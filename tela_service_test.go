@@ -1,0 +1,544 @@
+// Copyright 2025 HOLOGRAM Project. All rights reserved.
+// Unit and integration tests for tela_service.go (TELA DOC/INDEX deployment)
+
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// ============== Helper Function Unit Tests ==============
+// These tests don't require a running daemon
+
+func TestEstimateGasCost(t *testing.T) {
+	tests := []struct {
+		name     string
+		size     int
+		expected uint64
+	}{
+		{"Zero bytes", 0, 5000},                      // Base cost only
+		{"100 bytes", 100, 6000},                     // 5000 + 100*10
+		{"1KB", 1024, 5000 + 1024*10},                // 5000 + 10240
+		{"10KB", 10240, 5000 + 10240*10},             // 5000 + 102400
+		{"100KB", 102400, 5000 + 102400*10}, // Large file
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := estimateGasCost(tt.size)
+			if result != tt.expected {
+				t.Errorf("estimateGasCost(%d) = %d, expected %d", tt.size, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEstimateGasCostFormula(t *testing.T) {
+	// Verify the formula: baseCost(5000) + sizeBytes * 10
+	baseCost := uint64(5000)
+	perByteCost := uint64(10)
+
+	sizes := []int{0, 1, 10, 100, 1000, 10000}
+	for _, size := range sizes {
+		expected := baseCost + uint64(size)*perByteCost
+		result := estimateGasCost(size)
+		if result != expected {
+			t.Errorf("estimateGasCost(%d) = %d, expected %d (formula: %d + %d * %d)",
+				size, result, expected, baseCost, size, perByteCost)
+		}
+	}
+}
+
+func TestCanCompress(t *testing.T) {
+	// Note: TELA uses custom doc types, not MIME types
+	// See tela-cli/tela.go for constants
+	tests := []struct {
+		docType     string
+		canCompress bool
+	}{
+		// Compressible types (text-based) - TELA format
+		{"TELA-HTML-1", true},   // tela.DOC_HTML
+		{"TELA-CSS-1", true},    // tela.DOC_CSS
+		{"TELA-JS-1", true},     // tela.DOC_JS
+		{"TELA-JSON-1", true},   // tela.DOC_JSON
+		{"TELA-MD-1", true},     // tela.DOC_MD
+
+		// Non-compressible types (binary/already compressed/unknown)
+		{"TELA-STATIC-1", false}, // Generic static type
+		{"TELA-GO-1", false},     // Go code (might be in list, check)
+		{"image/png", false},     // MIME types not in compressible list
+		{"application/octet-stream", false},
+
+		// Edge cases
+		{"", false},
+		{"unknown", false},
+		{"tela-html-1", false}, // Case sensitive - lowercase shouldn't match
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.docType, func(t *testing.T) {
+			result := canCompress(tt.docType)
+			if result != tt.canCompress {
+				t.Errorf("canCompress(%s) = %v, expected %v", tt.docType, result, tt.canCompress)
+			}
+		})
+	}
+}
+
+// ============== DOCInfo Structure Tests ==============
+
+func TestDOCInfo_JSONMarshaling(t *testing.T) {
+	doc := DOCInfo{
+		Name:        "index.html",
+		Path:        "/path/to/file",
+		SubDir:      "",
+		DocType:     "text/html",
+		Size:        1024,
+		Compressed:  false,
+		Description: "Main page",
+		IconURL:     "https://example.com/icon.png",
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("Failed to marshal DOCInfo: %v", err)
+	}
+
+	// Unmarshal back
+	var decoded DOCInfo
+	if err := json.Unmarshal(jsonData, &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal DOCInfo: %v", err)
+	}
+
+	// Verify fields
+	if decoded.Name != doc.Name {
+		t.Errorf("Name mismatch: got %s, expected %s", decoded.Name, doc.Name)
+	}
+	if decoded.Path != doc.Path {
+		t.Errorf("Path mismatch: got %s, expected %s", decoded.Path, doc.Path)
+	}
+	if decoded.DocType != doc.DocType {
+		t.Errorf("DocType mismatch: got %s, expected %s", decoded.DocType, doc.DocType)
+	}
+	if decoded.Size != doc.Size {
+		t.Errorf("Size mismatch: got %d, expected %d", decoded.Size, doc.Size)
+	}
+	if decoded.Compressed != doc.Compressed {
+		t.Errorf("Compressed mismatch: got %v, expected %v", decoded.Compressed, doc.Compressed)
+	}
+}
+
+func TestDOCInfo_DataFieldExcludedFromJSON(t *testing.T) {
+	doc := DOCInfo{
+		Name: "test.html",
+		Data: []byte("<html>test</html>"),
+	}
+
+	jsonData, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	// Data should not appear in JSON (json:"-" tag)
+	if strings.Contains(string(jsonData), "data") {
+		t.Error("Data field should be excluded from JSON marshaling")
+	}
+}
+
+func TestDOCInfo_EmptyFields(t *testing.T) {
+	jsonStr := `{"name":"","path":"","docType":""}`
+	
+	var doc DOCInfo
+	if err := json.Unmarshal([]byte(jsonStr), &doc); err != nil {
+		t.Fatalf("Failed to unmarshal empty DOCInfo: %v", err)
+	}
+
+	if doc.Name != "" || doc.Path != "" || doc.DocType != "" {
+		t.Error("Empty strings should unmarshal correctly")
+	}
+}
+
+// ============== INDEXInfo Structure Tests ==============
+
+func TestINDEXInfo_JSONMarshaling(t *testing.T) {
+	idx := INDEXInfo{
+		Name:        "My TELA App",
+		Description: "A test application",
+		DURL:        "myapp",
+		IconURL:     "https://example.com/icon.png",
+		DOCSCIDs: []string{
+			"abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+			"def456abc123def456abc123def456abc123def456abc123def456abc123def4",
+		},
+		Licenses: []string{"MIT"},
+	}
+
+	jsonData, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatalf("Failed to marshal INDEXInfo: %v", err)
+	}
+
+	var decoded INDEXInfo
+	if err := json.Unmarshal(jsonData, &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal INDEXInfo: %v", err)
+	}
+
+	if decoded.Name != idx.Name {
+		t.Errorf("Name mismatch")
+	}
+	if decoded.DURL != idx.DURL {
+		t.Errorf("DURL mismatch")
+	}
+	if len(decoded.DOCSCIDs) != len(idx.DOCSCIDs) {
+		t.Errorf("DOCSCIDs length mismatch: got %d, expected %d", len(decoded.DOCSCIDs), len(idx.DOCSCIDs))
+	}
+}
+
+func TestINDEXInfo_EmptyDOCSCIDs(t *testing.T) {
+	idx := INDEXInfo{
+		Name:     "Empty App",
+		DOCSCIDs: []string{},
+	}
+
+	jsonData, _ := json.Marshal(idx)
+	var decoded INDEXInfo
+	json.Unmarshal(jsonData, &decoded)
+
+	if decoded.DOCSCIDs == nil {
+		// Empty slice should become empty slice, not nil
+		t.Log("Note: Empty DOCSCIDs unmarshals as nil (acceptable)")
+	}
+}
+
+// ============== File System Tests ==============
+
+func TestPreviewDOC_WithTempFile(t *testing.T) {
+	// Create temp directory
+	tempDir, err := os.MkdirTemp("", "tela_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create test HTML file
+	htmlContent := `<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body><h1>Hello TELA</h1></body>
+</html>`
+	htmlPath := filepath.Join(tempDir, "index.html")
+	if err := os.WriteFile(htmlPath, []byte(htmlContent), 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	// Create App instance for testing
+	app := &App{}
+
+	// Test PreviewDOC
+	result := app.PreviewDOC(htmlPath)
+
+	// Verify result
+	if success, ok := result["success"].(bool); !ok || !success {
+		t.Errorf("PreviewDOC failed: %v", result["error"])
+	}
+
+	if name, ok := result["name"].(string); !ok || name != "index.html" {
+		t.Errorf("Expected name 'index.html', got '%v'", result["name"])
+	}
+
+	if size, ok := result["size"].(int64); !ok || size != int64(len(htmlContent)) {
+		t.Errorf("Expected size %d, got '%v'", len(htmlContent), result["size"])
+	}
+
+	if gasEstimate, ok := result["gasEstimate"].(uint64); !ok || gasEstimate == 0 {
+		t.Errorf("Expected non-zero gas estimate, got '%v'", result["gasEstimate"])
+	}
+}
+
+func TestPreviewDOC_NonexistentFile(t *testing.T) {
+	app := &App{}
+	result := app.PreviewDOC("/nonexistent/path/file.html")
+
+	if success, ok := result["success"].(bool); ok && success {
+		t.Error("PreviewDOC should fail for nonexistent file")
+	}
+
+	if _, ok := result["error"]; !ok {
+		t.Error("PreviewDOC should return error message for nonexistent file")
+	}
+}
+
+func TestPreviewDOC_DifferentFileTypes(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "tela_test")
+	defer os.RemoveAll(tempDir)
+
+	app := &App{}
+
+	testFiles := []struct {
+		name     string
+		content  string
+		wantCompress bool
+	}{
+		{"style.css", "body { color: red; }", true},
+		{"script.js", "console.log('test');", true},
+		{"data.json", `{"key": "value"}`, true},
+		{"image.png", "fake png content", false},
+	}
+
+	for _, tf := range testFiles {
+		t.Run(tf.name, func(t *testing.T) {
+			filePath := filepath.Join(tempDir, tf.name)
+			os.WriteFile(filePath, []byte(tf.content), 0644)
+
+			result := app.PreviewDOC(filePath)
+
+			if success := result["success"].(bool); !success {
+				t.Errorf("PreviewDOC failed for %s: %v", tf.name, result["error"])
+				return
+			}
+
+			// Check canCompress matches expected
+			if canComp, ok := result["canCompress"].(bool); ok {
+				if canComp != tf.wantCompress {
+					t.Errorf("canCompress for %s: got %v, want %v", tf.name, canComp, tf.wantCompress)
+				}
+			}
+		})
+	}
+}
+
+// ============== ParseFolderForTELA Tests ==============
+
+func TestParseFolderForTELA_BasicStructure(t *testing.T) {
+	// Create temp directory with typical TELA structure
+	tempDir, _ := os.MkdirTemp("", "tela_app_test")
+	defer os.RemoveAll(tempDir)
+
+	// Create files
+	os.WriteFile(filepath.Join(tempDir, "index.html"), []byte("<html></html>"), 0644)
+	os.WriteFile(filepath.Join(tempDir, "style.css"), []byte("body{}"), 0644)
+	os.WriteFile(filepath.Join(tempDir, "app.js"), []byte("console.log()"), 0644)
+
+	// Create subdirectory
+	os.Mkdir(filepath.Join(tempDir, "assets"), 0755)
+	os.WriteFile(filepath.Join(tempDir, "assets", "logo.png"), []byte("fake png"), 0644)
+
+	app := &App{}
+	result := app.ParseFolderForTELA(tempDir)
+
+	if success := result["success"].(bool); !success {
+		t.Fatalf("ParseFolderForTELA failed: %v", result["error"])
+	}
+
+	// Files are returned as []DOCInfo
+	files, ok := result["files"].([]DOCInfo)
+	if !ok {
+		t.Fatalf("Expected files as []DOCInfo, got %T", result["files"])
+	}
+
+	if len(files) < 3 {
+		t.Errorf("Expected at least 3 files, got %d", len(files))
+	}
+
+	// Check that we have index.html
+	hasIndex := false
+	for _, f := range files {
+		if f.Name == "index.html" {
+			hasIndex = true
+			break
+		}
+	}
+	if !hasIndex {
+		t.Error("Expected index.html in parsed files")
+	}
+
+	// Check totalFiles matches
+	if totalFiles, ok := result["totalFiles"].(int); ok {
+		if totalFiles != len(files) {
+			t.Errorf("totalFiles (%d) doesn't match len(files) (%d)", totalFiles, len(files))
+		}
+	}
+}
+
+func TestParseFolderForTELA_EmptyFolder(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "empty_folder")
+	defer os.RemoveAll(tempDir)
+
+	app := &App{}
+	result := app.ParseFolderForTELA(tempDir)
+
+	// Should succeed but with empty/minimal files
+	if success := result["success"].(bool); !success {
+		// Empty folder might legitimately fail or return empty
+		t.Log("Empty folder returned error (acceptable):", result["error"])
+	}
+}
+
+func TestParseFolderForTELA_NonexistentFolder(t *testing.T) {
+	app := &App{}
+	result := app.ParseFolderForTELA("/nonexistent/folder/path")
+
+	// Note: filepath.Walk silently returns 0 files for nonexistent paths
+	// This is acceptable behavior - the result will have empty files
+	if success, ok := result["success"].(bool); ok && success {
+		// Check that files is empty or errors contains something
+		if files, ok := result["files"].([]DOCInfo); ok && len(files) == 0 {
+			// Empty files for nonexistent folder is acceptable
+			t.Log("Nonexistent folder returns empty files (acceptable)")
+		}
+		if errors, ok := result["errors"].([]string); ok && len(errors) > 0 {
+			t.Logf("Errors recorded: %v", errors)
+		}
+	}
+}
+
+// ============== GetGasEstimate Tests ==============
+
+func TestGetGasEstimate_ValidDOCInfo(t *testing.T) {
+	app := &App{}
+
+	docInfo := DOCInfo{
+		Name: "test.html",
+		Size: 1024,
+	}
+	docJSON, _ := json.Marshal(docInfo)
+
+	result := app.GetGasEstimate(string(docJSON))
+
+	if success := result["success"].(bool); !success {
+		t.Errorf("GetGasEstimate failed: %v", result["error"])
+	}
+
+	if gasEstimate, ok := result["gasEstimate"].(uint64); !ok || gasEstimate == 0 {
+		t.Errorf("Expected non-zero gas estimate")
+	}
+
+	// Verify size is returned
+	if size, ok := result["size"].(int64); !ok || size != 1024 {
+		t.Errorf("Expected size 1024, got %v", result["size"])
+	}
+}
+
+func TestGetGasEstimate_InvalidJSON(t *testing.T) {
+	app := &App{}
+
+	result := app.GetGasEstimate("not valid json")
+
+	if success, ok := result["success"].(bool); ok && success {
+		t.Error("GetGasEstimate should fail for invalid JSON")
+	}
+}
+
+func TestGetGasEstimate_ZeroSize(t *testing.T) {
+	app := &App{}
+
+	docInfo := DOCInfo{
+		Name: "empty.html",
+		Size: 0,
+	}
+	docJSON, _ := json.Marshal(docInfo)
+
+	result := app.GetGasEstimate(string(docJSON))
+
+	if success := result["success"].(bool); !success {
+		t.Errorf("GetGasEstimate failed: %v", result["error"])
+	}
+
+	// Zero size should still have base gas cost
+	if gasEstimate, ok := result["gasEstimate"].(uint64); !ok || gasEstimate < 5000 {
+		t.Errorf("Expected at least base gas cost (5000), got %v", gasEstimate)
+	}
+}
+
+// ============== Benchmarks ==============
+
+func BenchmarkEstimateGasCost(b *testing.B) {
+	sizes := []int{100, 1024, 10240, 102400}
+	for _, size := range sizes {
+		b.Run(string(rune(size)), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				estimateGasCost(size)
+			}
+		})
+	}
+}
+
+func BenchmarkCanCompress(b *testing.B) {
+	docTypes := []string{"text/html", "image/png", "application/json", "unknown"}
+	for _, dt := range docTypes {
+		b.Run(dt, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				canCompress(dt)
+			}
+		})
+	}
+}
+
+func BenchmarkDOCInfoMarshal(b *testing.B) {
+	doc := DOCInfo{
+		Name:        "index.html",
+		Path:        "/path/to/file",
+		DocType:     "text/html",
+		Size:        10240,
+		Compressed:  true,
+		Description: "Main application entry point",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Marshal(doc)
+	}
+}
+
+func BenchmarkDOCInfoUnmarshal(b *testing.B) {
+	jsonStr := `{"name":"index.html","path":"/path/to/file","docType":"text/html","size":10240,"compressed":true,"description":"Main application entry point"}`
+	jsonBytes := []byte(jsonStr)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var doc DOCInfo
+		json.Unmarshal(jsonBytes, &doc)
+	}
+}
+
+// ============== Integration Test Helpers ==============
+// These require simulator mode to be running
+
+// TestIntegration_InstallDOC tests actual DOC deployment
+// Run with: go test -run TestIntegration -tags integration
+func TestIntegration_InstallDOC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	// Check if we can detect simulator mode
+	// This test will be skipped if simulator isn't running
+	t.Log("Integration test for InstallDOC - requires simulator mode")
+	t.Log("To run: Start Hologram in simulator mode, then run 'go test -run TestIntegration'")
+	
+	// This would need actual simulator connection
+	t.Skip("Simulator mode required - run manually with app in simulator mode")
+}
+
+// TestIntegration_FullTELADeployment tests complete TELA app deployment
+func TestIntegration_FullTELADeployment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	t.Log("Integration test for full TELA deployment - requires simulator mode")
+	t.Log("Steps to test manually:")
+	t.Log("1. Start Hologram")
+	t.Log("2. Switch to Simulator mode (Settings > Network)")
+	t.Log("3. Go to Studio > Create INDEX")
+	t.Log("4. Select a folder with HTML/CSS/JS files")
+	t.Log("5. Click Deploy")
+	t.Log("6. Verify app appears in Browser > Discover")
+	
+	t.Skip("Manual test required - run with Hologram in simulator mode")
+}

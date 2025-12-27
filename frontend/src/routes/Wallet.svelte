@@ -1,0 +1,3420 @@
+<script>
+  import { walletState, appState, settingsState, walletRequestHistory, clearRequestHistory, toast, handleBackendError } from '../lib/stores/appState.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys } from '../../wailsjs/go/main/App.js';
+  import { onMount, onDestroy } from 'svelte';
+  import { 
+    Copy, ArrowUp, ArrowDown, ArrowLeftRight, Eye, EyeOff,
+    Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe,
+    LayoutDashboard, QrCode, History, Coins, Users, FileSignature, RefreshCw,
+    Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield
+  } from 'lucide-svelte';
+  
+  import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
+  import QRCodeComponent from '../lib/components/QRCode.svelte';
+  import AddContactModal from '../lib/components/AddContactModal.svelte';
+  
+  // ============================================
+  // NAVIGATION STATE
+  // ============================================
+  let activeSection = 'dashboard';
+  
+  const sidebarSections = {
+    overview: [
+      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    ],
+    transactions: [
+      { id: 'send', label: 'Send', icon: ArrowUp },
+      { id: 'receive', label: 'Receive', icon: ArrowDown },
+      { id: 'request', label: 'Request Payment', icon: QrCode },
+      { id: 'history', label: 'History', icon: History },
+    ],
+    portfolio: [
+      { id: 'tokens', label: 'Tokens', icon: Coins },
+    ],
+    tools: [
+      { id: 'addressbook', label: 'Address Book', icon: Users },
+      { id: 'sign', label: 'Sign Message', icon: FileSignature },
+      { id: 'backup', label: 'Backup & Security', icon: Shield },
+    ]
+  };
+  
+  // ============================================
+  // LOGIN TAB STATE
+  // ============================================
+  let activeTab = 'open'; // 'open' | 'create' | 'restore'
+  
+  // Open wallet form
+  let walletPath = '';
+  let password = '';
+  let showPassword = false;
+  let loading = false;
+  let error = null;
+  let recentWallets = [];
+  let recentWalletsInfo = [];
+  
+  // Create wallet form
+  let createPath = '';
+  let createPassword = '';
+  let createPasswordConfirm = '';
+  let showCreatePassword = false;
+  let createdSeed = null;
+  let seedConfirmed = false;
+  let createLoading = false;
+  let createError = null;
+  
+  // Restore wallet form
+  let restorePath = '';
+  let restorePassword = '';
+  let restorePasswordConfirm = '';
+  let restoreSeed = '';
+  let showRestorePassword = false;
+  let restoreLoading = false;
+  let restoreError = null;
+  
+  // ============================================
+  // WALLET DATA STATE
+  // ============================================
+  let transactionHistory = [];
+  
+  // ============================================
+  // SEND SECTION STATE (3-step flow)
+  // ============================================
+  let sendStep = 1; // 1: Enter, 2: Review, 3: Success
+  let sendDest = '';
+  let sendAmount = '';
+  let sendPassword = '';
+  let showSendPassword = false;
+  let sendError = null;
+  let sendTxid = null;
+  let sendLoading = false;
+  
+  // ============================================
+  // RECEIVE SECTION STATE
+  // ============================================
+  let addressType = 'standard'; // 'standard' | 'integrated'
+  let integratedAddress = '';
+  let integratedLoading = false;
+  
+  // ============================================
+  // REQUEST PAYMENT STATE
+  // ============================================
+  let requestAmount = '';
+  let requestDesc = '';
+  
+  // ============================================
+  // HISTORY SECTION STATE
+  // ============================================
+  let historyFilter = 'all'; // 'all' | 'in' | 'out' | 'mining'
+  let historySearch = '';
+  
+  // ============================================
+  // ADDRESS BOOK STATE
+  // ============================================
+  let contacts = [];
+  let contactsLoading = false;
+  let showAddContact = false;
+  let editingContact = null;
+  let contactSearch = '';
+  
+  // ============================================
+  // SIGN/VERIFY STATE
+  // ============================================
+  let signTab = 'sign'; // 'sign' | 'verify'
+  let messageToSign = '';
+  let signedResult = null;
+  let signLoading = false;
+  let verifyInput = '';
+  let verifyResult = null;
+  let verifyLoading = false;
+  
+  // ============================================
+  // BACKUP & SECURITY STATE
+  // ============================================
+  let backupPassword = '';
+  let showBackupPassword = false;
+  let seedRevealed = false;
+  let revealedSeed = '';
+  let backupLoading = false;
+  let backupError = null;
+  
+  // Keys state
+  let keysPassword = '';
+  let showKeysPassword = false;
+  let keysRevealed = false;
+  let revealedSecretKey = '';
+  let revealedPublicKey = '';
+  let keysLoading = false;
+  let keysError = null;
+  
+  // ============================================
+  // COMPUTED VALUES
+  // ============================================
+  $: balanceValue = $walletState.balance ? Math.min(($walletState.balance / 100000) % 100, 100) : 0;
+  $: createPasswordsMatch = createPassword === createPasswordConfirm && createPassword.length > 0;
+  $: restorePasswordsMatch = restorePassword === restorePasswordConfirm && restorePassword.length > 0;
+  $: seedWordCount = restoreSeed.trim().split(/\s+/).filter(w => w.length > 0).length;
+  $: isValidSeed = seedWordCount === 25;
+  
+  // Send validation
+  $: availableBalance = $walletState.balance / 100000;
+  $: sendAmountAtomic = Math.floor(parseFloat(sendAmount || '0') * 100000);
+  $: isValidSendAmount = !isNaN(sendAmountAtomic) && sendAmountAtomic > 0 && sendAmountAtomic <= $walletState.balance;
+  $: isValidSendAddress = sendDest.startsWith('dero1') || sendDest.startsWith('deto1');
+  $: canSend = isValidSendAmount && isValidSendAddress;
+  
+  // Payment URI
+  $: paymentUri = requestAmount && parseFloat(requestAmount) > 0
+    ? `dero://${$walletState.address}?amount=${parseFloat(requestAmount) * 100000}${requestDesc ? '&desc=' + encodeURIComponent(requestDesc) : ''}`
+    : '';
+  
+  // Filtered history
+  $: filteredHistory = transactionHistory.filter(tx => {
+    if (historyFilter === 'in' && !tx.incoming) return false;
+    if (historyFilter === 'out' && (tx.incoming || tx.coinbase)) return false;
+    if (historyFilter === 'mining' && !tx.coinbase) return false;
+    if (historySearch && tx.txid && !tx.txid.toLowerCase().includes(historySearch.toLowerCase())) {
+      return false;
+    }
+    return true;
+  });
+  
+  // Seed words display
+  $: seedWords = createdSeed ? createdSeed.split(' ') : [];
+  
+  // ============================================
+  // POLLING
+  // ============================================
+  let balanceInterval;
+  
+  function startPolling() {
+    balanceInterval = setInterval(refreshBalance, 15000);
+  }
+  
+  function stopPolling() {
+    if (balanceInterval) clearInterval(balanceInterval);
+  }
+  
+  // ============================================
+  // LIFECYCLE
+  // ============================================
+  onMount(async () => {
+    try {
+      const status = await GetWalletStatus();
+      if (status.isOpen) {
+        walletState.update(state => ({
+          ...state,
+          isOpen: true,
+          address: status.address,
+          walletPath: status.path,
+        }));
+        walletPath = status.path || '';
+        await refreshBalance();
+        await loadTransactionHistory();
+        startPolling();
+      }
+      
+      // Load enhanced wallet info for recent wallets
+      try {
+        const infos = await GetRecentWalletsWithInfo();
+        if (infos && infos.length > 0) {
+          recentWalletsInfo = infos;
+          recentWallets = infos.map(w => w.path);
+        }
+      } catch (e) {
+        // Fallback to simple list
+        const recents = await ListRecentWallets();
+        if (recents && recents.length > 0) {
+          recentWallets = recents;
+          recentWalletsInfo = recents.map(p => ({ 
+            path: p, 
+            filename: p.split('/').pop(), 
+            addressPrefix: '' 
+          }));
+        }
+      }
+    } catch (err) {
+      console.error('Error checking wallet status:', err);
+    }
+  });
+  
+  onDestroy(() => {
+    stopPolling();
+  });
+  
+  // ============================================
+  // DATA LOADING FUNCTIONS
+  // ============================================
+  async function refreshBalance() {
+    try {
+      const balance = await GetBalance();
+      if (balance.success) {
+        walletState.update(state => ({
+          ...state,
+          balance: balance.balance,
+          lockedBalance: balance.lockedBalance,
+        }));
+      }
+    } catch (err) {
+      console.error('Error fetching balance:', err);
+    }
+  }
+  
+  async function loadTransactionHistory() {
+    try {
+      const result = await GetTransactionHistory(100);
+      if (result.success && result.transactions) {
+        transactionHistory = result.transactions;
+      }
+    } catch (err) {
+      console.error('Error fetching transaction history:', err);
+    }
+  }
+  
+  
+  async function refreshAll() {
+    await Promise.all([
+      refreshBalance(),
+      loadTransactionHistory()
+    ]);
+    toast.success('Wallet refreshed');
+  }
+  
+  // ============================================
+  // WALLET MANAGEMENT
+  // ============================================
+  async function openWallet() {
+    if (!walletPath || !password) {
+      error = 'Please provide wallet path and password';
+      return;
+    }
+    
+    loading = true;
+    error = null;
+    
+    try {
+      const result = await OpenWallet(walletPath, password);
+      if (result.success) {
+        walletState.update(state => ({
+          ...state,
+          isOpen: true,
+          address: result.address,
+          walletPath: walletPath,
+        }));
+        settingsState.update(s => ({ ...s, lastWalletPath: walletPath }));
+        password = '';
+        
+        await refreshBalance();
+        await loadTransactionHistory();
+        startPolling();
+        
+        const recents = await ListRecentWallets();
+        if (recents) recentWallets = recents;
+      } else {
+        error = handleBackendError(result, { showToast: false }) || 'Failed to open wallet';
+      }
+    } catch (err) {
+      console.error('[Wallet Open Exception]', err);
+      error = err.message || 'Failed to open wallet';
+    } finally {
+      loading = false;
+    }
+  }
+  
+  async function closeWallet() {
+    try {
+      stopPolling();
+      const result = await CloseWallet();
+      if (result.success) {
+        walletState.update(state => ({
+          ...state,
+          isOpen: false,
+          address: '',
+          balance: 0,
+          lockedBalance: 0,
+          walletPath: '',
+        }));
+        transactionHistory = [];
+        activeSection = 'dashboard';
+        resetSendForm();
+      }
+    } catch (err) {
+      console.error('Failed to close wallet:', err);
+    }
+  }
+  
+  // Remove a single wallet from recent list
+  async function handleRemoveRecentWallet(path, event) {
+    event.stopPropagation(); // Don't select the wallet
+    try {
+      const result = await RemoveRecentWallet(path);
+      if (result.success) {
+        // Update local state
+        recentWalletsInfo = recentWalletsInfo.filter(w => w.path !== path);
+        recentWallets = recentWallets.filter(p => p !== path);
+        // Clear walletPath if it was the removed one
+        if (walletPath === path) {
+          walletPath = '';
+        }
+      }
+    } catch (err) {
+      console.error('Failed to remove recent wallet:', err);
+    }
+  }
+  
+  // Clear all recent wallets
+  async function handleClearRecentWallets() {
+    if (!confirm('Clear all recent wallets from the list?')) return;
+    try {
+      const result = await ClearRecentWallets();
+      if (result.success) {
+        recentWalletsInfo = [];
+        recentWallets = [];
+        walletPath = '';
+      }
+    } catch (err) {
+      console.error('Failed to clear recent wallets:', err);
+    }
+  }
+  
+  async function handleCreateWallet() {
+    if (!createPath || !createPasswordsMatch) {
+      createError = 'Please fill in all fields correctly';
+      return;
+    }
+    
+    createLoading = true;
+    createError = null;
+    
+    try {
+      const result = await CreateWallet(createPath, createPassword);
+      if (result.success) {
+        createdSeed = result.seed;
+        toast.success('Wallet created! Please save your seed phrase.');
+      } else {
+        createError = handleBackendError(result, { showToast: false }) || 'Failed to create wallet';
+      }
+    } catch (err) {
+      console.error('[Wallet Create Exception]', err);
+      createError = err.message || 'Failed to create wallet';
+    } finally {
+      createLoading = false;
+    }
+  }
+  
+  async function confirmSeedAndOpen() {
+    if (!seedConfirmed) return;
+    
+    walletPath = createPath;
+    password = createPassword;
+    
+    createdSeed = null;
+    seedConfirmed = false;
+    createPath = '';
+    createPassword = '';
+    createPasswordConfirm = '';
+    
+    activeTab = 'open';
+    await openWallet();
+  }
+  
+  async function handleRestoreWallet() {
+    if (!restorePath || !restorePasswordsMatch || !isValidSeed) {
+      restoreError = 'Please fill in all fields correctly';
+      return;
+    }
+    
+    restoreLoading = true;
+    restoreError = null;
+    
+    try {
+      const result = await RestoreWallet(restorePath, restorePassword, restoreSeed.trim());
+      if (result.success) {
+        toast.success('Wallet restored successfully!');
+        
+        walletPath = restorePath;
+        password = restorePassword;
+        
+        restorePath = '';
+        restorePassword = '';
+        restorePasswordConfirm = '';
+        restoreSeed = '';
+        
+        activeTab = 'open';
+        await openWallet();
+      } else {
+        restoreError = handleBackendError(result, { showToast: false }) || 'Failed to restore wallet';
+      }
+    } catch (err) {
+      console.error('[Wallet Restore Exception]', err);
+      restoreError = err.message || 'Failed to restore wallet';
+    } finally {
+      restoreLoading = false;
+    }
+  }
+  
+  async function connectXSWD() {
+    try {
+      await ConnectXSWD();
+    } catch (err) {
+      console.error('XSWD connection failed:', err);
+    }
+  }
+  
+  // ============================================
+  // SEND FUNCTIONS
+  // ============================================
+  function setMaxAmount() {
+    const maxAmount = Math.max(0, ($walletState.balance - 100) / 100000);
+    sendAmount = maxAmount.toFixed(5);
+  }
+  
+  function resetSendForm() {
+    sendStep = 1;
+    sendDest = '';
+    sendAmount = '';
+    sendPassword = '';
+    sendError = null;
+    sendTxid = null;
+    sendLoading = false;
+  }
+  
+  async function executeSend() {
+    if (!sendPassword) {
+      sendError = 'Please enter your wallet password';
+      return;
+    }
+    
+    sendLoading = true;
+    sendError = null;
+    
+    try {
+      const params = {
+        transfers: [{
+          destination: sendDest,
+          amount: sendAmountAtomic
+        }]
+      };
+      
+      const result = await InternalWalletCall('transfer', params, sendPassword);
+      
+      if (result.success) {
+        sendTxid = result.txid;
+        sendStep = 3;
+        toast.success('Transaction sent successfully!');
+        await refreshBalance();
+        await loadTransactionHistory();
+      } else {
+        sendError = handleBackendError(result, { showToast: false }) || 'Transaction failed';
+      }
+    } catch (err) {
+      console.error('[Send Transaction Exception]', err);
+      sendError = err.message || 'Transaction failed';
+    } finally {
+      sendLoading = false;
+    }
+  }
+  
+  // ============================================
+  // RECEIVE FUNCTIONS
+  // ============================================
+  async function generateIntegratedAddress() {
+    addressType = 'integrated';
+    if (integratedAddress) return;
+    
+    integratedLoading = true;
+    try {
+      const result = await GetIntegratedAddress('');
+      if (result.success) {
+        integratedAddress = result.address;
+      } else {
+        toast.error('Failed to generate integrated address');
+        addressType = 'standard';
+      }
+    } catch (err) {
+      console.error('Failed to generate integrated address:', err);
+      addressType = 'standard';
+    } finally {
+      integratedLoading = false;
+    }
+  }
+  
+  function getCurrentAddress() {
+    return addressType === 'integrated' && integratedAddress 
+      ? integratedAddress 
+      : $walletState.address;
+  }
+  
+  // ============================================
+  // HISTORY FUNCTIONS
+  // ============================================
+  function exportHistory() {
+    const csv = [
+      ['TXID', 'Type', 'Amount (DERO)', 'Time'],
+      ...filteredHistory.map(tx => [
+        tx.txid || '',
+        tx.coinbase ? 'Mining' : tx.incoming ? 'Received' : 'Sent',
+        formatBalance(tx.amount),
+        tx.time ? new Date(tx.time * 1000).toISOString() : ''
+      ])
+    ].map(row => row.join(',')).join('\n');
+    
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `wallet-history-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success('History exported to CSV');
+  }
+  
+  // ============================================
+  // ADDRESS BOOK FUNCTIONS
+  // ============================================
+  async function loadContacts() {
+    contactsLoading = true;
+    try {
+      const result = await GetAddressBook();
+      if (result.success) {
+        contacts = result.contacts || [];
+      }
+    } catch (err) {
+      console.error('Failed to load contacts:', err);
+    } finally {
+      contactsLoading = false;
+    }
+  }
+  
+  async function deleteContact(id) {
+    try {
+      const result = await DeleteContact(id);
+      if (result.success) {
+        toast.success('Contact deleted');
+        await loadContacts();
+      } else {
+        toast.error(result.error || 'Failed to delete contact');
+      }
+    } catch (err) {
+      toast.error('Failed to delete contact');
+    }
+  }
+  
+  function editContact(contact) {
+    editingContact = contact;
+    showAddContact = true;
+  }
+  
+  function sendToContact(address) {
+    sendDest = address;
+    activeSection = 'send';
+  }
+  
+  // Filtered contacts
+  $: filteredContacts = contacts.filter(c => {
+    if (!contactSearch) return true;
+    const search = contactSearch.toLowerCase();
+    return c.label.toLowerCase().includes(search) || 
+           c.address.toLowerCase().includes(search) ||
+           (c.notes && c.notes.toLowerCase().includes(search));
+  });
+  
+  // ============================================
+  // SIGN/VERIFY FUNCTIONS
+  // ============================================
+  async function signTheMessage() {
+    if (!messageToSign.trim()) {
+      toast.error('Please enter a message to sign');
+      return;
+    }
+    
+    signLoading = true;
+    signedResult = null;
+    
+    try {
+      const result = await SignMessage(messageToSign);
+      if (result.success) {
+        signedResult = {
+          signature: result.signature,
+          address: result.address,
+          message: result.message
+        };
+        toast.success('Message signed!');
+      } else {
+        toast.error(result.error || 'Failed to sign message');
+      }
+    } catch (err) {
+      toast.error(err.message || 'Failed to sign message');
+    } finally {
+      signLoading = false;
+    }
+  }
+  
+  async function verifyTheSignature() {
+    if (!verifyInput.trim()) {
+      toast.error('Please paste signed data to verify');
+      return;
+    }
+    
+    verifyLoading = true;
+    verifyResult = null;
+    
+    try {
+      const result = await VerifySignature(verifyInput);
+      if (result.success) {
+        verifyResult = {
+          valid: result.valid,
+          signer: result.signer || null,
+          message: result.message || null,
+          error: result.error || null
+        };
+      } else {
+        toast.error(result.error || 'Verification failed');
+      }
+    } catch (err) {
+      toast.error(err.message || 'Verification failed');
+    } finally {
+      verifyLoading = false;
+    }
+  }
+  
+  function copySignature() {
+    if (signedResult?.signature) {
+      navigator.clipboard.writeText(signedResult.signature);
+      toast.success('Signature copied!');
+    }
+  }
+  
+  function resetSign() {
+    messageToSign = '';
+    signedResult = null;
+  }
+  
+  function resetVerify() {
+    verifyInput = '';
+    verifyResult = null;
+  }
+  
+  // ============================================
+  // BACKUP & SECURITY FUNCTIONS
+  // ============================================
+  async function revealSeed() {
+    if (!backupPassword.trim()) {
+      backupError = 'Please enter your wallet password';
+      return;
+    }
+    
+    backupLoading = true;
+    backupError = null;
+    
+    try {
+      const result = await GetSeedPhrase(backupPassword);
+      if (result.success) {
+        revealedSeed = result.seed;
+        seedRevealed = true;
+        backupPassword = ''; // Clear password from memory
+        toast.success('Seed phrase revealed');
+      } else {
+        backupError = handleBackendError(result, { showToast: false }) || 'Failed to retrieve seed phrase';
+      }
+    } catch (err) {
+      console.error('Error retrieving seed phrase:', err);
+      backupError = err.message || 'Failed to retrieve seed phrase';
+    } finally {
+      backupLoading = false;
+    }
+  }
+  
+  function resetBackup() {
+    seedRevealed = false;
+    revealedSeed = '';
+    backupPassword = '';
+    backupError = null;
+    showBackupPassword = false;
+  }
+  
+  async function revealKeys() {
+    if (!keysPassword.trim()) {
+      keysError = 'Please enter your wallet password';
+      return;
+    }
+    
+    keysLoading = true;
+    keysError = null;
+    
+    try {
+      const result = await GetWalletKeys(keysPassword);
+      if (result.success) {
+        revealedSecretKey = result.secretKey;
+        revealedPublicKey = result.publicKey;
+        keysRevealed = true;
+        keysPassword = ''; // Clear password from memory
+        toast.success('Wallet keys revealed');
+      } else {
+        keysError = handleBackendError(result, { showToast: false }) || 'Failed to retrieve wallet keys';
+      }
+    } catch (err) {
+      console.error('Error retrieving wallet keys:', err);
+      keysError = err.message || 'Failed to retrieve wallet keys';
+    } finally {
+      keysLoading = false;
+    }
+  }
+  
+  function resetKeys() {
+    keysRevealed = false;
+    revealedSecretKey = '';
+    revealedPublicKey = '';
+    keysPassword = '';
+    keysError = null;
+    showKeysPassword = false;
+  }
+  
+  // ============================================
+  // UTILITY FUNCTIONS
+  // ============================================
+  function formatBalance(atomic) {
+    return (atomic / 100000).toFixed(5);
+  }
+  
+  function formatAddress(addr) {
+    if (!addr) return '';
+    return addr.slice(0, 12) + '...' + addr.slice(-8);
+  }
+  
+  function formatTime(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp * 1000);
+    const now = new Date();
+    const diff = now - date;
+    
+    if (diff < 60000) return 'Just now';
+    if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+    if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+    if (diff < 604800000) return Math.floor(diff / 86400000) + 'd ago';
+    return date.toLocaleDateString();
+  }
+  
+  function copyToClipboard(text, label = 'Copied!') {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    toast.success(label, 2000);
+  }
+  
+  function copyAddress() {
+    copyToClipboard($walletState.address, 'Address copied!');
+  }
+  
+  async function selectWalletFile() {
+    try {
+      const selected = await SelectWalletFile();
+      if (selected) walletPath = selected;
+    } catch (err) {
+      console.error('File dialog error:', err);
+    }
+  }
+  
+  async function selectCreatePath() {
+    try {
+      const selected = await SelectWalletFile();
+      if (selected) createPath = selected;
+    } catch (err) {
+      console.error('File dialog error:', err);
+    }
+  }
+  
+  async function selectRestorePath() {
+    try {
+      const selected = await SelectWalletFile();
+      if (selected) restorePath = selected;
+    } catch (err) {
+      console.error('File dialog error:', err);
+    }
+  }
+</script>
+
+{#if $walletState.isOpen}
+  <!-- ============================================
+       CONNECTED WALLET VIEW - Sub-Sidebar Layout
+       ============================================ -->
+  <div class="page-layout">
+    <!-- Page Header -->
+    <div class="page-header">
+      <div class="page-header-inner">
+        <div class="page-header-left">
+          <h1 class="page-header-title">
+            <Wallet size={18} class="page-header-icon" strokeWidth={1.5} />
+            Wallet
+          </h1>
+          <p class="page-header-desc">Manage your DERO assets and transactions</p>
+        </div>
+        <div class="page-header-actions">
+          <span class="badge badge-live">
+            <span class="live-dot"></span>
+            CONNECTED
+          </span>
+          <button class="btn btn-ghost btn-sm" on:click={refreshAll}>
+            <RefreshCw size={14} />
+            Refresh
+          </button>
+          <button class="btn btn-danger btn-sm" on:click={closeWallet}>
+            Disconnect
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Page Body -->
+    <div class="page-body">
+      <!-- Sidebar -->
+      <div class="page-sidebar">
+        {#each Object.entries(sidebarSections) as [group, items], groupIdx}
+          <div class="page-sidebar-section" style={groupIdx > 0 ? 'margin-top: var(--s-5)' : ''}>
+            {group.toUpperCase()}
+          </div>
+          <nav class="page-sidebar-nav">
+            {#each items as item}
+              <button
+                class="page-sidebar-item"
+                class:active={activeSection === item.id}
+                class:disabled={item.disabled}
+                on:click={() => !item.disabled && (activeSection = item.id)}
+                disabled={item.disabled}
+              >
+                <span class="page-sidebar-item-icon">
+                  <svelte:component this={item.icon} size={14} strokeWidth={1.5} />
+                </span>
+                <span class="page-sidebar-item-label">{item.label}</span>
+                {#if item.disabled}
+                  <span class="sidebar-coming-soon">Soon</span>
+                {/if}
+              </button>
+            {/each}
+          </nav>
+        {/each}
+      </div>
+
+      <!-- Content Area -->
+      <div class="page-content">
+        
+        <!-- ============================================
+             DASHBOARD SECTION
+             ============================================ -->
+        {#if activeSection === 'dashboard'}
+          <div class="content-section-title">Wallet Dashboard</div>
+          <p class="content-section-desc">Your wallet at a glance</p>
+
+          <!-- Balance Panel -->
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">◆</span>
+                BALANCE
+              </div>
+              <div class="cmd-panel-meta">
+                <span class="badge badge-live">LIVE</span>
+              </div>
+            </div>
+            <div class="wallet-balance-display">
+              <div class="balance-main">
+                <span class="balance-value">{formatBalance($walletState.balance)}</span>
+                <span class="balance-unit">DERO</span>
+              </div>
+              {#if $walletState.lockedBalance > 0}
+                <div class="balance-locked">
+                  + {formatBalance($walletState.lockedBalance)} locked
+                </div>
+              {/if}
+              <div class="wallet-address-row">
+                <span class="address-text">{formatAddress($walletState.address)}</span>
+                <button class="btn-icon-sm" on:click={copyAddress} title="Copy address">
+                  <Copy size={12} />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Actions -->
+          <div class="quick-actions-grid">
+            <button class="quick-action-btn" on:click={() => activeSection = 'send'}>
+              <ArrowUp size={20} strokeWidth={1.5} />
+              <span>Send</span>
+            </button>
+            <button class="quick-action-btn" on:click={() => activeSection = 'receive'}>
+              <ArrowDown size={20} strokeWidth={1.5} />
+              <span>Receive</span>
+            </button>
+            <button class="quick-action-btn" on:click={() => activeSection = 'request'}>
+              <QrCode size={20} strokeWidth={1.5} />
+              <span>Request</span>
+            </button>
+            <button class="quick-action-btn" on:click={() => activeSection = 'history'}>
+              <History size={20} strokeWidth={1.5} />
+              <span>History</span>
+            </button>
+          </div>
+
+
+          <!-- Recent Activity -->
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">◎</span>
+                RECENT ACTIVITY
+              </div>
+              <div class="cmd-panel-meta">
+                <button class="btn btn-ghost btn-sm" on:click={() => activeSection = 'history'}>
+                  View All
+                  <ChevronRight size={12} />
+                </button>
+              </div>
+            </div>
+            <div class="recent-tx-list">
+              {#each transactionHistory.slice(0, 5) as tx}
+                <div class="tx-row">
+                  <div class="tx-left">
+                    <span class="tx-icon" class:tx-in={tx.incoming || tx.coinbase} class:tx-out={!tx.incoming && !tx.coinbase}>
+                      {#if tx.coinbase}
+                        <Pickaxe size={14} />
+                      {:else if tx.incoming}
+                        <ArrowDown size={14} />
+                      {:else}
+                        <ArrowUp size={14} />
+                      {/if}
+                    </span>
+                    <div class="tx-info">
+                      <span class="tx-type">{tx.coinbase ? 'Mining Reward' : tx.incoming ? 'Received' : 'Sent'}</span>
+                      <span class="tx-time">{formatTime(tx.time)}</span>
+                    </div>
+                  </div>
+                  <span class="tx-amt" class:tx-amt-in={tx.incoming || tx.coinbase} class:tx-amt-out={!tx.incoming && !tx.coinbase}>
+                    {tx.incoming || tx.coinbase ? '+' : '-'}{formatBalance(tx.amount)} DERO
+                  </span>
+                </div>
+              {:else}
+                <div class="cmd-empty-state">
+                  <span class="cmd-empty-icon">◎</span>
+                  <span class="cmd-empty-text">No recent transactions</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- ============================================
+             SEND SECTION (3-Step Flow)
+             ============================================ -->
+        {#if activeSection === 'send'}
+          <div class="content-section-title">Send DERO</div>
+          <p class="content-section-desc">Transfer DERO to any address</p>
+
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">⬢</span>
+                {#if sendStep === 1}TRANSFER{:else if sendStep === 2}CONFIRM{:else}COMPLETE{/if}
+              </div>
+              <div class="cmd-panel-meta">
+                <span class="step-indicator">Step {sendStep} of 3</span>
+              </div>
+            </div>
+            
+            <div class="send-form-content">
+              {#if sendStep === 1}
+                <!-- STEP 1: Enter Details -->
+                <div class="form-group">
+                  <label class="form-label">Recipient Address</label>
+                  <input 
+                    type="text" 
+                    class="input" 
+                    class:input-error={sendDest && !isValidSendAddress}
+                    bind:value={sendDest} 
+                    placeholder="dero1..." 
+                  />
+                  {#if sendDest && !isValidSendAddress}
+                    <span class="form-error">Invalid DERO address</span>
+                  {/if}
+                </div>
+                
+                <div class="form-group">
+                  <div class="form-label-row">
+                    <label class="form-label">Amount</label>
+                    <span class="form-hint">Available: {availableBalance.toFixed(5)} DERO</span>
+                  </div>
+                  <div class="input-with-action">
+                    <input 
+                      type="number" 
+                      class="input" 
+                      class:input-error={sendAmount && !isValidSendAmount}
+                      bind:value={sendAmount} 
+                      placeholder="0.00000" 
+                      step="0.00001" 
+                      min="0"
+                    />
+                    <button class="btn btn-ghost btn-sm" on:click={setMaxAmount}>MAX</button>
+                  </div>
+                  {#if sendAmount && !isValidSendAmount}
+                    <span class="form-error">
+                      {sendAmountAtomic <= 0 ? 'Amount must be positive' : 'Insufficient balance'}
+                    </span>
+                  {/if}
+                </div>
+                
+                <div class="form-actions">
+                  <button class="btn btn-primary" disabled={!canSend} on:click={() => sendStep = 2}>
+                    Review Transaction
+                    <ChevronRight size={14} />
+                  </button>
+                </div>
+                
+              {:else if sendStep === 2}
+                <!-- STEP 2: Review & Confirm -->
+                <div class="confirm-details">
+                  <div class="confirm-row">
+                    <span class="confirm-label">Sending</span>
+                    <span class="confirm-value confirm-value-amount">{sendAmount} DERO</span>
+                  </div>
+                  <div class="confirm-row">
+                    <span class="confirm-label">To</span>
+                    <span class="confirm-value confirm-value-address">{formatAddress(sendDest)}</span>
+                  </div>
+                  <div class="confirm-row">
+                    <span class="confirm-label">Est. Fee</span>
+                    <span class="confirm-value">~0.00001 DERO</span>
+                  </div>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">Wallet Password</label>
+                  <div class="input-wrap">
+                    {#if showSendPassword}
+                      <input type="text" class="input" bind:value={sendPassword} placeholder="Enter password" />
+                    {:else}
+                      <input type="password" class="input" bind:value={sendPassword} placeholder="Enter password" />
+                    {/if}
+                    <button type="button" class="input-action" on:click={() => showSendPassword = !showSendPassword}>
+                      {#if showSendPassword}
+                        <EyeOff size={16} strokeWidth={1.5} />
+                      {:else}
+                        <Eye size={16} strokeWidth={1.5} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+                
+                {#if sendError}
+                  <div class="alert alert-error">
+                    <AlertTriangle size={14} />
+                    <span>{sendError}</span>
+                  </div>
+                {/if}
+                
+                <div class="form-actions form-actions-split">
+                  <button class="btn btn-ghost" on:click={() => { sendStep = 1; sendError = null; }}>
+                    ← Back
+                  </button>
+                  <button class="btn btn-primary" disabled={sendLoading || !sendPassword} on:click={executeSend}>
+                    {#if sendLoading}
+                      <Loader2 size={14} class="spin" />
+                      Sending...
+                    {:else}
+                      Confirm & Send
+                    {/if}
+                  </button>
+                </div>
+                
+              {:else}
+                <!-- STEP 3: Success -->
+                <div class="success-state">
+                  <div class="success-icon">
+                    <Check size={48} strokeWidth={1.5} />
+                  </div>
+                  <h3 class="success-title">Transaction Sent!</h3>
+                  <p class="success-text">{sendAmount} DERO sent successfully</p>
+                  
+                  <div class="txid-display">
+                    <span class="txid-label">Transaction ID</span>
+                    <div class="txid-row">
+                      <code class="txid-value">{sendTxid?.slice(0, 24)}...</code>
+                      <button class="btn-icon-sm" on:click={() => copyToClipboard(sendTxid, 'TXID copied!')}>
+                        <Copy size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <div class="form-actions">
+                    <button class="btn btn-primary" on:click={resetSendForm}>Done</button>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        <!-- ============================================
+             RECEIVE SECTION
+             ============================================ -->
+        {#if activeSection === 'receive'}
+          <div class="content-section-title">Receive DERO</div>
+          <p class="content-section-desc">Share your address to receive payments</p>
+
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">⬢</span>
+                YOUR ADDRESS
+              </div>
+            </div>
+            
+            <div class="receive-content">
+              <!-- Address Type Toggle -->
+              <div class="address-type-toggle">
+                <button 
+                  class="toggle-btn" 
+                  class:active={addressType === 'standard'}
+                  on:click={() => addressType = 'standard'}
+                >
+                  Standard
+                </button>
+                <button 
+                  class="toggle-btn" 
+                  class:active={addressType === 'integrated'}
+                  on:click={generateIntegratedAddress}
+                  disabled={integratedLoading}
+                >
+                  {#if integratedLoading}
+                    <Loader2 size={12} class="spin" />
+                  {/if}
+                  Integrated
+                </button>
+              </div>
+              
+              {#if addressType === 'integrated'}
+                <p class="address-hint">Integrated addresses include a unique payment ID for tracking</p>
+              {/if}
+              
+              <!-- QR Code -->
+              <div class="qr-display">
+                <QRCodeComponent 
+                  value={getCurrentAddress()} 
+                  size={200} 
+                />
+              </div>
+              
+              <!-- Address Display -->
+              <div class="address-display">
+                <code class="address-full">{getCurrentAddress()}</code>
+              </div>
+              
+              <div class="receive-actions">
+                <button class="btn btn-primary" on:click={() => copyToClipboard(getCurrentAddress(), 'Address copied!')}>
+                  <Copy size={14} />
+                  Copy Address
+                </button>
+              </div>
+              
+              <div class="receive-warning">
+                <AlertTriangle size={14} />
+                <span>Only send DERO to this address. Other cryptocurrencies may be lost permanently.</span>
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        <!-- ============================================
+             REQUEST PAYMENT SECTION
+             ============================================ -->
+        {#if activeSection === 'request'}
+          <div class="content-section-title">Request Payment</div>
+          <p class="content-section-desc">Generate a payment request with amount</p>
+
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">⬢</span>
+                PAYMENT REQUEST
+              </div>
+            </div>
+            
+            <div class="request-content">
+              <div class="form-group">
+                <label class="form-label">Amount (DERO)</label>
+                <input 
+                  type="number" 
+                  class="input" 
+                  bind:value={requestAmount} 
+                  placeholder="0.00000" 
+                  step="0.00001"
+                  min="0"
+                />
+              </div>
+              
+              <div class="form-group">
+                <label class="form-label">Description (optional)</label>
+                <input 
+                  type="text" 
+                  class="input" 
+                  bind:value={requestDesc} 
+                  placeholder="Payment for..." 
+                />
+              </div>
+              
+              {#if paymentUri}
+                <!-- QR Code with URI -->
+                <div class="qr-display">
+                  <QRCodeComponent value={paymentUri} size={200} />
+                </div>
+                
+                <div class="uri-display">
+                  <label class="form-label">Payment URI</label>
+                  <div class="uri-box">
+                    <code class="uri-value">{paymentUri}</code>
+                  </div>
+                </div>
+                
+                <div class="request-actions">
+                  <button class="btn btn-primary" on:click={() => copyToClipboard(paymentUri, 'Payment URI copied!')}>
+                    <Copy size={14} />
+                    Copy URI
+                  </button>
+                </div>
+              {:else}
+                <div class="request-placeholder">
+                  <QrCode size={48} strokeWidth={1} />
+                  <p>Enter an amount to generate a payment QR code</p>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        <!-- ============================================
+             HISTORY SECTION
+             ============================================ -->
+        {#if activeSection === 'history'}
+          <div class="content-section-title">Transaction History</div>
+          <p class="content-section-desc">View and export your transaction records</p>
+
+          <!-- Filters -->
+          <div class="history-filters">
+            <div class="filter-tabs">
+              <button class="filter-tab" class:active={historyFilter === 'all'} on:click={() => historyFilter = 'all'}>
+                All
+              </button>
+              <button class="filter-tab" class:active={historyFilter === 'in'} on:click={() => historyFilter = 'in'}>
+                Received
+              </button>
+              <button class="filter-tab" class:active={historyFilter === 'out'} on:click={() => historyFilter = 'out'}>
+                Sent
+              </button>
+              <button class="filter-tab" class:active={historyFilter === 'mining'} on:click={() => historyFilter = 'mining'}>
+                Mining
+              </button>
+            </div>
+            
+            <div class="filter-actions">
+              <div class="search-input-wrap">
+                <Search size={14} />
+                <input 
+                  type="text" 
+                  class="search-input" 
+                  bind:value={historySearch} 
+                  placeholder="Search TXID..." 
+                />
+              </div>
+              <button class="btn btn-secondary btn-sm" on:click={exportHistory}>
+                <Download size={14} />
+                Export
+              </button>
+            </div>
+          </div>
+
+          <!-- Transaction List -->
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">☰</span>
+                TRANSACTIONS
+              </div>
+              <div class="cmd-panel-meta">
+                <span class="count-badge">{filteredHistory.length} items</span>
+              </div>
+            </div>
+            
+            <div class="tx-list-full">
+              {#each filteredHistory as tx}
+                <div class="tx-row-detailed">
+                  <div class="tx-icon-wrap">
+                    <span class="tx-icon" class:tx-in={tx.incoming || tx.coinbase} class:tx-out={!tx.incoming && !tx.coinbase}>
+                      {#if tx.coinbase}
+                        <Pickaxe size={14} />
+                      {:else if tx.incoming}
+                        <ArrowDown size={14} />
+                      {:else}
+                        <ArrowUp size={14} />
+                      {/if}
+                    </span>
+                  </div>
+                  <div class="tx-details">
+                    <span class="tx-type">{tx.coinbase ? 'Mining Reward' : tx.incoming ? 'Received' : 'Sent'}</span>
+                    <span class="tx-id">{tx.txid?.slice(0, 20)}...</span>
+                  </div>
+                  <div class="tx-meta">
+                    <span class="tx-amount" class:positive={tx.incoming || tx.coinbase} class:negative={!tx.incoming && !tx.coinbase}>
+                      {tx.incoming || tx.coinbase ? '+' : '-'}{formatBalance(tx.amount)} DERO
+                    </span>
+                    <span class="tx-timestamp">{formatTime(tx.time)}</span>
+                  </div>
+                  <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.txid, 'TXID copied!')} title="Copy TXID">
+                    <Copy size={12} />
+                  </button>
+                </div>
+              {:else}
+                <div class="cmd-empty-state">
+                  <span class="cmd-empty-icon">◎</span>
+                  <span class="cmd-empty-text">No transactions found</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- ============================================
+             TOKENS SECTION
+             ============================================ -->
+        {#if activeSection === 'tokens'}
+          <div class="content-section-title">Token Portfolio</div>
+          <p class="content-section-desc">View and manage your token holdings</p>
+          
+          <TokenPortfolio />
+        {/if}
+
+        <!-- ============================================
+             ADDRESS BOOK SECTION
+             ============================================ -->
+        {#if activeSection === 'addressbook'}
+          <div class="content-section-title">Address Book</div>
+          <p class="content-section-desc">Save addresses for quick access</p>
+
+          <!-- Search and Add -->
+          <div class="addressbook-controls">
+            <div class="search-input-wrap">
+              <Search size={14} />
+              <input 
+                type="text" 
+                class="search-input" 
+                bind:value={contactSearch} 
+                placeholder="Search contacts..."
+              />
+            </div>
+            <button class="btn btn-primary btn-sm" on:click={() => { editingContact = null; showAddContact = true; loadContacts(); }}>
+              <Plus size={14} />
+              Add Contact
+            </button>
+          </div>
+
+          <!-- Contacts List -->
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">◎</span>
+                CONTACTS
+              </div>
+              <div class="cmd-panel-meta">
+                <span class="count-badge">{filteredContacts.length} saved</span>
+                <button class="btn btn-ghost btn-sm" on:click={loadContacts} disabled={contactsLoading}>
+                  <RefreshCw size={12} class={contactsLoading ? 'spin' : ''} />
+                </button>
+              </div>
+            </div>
+            
+            <div class="contacts-list">
+              {#each filteredContacts as contact}
+                <div class="contact-row">
+                  <div class="contact-icon">
+                    <Users size={16} />
+                  </div>
+                  <div class="contact-info">
+                    <span class="contact-label">{contact.label}</span>
+                    <span class="contact-address">{formatAddress(contact.address)}</span>
+                    {#if contact.notes}
+                      <span class="contact-notes">{contact.notes}</span>
+                    {/if}
+                  </div>
+                  <div class="contact-actions">
+                    <button class="action-btn" on:click={() => copyToClipboard(contact.address, 'Address copied!')} title="Copy">
+                      <Copy size={12} />
+                    </button>
+                    <button class="action-btn action-btn-send" on:click={() => sendToContact(contact.address)} title="Send">
+                      <Send size={12} />
+                    </button>
+                    <button class="action-btn" on:click={() => editContact(contact)} title="Edit">
+                      <Edit size={12} />
+                    </button>
+                    <button class="action-btn action-btn-danger" on:click={() => deleteContact(contact.id)} title="Delete">
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+              {:else}
+                <div class="cmd-empty-state">
+                  <span class="cmd-empty-icon">◎</span>
+                  <span class="cmd-empty-text">
+                    {contactSearch ? 'No contacts found' : 'No contacts saved yet'}
+                  </span>
+                  {#if !contactSearch}
+                    <button class="btn btn-primary btn-sm" on:click={() => { editingContact = null; showAddContact = true; }}>
+                      <Plus size={14} />
+                      Add your first contact
+                    </button>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- ============================================
+             SIGN MESSAGE SECTION
+             ============================================ -->
+        {#if activeSection === 'sign'}
+          <div class="content-section-title">Sign & Verify</div>
+          <p class="content-section-desc">Cryptographically sign messages and verify signatures</p>
+
+          <!-- Tab Switcher -->
+          <div class="sign-tabs">
+            <button class="sign-tab" class:active={signTab === 'sign'} on:click={() => signTab = 'sign'}>
+              Sign Message
+            </button>
+            <button class="sign-tab" class:active={signTab === 'verify'} on:click={() => signTab = 'verify'}>
+              Verify Signature
+            </button>
+          </div>
+
+          {#if signTab === 'sign'}
+            <!-- SIGN TAB -->
+            <div class="cmd-stats-panel">
+              <div class="cmd-panel-header">
+                <div class="cmd-panel-title">
+                  <span class="cmd-panel-icon">✍</span>
+                  SIGN MESSAGE
+                </div>
+              </div>
+              
+              <div class="sign-content">
+                <div class="form-group">
+                  <label class="form-label">Message to Sign</label>
+                  <textarea 
+                    class="input textarea" 
+                    bind:value={messageToSign} 
+                    placeholder="Enter your message here..."
+                    rows="4"
+                  ></textarea>
+                </div>
+                
+                <div class="form-actions">
+                  <button class="btn btn-ghost" on:click={resetSign} disabled={!messageToSign && !signedResult}>
+                    Clear
+                  </button>
+                  <button class="btn btn-primary" on:click={signTheMessage} disabled={signLoading || !messageToSign.trim()}>
+                    {#if signLoading}
+                      <Loader2 size={14} class="spin" />
+                      Signing...
+                    {:else}
+                      Sign Message
+                    {/if}
+                  </button>
+                </div>
+                
+                {#if signedResult}
+                  <div class="signature-result">
+                    <div class="result-header">
+                      <Check size={16} />
+                      <span>Message Signed Successfully</span>
+                    </div>
+                    
+                    <div class="result-field">
+                      <label class="form-label">Signed By</label>
+                      <div class="result-value mono">{formatAddress(signedResult.address)}</div>
+                    </div>
+                    
+                    <div class="result-field">
+                      <label class="form-label">Signature (PEM)</label>
+                      <div class="signature-box">
+                        <pre class="signature-text">{signedResult.signature}</pre>
+                      </div>
+                    </div>
+                    
+                    <button class="btn btn-secondary" on:click={copySignature}>
+                      <Copy size={14} />
+                      Copy Signature
+                    </button>
+                  </div>
+                {/if}
+              </div>
+            </div>
+            
+          {:else}
+            <!-- VERIFY TAB -->
+            <div class="cmd-stats-panel">
+              <div class="cmd-panel-header">
+                <div class="cmd-panel-title">
+                  <span class="cmd-panel-icon">✓</span>
+                  VERIFY SIGNATURE
+                </div>
+              </div>
+              
+              <div class="sign-content">
+                <div class="form-group">
+                  <label class="form-label">Signed Data (PEM)</label>
+                  <textarea 
+                    class="input textarea mono" 
+                    bind:value={verifyInput} 
+                    placeholder="Paste the PEM-encoded signature here..."
+                    rows="8"
+                  ></textarea>
+                </div>
+                
+                <div class="form-actions">
+                  <button class="btn btn-ghost" on:click={resetVerify} disabled={!verifyInput && !verifyResult}>
+                    Clear
+                  </button>
+                  <button class="btn btn-primary" on:click={verifyTheSignature} disabled={verifyLoading || !verifyInput.trim()}>
+                    {#if verifyLoading}
+                      <Loader2 size={14} class="spin" />
+                      Verifying...
+                    {:else}
+                      Verify Signature
+                    {/if}
+                  </button>
+                </div>
+                
+                {#if verifyResult}
+                  <div class="verify-result" class:valid={verifyResult.valid} class:invalid={!verifyResult.valid}>
+                    <div class="result-header">
+                      {#if verifyResult.valid}
+                        <Check size={16} />
+                        <span>Valid Signature</span>
+                      {:else}
+                        <AlertTriangle size={16} />
+                        <span>Invalid Signature</span>
+                      {/if}
+                    </div>
+                    
+                    {#if verifyResult.valid}
+                      <div class="result-field">
+                        <label class="form-label">Signed By</label>
+                        <div class="result-value mono">{formatAddress(verifyResult.signer)}</div>
+                      </div>
+                      
+                      <div class="result-field">
+                        <label class="form-label">Original Message</label>
+                        <div class="result-value">{verifyResult.message}</div>
+                      </div>
+                    {:else if verifyResult.error}
+                      <div class="result-error">{verifyResult.error}</div>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        {/if}
+
+        <!-- ============================================
+             BACKUP & SECURITY SECTION
+             ============================================ -->
+        {#if activeSection === 'backup'}
+          <div class="content-section-title">Backup & Security</div>
+          <p class="content-section-desc">View your recovery seed phrase and export keys</p>
+
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">■</span>
+                RECOVERY SEED
+              </div>
+            </div>
+            
+            <div class="backup-content">
+              {#if !seedRevealed}
+                <!-- Password Prompt -->
+                <div class="backup-warning">
+                  <AlertTriangle size={16} />
+                  <span>Enter your wallet password to view your recovery seed phrase</span>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">Wallet Password</label>
+                  <div class="input-wrap">
+                    {#if showBackupPassword}
+                      <input 
+                        type="text" 
+                        class="input" 
+                        bind:value={backupPassword} 
+                        placeholder="Enter wallet password" 
+                        autocomplete="off"
+                      />
+                    {:else}
+                      <input 
+                        type="password" 
+                        class="input" 
+                        bind:value={backupPassword} 
+                        placeholder="Enter wallet password" 
+                        autocomplete="off"
+                      />
+                    {/if}
+                    <button 
+                      type="button" 
+                      class="input-action" 
+                      on:click={() => showBackupPassword = !showBackupPassword}
+                    >
+                      {#if showBackupPassword}
+                        <EyeOff size={16} strokeWidth={1.5} />
+                      {:else}
+                        <Eye size={16} strokeWidth={1.5} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+                
+                {#if backupError}
+                  <div class="alert alert-error">
+                    <AlertTriangle size={14} />
+                    <span>{backupError}</span>
+                  </div>
+                {/if}
+                
+                <div class="form-actions">
+                  <button 
+                    class="btn btn-primary" 
+                    on:click={revealSeed} 
+                    disabled={backupLoading || !backupPassword.trim()}
+                  >
+                    {#if backupLoading}
+                      <Loader2 size={14} class="spin" />
+                      Verifying...
+                    {:else}
+                      View Seed Phrase
+                    {/if}
+                  </button>
+                </div>
+              {:else}
+                <!-- Seed Display -->
+                <div class="seed-header">
+                  <AlertTriangle size={32} class="seed-warning-icon" />
+                  <h2 class="seed-title">Your Recovery Seed</h2>
+                  <p class="seed-subtitle">Write down these 25 words in order. This is the ONLY way to recover your wallet.</p>
+                </div>
+                
+                <div class="seed-grid">
+                  {#each revealedSeed.split(' ') as word, i}
+                    <div class="seed-word">
+                      <span class="seed-num">{i + 1}</span>
+                      <span class="seed-text">{word}</span>
+                    </div>
+                  {/each}
+                </div>
+                
+                <div class="seed-warnings">
+                  <div class="warning-item">
+                    <AlertTriangle size={16} />
+                    <span>NEVER share your seed with anyone</span>
+                  </div>
+                  <div class="warning-item">
+                    <AlertTriangle size={16} />
+                    <span>Hologram will NEVER ask for your seed</span>
+                  </div>
+                  <div class="warning-item">
+                    <AlertTriangle size={16} />
+                    <span>Store this offline in a safe place</span>
+                  </div>
+                </div>
+                
+                <div class="backup-actions">
+                  <button class="btn btn-secondary" on:click={() => copyToClipboard(revealedSeed, 'Seed phrase copied!')}>
+                    <Copy size={14} />
+                    Copy Seed Phrase
+                  </button>
+                  <button class="btn btn-ghost" on:click={resetBackup}>
+                    Hide Seed
+                  </button>
+                </div>
+              {/if}
+            </div>
+          </div>
+
+          <!-- Wallet Keys Panel -->
+          <div class="cmd-stats-panel" style="margin-top: var(--s-4);">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">■</span>
+                WALLET KEYS
+              </div>
+            </div>
+            
+            <div class="backup-content">
+              {#if !keysRevealed}
+                <!-- Password Prompt -->
+                <div class="backup-warning">
+                  <AlertTriangle size={16} />
+                  <span>Enter your wallet password to view your secret and public keys</span>
+                </div>
+                
+                <div class="keys-warning-critical">
+                  <AlertTriangle size={16} />
+                  <div>
+                    <strong>CRITICAL:</strong> Your secret key provides full control over your wallet. Never share it with anyone.
+                  </div>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">Wallet Password</label>
+                  <div class="input-wrap">
+                    {#if showKeysPassword}
+                      <input 
+                        type="text" 
+                        class="input" 
+                        bind:value={keysPassword} 
+                        placeholder="Enter wallet password" 
+                        autocomplete="off"
+                      />
+                    {:else}
+                      <input 
+                        type="password" 
+                        class="input" 
+                        bind:value={keysPassword} 
+                        placeholder="Enter wallet password" 
+                        autocomplete="off"
+                      />
+                    {/if}
+                    <button 
+                      type="button" 
+                      class="input-action" 
+                      on:click={() => showKeysPassword = !showKeysPassword}
+                    >
+                      {#if showKeysPassword}
+                        <EyeOff size={16} strokeWidth={1.5} />
+                      {:else}
+                        <Eye size={16} strokeWidth={1.5} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+                
+                {#if keysError}
+                  <div class="alert alert-error">
+                    <AlertTriangle size={14} />
+                    <span>{keysError}</span>
+                  </div>
+                {/if}
+                
+                <div class="form-actions">
+                  <button 
+                    class="btn btn-primary" 
+                    on:click={revealKeys} 
+                    disabled={keysLoading || !keysPassword.trim()}
+                  >
+                    {#if keysLoading}
+                      <Loader2 size={14} class="spin" />
+                      Verifying...
+                    {:else}
+                      View Keys
+                    {/if}
+                  </button>
+                </div>
+              {:else}
+                <!-- Keys Display -->
+                <div class="keys-display">
+                  <!-- Secret Key -->
+                  <div class="key-section">
+                    <div class="key-header">
+                      <span class="key-label">SECRET KEY</span>
+                      <span class="key-warning-badge">CRITICAL</span>
+                    </div>
+                    <div class="key-value-box">
+                      <code class="key-value mono">{revealedSecretKey}</code>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" on:click={() => copyToClipboard(revealedSecretKey, 'Secret key copied!')}>
+                      <Copy size={14} />
+                      Copy Secret Key
+                    </button>
+                    <div class="key-warning-text">
+                      <AlertTriangle size={14} />
+                      <span>This key provides full wallet control. Keep it secure and never share it.</span>
+                    </div>
+                  </div>
+                  
+                  <!-- Separator -->
+                  <div class="key-separator"></div>
+                  
+                  <!-- Public Key -->
+                  <div class="key-section">
+                    <div class="key-header">
+                      <span class="key-label">PUBLIC KEY</span>
+                    </div>
+                    <div class="key-value-box">
+                      <code class="key-value mono">{revealedPublicKey}</code>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" on:click={() => copyToClipboard(revealedPublicKey, 'Public key copied!')}>
+                      <Copy size={14} />
+                      Copy Public Key
+                    </button>
+                    <div class="key-info-text">
+                      <span>Public key can be shared safely. It's used to verify signatures.</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <div class="backup-actions">
+                  <button class="btn btn-ghost" on:click={resetKeys}>
+                    Hide Keys
+                  </button>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+      </div>
+    </div>
+  </div>
+
+{:else if createdSeed}
+  <!-- ============================================
+       SEED PHRASE DISPLAY
+       ============================================ -->
+  <div class="wallet-page">
+    <div class="wallet-container">
+      <div class="seed-display">
+        <div class="seed-header">
+          <AlertTriangle size={32} class="seed-warning-icon" />
+          <h2 class="seed-title">Your Recovery Seed</h2>
+          <p class="seed-subtitle">Write down these 25 words in order. This is the ONLY way to recover your wallet.</p>
+        </div>
+        
+        <div class="seed-grid">
+          {#each seedWords as word, i}
+            <div class="seed-word">
+              <span class="seed-num">{i + 1}</span>
+              <span class="seed-text">{word}</span>
+            </div>
+          {/each}
+        </div>
+        
+        <div class="seed-warnings">
+          <div class="warning-item">
+            <AlertTriangle size={16} />
+            <span>NEVER share your seed with anyone</span>
+          </div>
+          <div class="warning-item">
+            <AlertTriangle size={16} />
+            <span>Hologram will NEVER ask for your seed</span>
+          </div>
+          <div class="warning-item">
+            <AlertTriangle size={16} />
+            <span>Store this offline in a safe place</span>
+          </div>
+        </div>
+        
+        <label class="seed-confirm-label">
+          <input type="checkbox" bind:checked={seedConfirmed} />
+          <span>I have saved my recovery seed securely</span>
+        </label>
+        
+        <div class="seed-actions">
+          <button class="btn btn-secondary" on:click={() => { createdSeed = null; }}>
+            Cancel
+          </button>
+          <button class="btn btn-primary" disabled={!seedConfirmed} on:click={confirmSeedAndOpen}>
+            Continue to Wallet
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+{:else}
+  <!-- ============================================
+       LOGIN FORM
+       ============================================ -->
+  <div class="wallet-page">
+    <div class="wallet-container">
+      <div class="login-header">
+        <h1 class="login-title">Wallet</h1>
+        <p class="login-subtitle">Open an existing wallet or create a new one</p>
+      </div>
+      
+      <!-- Tab Navigation -->
+      <div class="tab-nav">
+        <button class="tab-btn" class:active={activeTab === 'open'} on:click={() => activeTab = 'open'}>
+          <FolderOpen size={16} />
+          <span>Open</span>
+        </button>
+        <button class="tab-btn" class:active={activeTab === 'create'} on:click={() => activeTab = 'create'}>
+          <Plus size={16} />
+          <span>Create</span>
+        </button>
+        <button class="tab-btn" class:active={activeTab === 'restore'} on:click={() => activeTab = 'restore'}>
+          <RotateCcw size={16} />
+          <span>Restore</span>
+        </button>
+      </div>
+      
+      <div class="card-shimmer">
+        <div class="card-body-lg">
+          {#if activeTab === 'open'}
+            <!-- Open Wallet Tab -->
+            <div class="form-group">
+              <label class="form-label">Wallet File</label>
+              <div class="input-row">
+                <input type="text" bind:value={walletPath} placeholder="/path/to/wallet.db" class="input" />
+                <button on:click={selectWalletFile} class="btn btn-secondary">Browse</button>
+              </div>
+            </div>
+            
+            <div class="form-group">
+              <label class="form-label">Password</label>
+              <div class="input-wrap">
+                {#if showPassword}
+                  <input type="text" bind:value={password} placeholder="Enter wallet password" class="input" />
+                {:else}
+                  <input type="password" bind:value={password} placeholder="Enter wallet password" class="input" />
+                {/if}
+                <button type="button" on:click={() => showPassword = !showPassword} class="input-action">
+                  {#if showPassword}
+                    <EyeOff size={16} strokeWidth={1.5} />
+                  {:else}
+                    <Eye size={16} strokeWidth={1.5} />
+                  {/if}
+                </button>
+              </div>
+            </div>
+            
+            {#if error}
+              <div class="alert alert-error">
+                <span class="alert-text">{error}</span>
+              </div>
+            {/if}
+            
+            <button on:click={openWallet} disabled={loading || !walletPath} class="btn btn-primary btn-block">
+              {loading ? 'Opening...' : 'Open Wallet'}
+            </button>
+            
+          {:else if activeTab === 'create'}
+            <!-- Create Wallet Tab -->
+            <div class="form-group">
+              <label class="form-label">Wallet Name</label>
+              <input type="text" bind:value={createPath} placeholder="MyWallet" class="input" maxlength="25" />
+              <span class="form-hint">Just enter a name - the wallet file will be created automatically</span>
+            </div>
+            
+            <div class="form-group">
+              <label class="form-label">Password</label>
+              <div class="input-wrap">
+                {#if showCreatePassword}
+                  <input type="text" bind:value={createPassword} placeholder="Create a strong password" class="input" />
+                {:else}
+                  <input type="password" bind:value={createPassword} placeholder="Create a strong password" class="input" />
+                {/if}
+                <button type="button" on:click={() => showCreatePassword = !showCreatePassword} class="input-action">
+                  {#if showCreatePassword}
+                    <EyeOff size={16} strokeWidth={1.5} />
+                  {:else}
+                    <Eye size={16} strokeWidth={1.5} />
+                  {/if}
+                </button>
+              </div>
+            </div>
+            
+            <div class="form-group">
+              <label class="form-label">Confirm Password</label>
+              <input 
+                type="password" 
+                bind:value={createPasswordConfirm} 
+                placeholder="Confirm password" 
+                class="input"
+                class:input-error={createPasswordConfirm && !createPasswordsMatch}
+              />
+              {#if createPasswordConfirm && !createPasswordsMatch}
+                <span class="form-error">Passwords do not match</span>
+              {/if}
+            </div>
+            
+            {#if createError}
+              <div class="alert alert-error">
+                <span class="alert-text">{createError}</span>
+              </div>
+            {/if}
+            
+            <button 
+              on:click={handleCreateWallet} 
+              disabled={createLoading || !createPath || !createPasswordsMatch} 
+              class="btn btn-primary btn-block"
+            >
+              {createLoading ? 'Creating...' : 'Create Wallet'}
+            </button>
+            
+          {:else if activeTab === 'restore'}
+            <!-- Restore Wallet Tab -->
+            <div class="form-group">
+              <label class="form-label">Wallet Name</label>
+              <input type="text" bind:value={restorePath} placeholder="MyWallet" class="input" maxlength="25" />
+              <span class="form-hint">Enter a name for the restored wallet</span>
+            </div>
+            
+            <div class="form-group">
+              <label class="form-label">Recovery Seed (25 words)</label>
+              <textarea
+                bind:value={restoreSeed}
+                placeholder="Enter your 25-word recovery seed..."
+                class="input textarea"
+                rows="4"
+              ></textarea>
+              <span class="form-hint">{seedWordCount} / 25 words</span>
+              {#if restoreSeed && !isValidSeed}
+                <span class="form-error">Seed must be exactly 25 words</span>
+              {/if}
+            </div>
+            
+            <div class="form-group">
+              <label class="form-label">New Password</label>
+              <div class="input-wrap">
+                {#if showRestorePassword}
+                  <input type="text" bind:value={restorePassword} placeholder="Create a password" class="input" />
+                {:else}
+                  <input type="password" bind:value={restorePassword} placeholder="Create a password" class="input" />
+                {/if}
+                <button type="button" on:click={() => showRestorePassword = !showRestorePassword} class="input-action">
+                  {#if showRestorePassword}
+                    <EyeOff size={16} strokeWidth={1.5} />
+                  {:else}
+                    <Eye size={16} strokeWidth={1.5} />
+                  {/if}
+                </button>
+              </div>
+            </div>
+            
+            <div class="form-group">
+              <label class="form-label">Confirm Password</label>
+              <input 
+                type="password" 
+                bind:value={restorePasswordConfirm} 
+                placeholder="Confirm password" 
+                class="input"
+                class:input-error={restorePasswordConfirm && !restorePasswordsMatch}
+              />
+              {#if restorePasswordConfirm && !restorePasswordsMatch}
+                <span class="form-error">Passwords do not match</span>
+              {/if}
+            </div>
+            
+            {#if restoreError}
+              <div class="alert alert-error">
+                <span class="alert-text">{restoreError}</span>
+              </div>
+            {/if}
+            
+            <button 
+              on:click={handleRestoreWallet} 
+              disabled={restoreLoading || !restorePath || !restorePasswordsMatch || !isValidSeed} 
+              class="btn btn-primary btn-block"
+            >
+              {restoreLoading ? 'Restoring...' : 'Restore Wallet'}
+            </button>
+          {/if}
+        </div>
+      </div>
+      
+      <!-- XSWD Alternative -->
+      <div class="xswd-section">
+        <p class="xswd-text">Or connect via XSWD to an external wallet</p>
+        <button
+          on:click={connectXSWD}
+          disabled={$appState.xswdConnected}
+          class="btn btn-secondary"
+        >
+          {$appState.xswdConnected ? 'XSWD Connected' : 'Connect via XSWD'}
+        </button>
+      </div>
+      
+      <!-- Recent Wallets -->
+      {#if activeTab === 'open' && recentWalletsInfo.length > 0}
+        <div class="recent-wallets-section">
+          <div class="recent-wallets-header">
+            <h3 class="recent-wallets-title">RECENT WALLETS</h3>
+            <button 
+              class="recent-wallets-clear-btn"
+              on:click={handleClearRecentWallets}
+              title="Clear all recent wallets"
+            >
+              Clear All
+            </button>
+          </div>
+          <div class="recent-wallets-list">
+            {#each recentWalletsInfo as wallet}
+              <button 
+                on:click={() => walletPath = wallet.path} 
+                class="recent-wallet-card"
+                class:active={walletPath === wallet.path}
+              >
+                <span class="recent-wallet-icon">{walletPath === wallet.path ? '✓' : '◇'}</span>
+                <div class="recent-wallet-info">
+                  <span class="recent-wallet-name">{wallet.filename}</span>
+                  {#if wallet.addressPrefix}
+                    <span class="recent-wallet-address">{wallet.addressPrefix}...</span>
+                  {/if}
+                </div>
+                <button 
+                  class="recent-wallet-remove"
+                  on:click={(e) => handleRemoveRecentWallet(wallet.path, e)}
+                  title="Remove from recent wallets"
+                >
+                  ×
+                </button>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+<!-- Modals -->
+<AddContactModal 
+  bind:show={showAddContact} 
+  editContact={editingContact}
+  on:saved={loadContacts}
+  on:close={() => { editingContact = null; }}
+/>
+
+<style>
+  /* ============================================
+     WALLET PAGE STYLES
+     ============================================ */
+  
+  /* Login Page (unchanged) */
+  .wallet-page {
+    height: 100%;
+    overflow: auto;
+    padding: var(--s-6);
+  }
+  
+  .wallet-container {
+    max-width: 480px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-5);
+  }
+  
+  /* Tab Navigation */
+  .tab-nav {
+    display: flex;
+    gap: var(--s-2);
+    background: var(--void-deep);
+    padding: var(--s-2);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-2);
+  }
+  
+  .tab-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    background: transparent;
+    border: none;
+    border-radius: var(--r-sm);
+    color: var(--text-3);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--dur-fast);
+  }
+  
+  .tab-btn:hover { color: var(--text-1); background: var(--void-up); }
+  .tab-btn.active { background: var(--void-mid); color: var(--cyan-400); }
+  
+  /* Login Header */
+  .login-header { 
+    text-align: center; 
+    margin-bottom: var(--s-5);
+    padding-top: var(--s-4);
+  }
+  .login-title {
+    font-family: var(--font-mono);
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--text-1);
+    margin: 0 0 var(--s-2) 0;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .login-subtitle { 
+    font-size: 13px; 
+    color: var(--text-3); 
+    margin: 0; 
+  }
+  
+  /* Input Row */
+  .input-row { display: flex; gap: var(--s-2); }
+  .input-row .input { flex: 1; }
+  
+  /* Textarea */
+  .textarea {
+    font-family: var(--font-mono);
+    resize: vertical;
+    min-height: 100px;
+  }
+  
+  /* XSWD Section */
+  .xswd-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-4);
+    background: var(--void-deep);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-md);
+  }
+  .xswd-text { 
+    font-size: 12px; 
+    color: var(--text-4); 
+    margin: 0;
+  }
+  
+  /* Recent Wallets - Card Style */
+  .recent-wallets-section {
+    padding-top: var(--s-4);
+  }
+  
+  .recent-wallets-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--text-4);
+    margin-bottom: var(--s-3);
+  }
+  
+  .recent-wallets-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  
+  .recent-wallet-card {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    width: 100%;
+    padding: var(--s-3) var(--s-4);
+    background: var(--void-deep);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-md);
+    cursor: pointer;
+    transition: all 150ms ease;
+    text-align: left;
+  }
+  
+  .recent-wallet-card:hover {
+    background: var(--void-up);
+    border-color: var(--border-subtle);
+  }
+  
+  .recent-wallet-card.active {
+    background: rgba(6, 182, 212, 0.08);
+    border-color: rgba(6, 182, 212, 0.3);
+  }
+  
+  .recent-wallet-icon {
+    font-size: 14px;
+    color: var(--text-4);
+    flex-shrink: 0;
+  }
+  
+  .recent-wallet-card.active .recent-wallet-icon {
+    color: var(--cyan-400);
+  }
+  
+  .recent-wallet-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  
+  .recent-wallet-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-1);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  .recent-wallet-address {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-4);
+  }
+  
+  /* Recent Wallets Header */
+  .recent-wallets-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--s-3);
+  }
+  
+  .recent-wallets-header .recent-wallets-title {
+    margin-bottom: 0;
+  }
+  
+  .recent-wallets-clear-btn {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-4);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--r-sm);
+    transition: all 150ms ease;
+  }
+  
+  .recent-wallets-clear-btn:hover {
+    color: var(--status-err);
+    background: rgba(248, 113, 113, 0.1);
+  }
+  
+  /* Remove button on wallet cards */
+  .recent-wallet-remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    border-radius: var(--r-sm);
+    color: var(--text-5);
+    font-size: 14px;
+    cursor: pointer;
+    opacity: 0;
+    transition: all 150ms ease;
+  }
+  
+  .recent-wallet-card:hover .recent-wallet-remove {
+    opacity: 1;
+  }
+  
+  .recent-wallet-remove:hover {
+    color: var(--status-err);
+    background: rgba(248, 113, 113, 0.15);
+  }
+  
+  /* Seed Display */
+  .seed-display {
+    background: var(--void-mid);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-lg);
+    padding: var(--s-5);
+  }
+  .seed-header { 
+    text-align: center; 
+    margin-bottom: var(--s-5); 
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  :global(.seed-warning-icon) { 
+    color: var(--status-warn); 
+    margin-bottom: var(--s-3);
+    display: block;
+  }
+  .seed-title {
+    font-family: var(--font-mono);
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-1);
+    margin: 0 0 var(--s-2) 0;
+  }
+  .seed-subtitle { font-size: 13px; color: var(--text-3); margin: 0; }
+  .seed-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: var(--s-2);
+    background: var(--void-deep);
+    padding: var(--s-4);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
+  }
+  .seed-word {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: var(--s-2);
+    background: var(--void-mid);
+    border-radius: var(--r-sm);
+  }
+  .seed-num { font-size: 9px; color: var(--text-4); margin-bottom: 2px; }
+  .seed-text { font-family: var(--font-mono); font-size: 11px; color: var(--text-1); font-weight: 500; }
+  .seed-warnings { display: flex; flex-direction: column; gap: var(--s-2); margin-bottom: var(--s-4); }
+  .warning-item {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: rgba(251, 191, 36, 0.1);
+    border-radius: var(--r-sm);
+    font-size: 12px;
+    color: var(--status-warn);
+  }
+  .seed-confirm-label {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-3);
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-2);
+  }
+  .seed-confirm-label input { accent-color: var(--cyan-400); }
+  .seed-actions { display: flex; gap: var(--s-3); justify-content: flex-end; }
+  
+  /* ============================================
+     CONNECTED WALLET STYLES
+     ============================================ */
+  
+  /* Live Dot */
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    background: var(--status-ok);
+    border-radius: 50%;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  
+  /* Sidebar Coming Soon Badge */
+  .sidebar-coming-soon {
+    font-size: 9px;
+    padding: 2px 6px;
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--status-warn);
+    border-radius: var(--r-xs);
+    margin-left: auto;
+  }
+  
+  .page-sidebar-item.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  /* Balance Display */
+  .wallet-balance-display {
+    padding: var(--s-6);
+    text-align: center;
+  }
+  
+  .balance-main {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: var(--s-2);
+  }
+  
+  .balance-value {
+    font-size: 36px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: var(--cyan-400);
+  }
+  
+  .balance-unit {
+    font-size: 16px;
+    color: var(--text-3);
+  }
+  
+  .balance-locked {
+    font-size: 12px;
+    color: var(--text-4);
+    margin-top: var(--s-2);
+  }
+  
+  .wallet-address-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    margin-top: var(--s-4);
+    padding: var(--s-2) var(--s-3);
+    background: var(--void-deep);
+    border-radius: var(--r-sm);
+  }
+  
+  .address-text {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  
+  /* Icon Buttons */
+  .btn-icon-sm {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    background: transparent;
+    border: none;
+    border-radius: var(--r-sm);
+    color: var(--text-4);
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  
+  .btn-icon-sm:hover {
+    background: var(--void-hover);
+    color: var(--cyan-400);
+  }
+  
+  /* Quick Actions Grid */
+  .quick-actions-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--s-3);
+    margin: var(--s-4) 0;
+  }
+  
+  .quick-action-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-4);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    color: var(--text-2);
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  
+  .quick-action-btn:hover {
+    background: var(--void-up);
+    border-color: var(--cyan-400);
+    color: var(--cyan-400);
+  }
+  
+  .quick-action-btn span {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  
+  /* Wallet Stats Grid */
+  .wallet-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    padding: var(--s-4);
+    gap: var(--s-4);
+  }
+  
+  /* Transaction Lists */
+  .recent-tx-list {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .tx-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--s-3) var(--s-4);
+    border-bottom: 1px solid var(--border-dim);
+    transition: background 150ms ease;
+  }
+  
+  .tx-row:last-child { border-bottom: none; }
+  .tx-row:hover { background: var(--void-up); }
+  
+  .tx-left { display: flex; align-items: center; gap: var(--s-3); }
+  
+  .tx-icon {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--void-deep);
+  }
+  
+  .tx-icon.tx-in { color: var(--status-ok); background: rgba(52, 211, 153, 0.1); }
+  .tx-icon.tx-out { color: var(--status-err); background: rgba(248, 113, 113, 0.1); }
+  
+  .tx-info { display: flex; flex-direction: column; gap: 2px; }
+  .tx-type { font-size: 13px; color: var(--text-1); }
+  .tx-time { font-size: 11px; color: var(--text-4); }
+  
+  .tx-amt {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  
+  .tx-amt-in { color: var(--status-ok); }
+  .tx-amt-out { color: var(--text-2); }
+  
+  /* Send Form */
+  .send-form-content { padding: var(--s-4); }
+  
+  .form-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .input-with-action {
+    display: flex;
+    gap: var(--s-2);
+  }
+  
+  .input-with-action .input { flex: 1; }
+  
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--s-3);
+    margin-top: var(--s-4);
+  }
+  
+  .form-actions-split { justify-content: space-between; }
+  
+  .step-indicator {
+    font-size: 11px;
+    color: var(--text-4);
+    padding: 2px 8px;
+    background: var(--void-deep);
+    border-radius: var(--r-sm);
+  }
+  
+  /* Confirm Details */
+  .confirm-details {
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+    padding: var(--s-4);
+    margin-bottom: var(--s-4);
+  }
+  
+  .confirm-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--s-2) 0;
+    border-bottom: 1px solid var(--border-dim);
+  }
+  
+  .confirm-row:last-child { border-bottom: none; }
+  
+  .confirm-label { font-size: 12px; color: var(--text-3); }
+  .confirm-value { font-size: 13px; color: var(--text-1); font-family: var(--font-mono); }
+  .confirm-value-amount { color: var(--cyan-400); font-weight: 600; font-size: 16px; }
+  .confirm-value-address { font-size: 11px; }
+  
+  /* Success State */
+  .success-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: var(--s-4);
+  }
+  
+  .success-icon {
+    width: 80px;
+    height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(52, 211, 153, 0.1);
+    border-radius: 50%;
+    color: var(--status-ok);
+    margin-bottom: var(--s-4);
+  }
+  
+  .success-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-1);
+    margin: 0 0 var(--s-2) 0;
+  }
+  
+  .success-text {
+    font-size: 13px;
+    color: var(--text-3);
+    margin: 0 0 var(--s-4) 0;
+  }
+  
+  .txid-display {
+    width: 100%;
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+    padding: var(--s-3);
+    margin-bottom: var(--s-4);
+  }
+  
+  .txid-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-4);
+    margin-bottom: var(--s-2);
+    display: block;
+  }
+  
+  .txid-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+  }
+  
+  .txid-value {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  
+  /* Receive Content */
+  .receive-content { padding: var(--s-4); }
+  
+  .address-type-toggle {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
+  }
+  
+  .toggle-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: transparent;
+    border: none;
+    border-radius: var(--r-sm);
+    font-size: 12px;
+    color: var(--text-3);
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  
+  .toggle-btn:hover { color: var(--text-1); }
+  .toggle-btn.active { background: var(--void-mid); color: var(--cyan-400); }
+  .toggle-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  
+  .address-hint {
+    font-size: 11px;
+    color: var(--text-4);
+    text-align: center;
+    margin-bottom: var(--s-4);
+  }
+  
+  .qr-display {
+    display: flex;
+    justify-content: center;
+    margin: var(--s-4) 0;
+  }
+  
+  .address-display {
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+    padding: var(--s-3);
+    margin-bottom: var(--s-4);
+    overflow: hidden;
+    text-align: center;
+  }
+  
+  .address-full {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-2);
+    word-break: break-all;
+    line-height: 1.5;
+    display: inline-block;
+  }
+  
+  .receive-actions {
+    display: flex;
+    justify-content: center;
+    margin-bottom: var(--s-4);
+  }
+  
+  .receive-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.2);
+    border-radius: var(--r-md);
+    font-size: 11px;
+    color: var(--status-warn);
+  }
+  
+  /* Request Content */
+  .request-content { padding: var(--s-4); }
+  
+  .uri-display { margin-bottom: var(--s-4); }
+  
+  .uri-box {
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+    padding: var(--s-3);
+    margin-top: var(--s-2);
+  }
+  
+  .uri-value {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-2);
+    word-break: break-all;
+    line-height: 1.5;
+  }
+  
+  .request-actions { display: flex; justify-content: center; }
+  
+  .request-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-8);
+    color: var(--text-4);
+  }
+  
+  .request-placeholder p {
+    font-size: 13px;
+    margin: 0;
+  }
+  
+  /* History Filters */
+  .history-filters {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--s-4);
+    flex-wrap: wrap;
+    gap: var(--s-3);
+  }
+  
+  .filter-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+  }
+  
+  .filter-tab {
+    padding: var(--s-2) var(--s-3);
+    background: transparent;
+    border: none;
+    font-size: 12px;
+    color: var(--text-3);
+    cursor: pointer;
+    border-radius: var(--r-sm);
+    transition: all 150ms ease;
+  }
+  
+  .filter-tab:hover { color: var(--text-1); }
+  .filter-tab.active { background: var(--void-mid); color: var(--cyan-400); }
+  
+  .filter-actions {
+    display: flex;
+    gap: var(--s-2);
+    align-items: center;
+  }
+  
+  .search-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    color: var(--text-4);
+  }
+  
+  .search-input {
+    background: transparent;
+    border: none;
+    font-size: 12px;
+    color: var(--text-1);
+    width: 120px;
+  }
+  
+  .search-input:focus { outline: none; }
+  .search-input::placeholder { color: var(--text-4); }
+  
+  .count-badge {
+    font-size: 11px;
+    color: var(--text-4);
+    padding: 2px 8px;
+    background: var(--void-deep);
+    border-radius: var(--r-sm);
+  }
+  
+  /* Full Transaction List */
+  .tx-list-full { display: flex; flex-direction: column; }
+  
+  .tx-row-detailed {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
+    border-bottom: 1px solid var(--border-dim);
+    transition: background 150ms ease;
+  }
+  
+  .tx-row-detailed:last-child { border-bottom: none; }
+  .tx-row-detailed:hover { background: var(--void-up); }
+  
+  .tx-icon-wrap { flex-shrink: 0; }
+  
+  .tx-details {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  
+  .tx-id {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-4);
+  }
+  
+  .tx-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+  }
+  
+  .tx-amount {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  
+  .tx-amount.positive { color: var(--status-ok); }
+  .tx-amount.negative { color: var(--text-2); }
+  
+  .tx-timestamp {
+    font-size: 11px;
+    color: var(--text-4);
+  }
+  
+  /* Coming Soon Panel */
+  .coming-soon-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-4);
+    padding: var(--s-10);
+    background: var(--void-mid);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-lg);
+    color: var(--text-3);
+    text-align: center;
+  }
+  
+  .coming-soon-panel h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-1);
+    margin: 0;
+  }
+  
+  .coming-soon-panel p {
+    font-size: 13px;
+    margin: 0;
+    max-width: 300px;
+  }
+  
+  /* Spin Animation */
+  :global(.spin) {
+    animation: spin 1s linear infinite;
+  }
+  
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  
+  /* ============================================
+     ADDRESS BOOK STYLES
+     ============================================ */
+  
+  .addressbook-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--s-3);
+    margin-bottom: var(--s-4);
+  }
+  
+  .contacts-list {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .contact-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-3);
+    padding: var(--s-4);
+    border-bottom: 1px solid var(--border-dim);
+    transition: background 150ms ease;
+  }
+  
+  .contact-row:last-child {
+    border-bottom: none;
+  }
+  
+  .contact-row:hover {
+    background: var(--void-up);
+  }
+  
+  .contact-row:hover .contact-actions .action-btn {
+    opacity: 1;
+  }
+  
+  .contact-icon {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--void-deep);
+    border-radius: 50%;
+    color: var(--text-3);
+    flex-shrink: 0;
+  }
+  
+  .contact-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  
+  .contact-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-1);
+  }
+  
+  .contact-address {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-3);
+  }
+  
+  .contact-notes {
+    font-size: 11px;
+    color: var(--text-4);
+    margin-top: 2px;
+  }
+  
+  .contact-actions {
+    display: flex;
+    gap: var(--s-1);
+    flex-shrink: 0;
+  }
+  
+  .contact-actions .action-btn {
+    opacity: 0;
+    transition: all 150ms ease;
+  }
+  
+  .action-btn-send:hover {
+    background: var(--cyan-400);
+    border-color: var(--cyan-400);
+    color: var(--void-base);
+  }
+  
+  /* ============================================
+     SIGN/VERIFY STYLES
+     ============================================ */
+  
+  .sign-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
+  }
+  
+  .sign-tab {
+    flex: 1;
+    padding: var(--s-2) var(--s-3);
+    background: transparent;
+    border: none;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-3);
+    cursor: pointer;
+    border-radius: var(--r-sm);
+    transition: all 150ms ease;
+  }
+  
+  .sign-tab:hover {
+    color: var(--text-1);
+  }
+  
+  .sign-tab.active {
+    background: var(--void-mid);
+    color: var(--cyan-400);
+  }
+  
+  .sign-content {
+    padding: var(--s-4);
+  }
+  
+  .textarea {
+    font-family: var(--font-mono);
+    resize: vertical;
+    min-height: 80px;
+  }
+  
+  .signature-result,
+  .verify-result {
+    margin-top: var(--s-4);
+    padding: var(--s-4);
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+    border: 1px solid var(--border-dim);
+  }
+  
+  .verify-result.valid {
+    border-color: rgba(52, 211, 153, 0.3);
+    background: rgba(52, 211, 153, 0.05);
+  }
+  
+  .verify-result.invalid {
+    border-color: rgba(248, 113, 113, 0.3);
+    background: rgba(248, 113, 113, 0.05);
+  }
+  
+  .result-header {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--status-ok);
+    margin-bottom: var(--s-3);
+  }
+  
+  .verify-result.invalid .result-header {
+    color: var(--status-err);
+  }
+  
+  .result-field {
+    margin-bottom: var(--s-3);
+  }
+  
+  .result-field:last-child {
+    margin-bottom: 0;
+  }
+  
+  .result-value {
+    font-size: 13px;
+    color: var(--text-1);
+    padding: var(--s-2) var(--s-3);
+    background: var(--void-mid);
+    border-radius: var(--r-sm);
+    word-break: break-all;
+  }
+  
+  .result-value.mono {
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  
+  .result-error {
+    font-size: 12px;
+    color: var(--status-err);
+  }
+  
+  .signature-box {
+    background: var(--void-mid);
+    border-radius: var(--r-sm);
+    padding: var(--s-3);
+    overflow-x: auto;
+  }
+  
+  .signature-text {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 0;
+  }
+  
+  /* Backup & Security Styles */
+  .backup-content {
+    padding: var(--s-4);
+  }
+  
+  .backup-warning {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-4);
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid rgba(251, 191, 36, 0.2);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
+    font-size: 12px;
+    color: var(--status-warn);
+  }
+  
+  .backup-actions {
+    display: flex;
+    gap: var(--s-3);
+    justify-content: flex-end;
+    margin-top: var(--s-4);
+  }
+  
+  /* Keys Display Styles */
+  .keys-warning-critical {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-4);
+    background: rgba(248, 113, 113, 0.1);
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
+    font-size: 12px;
+    color: var(--status-err);
+  }
+  
+  .keys-warning-critical strong {
+    font-weight: 600;
+  }
+  
+  .keys-display {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+  }
+  
+  .key-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+  }
+  
+  .key-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+  }
+  
+  .key-label {
+    color: var(--text-2);
+  }
+  
+  .key-warning-badge {
+    padding: 2px 8px;
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--status-err);
+    border-radius: var(--r-xs);
+    font-size: 9px;
+    font-weight: 600;
+  }
+  
+  .key-value-box {
+    padding: var(--s-3) var(--s-4);
+    background: var(--void-deep);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-md);
+    word-break: break-all;
+  }
+  
+  .key-value {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-1);
+    line-height: 1.6;
+    display: block;
+  }
+  
+  .key-value.mono {
+    font-variant-numeric: tabular-nums;
+  }
+  
+  .key-warning-text {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: rgba(251, 191, 36, 0.1);
+    border-radius: var(--r-sm);
+    font-size: 11px;
+    color: var(--status-warn);
+  }
+  
+  .key-info-text {
+    padding: var(--s-2) var(--s-3);
+    font-size: 11px;
+    color: var(--text-4);
+    font-style: italic;
+  }
+  
+  .key-separator {
+    height: 1px;
+    background: var(--border-dim);
+    margin: var(--s-2) 0;
+  }
+</style>

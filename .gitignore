@@ -1,0 +1,60 @@
+# Build outputs
+build/bin
+frontend/dist
+dist/
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+debug.log
+npm-debug.log*
+yarn-debug.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# Environment
+.env
+.env*.local
+
+# Database files
+*.db
+*.db.bak
+mainnet/*.db
+mainnet/*.db.bak
+testnet/*.db
+testnet/*.db.bak
+
+# Cache and temporary files
+datashards/
+*.tmp
+*.temp
+
+# Editor backups
+*.bak
+*.backup
+
+# Checksum files
+*.md5
+
+# Internal documentation (for development, not for peer review)
+docs/
+
+# Compiled binaries (should be built, not committed)
+TELA-Browser-Wails
+
+# Reference projects (not part of HOLOGRAM, kept locally for reference)
+tela-cli/

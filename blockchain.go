@@ -1,0 +1,839 @@
+package main
+
+import (
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"log"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+// TELAContent represents assembled TELA application content
+type TELAContent struct {
+	HTML      string
+	CSS       []string
+	JS        []string
+	CSSByName map[string]string // filename -> CSS content for external reference replacement
+	JSByName  map[string]string // filename -> JS content for external reference replacement
+	Meta      map[string]interface{}
+	SCIDs     map[string]string // filename -> SCID mapping
+	Files     []DocFile         // raw files extracted from DOCs
+}
+
+// DocFile represents a single extracted file from a DOC contract
+type DocFile struct {
+    Name    string
+    Content string
+    DocType string
+}
+
+// FetchTELAContent fetches and assembles TELA content from the blockchain
+// It auto-detects whether the SCID is a DOC (single file) or INDEX (multi-file bundle)
+func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
+	a.logToConsole(fmt.Sprintf("[PKG] Fetching smart contract: %s", scid))
+
+	// Fetch the smart contract
+	scData, err := a.fetchSmartContract(scid, true, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch SC: %w", err)
+	}
+
+	a.logToConsole("[OK] Smart contract fetched successfully")
+
+	// Detect if this is a DOC or INDEX by checking for docType vs DOC1
+	stringKeys, hasStringKeys := scData["stringkeys"].(map[string]interface{})
+	if !hasStringKeys {
+		return nil, fmt.Errorf("invalid TELA contract: no stringkeys")
+	}
+
+	// Check for DOC indicators (docType key means it's a DOC)
+	_, hasDocType := stringKeys["docType"]
+	// Check for INDEX indicators (DOC1 key means it's an INDEX)
+	_, hasDOC1 := stringKeys["DOC1"]
+
+	// If it has docType but no DOC1, it's a standalone DOC - render directly
+	if hasDocType && !hasDOC1 {
+		a.logToConsole("[DOC] Detected standalone DOC contract - rendering directly")
+		return a.fetchSingleDOC(scid, scData)
+	}
+
+	// Otherwise, treat as INDEX and fetch referenced DOCs
+	a.logToConsole("[INDEX] Detected INDEX contract - fetching DOCs")
+
+	// Parse INDEX to get DOC SCIDs
+	docSCIDs := extractDOCsSCIDs(scData)
+	if len(docSCIDs) == 0 {
+		// Maybe it's a DOC after all (some contracts may have weird structures)
+		if hasDocType {
+			a.logToConsole("[FALLBACK] No DOC refs found but has docType - trying as DOC")
+			return a.fetchSingleDOC(scid, scData)
+		}
+		a.logToConsole("  [WARN]  No DOC contracts found - check the response structure above")
+		return nil, fmt.Errorf("no DOC contracts found in INDEX")
+	}
+
+	a.logToConsole(fmt.Sprintf("[INDEX] Found %d DOC contracts", len(docSCIDs)))
+
+	// Fetch all DOC contracts
+	content := &TELAContent{
+		CSS:   make([]string, 0),
+		JS:    make([]string, 0),
+		Meta:  make(map[string]interface{}),
+        SCIDs: make(map[string]string),
+        Files: make([]DocFile, 0),
+	}
+
+	// Extract INDEX metadata from stringkeys (hex-encoded)
+	// Note: stringKeys was already extracted above for DOC/INDEX detection
+	if nameHex, ok := stringKeys["nameHdr"].(string); ok {
+		content.Meta["name"] = decodeHexString(nameHex)
+	}
+	if descrHex, ok := stringKeys["descrHdr"].(string); ok {
+		content.Meta["description"] = decodeHexString(descrHex)
+	}
+	if durlHex, ok := stringKeys["dURL"].(string); ok {
+		content.Meta["durl"] = decodeHexString(durlHex)
+	}
+
+	// Fetch all DOCs in parallel for better performance
+	type docResult struct {
+		index int
+		scid  string
+		data  map[string]interface{}
+		err   error
+	}
+
+	a.logToConsole(fmt.Sprintf("[DOC] Fetching %d DOCs in parallel...", len(docSCIDs)))
+
+	results := make(chan docResult, len(docSCIDs))
+	for i, docSCID := range docSCIDs {
+		go func(idx int, scid string) {
+			data, err := a.fetchSmartContract(scid, true, true)
+			results <- docResult{index: idx, scid: scid, data: data, err: err}
+		}(i, docSCID)
+	}
+
+	// Collect results and process in order
+	docDataList := make([]map[string]interface{}, len(docSCIDs))
+	for range docSCIDs {
+		r := <-results
+		if r.err != nil {
+			a.logToConsole(fmt.Sprintf("  [WARN]  Failed to fetch DOC %d (%s...): %v", r.index+1, r.scid[:16], r.err))
+			continue
+		}
+		docDataList[r.index] = r.data
+		a.logToConsole(fmt.Sprintf("  ✓ Fetched DOC %d/%d: %s...", r.index+1, len(docSCIDs), r.scid[:16]))
+	}
+
+	// Process DOCs in order
+	for i, docData := range docDataList {
+		if docData == nil {
+			continue // Skip failed fetches
+		}
+		if err := a.processDOC(docData, content); err != nil {
+			a.logToConsole(fmt.Sprintf("  [WARN]  Failed to process DOC %d: %v", i+1, err))
+			continue
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] Processed %d DOCs total", len(docSCIDs)))
+
+	// Check if we got at least HTML
+	if content.HTML == "" {
+        // Attempt shard assembly if this is a shard index dURL
+        if du, ok := content.Meta["durl"].(string); ok && isShardIndexDURL(du) {
+            a.logToConsole("[LINK] Shard index detected; assembling shard files")
+            assembled := assembleShardFiles(content)
+            if assembled != "" {
+                content.HTML = assembled
+            }
+        }
+        if content.HTML == "" {
+            a.logToConsole("[ERR] No HTML content found in any DOC")
+            return nil, fmt.Errorf("no HTML content found")
+        }
+	}
+
+    // Assemble final HTML (unless already assembled via shards or library view)
+    duStr, hasDU := content.Meta["durl"].(string)
+    if hasDU && isLibraryDURL(duStr) {
+        a.logToConsole("📚 Library dURL detected; rendering library info view")
+        content.HTML = renderLibraryInfo(content)
+    } else if !(content.HTML != "" && hasDU && isShardIndexDURL(duStr)) {
+        a.logToConsole("🔧 Assembling final HTML...")
+        if err := a.assembleFinalHTML(content); err != nil {
+            a.logToConsole(fmt.Sprintf("[ERR] Assembly failed: %v", err))
+            return nil, err
+        }
+    }
+
+	a.logToConsole("[OK] HTML assembly complete!")
+	return content, nil
+}
+
+// isShardIndexDURL returns true if the dURL ends with .tela.shards
+func isShardIndexDURL(durl string) bool {
+    s := strings.ToLower(strings.TrimSpace(durl))
+    return strings.HasSuffix(s, ".tela.shards")
+}
+
+// isLibraryDURL returns true if the dURL ends with .tela.lib
+func isLibraryDURL(durl string) bool {
+    s := strings.ToLower(strings.TrimSpace(durl))
+    return strings.HasSuffix(s, ".tela.lib")
+}
+
+// fetchSingleDOC renders a standalone DOC contract directly (not part of an INDEX)
+// This is used when a user pastes a DOC SCID directly into the browser
+func (a *App) fetchSingleDOC(scid string, docData map[string]interface{}) (*TELAContent, error) {
+	content := &TELAContent{
+		CSS:       make([]string, 0),
+		JS:        make([]string, 0),
+		Meta:      make(map[string]interface{}),
+		SCIDs:     make(map[string]string),
+		Files:     make([]DocFile, 0),
+		CSSByName: make(map[string]string),
+		JSByName:  make(map[string]string),
+	}
+
+	stringKeys, ok := docData["stringkeys"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("no stringkeys in DOC contract")
+	}
+
+	// Extract DOC metadata
+	docType := ""
+	if docTypeHex, ok := stringKeys["docType"].(string); ok {
+		docType = decodeHexString(docTypeHex)
+	}
+
+	fileName := "document"
+	if fileNameHex, ok := stringKeys["nameHdr"].(string); ok {
+		fileName = decodeHexString(fileNameHex)
+	}
+
+	// Extract optional metadata
+	if descrHex, ok := stringKeys["descrHdr"].(string); ok {
+		content.Meta["description"] = decodeHexString(descrHex)
+	}
+	if durlHex, ok := stringKeys["dURL"].(string); ok {
+		content.Meta["durl"] = decodeHexString(durlHex)
+	}
+	content.Meta["name"] = fileName
+	content.Meta["docType"] = docType
+	content.Meta["scid"] = scid
+
+	// Get the code (actual file content)
+	code, ok := docData["code"].(string)
+	if !ok {
+		return nil, fmt.Errorf("no code in DOC contract")
+	}
+
+	// Extract file content from smart contract comment block
+	fileContent := extractFileContentFromCode(code)
+	if fileContent == "" {
+		return nil, fmt.Errorf("could not extract file content from DOC")
+	}
+
+	// Handle gzip compression if filename ends with .gz
+	if strings.HasSuffix(fileName, ".gz") {
+		a.logToConsole(fmt.Sprintf("[DOC] Decompressing %s (%d bytes compressed)", fileName, len(fileContent)))
+		decompressed, err := decompressGzip(fileContent)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Gzip decompression failed: %v - using raw content", err))
+		} else {
+			fileContent = decompressed
+			fileName = strings.TrimSuffix(fileName, ".gz")
+			a.logToConsole(fmt.Sprintf("[DOC] Decompressed to %s (%d bytes)", fileName, len(fileContent)))
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[DOC] Extracted: %s (%s, %d bytes)", fileName, docType, len(fileContent)))
+
+	// Store the file
+	content.Files = append(content.Files, DocFile{
+		Name:    fileName,
+		Content: fileContent,
+		DocType: docType,
+	})
+	content.SCIDs[fileName] = scid
+
+	// Route content based on docType
+	switch {
+	case strings.HasPrefix(docType, "TELA-HTML"):
+		// HTML document - render directly
+		content.HTML = fileContent
+		a.logToConsole("[DOC] Rendering HTML document directly")
+
+	case strings.HasPrefix(docType, "TELA-CSS"):
+		// CSS file - wrap in simple HTML viewer
+		content.HTML = renderCSSViewer(fileName, fileContent, scid)
+		a.logToConsole("[DOC] Rendering CSS viewer")
+
+	case strings.HasPrefix(docType, "TELA-JS"):
+		// JS file - wrap in simple HTML viewer
+		content.HTML = renderJSViewer(fileName, fileContent, scid)
+		a.logToConsole("[DOC] Rendering JS viewer")
+
+	case strings.HasPrefix(docType, "TELA-MD"):
+		// Markdown - render as preformatted text (could enhance with MD parser later)
+		content.HTML = renderMarkdownViewer(fileName, fileContent, scid)
+		a.logToConsole("[DOC] Rendering Markdown viewer")
+
+	default:
+		// Unknown type - try to render as HTML, or show as code
+		if strings.Contains(strings.ToLower(fileName), ".html") || strings.Contains(strings.ToLower(fileName), ".htm") {
+			content.HTML = fileContent
+			a.logToConsole("[DOC] Assuming HTML based on filename")
+		} else {
+			// Show as code viewer
+			content.HTML = renderCodeViewer(fileName, docType, fileContent, scid)
+			a.logToConsole("[DOC] Rendering code viewer for unknown type")
+		}
+	}
+
+	a.logToConsole("[OK] Single DOC rendered successfully!")
+	return content, nil
+}
+
+// renderCSSViewer creates an HTML page displaying CSS content
+func renderCSSViewer(fileName, content, scid string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html><head>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a12; color: #e8e8f0; padding: 24px; margin: 0; }
+.header { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+h1 { font-size: 1.5rem; margin: 0 0 8px 0; color: #22d3ee; }
+.meta { font-size: 12px; color: #707088; font-family: monospace; }
+.scid { color: #a78bfa; }
+pre { background: #12121c; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.6; }
+code { color: #34d399; }
+</style>
+</head><body>
+<div class="header">
+<h1>📄 %s</h1>
+<div class="meta">Type: CSS Stylesheet</div>
+<div class="meta">SCID: <span class="scid">%s</span></div>
+</div>
+<pre><code>%s</code></pre>
+</body></html>`, htmlEscape(fileName), htmlEscape(scid), htmlEscape(content))
+}
+
+// renderJSViewer creates an HTML page displaying JavaScript content
+func renderJSViewer(fileName, content, scid string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html><head>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a12; color: #e8e8f0; padding: 24px; margin: 0; }
+.header { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+h1 { font-size: 1.5rem; margin: 0 0 8px 0; color: #fbbf24; }
+.meta { font-size: 12px; color: #707088; font-family: monospace; }
+.scid { color: #a78bfa; }
+pre { background: #12121c; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.6; }
+code { color: #fbbf24; }
+</style>
+</head><body>
+<div class="header">
+<h1>⚡ %s</h1>
+<div class="meta">Type: JavaScript</div>
+<div class="meta">SCID: <span class="scid">%s</span></div>
+</div>
+<pre><code>%s</code></pre>
+</body></html>`, htmlEscape(fileName), htmlEscape(scid), htmlEscape(content))
+}
+
+// renderMarkdownViewer creates an HTML page displaying Markdown content
+func renderMarkdownViewer(fileName, content, scid string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html><head>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a12; color: #e8e8f0; padding: 24px; margin: 0; }
+.header { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+h1 { font-size: 1.5rem; margin: 0 0 8px 0; color: #a78bfa; }
+.meta { font-size: 12px; color: #707088; font-family: monospace; }
+.scid { color: #a78bfa; }
+pre { background: #12121c; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+</style>
+</head><body>
+<div class="header">
+<h1>📝 %s</h1>
+<div class="meta">Type: Markdown</div>
+<div class="meta">SCID: <span class="scid">%s</span></div>
+</div>
+<pre>%s</pre>
+</body></html>`, htmlEscape(fileName), htmlEscape(scid), htmlEscape(content))
+}
+
+// renderCodeViewer creates an HTML page displaying generic code content
+func renderCodeViewer(fileName, docType, content, scid string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html><head>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a12; color: #e8e8f0; padding: 24px; margin: 0; }
+.header { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+h1 { font-size: 1.5rem; margin: 0 0 8px 0; color: #22d3ee; }
+.meta { font-size: 12px; color: #707088; font-family: monospace; }
+.scid { color: #a78bfa; }
+pre { background: #12121c; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.6; }
+code { color: #e8e8f0; }
+</style>
+</head><body>
+<div class="header">
+<h1>📄 %s</h1>
+<div class="meta">Type: %s</div>
+<div class="meta">SCID: <span class="scid">%s</span></div>
+</div>
+<pre><code>%s</code></pre>
+</body></html>`, htmlEscape(fileName), htmlEscape(docType), htmlEscape(scid), htmlEscape(content))
+}
+
+// assembleShardFiles concatenates shard file contents in DOC order into a simple HTML wrapper
+func assembleShardFiles(content *TELAContent) string {
+    if content == nil || len(content.Files) == 0 {
+        return ""
+    }
+    var b strings.Builder
+    b.WriteString("<html><head>")
+    // inject any CSS gathered
+    if len(content.CSS) > 0 {
+        b.WriteString("<style>\n")
+        for _, c := range content.CSS { b.WriteString(c); b.WriteString("\n") }
+        b.WriteString("</style>")
+    }
+    b.WriteString("</head><body>")
+    // naive concatenation in fetched order
+    for _, f := range content.Files {
+        if f.DocType == "TELA-HTML-1" || strings.HasPrefix(f.DocType, "TELA-HTML") || f.DocType == "" {
+            b.WriteString(f.Content)
+            b.WriteString("\n")
+        }
+    }
+    // inject any JS at bottom
+    if len(content.JS) > 0 {
+        b.WriteString("<script>\n")
+        for _, j := range content.JS { b.WriteString(j); b.WriteString("\n") }
+        b.WriteString("</script>")
+    }
+    b.WriteString("</body></html>")
+    return b.String()
+}
+
+// renderLibraryInfo returns a simple HTML describing the library contents
+func renderLibraryInfo(content *TELAContent) string {
+    var b strings.Builder
+    b.WriteString("<html><head><style>body{font-family:system-ui,Segoe UI,Arial,sans-serif;background:#0b0b0b;color:#ddd;padding:24px} table{width:100%;border-collapse:collapse;margin-top:12px} th,td{border:1px solid #333;padding:8px;text-align:left} th{background:#131313} code{color:#9cd} h1{margin:0 0 6px 0} .meta{color:#aaa;margin-top:4px}</style></head><body>")
+    name := "Library"
+    if v, ok := content.Meta["name"].(string); ok && v != "" { name = v }
+    durl := ""; if v, ok := content.Meta["durl"].(string); ok { durl = v }
+    descr := ""; if v, ok := content.Meta["description"].(string); ok { descr = v }
+    b.WriteString("<h1>" + htmlEscape(name) + "</h1>")
+    if durl != "" { b.WriteString("<div class=\"meta\"><strong>dURL:</strong> <code>" + htmlEscape(durl) + "</code></div>") }
+    if descr != "" { b.WriteString("<div class=\"meta\">" + htmlEscape(descr) + "</div>") }
+    b.WriteString("<table><thead><tr><th>File</th><th>Type</th><th>SCID</th></tr></thead><tbody>")
+    for _, f := range content.Files {
+        sc := content.SCIDs[f.Name]
+        b.WriteString("<tr><td>" + htmlEscape(f.Name) + "</td><td><code>" + htmlEscape(f.DocType) + "</code></td><td><code>" + htmlEscape(sc) + "</code></td></tr>")
+    }
+    b.WriteString("</tbody></table>")
+    b.WriteString("</body></html>")
+    return b.String()
+}
+
+// htmlEscape minimal escape
+func htmlEscape(s string) string {
+    s = strings.ReplaceAll(s, "&", "&amp;")
+    s = strings.ReplaceAll(s, "<", "&lt;")
+    s = strings.ReplaceAll(s, ">", "&gt;")
+    s = strings.ReplaceAll(s, "\"", "&quot;")
+    return s
+}
+
+// fetchSmartContract fetches a smart contract from the blockchain
+func (a *App) fetchSmartContract(scid string, code, variables bool) (map[string]interface{}, error) {
+	a.logToConsole(fmt.Sprintf("  [NET] Calling DERO.GetSC (direct daemon): scid=%s..., code=%v, variables=%v", scid[:16], code, variables))
+
+	// Use direct daemon connection instead of XSWD
+	result, err := a.daemonClient.GetSC(scid, code, variables)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("  [ERR] DERO.GetSC failed: %v", err))
+		return nil, fmt.Errorf("GetSC failed: %w", err)
+	}
+
+	a.logToConsole("  [OK] DERO.GetSC returned data successfully")
+
+	return result, nil
+}
+
+// extractDOCsSCIDs extracts DOC SCIDs from INDEX contract variables
+// Based on TELA source code: result.VariableStringKeys contains hex-encoded SCIDs
+func extractDOCsSCIDs(indexData map[string]interface{}) []string {
+	scids := make([]string, 0)
+
+	// DERO daemon returns variables in "stringkeys" field
+	stringKeys, ok := indexData["stringkeys"].(map[string]interface{})
+	if !ok {
+		log.Println("  [WARN]  No stringkeys field in INDEX response")
+		return scids
+	}
+
+	log.Println("  📋 Found stringkeys, extracting DOC SCIDs...")
+
+	// Look for DOC1, DOC2, DOC3, etc.
+	for i := 1; i <= 100; i++ { // Max 100 DOCs
+		key := fmt.Sprintf("DOC%d", i)
+		if hexSCID, ok := stringKeys[key].(string); ok && hexSCID != "" {
+			// Hex-decode the SCID
+			scid := decodeHexString(hexSCID)
+			if len(scid) == 64 { // Valid SCID length
+				scids = append(scids, scid)
+				log.Printf("  ✓ Found %s: %s", key, scid[:16]+"...")
+			}
+		} else {
+			break // No more DOCs
+		}
+	}
+
+	return scids
+}
+
+// decodeHexString decodes a hex string, returns original if decode fails
+func decodeHexString(hexStr string) string {
+	decoded, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return hexStr
+	}
+	return string(decoded)
+}
+
+// processDOC processes a DOC contract and extracts its content
+func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) error {
+	stringKeys, ok := docData["stringkeys"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("no stringkeys in DOC contract")
+	}
+
+	// Get docType (hex-encoded) - with nil check
+	docType := ""
+	if docTypeHex, ok := stringKeys["docType"].(string); ok {
+		docType = decodeHexString(docTypeHex)
+	}
+	
+	// Get fileName (hex-encoded) - with nil check
+	fileName := "unknown"
+	if fileNameHex, ok := stringKeys["nameHdr"].(string); ok {
+		fileName = decodeHexString(fileNameHex)
+	}
+
+	// Get the code (actual file content)
+	code, ok := docData["code"].(string)
+	if !ok {
+		return fmt.Errorf("no code in DOC contract")
+	}
+
+	// Extract the actual file content from the smart contract
+	// The file content is in a comment block after the contract code
+	fileContent := extractFileContentFromCode(code)
+
+	if fileContent == "" {
+		return fmt.Errorf("could not extract file content")
+	}
+
+	// Check if file is gzip-compressed (ends with .gz)
+	if strings.HasSuffix(fileName, ".gz") {
+		a.logToConsole(fmt.Sprintf("  ✓ Extracted %s (%d bytes, compressed)", fileName, len(fileContent)))
+		
+		// Decompress the content
+		decompressed, err := decompressGzip(fileContent)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("  [WARN]  Gzip decompression failed: %v", err))
+			// Continue with compressed content as fallback
+		} else {
+			fileContent = decompressed
+			// Remove .gz from filename for proper type detection
+			fileName = strings.TrimSuffix(fileName, ".gz")
+			a.logToConsole(fmt.Sprintf("  ✓ Decompressed to %s (%d bytes)", fileName, len(fileContent)))
+		}
+	} else {
+		a.logToConsole(fmt.Sprintf("  ✓ Extracted %s (%d bytes)", fileName, len(fileContent)))
+	}
+
+	// Get SCID for tracking - with nil check
+	scid := ""
+	if scidStr, ok := docData["scid"].(string); ok {
+		scid = scidStr
+	}
+
+    // Store by type
+	switch {
+	case strings.HasPrefix(docType, "TELA-HTML"):
+		content.HTML = fileContent
+		if scid != "" {
+			content.SCIDs[fileName] = scid
+		}
+
+	case strings.HasPrefix(docType, "TELA-CSS"):
+		content.CSS = append(content.CSS, fileContent)
+		// Track CSS content by filename for external reference replacement
+		if content.CSSByName == nil {
+			content.CSSByName = make(map[string]string)
+		}
+		content.CSSByName[fileName] = fileContent
+		if scid != "" {
+			content.SCIDs[fileName] = scid
+		}
+
+	case strings.HasPrefix(docType, "TELA-JS"):
+		content.JS = append(content.JS, fileContent)
+		// Track JS content by filename for external reference replacement
+		if content.JSByName == nil {
+			content.JSByName = make(map[string]string)
+		}
+		content.JSByName[fileName] = fileContent
+		if scid != "" {
+			content.SCIDs[fileName] = scid
+		}
+
+	default:
+		a.logToConsole(fmt.Sprintf("  [INFO]  Unknown docType: %s (treating as HTML)", docType))
+		// If docType is unknown, try to detect by content or use as HTML
+		if content.HTML == "" {
+			content.HTML = fileContent
+		}
+	}
+
+    // Record raw file for shard/library handling
+    content.Files = append(content.Files, DocFile{
+        Name:    fileName,
+        Content: fileContent,
+        DocType: docType,
+    })
+
+	return nil
+}
+
+// extractFileContentFromCode extracts file content from smart contract code
+// The actual file content is in a comment block (/* ... */)
+func extractFileContentFromCode(code string) string {
+	// Look for content in /* ... */ block
+	re := regexp.MustCompile(`/\*\s*([\s\S]*?)\s*\*/`)
+	matches := re.FindStringSubmatch(code)
+
+	if len(matches) > 1 {
+		return strings.TrimSpace(matches[1])
+	}
+
+	return ""
+}
+
+// decompressGzip decompresses gzip-compressed content (stored as base64 in smart contract)
+func decompressGzip(compressedBase64 string) (string, error) {
+	// First, decode from base64 (gzip data is stored as base64 text in SC)
+	compressed, err := base64.StdEncoding.DecodeString(compressedBase64)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64: %w", err)
+	}
+
+	// Then decompress the gzip data
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return "", fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer reader.Close()
+
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		return "", fmt.Errorf("failed to decompress: %w", err)
+	}
+
+	return string(decompressed), nil
+}
+
+// assembleFinalHTML assembles the final HTML document with CSS and JS
+// It replaces external <script src="..."> and <link href="..."> references with inlined content
+func (a *App) assembleFinalHTML(content *TELAContent) error {
+	if content.HTML == "" {
+		return fmt.Errorf("no HTML content found")
+	}
+
+	a.logToConsole("🔧 Assembling final HTML...")
+
+	// Track which files were inlined (so we don't double-add them)
+	inlinedCSS := make(map[string]bool)
+	inlinedJS := make(map[string]bool)
+
+	// Replace external CSS references: <link rel="stylesheet" href="filename.css">
+	if len(content.CSSByName) > 0 {
+		cssLinkRegex := regexp.MustCompile(`<link[^>]*href=["']([^"']+\.css)["'][^>]*>`)
+		content.HTML = cssLinkRegex.ReplaceAllStringFunc(content.HTML, func(match string) string {
+			// Extract the href value
+			hrefMatch := regexp.MustCompile(`href=["']([^"']+)["']`).FindStringSubmatch(match)
+			if len(hrefMatch) > 1 {
+				href := hrefMatch[1]
+				// Try to find the CSS content by filename (with and without path)
+				filename := filepath.Base(href)
+				if cssContent, ok := content.CSSByName[filename]; ok {
+					a.logToConsole(fmt.Sprintf("  ✓ Inlined CSS: %s", filename))
+					inlinedCSS[filename] = true
+					return "<style>\n" + cssContent + "\n</style>"
+				}
+				// Also try with full path
+				if cssContent, ok := content.CSSByName[href]; ok {
+					a.logToConsole(fmt.Sprintf("  ✓ Inlined CSS: %s", href))
+					inlinedCSS[href] = true
+					return "<style>\n" + cssContent + "\n</style>"
+				}
+			}
+			return match // Keep original if not found
+		})
+	}
+
+	// Replace external JS references: <script src="filename.js"></script>
+	if len(content.JSByName) > 0 {
+		jsScriptRegex := regexp.MustCompile(`<script[^>]*src=["']([^"']+\.js)["'][^>]*>\s*</script>`)
+		content.HTML = jsScriptRegex.ReplaceAllStringFunc(content.HTML, func(match string) string {
+			// Extract the src value
+			srcMatch := regexp.MustCompile(`src=["']([^"']+)["']`).FindStringSubmatch(match)
+			if len(srcMatch) > 1 {
+				src := srcMatch[1]
+				// Try to find the JS content by filename (with and without path)
+				filename := filepath.Base(src)
+				if jsContent, ok := content.JSByName[filename]; ok {
+					a.logToConsole(fmt.Sprintf("  ✓ Inlined JS: %s", filename))
+					inlinedJS[filename] = true
+					return "<script>\n" + jsContent + "\n</script>"
+				}
+				// Also try with full path
+				if jsContent, ok := content.JSByName[src]; ok {
+					a.logToConsole(fmt.Sprintf("  ✓ Inlined JS: %s", src))
+					inlinedJS[src] = true
+					return "<script>\n" + jsContent + "\n</script>"
+				}
+			}
+			return match // Keep original if not found
+		})
+	}
+
+	// Inject remaining CSS that wasn't referenced externally
+	remainingCSS := []string{}
+	for filename, cssContent := range content.CSSByName {
+		if !inlinedCSS[filename] {
+			remainingCSS = append(remainingCSS, cssContent)
+		}
+	}
+	if len(remainingCSS) > 0 {
+		cssBlock := "<style>\n"
+		for _, css := range remainingCSS {
+			cssBlock += css + "\n"
+		}
+		cssBlock += "</style>"
+
+		// Insert before </head> or at start of HTML
+		if strings.Contains(content.HTML, "</head>") {
+			content.HTML = strings.Replace(content.HTML, "</head>", cssBlock+"\n</head>", 1)
+		} else {
+			content.HTML = cssBlock + "\n" + content.HTML
+		}
+		a.logToConsole(fmt.Sprintf("  ✓ Injected %d additional CSS files", len(remainingCSS)))
+	}
+
+	// Inject remaining JS that wasn't referenced externally
+	remainingJS := []string{}
+	for filename, jsContent := range content.JSByName {
+		if !inlinedJS[filename] {
+			remainingJS = append(remainingJS, jsContent)
+		}
+	}
+	if len(remainingJS) > 0 {
+		jsBlock := "<script>\n"
+		for _, js := range remainingJS {
+			jsBlock += js + "\n"
+		}
+		jsBlock += "</script>"
+
+		// Insert before </body> or at end of HTML
+		if strings.Contains(content.HTML, "</body>") {
+			content.HTML = strings.Replace(content.HTML, "</body>", jsBlock+"\n</body>", 1)
+		} else {
+			content.HTML = content.HTML + "\n" + jsBlock
+		}
+		a.logToConsole(fmt.Sprintf("  ✓ Injected %d additional JS files", len(remainingJS)))
+	}
+
+	a.logToConsole("[OK] HTML assembly complete")
+
+	return nil
+}
+
+// ConsoleLog represents a log entry for the browser console
+type ConsoleLog struct {
+	Timestamp string `json:"timestamp"`
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+}
+
+// logToConsole sends a log message to the browser console
+func (a *App) logToConsole(message string) {
+	log.Println(message) // Also log to Go console
+
+	// Determine log level from message content
+	level := "info"
+	lowerMsg := strings.ToLower(message)
+	if strings.Contains(lowerMsg, "error") || strings.Contains(lowerMsg, "failed") || strings.Contains(lowerMsg, "[ERR]") {
+		level = "error"
+	} else if strings.Contains(lowerMsg, "warn") || strings.Contains(lowerMsg, "[WARN]") {
+		level = "warn"
+	} else if strings.Contains(lowerMsg, "[OK]") || strings.Contains(lowerMsg, "success") {
+		level = "success"
+	}
+
+	// Store in console history
+	logEntry := ConsoleLog{
+		Timestamp: fmt.Sprintf("%s", currentTimeStamp()),
+		Level:     level,
+		Message:   message,
+	}
+	a.consoleLogs = append(a.consoleLogs, logEntry)
+
+	// Limit console history
+	if len(a.consoleLogs) > 1000 {
+		a.consoleLogs = a.consoleLogs[len(a.consoleLogs)-1000:]
+	}
+
+	// Emit real-time event for terminal display
+	if a.ctx != nil {
+		wailsRuntime.EventsEmit(a.ctx, "node-log", map[string]interface{}{
+			"timestamp": logEntry.Timestamp,
+			"level":     logEntry.Level,
+			"message":   logEntry.Message,
+			"source":    "hologram",
+		})
+	}
+}
+
+// GetConsoleLogs returns recent console logs
+func (a *App) GetConsoleLogs() []ConsoleLog {
+	return a.consoleLogs
+}
+
+// ClearConsoleLogs clears the console history
+func (a *App) ClearConsoleLogs() map[string]interface{} {
+	a.consoleLogs = make([]ConsoleLog, 0)
+	return map[string]interface{}{
+		"success": true,
+		"message": "Console cleared",
+	}
+}
+
+func currentTimeStamp() string {
+	now := time.Now()
+	return now.Format("15:04:05")
+}
+

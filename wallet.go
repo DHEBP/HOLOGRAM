@@ -1,0 +1,1735 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/deroproject/derohe/cryptography/crypto"
+	"github.com/deroproject/derohe/globals"
+	"github.com/deroproject/derohe/rpc"
+	"github.com/deroproject/derohe/walletapi"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+// WalletManager handles wallet operations
+type WalletManager struct {
+	sync.RWMutex
+	wallet        *walletapi.Wallet_Disk
+	walletPath    string
+	isOpen        bool
+	recentWallets []string
+}
+
+// NewWalletManager creates a new wallet manager
+func NewWalletManager() *WalletManager {
+	return &WalletManager{
+		recentWallets: make([]string, 0),
+	}
+}
+
+// Global wallet manager instance
+var walletManager = NewWalletManager()
+
+// OpenWallet opens a DERO wallet file
+func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	a.logToConsole(fmt.Sprintf("[WALLET] Opening wallet: %s", filePath))
+	a.logToConsole(fmt.Sprintf("[NET] Network: Mainnet=%v Testnet=%v", globals.IsMainnet(), !globals.IsMainnet()))
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		a.logToConsole(fmt.Sprintf("[ERR] Wallet file not found: %s", filePath))
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Wallet file not found",
+		}
+	}
+
+	// Close existing wallet if open
+	if walletManager.isOpen && walletManager.wallet != nil {
+		walletManager.wallet.Close_Encrypted_Wallet()
+		walletManager.isOpen = false
+	}
+
+	// Open the wallet
+	wallet, err := walletapi.Open_Encrypted_Wallet(filePath, password)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Failed to open wallet: %v", err))
+		return ErrorResponse(err)
+	}
+
+	walletManager.wallet = wallet
+	walletManager.walletPath = filePath
+	walletManager.isOpen = true
+
+	// Set network mode (mainnet vs testnet) - MUST be called before GetAddress()
+	wallet.SetNetwork(globals.IsMainnet())
+
+	// Get daemon endpoint from settings
+	endpoint := "127.0.0.1:10102"
+	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+		// Remove http:// prefix if present
+		endpoint = ep
+		if len(endpoint) > 7 && endpoint[:7] == "http://" {
+			endpoint = endpoint[7:]
+		}
+	}
+
+	// Connect wallet to daemon
+	wallet.SetDaemonAddress(endpoint)
+
+	// Get wallet info (now with correct network prefix)
+	address := wallet.GetAddress().String()
+
+	// Add to recent wallets with address info
+	addToRecentWalletsWithInfo(filePath, address)
+
+	a.logToConsole(fmt.Sprintf("[OK] Wallet opened successfully: %s", address[:16]+"..."))
+
+	return map[string]interface{}{
+		"success": true,
+		"address": address,
+		"message": "Wallet opened successfully",
+	}
+}
+
+// CloseWallet closes the currently open wallet
+func (a *App) CloseWallet() map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	a.logToConsole("[WALLET] Closing wallet...")
+
+	walletManager.wallet.Close_Encrypted_Wallet()
+	walletManager.wallet = nil
+	walletManager.isOpen = false
+	walletManager.walletPath = ""
+
+	a.logToConsole("[OK] Wallet closed successfully")
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Wallet closed successfully",
+	}
+}
+
+// GetWalletStatus returns the current wallet status
+func (a *App) GetWalletStatus() map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": true,
+			"isOpen":  false,
+		}
+	}
+
+	wallet := walletManager.wallet
+	address := wallet.GetAddress().String()
+
+	return map[string]interface{}{
+		"success": true,
+		"isOpen":  true,
+		"address": address,
+		"path":    walletManager.walletPath,
+	}
+}
+
+// GetBalance returns the wallet balance
+func (a *App) GetBalance() map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	wallet := walletManager.wallet
+
+	// Get mature (spendable) and locked balance
+	mature, locked := wallet.Get_Balance()
+
+	return map[string]interface{}{
+		"success":       true,
+		"balance":       mature,
+		"lockedBalance": locked,
+		"balanceHuman":  float64(mature) / 100000.0,
+		"lockedHuman":   float64(locked) / 100000.0,
+	}
+}
+
+// GetAddress returns the wallet address
+func (a *App) GetAddress() map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	address := walletManager.wallet.GetAddress().String()
+
+	return map[string]interface{}{
+		"success": true,
+		"address": address,
+	}
+}
+
+// GetSeedPhrase returns the wallet's recovery seed phrase (password-protected)
+func (a *App) GetSeedPhrase(password string) map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	// Verify password by attempting to re-open the wallet
+	// This is a security check to ensure the user has the correct password
+	tempWallet, err := walletapi.Open_Encrypted_Wallet(walletManager.walletPath, password)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Failed to verify password for seed phrase: %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Invalid password",
+		}
+	}
+	// Close the temporary wallet immediately after verification
+	tempWallet.Close_Encrypted_Wallet()
+
+	// Get the seed phrase from the currently open wallet
+	seed := walletManager.wallet.GetSeed()
+
+	a.logToConsole("[OK] Seed phrase retrieved (password verified)")
+
+	return map[string]interface{}{
+		"success": true,
+		"seed":    seed,
+		"message": "Seed phrase retrieved successfully",
+	}
+}
+
+// GetWalletKeys returns the wallet's secret and public keys (password-protected)
+func (a *App) GetWalletKeys(password string) map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	// Verify password by attempting to re-open the wallet
+	tempWallet, err := walletapi.Open_Encrypted_Wallet(walletManager.walletPath, password)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Failed to verify password for wallet keys: %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Invalid password",
+		}
+	}
+	// Close the temporary wallet immediately after verification
+	tempWallet.Close_Encrypted_Wallet()
+
+	// Get the keys from the currently open wallet
+	keys := walletManager.wallet.Get_Keys()
+
+	// Format secret key (64 hex characters, matching Engram/dero-wallet-cli format)
+	// Pad with zeros on the left, then take last 64 characters
+	secretHex := keys.Secret.Text(16)
+	paddedSecret := "0000000000000000000000000000000000000000000000" + secretHex
+	secretKey := paddedSecret[len(paddedSecret)-64:]
+
+	// Get public key
+	publicKey := keys.Public.StringHex()
+
+	a.logToConsole("[OK] Wallet keys retrieved (password verified)")
+
+	return map[string]interface{}{
+		"success":    true,
+		"secretKey":  secretKey,
+		"publicKey":  publicKey,
+		"message":    "Wallet keys retrieved successfully",
+	}
+}
+
+// GetIntegratedAddress generates an integrated address with optional payment ID
+func (a *App) GetIntegratedAddress(paymentID string) map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	// Generate integrated address
+	integrated := walletManager.wallet.GetAddress()
+	if paymentID != "" {
+		// Add payment ID to the address
+		// Note: DERO uses different mechanism for payment IDs
+	}
+
+	return map[string]interface{}{
+		"success":           true,
+		"integratedAddress": integrated.String(),
+		"paymentID":         paymentID,
+	}
+}
+
+// ListRecentWallets returns the list of recently opened wallets
+func (a *App) ListRecentWallets() []string {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+	return walletManager.recentWallets
+}
+
+// Transfer sends DERO to another address
+func (a *App) Transfer(destination string, amount uint64, paymentID string) map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("💸 Initiating transfer: %d atomic units to %s", amount, destination[:16]+"..."))
+
+	// Build and send the transaction
+	// Note: This is a simplified version. Full implementation would handle
+	// ringsize, fees, integrated addresses, etc.
+
+	// For now, return a placeholder response
+	// Full implementation requires using wallet.TransferPayload0 or similar
+	return map[string]interface{}{
+		"success": false,
+		"error":   "Transfer functionality coming soon - use XSWD for transactions",
+	}
+}
+
+// GetTransactionHistory returns recent transactions
+func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	// Get DERO transactions (zero SCID = native DERO)
+	var scid crypto.Hash
+	// Show_Transfers(scid, coinbase, incoming, outgoing, min_height, max_height, sender, receiver, dstport, srcport)
+	rpcEntries := walletManager.wallet.Show_Transfers(scid, true, true, true, 0, 0, "", "", 0, 0)
+
+	// Convert to frontend-friendly format
+	entries := make([]map[string]interface{}, 0, len(rpcEntries))
+	for _, e := range rpcEntries {
+		entry := map[string]interface{}{
+			"txid":        e.TXID,
+			"height":      e.Height,
+			"topoheight":  e.TopoHeight,
+			"amount":      e.Amount,
+			"incoming":    e.Incoming,
+			"coinbase":    e.Coinbase,
+			"destination": e.Destination,
+			"timestamp":   e.Time.Unix(),
+		}
+		entries = append(entries, entry)
+	}
+
+	// Limit results (return most recent)
+	if limit > 0 && len(entries) > limit {
+		entries = entries[len(entries)-limit:]
+	}
+
+	return map[string]interface{}{
+		"success":      true,
+		"transactions": entries,
+		"count":        len(entries),
+	}
+}
+
+// GetWalletMiningEarnings returns coinbase (mining reward) transactions from wallet
+// This filters the transaction history to show only mining rewards
+func (a *App) GetWalletMiningEarnings(limit int) map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success":  false,
+			"error":    "No wallet is currently open",
+			"earnings": []map[string]interface{}{},
+		}
+	}
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	// Get DERO transactions with coinbase filter
+	var scid crypto.Hash
+	// Show_Transfers(scid, coinbase, incoming, outgoing, min_height, max_height, sender, receiver, dstport, srcport)
+	// Only get coinbase transactions (coinbase=true, incoming=true, outgoing=false)
+	rpcEntries := walletManager.wallet.Show_Transfers(scid, true, true, false, 0, 0, "", "", 0, 0)
+
+	// Filter for coinbase only and convert to frontend-friendly format
+	earnings := make([]map[string]interface{}, 0)
+	var totalAmount uint64 = 0
+	var blocksCount int = 0
+	var minisCount int = 0
+
+	for _, e := range rpcEntries {
+		if !e.Coinbase {
+			continue // Skip non-mining transactions
+		}
+
+		entry := map[string]interface{}{
+			"txid":      e.TXID,
+			"height":    e.Height,
+			"amount":    e.Amount,
+			"timestamp": e.Time.Unix(),
+		}
+
+		// Try to determine if block or miniblock based on amount
+		// Full blocks have higher rewards than miniblocks
+		// This is a heuristic - full blocks typically have 2+ DERO, minis less
+		rewardType := "miniblock"
+		if e.Amount >= 200000 { // 2 DERO = 200000 atomic units (DERO has 5 decimal places)
+			rewardType = "block"
+			blocksCount++
+		} else {
+			minisCount++
+		}
+		entry["type"] = rewardType
+		totalAmount += e.Amount
+
+		earnings = append(earnings, entry)
+	}
+
+	// Limit results (return most recent)
+	if limit > 0 && len(earnings) > limit {
+		earnings = earnings[len(earnings)-limit:]
+	}
+
+	return map[string]interface{}{
+		"success":       true,
+		"earnings":      earnings,
+		"count":         len(earnings),
+		"total_amount":  totalAmount,
+		"formatted":     formatDEROAmount(totalAmount),
+		"blocks_count":  blocksCount,
+		"minis_count":   minisCount,
+	}
+}
+
+// GetMiningEarningsSummary returns a summary of mining earnings without full list
+func (a *App) GetMiningEarningsSummary() map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success":      false,
+			"error":        "No wallet is currently open",
+			"total_amount": uint64(0),
+		}
+	}
+
+	// Get all coinbase transactions
+	var scid crypto.Hash
+	rpcEntries := walletManager.wallet.Show_Transfers(scid, true, true, false, 0, 0, "", "", 0, 0)
+
+	var totalAmount uint64 = 0
+	var blocksCount int = 0
+	var minisCount int = 0
+	var latestHeight uint64 = 0
+	var earliestHeight uint64 = 0
+
+	for _, e := range rpcEntries {
+		if !e.Coinbase {
+			continue
+		}
+
+		totalAmount += e.Amount
+
+		// Determine type
+		if e.Amount >= 200000 {
+			blocksCount++
+		} else {
+			minisCount++
+		}
+
+		// Track height range
+		if earliestHeight == 0 || e.Height < earliestHeight {
+			earliestHeight = e.Height
+		}
+		if e.Height > latestHeight {
+			latestHeight = e.Height
+		}
+	}
+
+	return map[string]interface{}{
+		"success":         true,
+		"total_amount":    totalAmount,
+		"formatted":       formatDEROAmount(totalAmount),
+		"blocks_count":    blocksCount,
+		"minis_count":     minisCount,
+		"total_count":     blocksCount + minisCount,
+		"earliest_height": earliestHeight,
+		"latest_height":   latestHeight,
+	}
+}
+
+// CreateWallet creates a new wallet file
+// If filePath is just a name (no path separators), it will be created in datashards/wallets/
+func (a *App) CreateWallet(filePath, password string) map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	// If just a name is provided (no path separators), construct full path
+	if !strings.Contains(filePath, string(filepath.Separator)) && !strings.Contains(filePath, "/") {
+		// Clean the name - remove any .db extension if user added it
+		name := strings.TrimSuffix(filePath, ".db")
+		// Construct path in wallets directory
+		filePath = filepath.Join(".", "datashards", "wallets", name+".db")
+	}
+
+	a.logToConsole(fmt.Sprintf("[WALLET] Creating new wallet: %s", filePath))
+
+	// Check if file already exists
+	if _, err := os.Stat(filePath); err == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "A wallet with this name already exists",
+		}
+	}
+
+	// Create parent directory if it doesn't exist
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "Failed to create wallet directory",
+			"technicalError": err.Error(),
+		}
+	}
+
+	// Create new wallet
+	wallet, err := walletapi.Create_Encrypted_Wallet_Random(filePath, password)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Failed to create wallet: %v", err))
+		return ErrorResponse(err)
+	}
+
+	// Get the seed phrase for backup
+	seed := wallet.GetSeed()
+
+	// Close the wallet (user should open it explicitly)
+	wallet.Close_Encrypted_Wallet()
+
+	a.logToConsole("[OK] Wallet created successfully")
+
+	return map[string]interface{}{
+		"success": true,
+		"seed":    seed,
+		"message": "Wallet created successfully. SAVE YOUR SEED PHRASE!",
+	}
+}
+
+// RestoreWallet restores a wallet from seed phrase
+// If filePath is just a name (no path separators), it will be created in datashards/wallets/
+func (a *App) RestoreWallet(filePath, password, seed string) map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	// If just a name is provided (no path separators), construct full path
+	if !strings.Contains(filePath, string(filepath.Separator)) && !strings.Contains(filePath, "/") {
+		// Clean the name - remove any .db extension if user added it
+		name := strings.TrimSuffix(filePath, ".db")
+		// Construct path in wallets directory
+		filePath = filepath.Join(".", "datashards", "wallets", name+".db")
+	}
+
+	a.logToConsole("[WALLET] Restoring wallet from seed...")
+
+	// Check if file already exists
+	if _, err := os.Stat(filePath); err == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "A wallet with this name already exists",
+		}
+	}
+
+	// Create parent directory if it doesn't exist
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "Failed to create wallet directory",
+			"technicalError": err.Error(),
+		}
+	}
+
+	// Restore wallet from seed
+	wallet, err := walletapi.Create_Encrypted_Wallet_From_Recovery_Words(filePath, password, seed)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Failed to restore wallet: %v", err))
+		return ErrorResponse(err)
+	}
+
+	address := wallet.GetAddress().String()
+	wallet.Close_Encrypted_Wallet()
+
+	a.logToConsole(fmt.Sprintf("[OK] Wallet restored successfully: %s", address[:16]+"..."))
+
+	return map[string]interface{}{
+		"success": true,
+		"address": address,
+		"message": "Wallet restored successfully",
+	}
+}
+
+// IsWalletOpen returns whether a wallet is currently open
+func (a *App) IsWalletOpen() bool {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+	return walletManager.isOpen
+}
+
+// GetWallet returns the current wallet instance (for internal use)
+func GetWallet() *walletapi.Wallet_Disk {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+	if walletManager.isOpen {
+		return walletManager.wallet
+	}
+	return nil
+}
+
+// Helper function to add wallet to recent list
+func addToRecentWallets(path string) {
+	// Remove if already exists
+	newRecent := []string{path}
+	for _, p := range walletManager.recentWallets {
+		if p != path {
+			newRecent = append(newRecent, p)
+		}
+	}
+
+	// Keep only last 5
+	if len(newRecent) > 5 {
+		newRecent = newRecent[:5]
+	}
+
+	walletManager.recentWallets = newRecent
+
+	// Save to settings file
+	saveRecentWallets(newRecent)
+}
+
+func saveRecentWallets(wallets []string) {
+	configDir := filepath.Join(".", "datashards", "settings")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		log.Printf("Failed to create settings directory: %v", err)
+		return
+	}
+
+	data, err := json.Marshal(wallets)
+	if err != nil {
+		log.Printf("Failed to marshal recent wallets: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(configDir, "recent_wallets.json"), data, 0600); err != nil {
+		log.Printf("Failed to save recent wallets: %v", err)
+	}
+}
+
+func loadRecentWallets() []string {
+	configFile := filepath.Join(".", "datashards", "settings", "recent_wallets.json")
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return []string{}
+	}
+
+	var wallets []string
+	if err := json.Unmarshal(data, &wallets); err != nil {
+		return []string{}
+	}
+
+	return wallets
+}
+
+// Initialize recent wallets on startup
+func init() {
+	walletManager.recentWallets = loadRecentWallets()
+}
+
+// ApproveWalletConnection signals that the user has approved a dApp connection
+func (a *App) ApproveWalletConnection() map[string]interface{} {
+	a.logToConsole("[OK] Wallet connection approved by user")
+	return map[string]interface{}{"success": true}
+}
+
+// InternalWalletCall executes a wallet method directly using the embedded wallet
+func (a *App) InternalWalletCall(method string, params map[string]interface{}, password string) map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	// If wallet not open, try to open it if we have path and password
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		if walletManager.walletPath != "" && password != "" {
+			a.logToConsole("[WALLET] Unlocking wallet for transaction...")
+			var err error
+			// Re-open wallet
+			walletManager.wallet, err = walletapi.Open_Encrypted_Wallet(walletManager.walletPath, password)
+			if err != nil {
+				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+			}
+			
+			walletManager.isOpen = true
+			
+			// Set daemon endpoint
+			endpoint := "127.0.0.1:10102"
+			if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+				endpoint = ep
+				if len(endpoint) > 7 && endpoint[:7] == "http://" {
+					endpoint = endpoint[7:]
+				}
+			}
+			walletManager.wallet.SetDaemonAddress(endpoint)
+		} else {
+			return map[string]interface{}{"success": false, "error": "Wallet not open"}
+		}
+	}
+
+	wallet := walletManager.wallet
+	a.logToConsole(fmt.Sprintf("[FAST] Internal wallet call: %s", method))
+
+	// Handle methods
+	switch method {
+	case "GetAddress", "DERO.GetAddress":
+		// Return the wallet address
+		address := wallet.GetAddress().String()
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]string{"address": address},
+		}
+		
+	case "GetBalance", "DERO.GetBalance":
+		// Return wallet balance
+		balance, lockedBalance := wallet.Get_Balance()
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]uint64{"balance": balance, "unlocked_balance": balance - lockedBalance, "locked_balance": lockedBalance},
+		}
+		
+	case "GetHeight", "DERO.GetHeight":
+		// Return wallet height
+		height := wallet.Get_Height()
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]uint64{"height": height},
+		}
+		
+	case "transfer", "Transfer", "DERO.Transfer":
+		// Parse transfers
+		var transfers []rpc.Transfer
+		if t, ok := params["transfers"].([]interface{}); ok {
+			for _, item := range t {
+				if tf, ok := item.(map[string]interface{}); ok {
+					amount := uint64(0)
+					if a, ok := tf["amount"].(float64); ok {
+						amount = uint64(a)
+					}
+					
+					dest := ""
+					if d, ok := tf["destination"].(string); ok {
+						dest = d
+					}
+					
+					transfers = append(transfers, rpc.Transfer{
+						Destination: dest,
+						Amount:      amount,
+						// Payload_RPC handling omitted for brevity/complexity in map parsing
+					})
+				}
+			}
+		} else {
+			// Try single destination/amount if provided at top level
+			amount := uint64(0)
+			if a, ok := params["amount"].(float64); ok {
+				amount = uint64(a)
+			}
+			dest := ""
+			if d, ok := params["destination"].(string); ok {
+				dest = d
+			}
+			
+			if dest != "" {
+				transfers = append(transfers, rpc.Transfer{
+					Destination: dest,
+					Amount:      amount,
+				})
+			}
+		}
+		
+		if len(transfers) == 0 {
+			return map[string]interface{}{"success": false, "error": "No transfers specified"}
+		}
+		
+		// Execute transfer
+		// Use TransferPayload0 which is standard for simple transfers
+		tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+		}
+		
+		return map[string]interface{}{
+			"success": true,
+			"txid":    tx.GetHash().String(),
+			"hex":     fmt.Sprintf("%x", tx.Serialize()),
+		}
+
+	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
+		scid := ""
+		if s, ok := params["scid"].(string); ok {
+			scid = s
+		}
+		
+		if scid == "" {
+			return map[string]interface{}{"success": false, "error": "Missing scid"}
+		}
+		
+		// Parse SC arguments
+		scArgs := rpc.Arguments{}
+		if args, ok := params["sc_rpc"].([]interface{}); ok {
+			for _, arg := range args {
+				if a, ok := arg.(map[string]interface{}); ok {
+					name, _ := a["name"].(string)
+					type_, _ := a["datatype"].(string)
+					val := a["value"]
+					
+					if name != "" {
+						switch type_ {
+						case "U":
+							if v, ok := val.(float64); ok {
+								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+							}
+						case "S":
+							if v, ok := val.(string); ok {
+								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
+							}
+						}
+					}
+				}
+			}
+		}
+		
+		// Parse entrypoint
+		entrypoint := ""
+		if ep, ok := params["entrypoint"].(string); ok {
+			entrypoint = ep
+		}
+		
+		// Add entrypoint to args if provided
+		if entrypoint != "" {
+			scArgs = append(scArgs, rpc.Argument{Name: rpc.SCACTION, DataType: "U", Value: uint64(1)}) // Call SC
+			scArgs = append(scArgs, rpc.Argument{Name: rpc.SCID, DataType: "H", Value: scid})
+			scArgs = append(scArgs, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
+		}
+		
+		// Transfer amount attached to SC call
+		transferAmount := uint64(0)
+		// Check for transfers attached to SC call
+		var transfers []rpc.Transfer
+		if t, ok := params["transfers"].([]interface{}); ok {
+			for _, item := range t {
+				if tf, ok := item.(map[string]interface{}); ok {
+					amt := uint64(0)
+					if a, ok := tf["amount"].(float64); ok {
+						amt = uint64(a)
+					}
+					// Only burn transfers supported in SC calls usually, or transfers to SC
+					if amt > 0 {
+						transferAmount += amt
+						transfers = append(transfers, rpc.Transfer{Destination: scid, Amount: amt, Burn: 0}) // Sending to SC
+					}
+				}
+			}
+		}
+
+		// Execute SC Invoke
+		// Note: WalletAPI might differ on SC invoke method signature
+		// Using TransferPayload0 with SC args
+		// For SC invoke, destination is usually random burn address or handled via rpc args
+		
+		// For SC invocation, we generally use TransferPayload0 with Arguments
+		// If we are sending DERO to the SC, we include it in transfers
+		
+		tx, err := wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+		}
+		
+		return map[string]interface{}{
+			"success": true,
+			"txid":    tx.GetHash().String(),
+			"hex":     fmt.Sprintf("%x", tx.Serialize()),
+		}
+		
+	default:
+		return map[string]interface{}{"success": false, "error": "Method not supported internally yet"}
+	}
+}
+
+// SelectWalletFile opens a file dialog to select a wallet file
+func (a *App) SelectWalletFile() string {
+	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select Wallet File",
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: "DERO Wallet (*.db)",
+				Pattern:     "*.db",
+			},
+			{
+				DisplayName: "All Files (*.*)",
+				Pattern:     "*.*",
+			},
+		},
+	})
+	if err != nil {
+		log.Printf("Error opening file dialog: %v", err)
+		return ""
+	}
+	return selection
+}
+
+// WalletInfo represents information about a wallet for the frontend
+type WalletInfo struct {
+	Path          string `json:"path"`
+	Filename      string `json:"filename"`
+	AddressPrefix string `json:"addressPrefix"`
+	LastUsed      int64  `json:"lastUsed"`
+	IsCurrent     bool   `json:"isCurrent"`
+}
+
+// SwitchWallet closes the current wallet and opens a different one
+func (a *App) SwitchWallet(filePath, password string) map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	a.logToConsole(fmt.Sprintf("[SYNC] Switching wallet to: %s", filepath.Base(filePath)))
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Wallet file not found",
+		}
+	}
+
+	// Close existing wallet if open
+	if walletManager.isOpen && walletManager.wallet != nil {
+		a.logToConsole("[WALLET] Closing current wallet...")
+		walletManager.wallet.Close_Encrypted_Wallet()
+		walletManager.isOpen = false
+		walletManager.wallet = nil
+	}
+
+	// Open the new wallet
+	wallet, err := walletapi.Open_Encrypted_Wallet(filePath, password)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Failed to switch wallet: %v", err))
+		return ErrorResponse(err)
+	}
+
+	walletManager.wallet = wallet
+	walletManager.walletPath = filePath
+	walletManager.isOpen = true
+
+	// Set network mode (mainnet vs testnet) - MUST be called before GetAddress()
+	wallet.SetNetwork(globals.IsMainnet())
+
+	// Get daemon endpoint from settings
+	endpoint := "127.0.0.1:10102"
+	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+		endpoint = ep
+		if len(endpoint) > 7 && endpoint[:7] == "http://" {
+			endpoint = endpoint[7:]
+		}
+	}
+
+	// Connect wallet to daemon
+	wallet.SetDaemonAddress(endpoint)
+
+	// Add to recent wallets with updated timestamp (now with correct network prefix)
+	addToRecentWalletsWithInfo(filePath, wallet.GetAddress().String())
+
+	address := wallet.GetAddress().String()
+	mature, locked := wallet.Get_Balance()
+
+	a.logToConsole(fmt.Sprintf("[OK] Switched to wallet: %s", address[:16]+"..."))
+
+	return map[string]interface{}{
+		"success":       true,
+		"address":       address,
+		"balance":       mature,
+		"lockedBalance": locked,
+		"balanceHuman":  float64(mature) / 100000.0,
+		"message":       "Wallet switched successfully",
+	}
+}
+
+// GetRecentWalletsWithInfo returns recent wallets with additional metadata
+func (a *App) GetRecentWalletsWithInfo() []WalletInfo {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	// Load the extended wallet info
+	infos := loadRecentWalletsWithInfo()
+
+	// Mark current wallet
+	for i := range infos {
+		if walletManager.isOpen && infos[i].Path == walletManager.walletPath {
+			infos[i].IsCurrent = true
+		}
+	}
+
+	return infos
+}
+
+// Extended wallet info storage
+type recentWalletData struct {
+	Path          string `json:"path"`
+	AddressPrefix string `json:"addressPrefix"`
+	LastUsed      int64  `json:"lastUsed"`
+}
+
+func addToRecentWalletsWithInfo(path, address string) {
+	// Load existing data
+	existing := loadRecentWalletsData()
+
+	// Create new entry
+	newEntry := recentWalletData{
+		Path:          path,
+		AddressPrefix: "",
+		LastUsed:      nowUnix(),
+	}
+	if len(address) >= 16 {
+		newEntry.AddressPrefix = address[:16] + "..."
+	}
+
+	// Remove existing entry for same path and add new one at front
+	newData := []recentWalletData{newEntry}
+	for _, e := range existing {
+		if e.Path != path {
+			newData = append(newData, e)
+		}
+	}
+
+	// Keep only last 10
+	if len(newData) > 10 {
+		newData = newData[:10]
+	}
+
+	// Save
+	saveRecentWalletsData(newData)
+
+	// Also update the simple list for backward compatibility
+	simplePaths := make([]string, len(newData))
+	for i, d := range newData {
+		simplePaths[i] = d.Path
+	}
+	walletManager.recentWallets = simplePaths
+}
+
+func loadRecentWalletsData() []recentWalletData {
+	configFile := filepath.Join(".", "datashards", "settings", "recent_wallets_info.json")
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		// Try to migrate from old format
+		oldWallets := loadRecentWallets()
+		if len(oldWallets) > 0 {
+			result := make([]recentWalletData, len(oldWallets))
+			for i, p := range oldWallets {
+				result[i] = recentWalletData{
+					Path:          p,
+					AddressPrefix: "",
+					LastUsed:      0,
+				}
+			}
+			return result
+		}
+		return []recentWalletData{}
+	}
+
+	var wallets []recentWalletData
+	if err := json.Unmarshal(data, &wallets); err != nil {
+		return []recentWalletData{}
+	}
+
+	return wallets
+}
+
+func saveRecentWalletsData(wallets []recentWalletData) {
+	configDir := filepath.Join(".", "datashards", "settings")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		log.Printf("Failed to create settings directory: %v", err)
+		return
+	}
+
+	data, err := json.Marshal(wallets)
+	if err != nil {
+		log.Printf("Failed to marshal recent wallets data: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(configDir, "recent_wallets_info.json"), data, 0600); err != nil {
+		log.Printf("Failed to save recent wallets data: %v", err)
+	}
+}
+
+func loadRecentWalletsWithInfo() []WalletInfo {
+	data := loadRecentWalletsData()
+	result := make([]WalletInfo, len(data))
+	for i, d := range data {
+		result[i] = WalletInfo{
+			Path:          d.Path,
+			Filename:      filepath.Base(d.Path),
+			AddressPrefix: d.AddressPrefix,
+			LastUsed:      d.LastUsed,
+			IsCurrent:     false,
+		}
+	}
+	return result
+}
+
+// RemoveRecentWallet removes a wallet from the recent wallets list by path
+func (a *App) RemoveRecentWallet(path string) map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	// Load existing data
+	existing := loadRecentWalletsData()
+
+	// Filter out the wallet to remove
+	var filtered []recentWalletData
+	found := false
+	for _, w := range existing {
+		if w.Path != path {
+			filtered = append(filtered, w)
+		} else {
+			found = true
+		}
+	}
+
+	if !found {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Wallet not found in recent list",
+		}
+	}
+
+	// Save filtered list
+	saveRecentWalletsData(filtered)
+
+	// Update in-memory list
+	simplePaths := make([]string, len(filtered))
+	for i, w := range filtered {
+		simplePaths[i] = w.Path
+	}
+	walletManager.recentWallets = simplePaths
+
+	return map[string]interface{}{
+		"success": true,
+	}
+}
+
+// ClearRecentWallets removes all wallets from the recent list
+func (a *App) ClearRecentWallets() map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	// Clear the data file
+	saveRecentWalletsData([]recentWalletData{})
+
+	// Clear in-memory list
+	walletManager.recentWallets = []string{}
+
+	return map[string]interface{}{
+		"success": true,
+	}
+}
+
+func nowUnix() int64 {
+	return time.Now().Unix()
+}
+
+// GetCurrentWalletPath returns the path of the currently open wallet
+func (a *App) GetCurrentWalletPath() string {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+	if walletManager.isOpen {
+		return walletManager.walletPath
+	}
+	return ""
+}
+
+// TrackedToken represents a user-tracked token
+type TrackedToken struct {
+	SCID    string `json:"scid"`
+	Name    string `json:"name"`
+	Symbol  string `json:"symbol"`
+	AddedAt int64  `json:"addedAt"`
+}
+
+// GetTrackedTokens returns the list of user-tracked tokens with balances
+func (a *App) GetTrackedTokens() map[string]interface{} {
+	// Load tracked tokens from settings
+	tokens := loadTrackedTokens()
+
+	// If we have a local wallet open, get balances
+	walletManager.RLock()
+	localWalletOpen := walletManager.isOpen && walletManager.wallet != nil
+	var walletAddress string
+	if localWalletOpen {
+		walletAddress = walletManager.wallet.GetAddress().String()
+	}
+	walletManager.RUnlock()
+
+	result := make([]map[string]interface{}, 0)
+
+	// Always include native DERO first if wallet is open
+	if localWalletOpen {
+		walletManager.RLock()
+		mature, _ := walletManager.wallet.Get_Balance()
+		walletManager.RUnlock()
+
+		result = append(result, map[string]interface{}{
+			"scid":    "0000000000000000000000000000000000000000000000000000000000000000",
+			"name":    "DERO",
+			"symbol":  "DERO",
+			"balance": mature,
+			"native":  true,
+		})
+	}
+
+	// For each tracked token, try to get balance from Gnomon or SC query
+	for _, token := range tokens {
+		tokenData := map[string]interface{}{
+			"scid":    token.SCID,
+			"name":    token.Name,
+			"symbol":  token.Symbol,
+			"balance": uint64(0),
+			"native":  false,
+		}
+
+		// Try to get balance from Gnomon if running
+		if a.gnomonClient != nil && a.gnomonClient.IsRunning() && walletAddress != "" {
+			// Look up balance in SC variables
+			vars := a.gnomonClient.GetAllSCIDVariableDetails(token.SCID)
+			for _, v := range vars {
+				key := fmt.Sprintf("%v", v.Key)
+				// Token balances are typically stored as address keys
+				if key == walletAddress {
+					if balance, ok := v.Value.(uint64); ok {
+						tokenData["balance"] = balance
+					} else if balance, ok := v.Value.(float64); ok {
+						tokenData["balance"] = uint64(balance)
+					}
+				}
+				// Also try common naming patterns
+				if token.Name == "" && key == "nameHdr" {
+					tokenData["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
+				if token.Symbol == "" && key == "symbolHdr" {
+					tokenData["symbol"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
+			}
+		}
+
+		result = append(result, tokenData)
+	}
+
+	return map[string]interface{}{
+		"success": true,
+		"tokens":  result,
+		"count":   len(result),
+	}
+}
+
+// AddTrackedToken adds a token SCID to the tracked list
+func (a *App) AddTrackedToken(scid, name, symbol string) map[string]interface{} {
+	// Validate SCID format (64 hex chars)
+	if len(scid) != 64 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Invalid SCID format - must be 64 hexadecimal characters",
+		}
+	}
+
+	// Check if already tracked
+	tokens := loadTrackedTokens()
+	for _, t := range tokens {
+		if t.SCID == scid {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Token already tracked",
+			}
+		}
+	}
+
+	// Try to fetch token metadata from Gnomon
+	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
+		vars := a.gnomonClient.GetAllSCIDVariableDetails(scid)
+		for _, v := range vars {
+			key := fmt.Sprintf("%v", v.Key)
+			if name == "" && key == "nameHdr" {
+				name = decodeHexString(fmt.Sprintf("%v", v.Value))
+			}
+			if symbol == "" && key == "symbolHdr" {
+				symbol = decodeHexString(fmt.Sprintf("%v", v.Value))
+			}
+		}
+	}
+
+	// Add to tracked list
+	newToken := TrackedToken{
+		SCID:    scid,
+		Name:    name,
+		Symbol:  symbol,
+		AddedAt: time.Now().Unix(),
+	}
+	tokens = append(tokens, newToken)
+	saveTrackedTokens(tokens)
+
+	a.logToConsole(fmt.Sprintf("📌 Added tracked token: %s (%s)", name, scid[:16]+"..."))
+
+	return map[string]interface{}{
+		"success": true,
+		"token":   newToken,
+		"message": "Token added to portfolio",
+	}
+}
+
+// RemoveTrackedToken removes a token from the tracked list
+func (a *App) RemoveTrackedToken(scid string) map[string]interface{} {
+	tokens := loadTrackedTokens()
+	newTokens := make([]TrackedToken, 0)
+	found := false
+
+	for _, t := range tokens {
+		if t.SCID != scid {
+			newTokens = append(newTokens, t)
+		} else {
+			found = true
+		}
+	}
+
+	if !found {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Token not found in tracked list",
+		}
+	}
+
+	saveTrackedTokens(newTokens)
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Token removed from portfolio",
+	}
+}
+
+// TransferToken sends a token (non-native asset) to another address
+func (a *App) TransferToken(scid, destination string, amount uint64, password string) map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		// Try to reopen with password
+		if walletManager.walletPath != "" && password != "" {
+			var err error
+			walletManager.wallet, err = walletapi.Open_Encrypted_Wallet(walletManager.walletPath, password)
+			if err != nil {
+				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+			}
+			walletManager.isOpen = true
+			endpoint := "127.0.0.1:10102"
+			if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+				endpoint = ep
+				if len(endpoint) > 7 && endpoint[:7] == "http://" {
+					endpoint = endpoint[7:]
+				}
+			}
+			walletManager.wallet.SetDaemonAddress(endpoint)
+		} else {
+			return map[string]interface{}{"success": false, "error": "Please open a wallet first."}
+		}
+	}
+
+	wallet := walletManager.wallet
+
+	a.logToConsole(fmt.Sprintf("💸 Transferring %d units of token %s to %s", amount, scid[:16]+"...", destination[:16]+"..."))
+
+	// Build transfer with asset (token)
+	// For DERO tokens, transfers include the SCID as the asset
+	transfers := []rpc.Transfer{
+		{
+			Destination: destination,
+			Amount:      0,         // DERO amount (0 for pure token transfer)
+			Burn:        amount,    // Token amount to transfer
+			SCID:        crypto.HashHexToHash(scid),
+		},
+	}
+
+	// Execute transfer
+	tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
+	if err != nil {
+		return ErrorResponse(err)
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] Token transfer successful! TXID: %s", tx.GetHash().String()))
+
+	return map[string]interface{}{
+		"success": true,
+		"txid":    tx.GetHash().String(),
+		"message": "Token transfer sent successfully",
+	}
+}
+
+// Helper functions for tracked tokens storage
+func loadTrackedTokens() []TrackedToken {
+	configFile := filepath.Join(".", "datashards", "settings", "tracked_tokens.json")
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return []TrackedToken{}
+	}
+
+	var tokens []TrackedToken
+	if err := json.Unmarshal(data, &tokens); err != nil {
+		return []TrackedToken{}
+	}
+
+	return tokens
+}
+
+func saveTrackedTokens(tokens []TrackedToken) {
+	configDir := filepath.Join(".", "datashards", "settings")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		log.Printf("Failed to create settings directory: %v", err)
+		return
+	}
+
+	data, err := json.Marshal(tokens)
+	if err != nil {
+		log.Printf("Failed to marshal tracked tokens: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(configDir, "tracked_tokens.json"), data, 0600); err != nil {
+		log.Printf("Failed to save tracked tokens: %v", err)
+	}
+}
+
+// ============================================
+// ADDRESS BOOK FUNCTIONS
+// ============================================
+
+// AddressBookEntry represents a saved contact
+type AddressBookEntry struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Address   string `json:"address"`
+	Notes     string `json:"notes"`
+	CreatedAt int64  `json:"createdAt"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
+// GetAddressBook returns all saved contacts
+func (a *App) GetAddressBook() map[string]interface{} {
+	contacts := loadAddressBook()
+	return map[string]interface{}{
+		"success":  true,
+		"contacts": contacts,
+		"count":    len(contacts),
+	}
+}
+
+// AddContact adds a new contact to the address book
+func (a *App) AddContact(label, address, notes string) map[string]interface{} {
+	// Validate address format
+	if !strings.HasPrefix(address, "dero1") && !strings.HasPrefix(address, "deto1") {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Invalid DERO address format",
+		}
+	}
+
+	if label == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Label is required",
+		}
+	}
+
+	contacts := loadAddressBook()
+
+	// Check for duplicate address
+	for _, c := range contacts {
+		if c.Address == address {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Address already exists in address book",
+			}
+		}
+	}
+
+	// Generate unique ID
+	id := fmt.Sprintf("contact_%d", time.Now().UnixNano())
+
+	newContact := AddressBookEntry{
+		ID:        id,
+		Label:     label,
+		Address:   address,
+		Notes:     notes,
+		CreatedAt: time.Now().Unix(),
+		UpdatedAt: time.Now().Unix(),
+	}
+
+	contacts = append(contacts, newContact)
+	saveAddressBook(contacts)
+
+	a.logToConsole(fmt.Sprintf("📒 Added contact: %s", label))
+
+	return map[string]interface{}{
+		"success": true,
+		"contact": newContact,
+		"message": "Contact added successfully",
+	}
+}
+
+// UpdateContact updates an existing contact
+func (a *App) UpdateContact(id, label, address, notes string) map[string]interface{} {
+	contacts := loadAddressBook()
+	found := false
+
+	for i, c := range contacts {
+		if c.ID == id {
+			contacts[i].Label = label
+			contacts[i].Address = address
+			contacts[i].Notes = notes
+			contacts[i].UpdatedAt = time.Now().Unix()
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Contact not found",
+		}
+	}
+
+	saveAddressBook(contacts)
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Contact updated successfully",
+	}
+}
+
+// DeleteContact removes a contact from the address book
+func (a *App) DeleteContact(id string) map[string]interface{} {
+	contacts := loadAddressBook()
+	newContacts := make([]AddressBookEntry, 0)
+	found := false
+
+	for _, c := range contacts {
+		if c.ID != id {
+			newContacts = append(newContacts, c)
+		} else {
+			found = true
+		}
+	}
+
+	if !found {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Contact not found",
+		}
+	}
+
+	saveAddressBook(newContacts)
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Contact deleted successfully",
+	}
+}
+
+// Helper functions for address book storage
+func loadAddressBook() []AddressBookEntry {
+	configFile := filepath.Join(".", "datashards", "settings", "address_book.json")
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return []AddressBookEntry{}
+	}
+
+	var contacts []AddressBookEntry
+	if err := json.Unmarshal(data, &contacts); err != nil {
+		return []AddressBookEntry{}
+	}
+
+	return contacts
+}
+
+func saveAddressBook(contacts []AddressBookEntry) {
+	configDir := filepath.Join(".", "datashards", "settings")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		log.Printf("Failed to create settings directory: %v", err)
+		return
+	}
+
+	data, err := json.Marshal(contacts)
+	if err != nil {
+		log.Printf("Failed to marshal address book: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(configDir, "address_book.json"), data, 0600); err != nil {
+		log.Printf("Failed to save address book: %v", err)
+	}
+}
+
+// ============================================
+// MESSAGE SIGNING FUNCTIONS
+// ============================================
+
+// SignMessage signs a message with the wallet's private key
+// Returns a PEM-encoded signature that can be verified
+func (a *App) SignMessage(message string) map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	if message == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Message cannot be empty",
+		}
+	}
+
+	wallet := walletManager.wallet
+
+	// Sign the message - returns PEM encoded signature
+	signature := wallet.SignData([]byte(message))
+	if signature == nil || len(signature) == 0 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Failed to sign message",
+		}
+	}
+
+	address := wallet.GetAddress().String()
+
+	a.logToConsole("✍️ Message signed successfully")
+
+	return map[string]interface{}{
+		"success":   true,
+		"signature": string(signature), // PEM encoded string
+		"address":   address,
+		"message":   message,
+	}
+}
+
+// VerifySignature verifies a PEM-encoded signed message
+// The signature parameter should be the full PEM block from SignMessage
+func (a *App) VerifySignature(signedData string) map[string]interface{} {
+	if signedData == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Signed data cannot be empty",
+		}
+	}
+
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	wallet := walletManager.wallet
+
+	// CheckSignature takes the PEM data and returns signer, message, error
+	signer, message, err := wallet.CheckSignature([]byte(signedData))
+	if err != nil {
+		return map[string]interface{}{
+			"success": true,
+			"valid":   false,
+			"error":   fmt.Sprintf("Verification failed: %v", err),
+		}
+	}
+
+	a.logToConsole("✓ Signature verified successfully")
+
+	return map[string]interface{}{
+		"success": true,
+		"valid":   true,
+		"signer":  signer.String(),
+		"message": string(message),
+	}
+}
+

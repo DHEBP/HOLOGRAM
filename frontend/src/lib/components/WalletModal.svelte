@@ -1,0 +1,770 @@
+<script>
+  import { fly, fade } from 'svelte/transition';
+  import { walletState, settingsState, walletRequests, activeWalletRequest, approveWalletRequest, denyWalletRequest, handleBackendError } from '../stores/appState.js';
+  import { OpenWallet, GetBalance, ListRecentWallets, SelectWalletFile, GetRecentWalletsWithInfo, SwitchWallet } from '../../../wailsjs/go/main/App.js';
+
+  // Derived from activeWalletRequest
+  $: request = $activeWalletRequest;
+  $: isOpen = !!request;
+
+  let password = '';
+  let walletPath = '';
+  let error = '';
+  let isLoading = false;
+  let recentWallets = [];
+  let recentWalletsInfo = [];
+  let showWalletSwitcher = false;
+  let switchPassword = '';
+  let selectedSwitchWallet = null;
+  
+  // Permission management for XSWD connections
+  let grantedPermissions = {};
+  
+  // Initialize permissions when request changes
+  $: if (request && request.type === 'connect' && request.requestedPermissions) {
+    // Initialize all requested permissions as granted by default
+    grantedPermissions = {};
+    for (const perm of request.requestedPermissions) {
+      // Use existing permission state if available, otherwise default to true
+      const existingValue = request.existingPermissions?.[perm.id];
+      grantedPermissions[perm.id] = existingValue !== undefined ? existingValue : true;
+    }
+  }
+  
+  function togglePermission(permId) {
+    grantedPermissions[permId] = !grantedPermissions[permId];
+    grantedPermissions = grantedPermissions; // Trigger reactivity
+  }
+  
+  function getGrantedPermissionsList() {
+    return Object.entries(grantedPermissions)
+      .filter(([_, granted]) => granted)
+      .map(([id, _]) => id);
+  }
+
+  // Initialize wallet path from settings/state when modal opens
+  $: if (isOpen && !walletPath) {
+    walletPath = $settingsState.lastWalletPath || $walletState.walletPath || '';
+    // Load recent wallets
+    loadRecentWallets();
+  }
+
+  async function loadRecentWallets() {
+    try {
+      // Load enhanced wallet info
+      const infos = await GetRecentWalletsWithInfo();
+      if (infos && infos.length > 0) {
+        recentWalletsInfo = infos;
+        recentWallets = infos.map(w => w.path);
+        // If no wallet path set, use the most recent
+        if (!walletPath && infos.length > 0) {
+          walletPath = infos[0].path;
+        }
+      } else {
+        // Fallback to simple list
+        const recents = await ListRecentWallets();
+        if (recents && recents.length > 0) {
+          recentWallets = recents;
+          recentWalletsInfo = recents.map(p => ({ path: p, filename: p.split('/').pop(), addressPrefix: '', isCurrent: false }));
+          if (!walletPath && recents.length > 0) {
+            walletPath = recents[0];
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load recent wallets:', e);
+    }
+  }
+
+  async function browseWallet() {
+    try {
+      const selected = await SelectWalletFile();
+      if (selected) {
+        walletPath = selected;
+      }
+    } catch (e) {
+      console.error('File dialog failed:', e);
+    }
+  }
+
+  function selectWalletToSwitch(wallet) {
+    selectedSwitchWallet = wallet;
+    switchPassword = '';
+  }
+
+  async function handleSwitchWallet() {
+    if (!selectedSwitchWallet) return;
+    
+    isLoading = true;
+    error = '';
+    
+    try {
+      const result = await SwitchWallet(selectedSwitchWallet.path, switchPassword);
+      if (!result.success) {
+        error = handleBackendError(result, { showToast: false }) || 'Failed to switch wallet';
+        isLoading = false;
+        return;
+      }
+      
+      // Update wallet state
+      walletState.update(state => ({
+        ...state,
+        isOpen: true,
+        address: result.address,
+        balance: result.balance,
+        lockedBalance: result.lockedBalance,
+        walletPath: selectedSwitchWallet.path,
+      }));
+      
+      // Store wallet path in settings
+      settingsState.update(s => ({ ...s, lastWalletPath: selectedSwitchWallet.path }));
+      
+      // Reset switch state
+      selectedSwitchWallet = null;
+      switchPassword = '';
+      showWalletSwitcher = false;
+      
+      // Reload recent wallets to update current marker
+      await loadRecentWallets();
+    } catch (e) {
+      error = e.message || 'Failed to switch wallet';
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  function cancelSwitch() {
+    selectedSwitchWallet = null;
+    switchPassword = '';
+    showWalletSwitcher = false;
+  }
+
+  async function handleApprove() {
+    if (!request) return;
+    
+    // If wallet is not open, require password AND wallet path
+    if (!$walletState.isOpen) {
+      if (!walletPath) {
+        error = 'Please select a wallet file';
+        return;
+      }
+      if (!password) {
+        error = 'Please enter your wallet password';
+        return;
+      }
+      
+      // Actually open the wallet
+      isLoading = true;
+      error = '';
+      
+      try {
+        const result = await OpenWallet(walletPath, password);
+        if (!result.success) {
+          error = handleBackendError(result, { showToast: false }) || 'Failed to open wallet';
+          isLoading = false;
+          return;
+        }
+        
+        // Update wallet state
+        walletState.update(state => ({
+          ...state,
+          isOpen: true,
+          address: result.address,
+          walletPath: walletPath,
+        }));
+        
+        // Store wallet path in settings for next time
+        settingsState.update(s => ({ ...s, lastWalletPath: walletPath }));
+        
+        // Fetch balance
+        try {
+          const balance = await GetBalance();
+          if (balance.success) {
+            walletState.update(state => ({
+              ...state,
+              balance: balance.balance,
+              lockedBalance: balance.lockedBalance,
+            }));
+          }
+        } catch (e) {
+          console.error('Failed to fetch balance:', e);
+        }
+      } catch (e) {
+        error = e.message || 'Failed to open wallet';
+        isLoading = false;
+        return;
+      }
+    }
+
+    isLoading = true;
+    error = '';
+
+    try {
+      // For connect requests, pass the granted permissions
+      const permissions = request.type === 'connect' ? getGrantedPermissionsList() : null;
+      await approveWalletRequest(request.id, password, null, permissions);
+      password = ''; // Clear password after use
+      walletPath = ''; // Reset for next time
+      grantedPermissions = {}; // Reset permissions
+      
+      // Restore focus to main document to prevent iframe from capturing scroll
+      restoreFocus();
+    } catch (e) {
+      error = e.message || 'Failed to approve request';
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  function handleDeny() {
+    if (!request) return;
+    denyWalletRequest(request.id);
+    password = '';
+    walletPath = '';
+    error = '';
+    
+    // Restore focus to main document
+    restoreFocus();
+  }
+  
+  // Restore interactivity after modal closes
+  function restoreFocus() {
+    // The iframe should be able to receive scroll events
+    // Focus the iframe so scroll events go to its content
+    const attempts = [50, 100, 200, 500, 1000];
+    attempts.forEach(delay => {
+      setTimeout(() => {
+        const iframe = document.querySelector('.browser-content-frame');
+        if (iframe) {
+          // Make sure iframe can receive events
+          iframe.style.pointerEvents = 'auto';
+          
+          // Click inside iframe to give it focus (allows scrolling)
+          try {
+            iframe.focus();
+            // Also try to focus the iframe's document body
+            if (iframe.contentWindow && iframe.contentDocument) {
+              iframe.contentDocument.body?.focus();
+            }
+          } catch (e) {
+            // Cross-origin restrictions may prevent this
+          }
+        }
+      }, delay);
+    });
+  }
+</script>
+
+{#if isOpen}
+  <!-- Backdrop -->
+  <div 
+    class="modal-panel-overlay"
+    transition:fade={{ duration: 200 }}
+    on:click={handleDeny}
+  ></div>
+
+  <!-- Slide-in Panel -->
+  <div 
+    class="modal-panel"
+    transition:fly={{ x: 300, duration: 300 }}
+  >
+    <!-- Header -->
+    <div class="modal-panel-header">
+      <div class="modal-panel-header-row">
+        <span class="modal-panel-icon">◈</span>
+        <div>
+          <h2 class="modal-panel-title">Wallet Request</h2>
+          <p class="modal-panel-subtitle">
+            {#if request.type === 'connect'}
+              Connection Request
+            {:else if request.type === 'sign'}
+              Transaction Signing
+            {:else}
+              Permission Request
+            {/if}
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="modal-panel-content">
+      <!-- App Info -->
+      <div class="modal-app-info-card">
+        <h3 class="modal-app-info-label">REQUEST FROM</h3>
+        <div class="modal-app-info-row">
+          <div class="modal-app-icon">◎</div>
+          <div>
+            <div class="modal-app-name">{request.appName || 'Unknown App'}</div>
+            <div class="modal-app-origin">{request.origin || 'Local App'}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Request Details -->
+      <div class="wallet-request-details">
+        {#if request.type === 'connect'}
+          <div>
+            <h3 class="modal-section-title">Permissions Requested</h3>
+            {#if request.requestedPermissions && request.requestedPermissions.length > 0}
+              <div class="modal-permissions-list">
+                {#each request.requestedPermissions as perm}
+                  <label 
+                    class="modal-permission-item {grantedPermissions[perm.id] ? 'modal-permission-item-active' : ''}"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={grantedPermissions[perm.id]}
+                      on:change={() => togglePermission(perm.id)}
+                      disabled={perm.alwaysAsk}
+                      class="modal-permission-checkbox"
+                    />
+                    <div class="modal-permission-content">
+                      <div class="modal-permission-header">
+                        <span class="modal-permission-name">{perm.name}</span>
+                        {#if perm.alwaysAsk}
+                          <span class="modal-permission-badge">Always asks</span>
+                        {/if}
+                      </div>
+                      <p class="modal-permission-desc">{perm.description}</p>
+                    </div>
+                  </label>
+                {/each}
+              </div>
+              
+              {#if request.existingPermissions}
+                <p class="wallet-info-note">
+                  <span class="wallet-info-icon">i</span>
+                  This app has connected before. Your previous permissions are shown.
+                </p>
+              {/if}
+            {:else}
+              <!-- Fallback for old-style requests without permission info -->
+              <ul class="wallet-fallback-permissions">
+                <li class="wallet-fallback-item">
+                  <span class="wallet-check-icon">✓</span>
+                  <span>View wallet address</span>
+                </li>
+                <li class="wallet-fallback-item">
+                  <span class="wallet-check-icon">✓</span>
+                  <span>View wallet balance</span>
+                </li>
+                <li class="wallet-fallback-item">
+                  <span class="wallet-check-icon">✓</span>
+                  <span>Request transaction signing</span>
+                </li>
+              </ul>
+            {/if}
+          </div>
+        {:else if request.type === 'sign'}
+          <!-- Transaction Details -->
+          <div>
+            <h3 class="modal-section-title">Transaction Details</h3>
+            
+            <div class="modal-tx-details-card">
+              {#if request.payload.transfers}
+                {#each request.payload.transfers as transfer}
+                  <div class="modal-tx-field">
+                    <div class="modal-tx-label">AMOUNT</div>
+                    <div class="modal-tx-amount">
+                      {(transfer.amount / 100000).toLocaleString()} DERO
+                    </div>
+                  </div>
+                  <div class="modal-tx-field">
+                    <div class="modal-tx-label">DESTINATION</div>
+                    <div class="modal-tx-destination">
+                      {transfer.destination}
+                    </div>
+                  </div>
+                {/each}
+              {/if}
+              
+              {#if request.payload.sc_data}
+                <div class="wallet-tx-sc-section">
+                  <div class="modal-tx-label">SMART CONTRACT CALL</div>
+                  <div class="wallet-tx-sc-data">
+                    {JSON.stringify(request.payload.sc_data, null, 2)}
+                  </div>
+                </div>
+              {/if}
+            </div>
+            
+            <div class="modal-alert modal-alert-warning">
+              <span class="modal-alert-icon">!</span>
+              Double check the destination and amount before approving.
+            </div>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Wallet State Section -->
+      {#if $walletState.isOpen}
+        <!-- Current wallet is open - show wallet switcher option -->
+        <div class="modal-wallet-section">
+          <div class="modal-wallet-current-row">
+            <div>
+              <p class="modal-wallet-label">CURRENT WALLET</p>
+              <p class="modal-wallet-address">{$walletState.address?.slice(0, 16)}...</p>
+            </div>
+            <button
+              on:click={() => { showWalletSwitcher = !showWalletSwitcher; loadRecentWallets(); }}
+              class="modal-link-btn"
+            >
+              {showWalletSwitcher ? 'Cancel' : 'Switch Wallet'}
+            </button>
+          </div>
+          
+          {#if showWalletSwitcher}
+            <div class="wallet-switcher">
+              <p class="wallet-switcher-label">SELECT WALLET TO USE</p>
+              
+              {#if selectedSwitchWallet}
+                <!-- Password input for selected wallet -->
+                <div class="wallet-switcher-form">
+                  <div class="wallet-selected-item">
+                    <span class="modal-wallet-icon">◇</span>
+                    <div class="modal-wallet-info">
+                      <p class="modal-wallet-filename">{selectedSwitchWallet.filename}</p>
+                      {#if selectedSwitchWallet.addressPrefix}
+                        <p class="modal-wallet-prefix">{selectedSwitchWallet.addressPrefix}</p>
+                      {/if}
+                    </div>
+                  </div>
+                  
+                  <input 
+                    type="password" 
+                    bind:value={switchPassword}
+                    placeholder="Enter password for this wallet..."
+                    class="modal-input"
+                    on:keydown={(e) => e.key === 'Enter' && handleSwitchWallet()}
+                  />
+                  
+                  <div class="wallet-btn-row">
+                    <button on:click={cancelSwitch} class="modal-btn modal-btn-secondary">
+                      Back
+                    </button>
+                    <button
+                      on:click={handleSwitchWallet}
+                      disabled={!switchPassword || isLoading}
+                      class="modal-btn modal-btn-primary"
+                    >
+                      {isLoading ? 'Switching...' : 'Switch'}
+                    </button>
+                  </div>
+                </div>
+              {:else}
+                <!-- Wallet list -->
+                <div class="modal-wallet-list">
+                  {#each recentWalletsInfo.filter(w => !w.isCurrent) as wallet}
+                    <button
+                      on:click={() => selectWalletToSwitch(wallet)}
+                      class="modal-wallet-list-item"
+                    >
+                      <span class="modal-wallet-icon">◇</span>
+                      <div class="modal-wallet-info">
+                        <p class="modal-wallet-filename">{wallet.filename}</p>
+                        {#if wallet.addressPrefix}
+                          <p class="modal-wallet-prefix">{wallet.addressPrefix}</p>
+                        {/if}
+                      </div>
+                      <span class="wallet-arrow-icon">→</span>
+                    </button>
+                  {/each}
+                  
+                  {#if recentWalletsInfo.filter(w => !w.isCurrent).length === 0}
+                    <p class="wallet-empty-state">No other wallets found</p>
+                  {/if}
+                </div>
+                
+                <!-- Browse for different wallet -->
+                <button
+                  on:click={async () => {
+                    const selected = await SelectWalletFile();
+                    if (selected) {
+                      selectWalletToSwitch({ path: selected, filename: selected.split('/').pop(), addressPrefix: '' });
+                    }
+                  }}
+                  class="modal-browse-btn"
+                >
+                  <span>+</span>
+                  <span>Browse for wallet file</span>
+                </button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <!-- Wallet Lock State - no wallet open -->
+        <div class="modal-wallet-section">
+          <!-- Wallet File Selection -->
+          <div class="modal-form-group">
+            <label class="modal-form-label">Wallet File</label>
+            <div class="modal-input-with-button">
+              <input 
+                type="text" 
+                bind:value={walletPath}
+                placeholder="Select wallet file..."
+                class="modal-input"
+              />
+              <button on:click={browseWallet} class="modal-btn modal-btn-secondary">
+                Browse
+              </button>
+            </div>
+            
+            <!-- Recent Wallets with Info -->
+            {#if recentWalletsInfo.length > 0}
+              <div class="wallet-recent-wallets">
+                <p class="wallet-recent-label">Recent wallets:</p>
+                <div class="modal-wallet-list">
+                  {#each recentWalletsInfo.slice(0, 5) as wallet}
+                    <button
+                      on:click={() => walletPath = wallet.path}
+                      class="modal-wallet-list-item {walletPath === wallet.path ? 'modal-wallet-list-item-active' : ''}"
+                    >
+                      <span class="modal-wallet-icon">{walletPath === wallet.path ? '✓' : '◇'}</span>
+                      <div class="modal-wallet-info">
+                        <p class="modal-wallet-filename">{wallet.filename}</p>
+                        {#if wallet.addressPrefix}
+                          <p class="modal-wallet-prefix">{wallet.addressPrefix}</p>
+                        {/if}
+                      </div>
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {:else if recentWallets.length > 0 && !walletPath}
+              <div class="wallet-recent-wallets">
+                <p class="wallet-recent-label">Recent wallets:</p>
+                <div class="wallet-recent-simple-list">
+                  {#each recentWallets.slice(0, 3) as recent}
+                    <button
+                      on:click={() => walletPath = recent}
+                      class="wallet-recent-simple-item"
+                    >
+                      {recent.split('/').pop()}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+          
+          <!-- Password -->
+          <div class="modal-form-group">
+            <label class="modal-form-label">Wallet Password</label>
+            <input 
+              type="password" 
+              bind:value={password}
+              placeholder="Enter wallet password..."
+              class="modal-input wallet-password-input"
+              on:keydown={(e) => e.key === 'Enter' && handleApprove()}
+            />
+          </div>
+        </div>
+      {/if}
+
+      {#if error}
+        <div class="modal-alert modal-alert-error">
+          {error}
+        </div>
+      {/if}
+    </div>
+
+    <!-- Actions -->
+    <div class="modal-panel-actions">
+      <button 
+        on:click={handleDeny}
+        class="modal-panel-btn modal-panel-btn-deny"
+        disabled={isLoading}
+      >
+        Deny
+      </button>
+      <button 
+        on:click={handleApprove}
+        class="modal-panel-btn modal-panel-btn-approve"
+        disabled={isLoading}
+      >
+        {#if isLoading}
+          Processing...
+        {:else}
+          Approve
+        {/if}
+      </button>
+    </div>
+  </div>
+{/if}
+
+<style>
+  /* WalletModal.svelte - Component-specific styles only
+     Modal panel base patterns now in hologram.css (.modal-panel-*) */
+  
+  /* Request Details Section */
+  .wallet-request-details {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+  }
+  
+  /* Info Note */
+  .wallet-info-note {
+    margin-top: var(--s-3);
+    font-size: 12px;
+    color: var(--text-4);
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+  }
+  
+  .wallet-info-icon {
+    color: var(--cyan-400);
+    font-weight: 700;
+  }
+  
+  /* Fallback Permissions */
+  .wallet-fallback-permissions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  
+  .wallet-fallback-item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+    font-size: 13px;
+    color: var(--text-3);
+  }
+  
+  .wallet-check-icon {
+    color: var(--status-ok);
+  }
+  
+  /* Smart Contract Section */
+  .wallet-tx-sc-section {
+    padding-top: var(--s-2);
+    border-top: 1px solid var(--border-dim);
+  }
+  
+  .wallet-tx-sc-data {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--status-warn);
+    white-space: pre-wrap;
+  }
+  
+  /* Wallet Switcher */
+  .wallet-switcher {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+    padding: var(--s-3);
+    background: rgba(8, 8, 14, 0.5);
+    border-radius: var(--r-lg);
+    border: 1px solid var(--border-dim);
+  }
+  
+  .wallet-switcher-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--text-4);
+  }
+  
+  .wallet-switcher-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+  }
+  
+  .wallet-selected-item {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2);
+    background: rgba(6, 182, 212, 0.1);
+    border: 1px solid rgba(6, 182, 212, 0.3);
+    border-radius: var(--r-md);
+  }
+  
+  .wallet-arrow-icon {
+    font-size: 12px;
+    color: var(--text-5);
+  }
+  
+  .wallet-empty-state {
+    font-size: 12px;
+    color: var(--text-4);
+    text-align: center;
+    padding: var(--s-2);
+  }
+  
+  .wallet-btn-row {
+    display: flex;
+    gap: var(--s-2);
+  }
+  
+  .wallet-btn-row .modal-btn {
+    flex: 1;
+  }
+  
+  /* Recent Wallets */
+  .wallet-recent-wallets {
+    margin-top: var(--s-3);
+  }
+  
+  .wallet-recent-label {
+    font-size: 12px;
+    color: var(--text-4);
+    margin-bottom: var(--s-2);
+  }
+  
+  .wallet-recent-simple-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  
+  .wallet-recent-simple-item {
+    width: 100%;
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-4);
+    padding: var(--s-1) var(--s-2);
+    border-radius: var(--r-sm);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: all 200ms ease-out;
+  }
+  
+  .wallet-recent-simple-item:hover {
+    color: var(--text-2);
+    background: var(--void-up);
+  }
+  
+  /* Password Input (larger for main unlock) */
+  .wallet-password-input {
+    padding: var(--s-3) var(--s-4);
+  }
+  
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--void-hover);
+    border-radius: var(--r-xs);
+  }
+</style>

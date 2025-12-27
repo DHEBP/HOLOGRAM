@@ -1,0 +1,477 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+// SimulatorManager provides unified control for all simulator operations
+type SimulatorManager struct {
+	sync.RWMutex
+	app           *App
+	walletManager *SimulatorWalletManager
+	isInitialized bool
+	isStarting    bool
+	baseDir       string
+}
+
+// SimulatorStatus represents the current state of the simulator
+type SimulatorStatus struct {
+	IsInitialized bool                   `json:"isInitialized"`
+	IsStarting    bool                   `json:"isStarting"`
+	DaemonRunning bool                   `json:"daemonRunning"`
+	WalletOpen    bool                   `json:"walletOpen"`
+	WalletAddress string                 `json:"walletAddress"`
+	Balance       uint64                 `json:"balance"`
+	BlockHeight   int64                  `json:"blockHeight"`
+	RpcEndpoint   string                 `json:"rpcEndpoint"`
+	Extra         map[string]interface{} `json:"extra"`
+}
+
+// NewSimulatorManager creates a new simulator manager
+func NewSimulatorManager(app *App) *SimulatorManager {
+	homeDir, _ := os.UserHomeDir()
+	baseDir := filepath.Join(homeDir, ".dero", "tela-gui")
+
+	return &SimulatorManager{
+		app:           app,
+		walletManager: NewSimulatorWalletManager(app.logToConsole),
+		baseDir:       baseDir,
+	}
+}
+
+// ================== Main Simulator Operations ==================
+
+// StartSimulatorMode is the ONE-CLICK simulator activation
+// It handles everything: daemon, wallet, initial funding
+func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
+	sm.Lock()
+	if sm.isStarting {
+		sm.Unlock()
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Simulator is already starting",
+		}
+	}
+	if sm.isInitialized {
+		sm.Unlock()
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Simulator is already running",
+		}
+	}
+	sm.isStarting = true
+	sm.Unlock()
+
+	defer func() {
+		sm.Lock()
+		sm.isStarting = false
+		sm.Unlock()
+	}()
+
+	sm.app.logToConsole("[SIM] Starting Simulator Mode...")
+
+	// Step 0: Check current connection status and save for rollback
+	sm.app.logToConsole("[...] Step 0: Checking current node connection...")
+	currentStatus := sm.app.GetNodeStatus()
+	wasExternalConnected := false
+	previousEndpoint := ""
+	previousNetworkMode := ""
+	previousDaemonClient := sm.app.daemonClient
+	
+	// Safely check if external node is connected (isExternal might not exist in map)
+	if isExt, ok := currentStatus["isExternal"].(bool); ok && isExt {
+		wasExternalConnected = true
+		if rpcPort, ok := currentStatus["rpcPort"].(int); ok {
+			previousEndpoint = fmt.Sprintf("http://127.0.0.1:%d", rpcPort)
+		}
+		// Get current network mode
+		netMode := sm.app.GetNetworkMode()
+		if net, ok := netMode["network"].(string); ok {
+			previousNetworkMode = net
+		}
+		sm.app.logToConsole(fmt.Sprintf("[WARN] External %s node detected at %s", previousNetworkMode, previousEndpoint))
+		sm.app.logToConsole("[INFO] Switching to Simulator will disconnect from external node")
+		sm.app.logToConsole("[INFO] If simulator fails, connection will be restored automatically")
+	}
+
+	// Step 1: Check simulator binary (not regular derod!)
+	sm.app.logToConsole("[PKG] Step 1: Checking simulator binary...")
+	binaryPath := GetSimulatorBinaryPath()
+	if binaryPath == "" {
+		sm.app.logToConsole("[ERR] Simulator binary not found")
+		sm.app.logToConsole("[INFO] Simulator requires simulator-darwin binary from derod Release142+")
+		sm.app.logToConsole("[INFO] Location: ~/.dero/tela-gui/derod/{version}/simulator-darwin")
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Simulator binary (simulator-darwin) not found. Please ensure derod Release142+ is installed.",
+			"step":    "check_binary",
+		}
+	}
+	sm.app.logToConsole(fmt.Sprintf("[OK] Simulator binary found: %s", binaryPath))
+
+	// Step 2: Start daemon in simulator mode
+	sm.app.logToConsole("[START] Step 2: Starting simulator daemon...")
+	
+	// First set network mode (this will change daemonClient endpoint)
+	modeResult := sm.app.SetNetworkMode("simulator")
+	if !modeResult["success"].(bool) {
+		// Rollback: restore previous connection
+		if wasExternalConnected && previousDaemonClient != nil {
+			sm.app.daemonClient = previousDaemonClient
+			sm.app.logToConsole("[RESTORE] Rolled back to previous connection")
+		}
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "Failed to set network mode",
+			"technicalError": fmt.Sprintf("%v", modeResult["error"]),
+			"step":           "set_network_mode",
+		}
+	}
+
+	// Enable mining server for the simulator
+	sm.app.SetNodeMiningConfig(true, "", 0)
+
+	// Start the node
+	startResult := sm.app.StartNodeWithNetwork(sm.baseDir, "simulator")
+	if !startResult["success"].(bool) {
+		// Rollback: restore previous connection if we had one
+		if wasExternalConnected && previousDaemonClient != nil {
+			sm.app.logToConsole("[RESTORE] Simulator failed to start, restoring previous connection...")
+			sm.app.daemonClient = previousDaemonClient
+			// Restore network mode
+			if previousNetworkMode != "" {
+				sm.app.SetNetworkMode(previousNetworkMode)
+			}
+			sm.app.logToConsole(fmt.Sprintf("[OK] Restored connection to external %s node", previousNetworkMode))
+		}
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "Failed to start simulator daemon",
+			"technicalError": fmt.Sprintf("%v", startResult["error"]),
+			"step":           "start_daemon",
+			"rolledBack":     wasExternalConnected,
+		}
+	}
+	sm.app.logToConsole("[OK] Simulator daemon started")
+
+	// Step 3: Wait for daemon to be ready
+	sm.app.logToConsole("[WAIT] Step 3: Waiting for daemon to be ready...")
+	if err := sm.waitForDaemon(30 * time.Second); err != nil {
+		// Rollback: restore previous connection if we had one
+		if wasExternalConnected && previousDaemonClient != nil {
+			sm.app.logToConsole("[RESTORE] Simulator daemon failed to become ready, restoring previous connection...")
+			sm.app.daemonClient = previousDaemonClient
+			// Restore network mode
+			if previousNetworkMode != "" {
+				sm.app.SetNetworkMode(previousNetworkMode)
+			}
+			sm.app.logToConsole(fmt.Sprintf("[OK] Restored connection to external %s node", previousNetworkMode))
+		}
+		return map[string]interface{}{
+			"success":        false,
+			"error":          FriendlyError(err),
+			"technicalError": err.Error(),
+			"step":           "wait_daemon",
+			"rolledBack":     wasExternalConnected,
+		}
+	}
+	sm.app.logToConsole("[OK] Daemon is ready")
+
+	// Step 4: Create/open simulator wallet
+	sm.app.logToConsole("[WALLET] Step 4: Setting up simulator wallet...")
+	
+	// Ensure wallet exists
+	_, err := sm.walletManager.EnsureWalletExists(sm.baseDir)
+	if err != nil {
+		return map[string]interface{}{
+			"success":        false,
+			"error":          FriendlyError(err),
+			"technicalError": err.Error(),
+			"step":           "create_wallet",
+		}
+	}
+
+	// Open the wallet
+	if err := sm.walletManager.OpenWallet(sm.baseDir); err != nil {
+		return map[string]interface{}{
+			"success":        false,
+			"error":          FriendlyError(err),
+			"technicalError": err.Error(),
+			"step":           "open_wallet",
+		}
+	}
+	sm.app.logToConsole(fmt.Sprintf("[OK] Wallet ready: %s", sm.walletManager.GetAddress()[:20]+"..."))
+
+	// Step 4b: Register wallet on blockchain
+	// ALWAYS call SendRegistration - it handles checking if already registered internally
+	// and manages the daemon connection properly (connect -> register -> disconnect)
+	// This is critical because the simulator blockchain resets each time
+	sm.app.logToConsole("[WALLET] Ensuring wallet is registered on blockchain...")
+	if err := sm.walletManager.SendRegistration(); err != nil {
+		sm.app.logToConsole(fmt.Sprintf("[WARN] Failed to send registration: %v", err))
+		sm.app.logToConsole("[INFO] You may need to click 'Auto-mines to confirm' to register your wallet")
+	} else {
+		sm.app.logToConsole("[OK] Wallet registration complete")
+	}
+
+	// Step 5: Configure Gnomon for simulator network (optional)
+	sm.app.logToConsole("[...] Step 5: Configuring Gnomon for simulator...")
+	// Gnomon will automatically use the correct endpoint when we update daemon client
+	// The gnomon data directory will be separate for simulator
+
+	// Mark as initialized
+	sm.Lock()
+	sm.isInitialized = true
+	sm.Unlock()
+
+	sm.app.logToConsole("[OK] Simulator Mode activated successfully!")
+	sm.app.logToConsole("[INFO] The simulator has built-in auto-mining - transactions are confirmed automatically")
+
+	// Get final status
+	netConfig := GetNetworkConfig(NetworkSimulator)
+	
+	return map[string]interface{}{
+		"success":       true,
+		"message":       "Simulator mode activated",
+		"walletAddress": sm.walletManager.GetAddress(),
+		"rpcEndpoint":   fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort),
+		"getworkPort":   netConfig.GetWorkPort,
+	}
+}
+
+// StopSimulatorMode stops all simulator services
+func (sm *SimulatorManager) StopSimulatorMode() map[string]interface{} {
+	sm.Lock()
+	defer sm.Unlock()
+
+	if !sm.isInitialized {
+		return map[string]interface{}{
+			"success": true,
+			"message": "Simulator was not running",
+		}
+	}
+
+	sm.app.logToConsole("[STOP] Stopping Simulator Mode...")
+
+	// Step 1: Close wallet
+	if sm.walletManager != nil {
+		sm.walletManager.CloseWallet()
+	}
+
+	// Step 2: Stop daemon
+	stopResult := sm.app.StopNode()
+	if !stopResult["success"].(bool) {
+		sm.app.logToConsole(fmt.Sprintf("[WARN] Warning stopping daemon: %v", stopResult["error"]))
+	}
+
+	sm.isInitialized = false
+
+	sm.app.logToConsole("[OK] Simulator Mode stopped")
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Simulator mode stopped",
+	}
+}
+
+// GetStatus returns the current simulator status
+func (sm *SimulatorManager) GetStatus() SimulatorStatus {
+	sm.RLock()
+	defer sm.RUnlock()
+
+	status := SimulatorStatus{
+		IsInitialized: sm.isInitialized,
+		IsStarting:    sm.isStarting,
+		Extra:         make(map[string]interface{}),
+	}
+
+	// Check daemon status
+	nodeStatus := sm.app.GetNodeStatus()
+	if isRunning, ok := nodeStatus["isRunning"].(bool); ok {
+		status.DaemonRunning = isRunning
+	}
+	if height, ok := nodeStatus["topoHeight"].(int64); ok {
+		status.BlockHeight = height
+	}
+
+	// Check wallet status
+	if sm.walletManager != nil {
+		status.WalletOpen = sm.walletManager.IsOpen()
+		status.WalletAddress = sm.walletManager.GetAddress()
+		if balance, _, err := sm.walletManager.GetBalance(); err == nil {
+			status.Balance = balance
+		}
+	}
+
+	// RPC endpoint
+	netConfig := GetNetworkConfig(NetworkSimulator)
+	status.RpcEndpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+
+	return status
+}
+
+// IsReady returns true if the simulator is fully initialized and ready to use
+func (sm *SimulatorManager) IsReady() bool {
+	sm.RLock()
+	defer sm.RUnlock()
+
+	if !sm.isInitialized {
+		return false
+	}
+
+	// Check daemon
+	nodeStatus := sm.app.GetNodeStatus()
+	if isRunning, ok := nodeStatus["isRunning"].(bool); !ok || !isRunning {
+		return false
+	}
+
+	// Check wallet
+	if sm.walletManager == nil || !sm.walletManager.IsOpen() {
+		return false
+	}
+
+	return true
+}
+
+// waitForDaemon waits for the daemon to be ready
+func (sm *SimulatorManager) waitForDaemon(timeout time.Duration) error {
+	start := time.Now()
+	pollInterval := 500 * time.Millisecond
+
+	for time.Since(start) < timeout {
+		info, err := sm.app.daemonClient.GetInfo()
+		if err == nil && info != nil {
+			// Daemon is responding
+			return nil
+		}
+		time.Sleep(pollInterval)
+	}
+
+	return fmt.Errorf("daemon did not become ready within %v", timeout)
+}
+
+
+// ResetSimulator clears all simulator data and starts fresh
+func (sm *SimulatorManager) ResetSimulator() map[string]interface{} {
+	sm.app.logToConsole("[SYNC] Resetting Simulator...")
+
+	// Stop simulator if running
+	if sm.isInitialized {
+		sm.StopSimulatorMode()
+	}
+
+	// Wait for services to stop
+	time.Sleep(2 * time.Second)
+
+	// Delete simulator data directory
+	simulatorDir := filepath.Join(sm.baseDir, SimulatorWalletDir)
+	if err := os.RemoveAll(simulatorDir); err != nil {
+		sm.app.logToConsole(fmt.Sprintf("[WARN] Warning: Failed to delete simulator data: %v", err))
+	} else {
+		sm.app.logToConsole("[OK] Simulator data cleared")
+	}
+
+	// Delete simulator gnomon data
+	gnomonSimDir := filepath.Join(sm.baseDir, "gnomon_simulator")
+	if err := os.RemoveAll(gnomonSimDir); err != nil {
+		sm.app.logToConsole(fmt.Sprintf("[WARN] Warning: Failed to delete gnomon data: %v", err))
+	}
+
+	// Restart simulator
+	return sm.StartSimulatorMode()
+}
+
+// ================== App API Functions ==================
+
+// StartSimulatorMode starts the one-click simulator mode
+func (a *App) StartSimulatorMode() map[string]interface{} {
+	// Initialize simulator manager if needed
+	if a.simulatorManager == nil {
+		a.simulatorManager = NewSimulatorManager(a)
+	}
+
+	return a.simulatorManager.StartSimulatorMode()
+}
+
+// StopSimulatorMode stops the simulator
+func (a *App) StopSimulatorMode() map[string]interface{} {
+	if a.simulatorManager == nil {
+		return map[string]interface{}{
+			"success": true,
+			"message": "Simulator was not running",
+		}
+	}
+
+	return a.simulatorManager.StopSimulatorMode()
+}
+
+// GetSimulatorStatus returns the current simulator status
+func (a *App) GetSimulatorStatus() map[string]interface{} {
+	if a.simulatorManager == nil {
+		return map[string]interface{}{
+			"success":       true,
+			"isInitialized": false,
+			"isStarting":    false,
+			"daemonRunning": false,
+			"walletOpen":    false,
+		}
+	}
+
+	status := a.simulatorManager.GetStatus()
+	return map[string]interface{}{
+		"success":       true,
+		"isInitialized": status.IsInitialized,
+		"isStarting":    status.IsStarting,
+		"daemonRunning": status.DaemonRunning,
+		"walletOpen":    status.WalletOpen,
+		"walletAddress": status.WalletAddress,
+		"balance":       status.Balance,
+		"balanceDERO":   float64(status.Balance) / 1e12,
+		"blockHeight":   status.BlockHeight,
+		"rpcEndpoint":   status.RpcEndpoint,
+		"miningStats":   status.Extra["miningStats"],
+	}
+}
+
+// IsSimulatorReady checks if the simulator is fully ready to use
+func (a *App) IsSimulatorReady() map[string]interface{} {
+	if a.simulatorManager == nil {
+		return map[string]interface{}{
+			"success": true,
+			"ready":   false,
+			"reason":  "Simulator not initialized",
+		}
+	}
+
+	ready := a.simulatorManager.IsReady()
+	reason := ""
+	if !ready {
+		status := a.simulatorManager.GetStatus()
+		if !status.DaemonRunning {
+			reason = "Daemon not running"
+		} else if !status.WalletOpen {
+			reason = "Wallet not open"
+		} else {
+			reason = "Unknown"
+		}
+	}
+
+	return map[string]interface{}{
+		"success": true,
+		"ready":   ready,
+		"reason":  reason,
+	}
+}
+
+// ResetSimulator clears all simulator data and starts fresh
+func (a *App) ResetSimulator() map[string]interface{} {
+	if a.simulatorManager == nil {
+		a.simulatorManager = NewSimulatorManager(a)
+	}
+
+	return a.simulatorManager.ResetSimulator()
+}

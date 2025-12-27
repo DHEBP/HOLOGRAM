@@ -1,0 +1,583 @@
+<script>
+  import { createEventDispatcher, onMount } from 'svelte';
+  import { Check, X, Diamond, AlertTriangle, Zap, Shield, Heart, Gamepad2 } from 'lucide-svelte';
+  import Wordmark from './Wordmark.svelte';
+  import { 
+    DetectRunningNode, CheckDerodStatus, GetLatestDerodRelease,
+    DownloadDerodFromGitHub, DetectExistingBlockchain, StartNode,
+    StartSimulatorMode, SetDevSupportEnabled
+  } from '../../../wailsjs/go/main/App.js';
+  import { waitForWails } from '../utils/wails.js';
+  import { saveSetting, syncNetworkMode } from '../stores/appState.js';
+  
+  const dispatch = createEventDispatcher();
+  
+  // Wizard state
+  let step = 'checking';
+  let error = '';
+  
+  // Detection results
+  let existingNode = null;
+  let derodInstalled = false;
+  let blockchainLocations = [];
+  let latestRelease = null;
+  
+  // Download state
+  let isDownloading = false;
+  let downloadError = '';
+  
+  // User choices
+  let selectedLocation = '';
+  let customLocation = '';
+  let useExternalNode = false;
+  let externalEndpoint = 'http://127.0.0.1:10102/json_rpc';
+  
+  onMount(async () => {
+    try {
+      // Wait for Wails Go bindings to be available
+      await waitForWails();
+      await runInitialChecks();
+    } catch (err) {
+      console.error('Failed to initialize wizard:', err);
+      error = err.message || 'Failed to initialize. Please restart the application.';
+      step = 'error';
+    }
+  });
+  
+  async function runInitialChecks() {
+    step = 'checking';
+    error = '';
+    
+    try {
+      // Check for existing running node
+      const nodeResult = await DetectRunningNode();
+      if (nodeResult.found) {
+        existingNode = nodeResult;
+        step = 'found_external';
+        return;
+      }
+      
+      // Check if derod is installed
+      const derodStatus = await CheckDerodStatus();
+      derodInstalled = derodStatus.installed;
+      
+      // Check for existing blockchain data
+      const blockchainResult = await DetectExistingBlockchain();
+      if (blockchainResult.locations) {
+        blockchainLocations = blockchainResult.locations;
+        if (blockchainLocations.length > 0) {
+          selectedLocation = blockchainLocations[0].path;
+        }
+      }
+      
+      // Determine next step
+      if (derodInstalled) {
+        step = 'choose_data';
+      } else {
+        step = 'no_node';
+      }
+    } catch (err) {
+      error = err.message || 'Failed to perform initial checks';
+      step = 'error';
+    }
+  }
+  
+  async function downloadDerod() {
+    isDownloading = true;
+    downloadError = '';
+    step = 'downloading';
+    
+    try {
+      // Get latest release info first
+      latestRelease = await GetLatestDerodRelease();
+      if (!latestRelease.success) {
+        throw new Error(latestRelease.error || 'Failed to fetch release info');
+      }
+      
+      // Download
+      const result = await DownloadDerodFromGitHub();
+      if (result.success) {
+        derodInstalled = true;
+        step = 'choose_data';
+      } else {
+        throw new Error(result.error || 'Download failed');
+      }
+    } catch (err) {
+      downloadError = err.message || 'Download failed';
+      step = 'download_error';
+    } finally {
+      isDownloading = false;
+    }
+  }
+  
+  function chooseExternalNode() {
+    useExternalNode = true;
+    step = 'external_config';
+  }
+  
+  async function connectToExternal() {
+    try {
+      // Save the external endpoint (using correct backend keys via saveSetting)
+      await saveSetting('daemonEndpoint', externalEndpoint);
+      await saveSetting('useEmbeddedNode', false);
+      
+      showEpochInfo();
+    } catch (err) {
+      error = err.message || 'Failed to save settings';
+    }
+  }
+  
+  async function useFoundExternal() {
+    try {
+      await saveSetting('daemonEndpoint', existingNode.endpoint);
+      await saveSetting('useEmbeddedNode', false);
+      
+      showEpochInfo();
+    } catch (err) {
+      error = err.message || 'Failed to save settings';
+    }
+  }
+  
+  async function startWithEmbedded() {
+    step = 'starting';
+    
+    try {
+      const dataDir = customLocation || selectedLocation || '~/.dero/mainnet';
+      
+      // Save settings (using correct backend keys via saveSetting)
+      await saveSetting('useEmbeddedNode', true);
+      await saveSetting('nodeDataDir', dataDir);
+      
+      // Start the node
+      const result = await StartNode(dataDir);
+      if (result.success) {
+        showEpochInfo();
+      } else {
+        throw new Error(result.error || 'Failed to start node');
+      }
+    } catch (err) {
+      error = err.message || 'Failed to start node';
+      step = 'error';
+    }
+  }
+  
+  function showEpochInfo() {
+    // Show the EPOCH info step before completing
+    step = 'epoch_info';
+  }
+  
+  async function complete() {
+    // Mark wizard as complete and dispatch event
+    await saveSetting('wizardComplete', true);
+    dispatch('complete');
+  }
+  
+  async function enableEpochAndComplete() {
+    // Enable developer support and complete wizard
+    // Use backend method which also starts the worker
+    await SetDevSupportEnabled(true);
+    await saveSetting('wizardComplete', true);
+    dispatch('complete');
+  }
+  
+  async function disableEpochAndComplete() {
+    // Disable developer support and complete wizard
+    // Use backend method which also stops the worker
+    await SetDevSupportEnabled(false);
+    await saveSetting('wizardComplete', true);
+    dispatch('complete');
+  }
+  
+  function skipWizard() {
+    // Skip directly to EPOCH info, then complete
+    step = 'epoch_info';
+  }
+  
+  async function useSimulatorInstead() {
+    // User wants to use Simulator instead of the detected mainnet node
+    step = 'starting_simulator';
+    
+    try {
+      const result = await StartSimulatorMode();
+      if (result.success) {
+        // Sync network mode to update frontend state (sidebar, etc.)
+        await syncNetworkMode();
+        // Simulator started, go to EPOCH info then complete
+        showEpochInfo();
+      } else {
+        error = result.error || 'Failed to start simulator';
+        step = 'error';
+      }
+    } catch (err) {
+      error = err.message || 'Failed to start simulator';
+      step = 'error';
+    }
+  }
+</script>
+
+<div class="wizard-backdrop">
+  <!-- Mandatory noise overlay per HOLOGRAM rulebook -->
+  <div class="noise-overlay"></div>
+  
+  <!-- Logo/Header - HOLOGRAM wordmark + tagline -->
+  <div class="wizard-header">
+    <Wordmark size="lg" glow={true} />
+    <p class="wizard-subtitle">Explore the DERO Decentralized Web</p>
+  </div>
+    
+  <!-- Wizard Card -->
+  <div class="wizard-card">
+    <div class="wizard-content">
+      
+      {#if step === 'checking'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot cyan"></span>
+            <span class="wizard-status-text">Initializing</span>
+          </div>
+          <span class="wizard-badge live">SCANNING</span>
+        </div>
+        
+        <div class="wizard-center">
+          <div class="wizard-icon wizard-icon-info">
+            <Diamond size={28} strokeWidth={1.5} />
+          </div>
+          <h2 class="wizard-step-title">Detecting Network</h2>
+          <p class="wizard-step-desc">Searching for existing DERO node...</p>
+        </div>
+      
+      {:else if step === 'found_external'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot"></span>
+            <span class="wizard-status-text">Node Detected</span>
+          </div>
+          <span class="wizard-badge">LIVE</span>
+        </div>
+        
+        <!-- Refined node info display -->
+        <div class="wizard-node-card">
+          <!-- Primary info: Network badge + block height -->
+          <div class="wizard-node-header">
+            <span class="wizard-network-badge" class:mainnet={existingNode.network === 'mainnet'} class:testnet={existingNode.network === 'testnet'}>
+              {existingNode.network || 'mainnet'}
+            </span>
+            <div class="wizard-block-info">
+              <span class="wizard-block-height">{(existingNode.height || 0).toLocaleString()}</span>
+              <span class="wizard-block-label">blocks</span>
+            </div>
+          </div>
+          
+          <!-- Secondary info grid -->
+          <div class="wizard-node-details">
+            <div class="wizard-detail-row">
+              <span class="wizard-detail-label">Endpoint</span>
+              <span class="wizard-detail-value mono">{existingNode.endpoint}</span>
+            </div>
+            <div class="wizard-detail-row">
+              <span class="wizard-detail-label">Version</span>
+              <span class="wizard-detail-value mono">{existingNode.version?.split('.').slice(0, 3).join('.') || 'Unknown'}</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="wizard-buttons">
+          <button on:click={useFoundExternal} class="wizard-btn wizard-btn-primary">
+            Use This Node
+          </button>
+          <button on:click={() => step = 'no_node'} class="wizard-btn wizard-btn-secondary">
+            Set Up New Node
+          </button>
+        </div>
+      
+      {:else if step === 'no_node'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot warn"></span>
+            <span class="wizard-status-text">Not Connected</span>
+          </div>
+          <span class="wizard-badge live">SETUP</span>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-2);">
+          <h2 class="wizard-step-title">Choose Connection</h2>
+          <p class="wizard-step-desc">How would you like to connect to the DERO network?</p>
+        </div>
+        
+        <div class="wizard-options grid-2">
+          <button on:click={downloadDerod} class="wizard-option primary">
+            <span class="wizard-option-icon">◉</span>
+            <div class="wizard-option-title">Mainnet</div>
+            <div class="wizard-option-desc">Live blockchain</div>
+            <span class="wizard-option-badge err">PERMANENT</span>
+            </button>
+          <button on:click={chooseExternalNode} class="wizard-option">
+            <span class="wizard-option-icon">◌</span>
+            <div class="wizard-option-title">Simulator</div>
+            <div class="wizard-option-desc">Local simulator</div>
+            <span class="wizard-option-badge ok">SAFE • NO COST</span>
+            </button>
+        </div>
+      
+      {:else if step === 'downloading'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot cyan"></span>
+            <span class="wizard-status-text">Downloading</span>
+          </div>
+          <span class="wizard-badge live">IN PROGRESS</span>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-4);">
+          <div class="wizard-icon wizard-icon-info">
+            <Diamond size={28} strokeWidth={1.5} />
+          </div>
+          <h2 class="wizard-step-title">Fetching DERO Node</h2>
+          <p class="wizard-step-desc">
+            {latestRelease?.tagName ? `Version ${latestRelease.tagName}` : 'Fetching latest release...'}
+          </p>
+          <p class="wizard-step-desc" style="color: var(--text-4);">
+            ~50MB download
+          </p>
+        </div>
+      
+      {:else if step === 'download_error'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot err"></span>
+            <span class="wizard-status-text">Error</span>
+          </div>
+          <span class="wizard-badge" style="color: var(--status-err); border-color: rgba(248, 113, 113, 0.4);">FAILED</span>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-4);">
+          <div class="wizard-icon wizard-icon-error">
+            <X size={28} strokeWidth={2.5} />
+          </div>
+          <h2 class="wizard-step-title">Download Failed</h2>
+          <p class="wizard-error">{downloadError}</p>
+        </div>
+        
+        <div class="wizard-buttons">
+          <button on:click={downloadDerod} class="wizard-btn wizard-btn-primary">
+              Retry Download
+            </button>
+          <button on:click={chooseExternalNode} class="wizard-btn wizard-btn-secondary">
+              Use External Node
+            </button>
+        </div>
+      
+      {:else if step === 'choose_data'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot cyan"></span>
+            <span class="wizard-status-text">Configure</span>
+          </div>
+          <span class="wizard-badge live">DATA</span>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-2);">
+          <h2 class="wizard-step-title">Data Location</h2>
+          <p class="wizard-step-desc">Select blockchain data storage</p>
+        </div>
+          
+          {#if blockchainLocations.length > 0}
+          <p class="wizard-form-label" style="color: var(--status-ok); margin-bottom: var(--s-2);">Found existing data:</p>
+          <div class="wizard-radio-list">
+              {#each blockchainLocations as loc}
+              <button
+                class="wizard-radio-item"
+                class:selected={selectedLocation === loc.path}
+                on:click={() => selectedLocation = loc.path}
+              >
+                <span class="wizard-radio-dot"></span>
+                <span class="wizard-radio-text">{loc.path}</span>
+                <span class="wizard-radio-meta">{loc.sizeGB?.toFixed(2)} GB</span>
+              </button>
+              {/each}
+            </div>
+          {/if}
+          
+        <div class="wizard-form-group">
+          <label class="wizard-form-label">Custom location:</label>
+            <input
+              type="text"
+              bind:value={customLocation}
+              placeholder="~/.dero/mainnet"
+            class="input"
+            />
+          </div>
+          
+        <button on:click={startWithEmbedded} class="wizard-btn wizard-btn-primary">
+            Start Node
+          </button>
+      
+      {:else if step === 'external_config'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot cyan"></span>
+            <span class="wizard-status-text">Configure</span>
+          </div>
+          <span class="wizard-badge live">EXTERNAL</span>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-2);">
+          <h2 class="wizard-step-title">External Node</h2>
+          <p class="wizard-step-desc">Enter your node endpoint</p>
+        </div>
+          
+        <div class="wizard-form-group">
+          <label class="wizard-form-label">Daemon Endpoint</label>
+            <input
+              type="text"
+              bind:value={externalEndpoint}
+              placeholder="http://127.0.0.1:10102/json_rpc"
+            class="input"
+            />
+          </div>
+          
+        <div class="wizard-buttons">
+          <button on:click={connectToExternal} class="wizard-btn wizard-btn-primary">
+              Connect
+            </button>
+          <button on:click={() => step = 'no_node'} class="wizard-btn wizard-btn-ghost">
+              ← Back
+            </button>
+        </div>
+      
+      {:else if step === 'starting'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot cyan"></span>
+            <span class="wizard-status-text">Starting</span>
+          </div>
+          <span class="wizard-badge live">INITIALIZING</span>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-6);">
+          <div class="wizard-icon wizard-icon-info">
+            <Zap size={28} strokeWidth={1.5} />
+          </div>
+          <h2 class="wizard-step-title">Starting Node</h2>
+          <p class="wizard-step-desc">Initializing DERO daemon...</p>
+        </div>
+      
+      {:else if step === 'starting_simulator'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot cyan"></span>
+            <span class="wizard-status-text">Starting</span>
+          </div>
+          <span class="wizard-badge live">SIMULATOR</span>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-6);">
+          <div class="wizard-icon wizard-icon-info">
+            <Zap size={28} strokeWidth={1.5} />
+          </div>
+          <h2 class="wizard-step-title">Starting Simulator</h2>
+          <p class="wizard-step-desc">Launching local test environment...</p>
+        </div>
+      
+      {:else if step === 'epoch_info'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot"></span>
+            <span class="wizard-status-text">Ready</span>
+          </div>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-2);">
+          <div class="wizard-icon wizard-icon-epoch">
+            <Zap size={28} strokeWidth={1.5} />
+          </div>
+          <h2 class="wizard-step-title">Developer Support</h2>
+          <p class="wizard-step-desc epoch-desc">
+            Allow Hologram to use a small amount of CPU for background mining 
+            that supports this app and DERO dApps you use.
+          </p>
+        </div>
+        
+        <div class="epoch-features">
+          <div class="epoch-feature">
+            <span class="epoch-feature-icon">◎</span>
+            <span>Very light (~2 threads)</span>
+          </div>
+          <div class="epoch-feature">
+            <span class="epoch-feature-icon">◎</span>
+            <span>Won't drain your battery</span>
+          </div>
+          <div class="epoch-feature">
+            <span class="epoch-feature-icon">◎</span>
+            <span>100% private contributions</span>
+          </div>
+        </div>
+        
+        <div class="wizard-buttons epoch-buttons">
+          <button on:click={enableEpochAndComplete} class="wizard-btn wizard-btn-primary">
+            Enable Developer Support
+          </button>
+          <button on:click={disableEpochAndComplete} class="wizard-btn wizard-btn-ghost">
+            No Thanks
+          </button>
+        </div>
+        
+        <p class="epoch-opt-out-note">
+          You can change this anytime in <span class="c-cyan">Settings</span>
+        </p>
+      
+      {:else if step === 'error'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot err"></span>
+            <span class="wizard-status-text">Error</span>
+          </div>
+          <span class="wizard-badge" style="color: var(--status-err); border-color: rgba(248, 113, 113, 0.4);">FAILED</span>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-4);">
+          <div class="wizard-icon wizard-icon-error">
+            <AlertTriangle size={28} strokeWidth={1.5} />
+          </div>
+          <h2 class="wizard-step-title">Something Went Wrong</h2>
+          <p class="wizard-error">{error}</p>
+        </div>
+        
+        <div class="wizard-buttons">
+          <button on:click={runInitialChecks} class="wizard-btn wizard-btn-primary">
+              Retry
+            </button>
+          <button on:click={skipWizard} class="wizard-btn wizard-btn-ghost">
+              Skip Setup
+            </button>
+        </div>
+      {/if}
+    </div>
+    </div>
+    
+    <!-- Footer option - contextual based on step -->
+  <div class="wizard-footer">
+    {#if step === 'found_external'}
+      <button on:click={useSimulatorInstead} class="wizard-skip wizard-skip-simulator">
+        <Gamepad2 size={14} /> Use Simulator Instead
+      </button>
+    {:else if step === 'checking' || step === 'starting' || step === 'starting_simulator' || step === 'downloading' || step === 'epoch_info'}
+      <!-- Hide skip on loading/transition states -->
+    {:else}
+      <button on:click={skipWizard} class="wizard-skip">
+        Skip setup and configure later
+      </button>
+    {/if}
+  </div>
+</div>

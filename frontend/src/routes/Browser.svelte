@@ -1,0 +1,2140 @@
+<script>
+  import { onMount, onDestroy } from 'svelte';
+  import { writable, get } from 'svelte/store';
+  import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, browserHistory, browserHistoryIndex, pushToHistory, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast } from '../lib/stores/appState.js';
+  import { favorites } from '../lib/stores/favorites.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart } from '../../wailsjs/go/main/App.js';
+  import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
+import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
+import RatingModal from '../lib/components/RatingModal.svelte';
+import RatingsBreakdown from '../lib/components/RatingsBreakdown.svelte';
+import VersionHistory from '../lib/components/VersionHistory.svelte';
+import { Star, History, GitBranch, Heart } from 'lucide-svelte';
+import deroIconFallback from '../assets/dero-icon-fallback.svg';
+
+let addressInput = '';
+  let loading = false;
+  let showWelcome = true;
+  let currentMeta = {};
+  let suggestions = [];
+  let showSuggestions = false;
+  let contentFrame;
+  let selectedIndex = -1;
+  let debounceTimer;
+  let unsubscribePending;
+  let unsubscribeWalletRequests;
+  let hasNavigated = false;
+  let previousWalletRequestCount = 0;
+  let addressBarFocused = false;
+  
+  // Browser tabs state
+  let tabs = [
+    { id: 'discover', title: 'Discover Apps', icon: 'home', isHome: true }
+  ];
+  let activeTabId = 'discover';
+  let tabIdCounter = 1;
+  
+  // Console panel state
+  let showConsole = false;
+  let consoleLogs = [];
+  let unsubscribeConsole;
+  let consoleViewport;
+  let consoleUserScrolled = false;
+  
+  // App discovery state
+  let apps = [];
+  let filteredApps = [];
+  let appsLoading = true;
+  let appsLoaded = false; // Track if we've attempted to load apps (prevents infinite loop when 0 apps found)
+  let selectedCategory = 'top';
+  let sortBy = 'rating';
+  
+  // Track failed icon URLs to show fallback
+  let failedIcons = new Set();
+  
+  // Handle icon load error - mark as failed and trigger re-render
+  function handleIconError(iconUrl) {
+    failedIcons.add(iconUrl);
+    failedIcons = failedIcons; // Trigger Svelte reactivity
+  }
+  
+  // Check if icon should be shown (exists and hasn't failed)
+  function shouldShowIcon(iconUrl) {
+    return iconUrl && !failedIcons.has(iconUrl);
+  }
+  
+  // Gnomon auto-start preference
+  let enableAutostart = false;
+  
+  // Local Dev Mode state
+  let isLocalDevMode = false;
+  let localDevUrl = '';
+  let hotReloadInProgress = false; // Flag to auto-approve XSWD during hot reload
+  
+  // Favorites
+  let showAllFavorites = false;
+  
+  // Rating modal state
+  let showRatingModal = false;
+  let ratingAppScid = '';
+  let ratingAppName = '';
+  
+  // Version History state
+  let showVersionHistory = false;
+  let versionHistoryScid = '';
+  
+  // Ratings breakdown state
+  let showRatingsBreakdown = false;
+  let breakdownScid = '';
+  
+  function openRatingModal(app, event) {
+    event.stopPropagation();
+    ratingAppScid = app.scid;
+    ratingAppName = app.display_name || app.name || 'TELA App';
+    showRatingModal = true;
+  }
+  
+  function openRatingsBreakdown(app, event) {
+    event.stopPropagation();
+    breakdownScid = app.scid;
+    showRatingsBreakdown = true;
+  }
+  
+  function handleRated(event) {
+    // Refresh the app list to show updated rating
+    loadApps();
+  }
+  
+  // Version History functions
+  function openVersionHistory() {
+    // Get current SCID from address bar or current meta
+    const scid = currentMeta?.scid || addressInput;
+    if (scid && scid.length === 64) {
+      versionHistoryScid = scid;
+      showVersionHistory = true;
+    } else {
+      toast.warn('No TELA app loaded. Navigate to a TELA app first.');
+    }
+  }
+  
+  function closeVersionHistory() {
+    showVersionHistory = false;
+  }
+  
+  function handleVersionRevert(event) {
+    // Navigate to Studio Actions with the SCID
+    window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'studio' }));
+    showVersionHistory = false;
+  }
+  
+  function handleVersionClone(event) {
+    // Navigate to Studio Clone
+    window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'studio' }));
+    showVersionHistory = false;
+  }
+  
+  const categories = [
+    { id: 'top', label: 'Top Rated (7+)', iconName: 'star' },
+    { id: 'good', label: 'Good (5+)', iconName: 'trending' },
+    { id: 'unrated', label: 'Unrated', iconName: 'circle' },
+    { id: 'all', label: 'All Apps', iconName: 'grid' },
+  ];
+  
+  let minRating = 0;
+  
+  // Check if current address is favorited
+  $: currentIsFavorited = addressInput && favorites.isFavorite(addressInput);
+  
+  async function loadApps() {
+    // Only load apps if Gnomon is already running - don't auto-start
+    if (!$appState.gnomonRunning) {
+      appsLoading = false;
+      return;
+    }
+    
+    appsLoading = true;
+    try {
+      const result = await GetDiscoveredApps();
+      if (result.success && result.apps) {
+        apps = result.apps;
+        applyFilters();
+      }
+      appsLoaded = true; // Mark as loaded even if 0 apps found
+    } catch (error) {
+      console.error('Failed to load apps:', error);
+      appsLoaded = true; // Mark as loaded to prevent retry loop
+    } finally {
+      appsLoading = false;
+    }
+  }
+  
+  // Track last indexed height for reactive reload
+  let lastIndexedHeight = 0;
+  
+  // Reset appsLoaded when Gnomon stops (so it can reload when restarted)
+  $: if (!$appState.gnomonRunning && appsLoaded) {
+    appsLoaded = false;
+    apps = [];
+    filteredApps = [];
+  }
+  
+  // Reactive: reload apps when Gnomon starts running (if not yet loaded)
+  // Uses appsLoaded flag to prevent infinite loop when 0 apps are found
+  $: if ($appState.gnomonRunning && !appsLoaded && !appsLoading) {
+    loadApps();
+  }
+  
+  // Reactive: reload apps when Gnomon syncs more blocks (finds new apps)
+  // Reload when indexed height increases by at least 1000 blocks
+  $: if ($appState.gnomonRunning && $appState.gnomonIndexedHeight > lastIndexedHeight + 1000 && !appsLoading) {
+    lastIndexedHeight = $appState.gnomonIndexedHeight;
+    loadApps();
+  }
+  
+  // Safety: reset category if it's 'epoch' (removed filter)
+  $: if (selectedCategory === 'epoch') {
+    selectedCategory = 'top';
+    applyFilters();
+  }
+  
+  function applyFilters() {
+    let result = [...apps];
+    
+    switch (selectedCategory) {
+      case 'top':
+        result = result.filter(app => app.rating && app.rating.average >= 7);
+        break;
+      case 'good':
+        result = result.filter(app => app.rating && app.rating.average >= 5);
+        break;
+      case 'unrated':
+        result = result.filter(app => !app.rating || app.rating.count === 0);
+        break;
+    }
+    
+    if (minRating > 0) {
+      result = result.filter(app => {
+        if (!app.rating || app.rating.count === 0) return minRating === 0;
+        return app.rating.average >= minRating;
+      });
+    }
+    
+    if (sortBy === 'rating') {
+      result.sort((a, b) => (b.rating?.average || 0) - (a.rating?.average || 0));
+    } else if (sortBy === 'name') {
+      result.sort((a, b) => (a.display_name || a.name || '').localeCompare(b.display_name || b.name || ''));
+    }
+    
+    filteredApps = result;
+  }
+  
+  function handleCategoryChange(categoryId) {
+    selectedCategory = categoryId;
+    applyFilters();
+  }
+  
+  function handleSortChange(event) {
+    sortBy = event.target.value;
+    applyFilters();
+  }
+  
+  function getRatingBadge(avg) {
+    if (!avg || avg === 0) return 'cyan';
+    if (avg >= 8) return 'emerald';
+    if (avg >= 7) return 'ok';
+    if (avg >= 5) return 'warn';
+    return 'err';
+  }
+  
+  function navigateToApp(app) {
+    // Store clean URL (badge provides dero:// prefix visually)
+    const url = app.durl || app.scid;
+    const title = app.display_name || app.name || 'App';
+    
+    // Always open apps in a new tab from Discover
+    openNewTab(title, url, 'box');
+  }
+  
+  function navigateToFavorite(fav) {
+    // Display just the dURL name or SCID (badge provides dero:// prefix)
+    addressInput = fav.durl || fav.scid;
+    navigate();
+  }
+  
+  async function startIndexer() {
+    try {
+      // Save auto-start preference if checkbox is checked
+      if (enableAutostart) {
+        await SetGnomonAutostart(true);
+      }
+      
+      await StartGnomon();
+      // Update status immediately so $appState.gnomonRunning becomes true
+      await updateStatus();
+      // Give Gnomon a moment to initialize
+      setTimeout(() => loadApps(), 500);
+    } catch (err) {
+      console.error('Failed to start Gnomon:', err);
+    }
+  }
+  
+  function toggleCurrentFavorite() {
+    if (!addressInput) return;
+    
+    // addressInput is now clean (without dero:// prefix)
+    const cleanInput = addressInput.startsWith('dero://') ? addressInput.slice(7) : addressInput;
+    const isHexSCID = /^[a-fA-F0-9]{64}$/.test(cleanInput);
+    
+    const app = apps.find(a => 
+      a.scid === cleanInput || 
+      a.durl === cleanInput
+    ) || {
+      scid: isHexSCID ? cleanInput : null,
+      durl: isHexSCID ? null : cleanInput,
+      name: currentMeta.name || cleanInput
+    };
+    
+    favorites.toggle(app);
+  }
+  
+  // Toggle favorite from app card (used in Discover grid)
+  function toggleAppFavorite(app, event) {
+    event.stopPropagation(); // Don't navigate to app
+    favorites.toggle(app);
+  }
+  
+  // Check if an app is favorited (pass $favorites to make it reactive)
+  function isAppFavorited(app, favList) {
+    return favList.some(f => f.scid === app.scid || (f.durl && f.durl === app.durl));
+  }
+  
+  onMount(() => {
+    unsubscribePending = pendingNavigation.subscribe((nav) => {
+      if (nav?.url && !hasNavigated) {
+        hasNavigated = true;
+        addressInput = nav.url;
+        clearPendingNavigation();
+        setTimeout(() => navigate(), 50);
+      }
+    });
+    
+    unsubscribeConsole = consoleLogsStore.subscribe(logs => {
+      consoleLogs = logs;
+    });
+    
+    // Watch for wallet request completions to restore iframe focus
+    unsubscribeWalletRequests = walletRequests.subscribe(requests => {
+      const currentCount = requests.length;
+      // When a request completes (count decreases), restore focus to iframe
+      if (previousWalletRequestCount > currentCount && contentFrame) {
+        addConsoleLog('🎯 [Browser] Wallet request completed, restoring iframe focus');
+        // Multiple attempts to ensure focus is restored
+        [100, 300, 500, 1000].forEach(delay => {
+          setTimeout(() => {
+            if (contentFrame) {
+              contentFrame.focus();
+              // Also try clicking the iframe content
+              try {
+                contentFrame.contentDocument?.body?.click();
+                contentFrame.contentDocument?.body?.focus();
+              } catch (e) {
+                // Cross-origin may prevent this
+              }
+            }
+          }, delay);
+        });
+      }
+      previousWalletRequestCount = currentCount;
+    });
+    
+    const handleSearchResult = (e) => {
+      const { type, query, result } = e.detail;
+      if (result && result.success && (type === 'sc' || type === 'durl')) {
+        if (type === 'sc') {
+          addressInput = query;
+          setTimeout(() => navigate(), 50);
+        } else if (type === 'durl') {
+          addressInput = query;
+          setTimeout(() => navigate(), 50);
+        }
+      }
+    };
+    window.addEventListener('search-result', handleSearchResult);
+    
+    // Handle direct browser navigation from Explorer (when user searches for a .tela domain)
+    const handleBrowserNavigate = (e) => {
+      const { durl } = e.detail;
+      if (durl) {
+        // Strip dero:// prefix if present (the navigate function handles it)
+        addressInput = durl.replace(/^dero:\/\//i, '');
+        setTimeout(() => navigate(), 50);
+      }
+    };
+    window.addEventListener('browser-navigate', handleBrowserNavigate);
+    
+    // PostMessage handler for XSWD bridge communication from iframe
+    const handleXSWDMessage = async (event) => {
+      if (contentFrame && event.source === contentFrame.contentWindow && event.data?.type === 'xswd-request') {
+        addConsoleLog(`📨 [Browser] Received: action=${event.data.action}, id=${event.data.id}`);
+      }
+      
+      // Only handle messages from our iframe
+      if (!contentFrame || event.source !== contentFrame.contentWindow) {
+        if (event.data && event.data.type === 'xswd-request') {
+          addConsoleLog(`⚠️ [Browser] Message from unexpected source`);
+        }
+        return;
+      }
+      if (!event.data || event.data.type !== 'xswd-request') {
+        return;
+      }
+      
+      const { id, action, payload } = event.data;
+      addConsoleLog(`🔌 [Browser] Processing: ${action} (id=${id})`);
+      
+      try {
+        let result;
+        
+        switch (action) {
+          case 'log':
+            // Add to console log
+            addConsoleLog(payload);
+            result = true;
+            break;
+            
+          case 'connect':
+            addConsoleLog(`🔌 [Browser] Connect request from: ${payload.appInfo?.name || 'Unknown App'}`);
+            // Request wallet connection approval
+            const settings = get(settingsState);
+            addConsoleLog(`🔌 [Browser] integratedWallet setting: ${settings.integratedWallet}`);
+            if (settings.integratedWallet) {
+              try {
+                // Auto-approve during hot reload to avoid modal interruption
+                if (hotReloadInProgress) {
+                  addConsoleLog('🔄 [Browser] Hot reload in progress - auto-approving XSWD reconnection');
+                  const approveResult = await ApproveWalletConnection();
+                  addConsoleLog(`🔌 [Browser] Auto-approve result: ${JSON.stringify(approveResult)}`);
+                  result = true;
+                } else {
+                  addConsoleLog('🔌 [Browser] Requesting wallet approval via modal...');
+                  const approval = await requestWalletApproval({
+                    type: 'connect',
+                    appName: payload.appInfo?.name || currentMeta.name || 'App',
+                    origin: addressInput,
+                    description: payload.appInfo?.description || ''
+                  });
+                  addConsoleLog(`🔌 [Browser] Approval result: approved=${approval?.approved}`);
+                  if (approval && approval.approved) {
+                    addConsoleLog('🔌 [Browser] Calling ApproveWalletConnection...');
+                    const approveResult = await ApproveWalletConnection();
+                    addConsoleLog(`🔌 [Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
+                    result = true;
+                  } else {
+                    addConsoleLog('🔌 [Browser] User denied connection');
+                    result = false;
+                  }
+                }
+              } catch (e) {
+                addConsoleLog(`❌ [Browser] Approval error: ${e.message}`);
+                result = false;
+              }
+            } else {
+              addConsoleLog('🔌 [Browser] Using external XSWD (integratedWallet=false)');
+              result = await ConnectXSWD();
+            }
+            break;
+            
+          case 'call':
+            // Handle XSWD method call
+            const { method, params, authState } = payload;
+            const normalizedMethod = method.replace('DERO.', '');
+            
+            // Wallet methods that require authorization
+            const walletMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
+                                   'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
+                                   'SplitIntegratedAddress', 'QueryKey', 'transfer', 'Transfer',
+                                   'scinvoke', 'SC_Invoke', 'Login'];
+            
+            // Check authorization for wallet methods
+            // Accept both 'accepted' and 'ok' for backward compatibility
+            if (walletMethods.includes(normalizedMethod) && authState !== 'accepted' && authState !== 'ok') {
+              throw new Error('Wallet not authorized');
+            }
+            
+            // Handle special methods
+            if (normalizedMethod === 'Ping') {
+              result = 'Pong';
+            } else if (normalizedMethod === 'Echo') {
+              result = params;
+            } else if (normalizedMethod === 'Login') {
+              result = 'Logged in';
+            } else {
+              // Route through XSWD/wallet
+              const callSettings = get(settingsState);
+              const signingMethods = ['transfer', 'scinvoke', 'sign', 'Transfer', 'SC_Invoke'];
+              const readMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
+                                   'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
+                                   'SplitIntegratedAddress', 'QueryKey'];
+              const methodLower = method.toLowerCase().replace('dero.', '');
+              
+              // Check if this is a wallet method (read or write)
+              const isWalletMethod = walletMethods.includes(normalizedMethod);
+              const isSigningMethod = signingMethods.map(m => m.toLowerCase()).includes(methodLower);
+              
+              if (callSettings.integratedWallet && isWalletMethod) {
+                // Use internal wallet for all wallet methods when integrated wallet is enabled
+                addConsoleLog(`🔌 [Browser] Using integrated wallet for: ${method}`);
+                
+                if (isSigningMethod) {
+                  // Signing methods need user approval each time
+                  const approval = await requestWalletApproval({
+                    type: 'sign',
+                    appName: currentMeta.name || 'App',
+                    origin: addressInput,
+                    payload: params
+                  });
+                  
+                  if (approval.approved) {
+                    const walletResult = await InternalWalletCall(method, params, approval.password);
+                    if (walletResult && walletResult.success) {
+                      result = walletResult.result;
+                      addConsoleLog(`✅ [Browser] ${method} succeeded`);
+                    } else {
+                      throw new Error(walletResult?.error || 'Internal wallet call failed');
+                    }
+                  } else {
+                    throw new Error('User denied transaction');
+                  }
+                } else {
+                  // Read methods (GetAddress, GetBalance, etc.) don't need password
+                  // They just read from the already-open wallet
+                  const walletResult = await InternalWalletCall(method, params || {}, '');
+                  addConsoleLog(`🔌 [Browser] InternalWalletCall result: success=${walletResult?.success}`);
+                  if (walletResult && walletResult.success) {
+                    result = walletResult.result;
+                    addConsoleLog(`✅ [Browser] ${method} succeeded: ${JSON.stringify(result).substring(0, 100)}`);
+                  } else {
+                    const errorMsg = walletResult?.error || 'Internal wallet call failed';
+                    addConsoleLog(`❌ [Browser] ${method} failed: ${errorMsg}`);
+                    throw new Error(errorMsg);
+                  }
+                }
+              } else {
+                // Use external XSWD for non-wallet methods or when integrated wallet is disabled
+                addConsoleLog(`🔌 [Browser] Calling external XSWD: ${method}`);
+                const xswdResult = await CallXSWD(JSON.stringify({ method, params }));
+                addConsoleLog(`🔌 [Browser] XSWD result: success=${xswdResult?.success}, error=${xswdResult?.error || 'none'}`);
+                if (xswdResult && xswdResult.success) {
+                  result = xswdResult.result;
+                  addConsoleLog(`✅ [Browser] ${method} succeeded`);
+                } else {
+                  const errorMsg = xswdResult?.error || xswdResult?.technicalError || 'XSWD call failed';
+                  addConsoleLog(`❌ [Browser] ${method} failed: ${errorMsg}`);
+                  throw new Error(errorMsg);
+                }
+              }
+            }
+            break;
+            
+          default:
+            throw new Error('Unknown action: ' + action);
+        }
+        
+        // Send response back to iframe
+        addConsoleLog(`✅ [Browser] Sending response for ${action}: ${typeof result === 'object' ? JSON.stringify(result).substring(0, 100) : result}`);
+        event.source.postMessage({
+          type: 'xswd-response',
+          id: id,
+          result: result
+        }, '*');
+        
+      } catch (error) {
+        // Send error response back to iframe
+        addConsoleLog(`❌ [Browser] Error in ${action}: ${error.message || String(error)}`);
+        event.source.postMessage({
+          type: 'xswd-response',
+          id: id,
+          error: error.message || String(error)
+        }, '*');
+      }
+    };
+    window.addEventListener('message', handleXSWDMessage);
+    
+    // Hot reload listener for local dev mode
+    EventsOn('localdev:reload', handleLocalDevReload);
+    
+    loadApps();
+    
+    return () => {
+      window.removeEventListener('search-result', handleSearchResult);
+      window.removeEventListener('browser-navigate', handleBrowserNavigate);
+      window.removeEventListener('message', handleXSWDMessage);
+    };
+  });
+  
+  onDestroy(async () => {
+    if (unsubscribePending) unsubscribePending();
+    if (unsubscribeConsole) unsubscribeConsole();
+    if (unsubscribeWalletRequests) unsubscribeWalletRequests();
+    EventsOff('localdev:reload');
+    
+    // Cleanup active TELA server
+    if (activeTelaServer) {
+      try {
+        await ShutdownServer(activeTelaServer);
+      } catch (e) {
+        // Server cleanup error (non-critical)
+      }
+    }
+  });
+  
+  // ========== LOCAL DEV MODE HELPERS ==========
+  
+  // Inline CSS files to avoid cross-origin issues with doc.write()
+  async function inlineLocalDevCSS(html, baseUrl) {
+    const base = baseUrl.replace(/\/$/, '');
+    const matches = [];
+    
+    // Find all <link> tags with stylesheet
+    const linkTagRegex = /<link\s+[^>]*>/gi;
+    let linkMatch;
+    
+    while ((linkMatch = linkTagRegex.exec(html)) !== null) {
+      const linkTag = linkMatch[0];
+      
+      // Check if it's a stylesheet
+      if (!/rel\s*=\s*["']stylesheet["']/i.test(linkTag)) continue;
+      
+      // Extract href value
+      const hrefMatch = linkTag.match(/href\s*=\s*["']([^"']+)["']/i);
+      if (!hrefMatch) continue;
+      
+      const href = hrefMatch[1];
+      addConsoleLog(`🔍 Found CSS link: href="${href}"`);
+      
+      // Skip if already absolute
+      if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('//')) {
+        addConsoleLog(`⏭️ Skipping absolute URL: ${href}`);
+        continue;
+      }
+      
+      matches.push({ full: linkTag, href });
+    }
+    
+    addConsoleLog(`🎨 Found ${matches.length} CSS file(s) to inline`);
+    
+    // Fetch and inline each CSS file
+    for (const { full, href } of matches) {
+      try {
+        // Build absolute URL - handle leading slash
+        const cleanHref = href.replace(/^\//, '');
+        const cssUrl = `${base}/${cleanHref}`;
+        
+        // Add cache-busting for CSS too
+        const cssFetchUrl = cssUrl + (cssUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
+        addConsoleLog(`📥 Fetching CSS: ${cssFetchUrl}`);
+        const cssResponse = await fetch(cssFetchUrl);
+        
+        if (cssResponse.ok) {
+          let fetchedCSS = await cssResponse.text();
+          addConsoleLog(`📄 CSS fetched: ${fetchedCSS.length} bytes`);
+          
+          // Rewrite url() references in CSS to be absolute
+          fetchedCSS = fetchedCSS.replace(/url\(['"]?(?!http|https|data:|\/\/)([^'")]+)['"]?\)/gi, 
+            `url('${base}/$1')`);
+          
+          // Replace the <link> with inline style (use array join to avoid confusing PostCSS)
+          const styleOpen = ['<', 'style data-inlined-from="', href, '">'].join('');
+          const styleClose = ['</', 'style>'].join('');
+          const styleTag = styleOpen + '\n' + fetchedCSS + '\n' + styleClose;
+          html = html.replace(full, styleTag);
+          addConsoleLog(`✅ Inlined CSS: ${href} (${fetchedCSS.length} bytes)`);
+        } else {
+          addConsoleLog(`⚠️ Failed to fetch CSS: ${cssUrl} (${cssResponse.status})`, 'warn');
+        }
+      } catch (cssError) {
+        addConsoleLog(`❌ Error inlining CSS ${href}: ${cssError}`, 'error');
+      }
+    }
+    
+    return html;
+  }
+  
+  // Rewrite relative URLs in HTML to point to local dev server
+  function rewriteLocalDevUrls(html, baseUrl) {
+    // Ensure baseUrl ends with trailing slash for base tag
+    const baseWithSlash = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+    const base = baseUrl.replace(/\/$/, '');
+    
+    // Inject <base> tag right after <head> to handle any URLs we might miss
+    if (html.includes('<head>')) {
+      html = html.replace('<head>', `<head>\n<base href="${baseWithSlash}">`);
+    } else if (html.includes('<HEAD>')) {
+      html = html.replace('<HEAD>', `<HEAD>\n<base href="${baseWithSlash}">`);
+    }
+    
+    // Rewrite href="..." for CSS and links (not starting with http/https/data/mailto/#)
+    html = html.replace(/href="(?!http|https|data:|mailto:|#|\/\/)([^"]*)"/gi, `href="${base}/$1"`);
+    
+    // Rewrite src="..." for scripts and images (not starting with http/https/data)
+    html = html.replace(/src="(?!http|https|data:|\/\/)([^"]*)"/gi, `src="${base}/$1"`);
+    
+    // Rewrite url() in inline styles (for background images, etc.)
+    html = html.replace(/url\(['"]?(?!http|https|data:|\/\/)([^'")]+)['"]?\)/gi, `url('${base}/$1')`);
+    
+    // Handle single-quoted attributes too
+    html = html.replace(/href='(?!http|https|data:|mailto:|#|\/\/)([^']*)'/gi, `href='${base}/$1'`);
+    html = html.replace(/src='(?!http|https|data:|\/\/)([^']*)'/gi, `src='${base}/$1'`);
+    
+    return html;
+  }
+  
+  // Handle hot reload events from local dev server
+  async function handleLocalDevReload(data) {
+    if (isLocalDevMode && localDevUrl) {
+      addConsoleLog(`🔄 Hot reload: ${data.file || 'file changed'}`);
+      
+      try {
+        // Set flag to auto-approve XSWD reconnection during hot reload
+        hotReloadInProgress = true;
+        
+        // Refetch the HTML from local server with cache-busting (same as initial load)
+        const cacheBuster = `?_t=${Date.now()}`;
+        const fetchUrl = localDevUrl + cacheBuster;
+        addConsoleLog(`📡 Hot reload fetching: ${fetchUrl}`);
+        
+        const response = await fetch(fetchUrl);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        let html = await response.text();
+        
+        // Inline CSS and rewrite URLs (same as initial load)
+        html = await inlineLocalDevCSS(html, localDevUrl);
+        html = rewriteLocalDevUrls(html, localDevUrl);
+        
+        // Re-render with XSWD bridge injection
+        renderContent(html);
+        addConsoleLog('✅ Hot reload complete');
+        
+        // Clear flag after a delay to allow XSWD to reconnect
+        setTimeout(() => {
+          hotReloadInProgress = false;
+        }, 3000);
+      } catch (err) {
+        addConsoleLog(`❌ Hot reload failed: ${err}`, 'error');
+        hotReloadInProgress = false;
+      }
+    }
+  }
+  
+  function toggleConsole() {
+    showConsole = !showConsole;
+  }
+  
+  // Clear console logs (both frontend and backend)
+  async function clearConsoleLogs() {
+    try {
+      await ClearBackendLogs();
+      consoleLogs = [];
+      appState.update(state => ({ ...state, consoleLogs: [] }));
+    } catch (e) {
+      console.error('Failed to clear logs:', e);
+    }
+  }
+  
+  // Copy recent console logs to clipboard
+  async function copyRecentLogs(lineCount) {
+    const logs = consoleLogs.slice(-lineCount);
+    const text = logs.map(log => `[${log.timestamp || new Date().toLocaleTimeString()}] ${log.message}`).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(`Copied ${logs.length} log lines`);
+    } catch (e) {
+      console.error('Failed to copy logs:', e);
+    }
+  }
+  
+  // Check if user is at bottom of console
+  function handleConsoleScroll() {
+    if (!consoleViewport) return;
+    const { scrollTop, scrollHeight, clientHeight } = consoleViewport;
+    // Consider "at bottom" if within 50px of the bottom
+    consoleUserScrolled = scrollHeight - scrollTop - clientHeight > 50;
+  }
+  
+  // Auto-scroll console to bottom only if user hasn't scrolled up
+  $: if (consoleLogs && consoleViewport && !consoleUserScrolled) {
+    setTimeout(() => {
+      if (consoleViewport && !consoleUserScrolled) {
+        consoleViewport.scrollTop = consoleViewport.scrollHeight;
+      }
+    }, 0);
+  }
+  
+  async function navigate(fromHistory = false) {
+    if (!addressInput.trim()) return;
+    
+    loading = true;
+    showWelcome = false;
+    hasNavigated = false;
+    
+    // Strip any existing dero:// prefix from input (badge provides it visually)
+    let cleanInput = addressInput.trim();
+    if (cleanInput.toLowerCase().startsWith('dero://')) {
+      cleanInput = cleanInput.slice(7);
+      addressInput = cleanInput; // Update display to not show redundant prefix
+    }
+    
+    addConsoleLog(`Navigating to: ${cleanInput}`);
+    
+    // Handle local:// URLs for local dev mode
+    if (cleanInput.toLowerCase().startsWith('local://')) {
+      await navigateToLocalDev(cleanInput);
+      return;
+    }
+    
+    // Reset local dev mode for non-local URLs
+    isLocalDevMode = false;
+    localDevUrl = '';
+    
+    // Determine if input is a dURL (name) or SCID (64-char hex)
+    const isHexSCID = /^[a-fA-F0-9]{64}$/.test(cleanInput);
+    const isDURL = !isHexSCID && cleanInput.length > 0;
+    
+    // For backend: prepend dero:// for dURL resolution
+    const backendInput = isDURL ? `dero://${cleanInput}` : cleanInput;
+    
+    // Update active tab with display name
+    const displayName = isDURL ? cleanInput : cleanInput.substring(0, 16) + '...';
+    updateActiveTab(displayName, cleanInput, 'box');
+    
+    try {
+      const navResult = await Navigate(backendInput);
+      
+      if (navResult.success) {
+        const scid = navResult.scid || cleanInput;
+        addToHistory(scid);
+        addConsoleLog(`Resolved SCID: ${scid}`);
+        
+        if (!fromHistory) {
+          pushToHistory(cleanInput);
+        }
+        
+        let result;
+        if (isDURL) {
+          result = await FetchByDURL(cleanInput);
+        } else {
+          result = await FetchSCID(scid);
+        }
+        
+        handleFetchResult(result, scid);
+      } else {
+        addConsoleLog(`Navigation failed: ${navResult.error}`, 'error');
+        showWelcome = true;
+      }
+    } catch (error) {
+      addConsoleLog(`Navigation error: ${error}`, 'error');
+      showWelcome = true;
+    } finally {
+      loading = false;
+    }
+  }
+  
+  // Navigate to local dev server
+  async function navigateToLocalDev(url, fromHistory = false) {
+    const directory = url.slice(8); // Remove 'local://'
+    
+    try {
+      // Get the local dev server status to find the URL
+      const status = await GetLocalDevServerStatus();
+      
+      if (!status.running) {
+        addConsoleLog('❌ Local dev server is not running. Start it from Studio → Serve.', 'error');
+        toast.error('Local dev server not running. Start it from Studio → Serve.');
+        showWelcome = true;
+        loading = false;
+        return;
+      }
+      
+      // Check if the directory matches (only warn if directories differ)
+      if (directory && status.directory !== directory) {
+        addConsoleLog(`⚠️ Local server serving different directory: ${status.directory}`, 'warn');
+      }
+      
+      isLocalDevMode = true;
+      localDevUrl = status.url;
+      
+      // Update tab
+      const dirName = status.directory.split('/').pop() || 'Local Dev';
+      updateActiveTab(`📁 ${dirName}`, url, 'server');
+      
+      if (!fromHistory) {
+        pushToHistory(url);
+      }
+      
+      // Fetch HTML from local server and inject XSWD bridge
+      addConsoleLog(`🚀 Loading local dev server: ${status.url}`);
+      addConsoleLog(`📂 Server directory: ${status.directory}`);
+      
+      try {
+        // Add cache-busting to ensure fresh content
+        const cacheBuster = `?_t=${Date.now()}`;
+        const fetchUrl = status.url + cacheBuster;
+        addConsoleLog(`📡 Fetching: ${fetchUrl}`);
+        
+        const response = await fetch(fetchUrl);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        let html = await response.text();
+        addConsoleLog(`📄 Fetched HTML (${html.length} bytes)`);
+        
+        // Inline CSS to avoid cross-origin issues with doc.write()
+        html = await inlineLocalDevCSS(html, status.url);
+        
+        // Rewrite remaining URLs (scripts, images, etc.)
+        html = rewriteLocalDevUrls(html, status.url);
+        
+        currentMeta = {
+          name: dirName,
+          isLocal: true,
+          directory: status.directory
+        };
+        
+        // Render using the same method as blockchain content (allows telaHost injection)
+        renderContent(html);
+        addConsoleLog(`✅ Local content rendered (${html.length} bytes)`);
+        
+      } catch (fetchError) {
+        addConsoleLog(`❌ Failed to fetch from local server: ${fetchError}`, 'error');
+        toast.error(`Failed to load local content: ${fetchError.message}`);
+        showWelcome = true;
+      }
+      
+    } catch (error) {
+      addConsoleLog(`Local dev error: ${error}`, 'error');
+      showWelcome = true;
+    } finally {
+      loading = false;
+    }
+  }
+  
+  // Track active TELA server for cleanup
+  let activeTelaServer = null;
+  
+  async function handleFetchResult(result, scid) {
+    if (result.success && result.content) {
+      currentMeta = result.meta || {};
+      currentMeta.scid = scid;
+      addConsoleLog(`Content loaded (${result.content.length} bytes)`);
+      
+      // Try HTTP server approach first (enables real XSWD connection)
+      try {
+        // Shutdown previous server if any
+        if (activeTelaServer) {
+          await ShutdownServer(activeTelaServer);
+          activeTelaServer = null;
+        }
+        
+        // Ensure XSWD server is running for wallet connections
+        try {
+          const xswdResult = await ConnectXSWD();
+          if (xswdResult.success) {
+            addConsoleLog('🔌 XSWD server ready');
+          }
+        } catch (e) {
+          addConsoleLog(`⚠️ XSWD: ${e.message}`);
+        }
+        
+        // Start real HTTP server for this TELA content
+        const serverResult = await ServeTELAContent(scid);
+        
+        if (serverResult.success && serverResult.url) {
+          addConsoleLog(`🌐 TELA server started: ${serverResult.url}`);
+          activeTelaServer = serverResult.name;
+          
+          // Load iframe from real HTTP URL
+          if (contentFrame) {
+            contentFrame.src = serverResult.url;
+            showWelcome = false;
+          }
+          return;
+        } else {
+          addConsoleLog(`⚠️ HTTP server failed, falling back to srcdoc: ${serverResult.error || 'Unknown'}`);
+        }
+      } catch (e) {
+        addConsoleLog(`⚠️ HTTP server error, falling back to srcdoc: ${e.message}`);
+      }
+      
+      // Fallback to srcdoc (with bridge injection)
+      renderContent(result.content);
+    } else {
+      addConsoleLog(`Fetch failed: ${result.error || 'Unknown error'}`, 'error');
+      showWelcome = true;
+    }
+  }
+  
+  // Minimal XSWD bridge script - intercepts WebSocket connections to localhost:44326
+  function getXSWDBridgeScript() {
+    return `<script>
+(function() {
+  'use strict';
+  
+  // Simple log to parent
+  function log(msg) {
+    try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*'); } catch(e) {}
+  }
+  
+  log('🔌 [Bridge] Initializing...');
+  
+  // Spoof location to look like a normal HTTP page (Engram serves at localhost:8082)
+  // Many apps check protocol and refuse to run on about: or blob:
+  try {
+    var fakeLocation = {
+      href: 'http://localhost:8082/',
+      protocol: 'http:',
+      host: 'localhost:8082',
+      hostname: 'localhost',
+      port: '8082',
+      pathname: '/',
+      search: '',
+      hash: '',
+      origin: 'http://localhost:8082',
+      toString: function() { return this.href; }
+    };
+    
+    // Try to override location (may not work in all browsers)
+    try {
+      Object.defineProperty(window, 'location', { value: fakeLocation, writable: false });
+      log('🔍 [Env] location spoofed to http://localhost:8082');
+    } catch(e) {
+      log('🔍 [Env] Could not spoof location: ' + e.message);
+    }
+    
+    log('🔍 [Env] location.protocol: ' + window.location.protocol);
+    log('🔍 [Env] in iframe: ' + (window.parent !== window));
+  } catch(e) {
+    log('🔍 [Env] Error: ' + e.message);
+  }
+  
+  // Store original WebSocket
+  var OriginalWebSocket = window.WebSocket;
+  
+  // Request ID for parent communication
+  var reqId = 0;
+  var pending = {};
+  
+  // Listen for parent responses
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'xswd-response' && pending[e.data.id]) {
+      var p = pending[e.data.id];
+      delete pending[e.data.id];
+      e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.result);
+    }
+  });
+  
+  // Send to parent and wait
+  function request(action, payload) {
+    return new Promise(function(resolve, reject) {
+      var id = ++reqId;
+      pending[id] = { resolve: resolve, reject: reject };
+      window.parent.postMessage({ type: 'xswd-request', id: id, action: action, payload: payload }, '*');
+      setTimeout(function() { if (pending[id]) { delete pending[id]; reject(new Error('timeout')); } }, 60000);
+    });
+  }
+  
+  // XSWD WebSocket Proxy
+  function XSWDProxy(url) {
+    var self = this;
+    self.url = url;
+    self.readyState = 0;
+    self.onopen = null;
+    self.onmessage = null;
+    self.onerror = null;
+    self.onclose = null;
+    self._auth = 'pending';
+    self._queue = [];
+    
+    log('🔌 XSWD connection intercepted: ' + url);
+    
+    // Simulate connection open (like Engram does)
+    setTimeout(function() {
+      self.readyState = 1;
+      log('🔌 XSWD WebSocket opened');
+      if (self.onopen) self.onopen({ type: 'open', target: self });
+      // Process queued
+      while (self._queue.length) self._handle(self._queue.shift());
+    }, 5);
+  }
+  
+  XSWDProxy.prototype.send = function(data) {
+    if (this.readyState === 0) { this._queue.push(data); return; }
+    if (this.readyState !== 1) throw new Error('WebSocket closed');
+    this._handle(data);
+  };
+  
+  XSWDProxy.prototype._handle = function(data) {
+    var self = this;
+    try {
+      var msg = typeof data === 'string' ? JSON.parse(data) : data;
+      log('📨 XSWD: ' + (msg.method || 'handshake'));
+      
+      // Handshake (has name/description, no method)
+      if (!msg.method && (msg.name || msg.description)) {
+        request('connect', { appInfo: msg }).then(function(ok) {
+          self._auth = ok ? 'ok' : 'denied';
+          log(ok ? '✅ Connection approved' : '❌ Connection denied');
+          self._respond({ accepted: !!ok });
+        }).catch(function(e) {
+          self._auth = 'denied';
+          self._respond({ accepted: false, message: e.message });
+        });
+        return;
+      }
+      
+      // RPC call
+      request('call', { method: msg.method, params: msg.params, authState: self._auth }).then(function(r) {
+        self._respond({ jsonrpc: '2.0', id: msg.id, result: r });
+      }).catch(function(e) {
+        self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
+      });
+    } catch(e) {
+      log('❌ XSWD error: ' + e.message);
+    }
+  };
+  
+  XSWDProxy.prototype._respond = function(r) {
+    var self = this;
+    if (self.onmessage) setTimeout(function() { self.onmessage({ type: 'message', data: JSON.stringify(r), target: self }); }, 0);
+  };
+  
+  XSWDProxy.prototype.close = function() {
+    this.readyState = 3;
+    if (this.onclose) this.onclose({ type: 'close', code: 1000 });
+  };
+  
+  XSWDProxy.CONNECTING = 0;
+  XSWDProxy.OPEN = 1;
+  XSWDProxy.CLOSING = 2;
+  XSWDProxy.CLOSED = 3;
+  
+  // Override WebSocket
+  window.WebSocket = function(url, protocols) {
+    // XSWD ports: 44326 (mainnet), 44325 (testnet)
+    if (url && (url.indexOf('44326') !== -1 || url.indexOf('44325') !== -1 || url.indexOf('xswd') !== -1)) {
+      return new XSWDProxy(url);
+    }
+    return protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
+  };
+  window.WebSocket.CONNECTING = 0;
+  window.WebSocket.OPEN = 1;
+  window.WebSocket.CLOSING = 2;
+  window.WebSocket.CLOSED = 3;
+  
+  log('🔌 [Bridge] Ready - WebSocket interception active');
+  
+  // Monitor what happens after page loads
+  window.addEventListener('DOMContentLoaded', function() {
+    log('📄 [DOM] DOMContentLoaded');
+    setTimeout(function() {
+      var root = document.getElementById('root');
+      log('📄 [DOM] #root innerHTML length: ' + (root ? root.innerHTML.length : 'no root'));
+      log('📄 [DOM] #root children: ' + (root ? root.children.length : 0));
+    }, 1000);
+  });
+})();
+<\/script>`;
+  }
+  
+  function renderContent(html) {
+    if (!contentFrame) return;
+    
+    try {
+      // Bridge is required for XSWD-dependent apps like Ghost Trading
+      const ENABLE_BRIDGE = true;
+      
+      let injectedHtml = html;
+      if (ENABLE_BRIDGE) {
+        // Inject the XSWD bridge script at the ABSOLUTE BEGINNING of the HTML
+        const bridgeScript = getXSWDBridgeScript();
+        injectedHtml = bridgeScript + html;
+      }
+      
+      // Try srcdoc first - simpler and works for many apps
+      // blob: URLs cause protocol issues (location.protocol = 'blob:')
+      contentFrame.srcdoc = injectedHtml;
+      
+      // Wait for iframe to load, then inject telaHost API
+      contentFrame.onload = () => {
+        setTimeout(() => injectTelaHostAPI(), 50);
+      };
+    } catch (e) {
+      console.error('Error rendering content:', e);
+    }
+  }
+  
+  // Inject telaHost API for direct access (apps can use this instead of XSWD WebSocket)
+  // WebSocket interception is now handled by the script injected into the HTML
+  function injectTelaHostAPI(retryCount = 0) {
+    if (!contentFrame) {
+      if (retryCount < 10) {
+        setTimeout(() => injectTelaHostAPI(retryCount + 1), 100);
+      }
+      return;
+    }
+    
+    try {
+      const iframeWindow = contentFrame.contentWindow;
+      if (!iframeWindow) {
+        if (retryCount < 10) {
+          setTimeout(() => injectTelaHostAPI(retryCount + 1), 100);
+        }
+        return;
+      }
+      
+      // Only inject if not already present
+      if (iframeWindow.telaHost) return;
+      
+      // Create telaHost API
+      iframeWindow.telaHost = {
+        call: async (method, params = {}) => {
+          try {
+            const settings = get(settingsState);
+            const signingMethods = ['transfer', 'scinvoke', 'sign'];
+            const methodLower = method.toLowerCase().replace('dero.', '');
+            
+            if (settings.integratedWallet && signingMethods.includes(methodLower)) {
+              const approval = await requestWalletApproval({
+                type: 'sign',
+                appName: currentMeta.name || 'App',
+                origin: addressInput,
+                payload: params
+              });
+              
+              if (approval.approved) {
+                const result = await InternalWalletCall(method, params, approval.password);
+                if (result && result.success) return result.result;
+                throw new Error(result?.error || 'Internal wallet call failed');
+              } else {
+                throw new Error('User denied transaction');
+              }
+            }
+          
+            const result = await CallXSWD(JSON.stringify({ method, params }));
+            if (result && result.success) return result.result;
+            throw new Error(result?.error || 'XSWD call failed');
+          } catch (error) {
+            throw error;
+          }
+        },
+        getNetworkInfo: async () => iframeWindow.telaHost.call('DERO.GetInfo'),
+        getBlock: async (height) => iframeWindow.telaHost.call('DERO.GetBlock', { height: parseInt(height) }),
+        getTransaction: async (txHash) => iframeWindow.telaHost.call('DERO.GetTransaction', { txs_hashes: [txHash] }),
+        getSmartContract: async (scid, code = true, variables = true) => {
+          const params = { scid };
+          if (code) params.code = true;
+          if (variables) params.variables = true;
+          return iframeWindow.telaHost.call('DERO.GetSC', params);
+        },
+        isConnected: () => $appState.xswdConnected,
+        connect: async () => {
+          const settings = get(settingsState);
+          if (settings.integratedWallet) {
+            try {
+              const approval = await requestWalletApproval({
+                type: 'connect',
+                appName: currentMeta.name || 'App',
+                origin: addressInput
+              });
+              if (approval.approved) {
+                await ApproveWalletConnection();
+                return true;
+              }
+              return false;
+            } catch (e) {
+              return false;
+            }
+          }
+          return await ConnectXSWD();
+        },
+        // Wallet shortcut methods (require connection)
+        getAddress: async () => {
+          const result = await iframeWindow.telaHost.call('GetAddress');
+          return result?.address || result;
+        },
+        getBalance: async () => {
+          const result = await iframeWindow.telaHost.call('GetBalance');
+          return { balance: result?.balance || 0, unlocked: result?.unlocked_balance || 0 };
+        },
+        transfer: async (params) => {
+          return iframeWindow.telaHost.call('transfer', params);
+        },
+        scInvoke: async (params) => {
+          return iframeWindow.telaHost.call('scinvoke', params);
+        }
+      };
+      
+      // Notify explorer that telaHost is now available (in case it initialized before injection)
+      try {
+        // If xswd-core exists and is not connected, trigger re-initialization
+        if (iframeWindow.xswd && iframeWindow.xswd.initialize && !iframeWindow.xswd.isConnected) {
+          setTimeout(() => {
+            try {
+              iframeWindow.xswd.initialize();
+            } catch (e) {
+              // Ignore errors - explorer might handle this differently
+            }
+          }, 100);
+        }
+        // Also try the global initializeTELA function
+        if (iframeWindow.initializeTELA && typeof iframeWindow.initializeTELA === 'function') {
+          setTimeout(() => {
+            try {
+              iframeWindow.initializeTELA(true); // Pass true to force reconnection
+            } catch (e) {
+              // Ignore errors
+            }
+          }, 100);
+        }
+      } catch (e) {
+        // Ignore notification errors
+      }
+      
+      addConsoleLog('✅ telaHost API injected');
+    } catch (error) {
+      console.error('Failed to inject telaHost API:', error);
+      // Silently fail for cross-origin - explorer can use WebSocket directly
+    }
+  }
+  
+  function handleAddressInput() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(fetchSuggestions, 150);
+    selectedIndex = -1;
+  }
+  
+  async function fetchSuggestions() {
+    const value = addressInput.trim();
+    
+    // Strip dero:// prefix if user typed it (badge provides it visually)
+    const cleanValue = value.toLowerCase().startsWith('dero://') ? value.slice(7) : value;
+    
+    // Show suggestions for empty input or non-SCID text (dURL names)
+    const isHexSCID = /^[a-fA-F0-9]{64}$/.test(cleanValue);
+    
+    if (!isHexSCID) {
+      try {
+        const result = await GetNameSuggestions(cleanValue);
+        if (result.success && result.suggestions) {
+          suggestions = result.suggestions;
+          showSuggestions = suggestions.length > 0;
+        } else {
+          suggestions = [];
+          showSuggestions = false;
+        }
+      } catch (error) {
+        suggestions = [];
+        showSuggestions = false;
+      }
+    } else {
+      suggestions = [];
+      showSuggestions = false;
+    }
+  }
+  
+  function selectSuggestion(suggestion) {
+    // Display just the name (badge provides dero:// prefix)
+    addressInput = suggestion.name;
+    showSuggestions = false;
+    navigate();
+  }
+  
+  async function goBack() {
+    if ($browserHistoryIndex > 0) {
+      const newIndex = $browserHistoryIndex - 1;
+      browserHistoryIndex.set(newIndex);
+      addressInput = $browserHistory[newIndex];
+      await navigate(true);
+    }
+  }
+  
+  async function goForward() {
+    if ($browserHistoryIndex < $browserHistory.length - 1) {
+      const newIndex = $browserHistoryIndex + 1;
+      browserHistoryIndex.set(newIndex);
+      addressInput = $browserHistory[newIndex];
+      await navigate(true);
+    }
+  }
+  
+  function goHome() {
+    showWelcome = true;
+    addressInput = '';
+    if (contentFrame) {
+      try {
+        const doc = contentFrame.contentDocument || contentFrame.contentWindow?.document;
+        if (doc) {
+          doc.open();
+          doc.write('');
+          doc.close();
+        }
+      } catch (e) {}
+    }
+  }
+  
+  function reload() {
+    if (addressInput) navigate(true);
+  }
+  
+  $: canGoBack = $browserHistoryIndex > 0;
+  $: canGoForward = $browserHistoryIndex < $browserHistory.length - 1;
+  
+  // Tab management functions
+  // Design Decision: New tab behavior uses "Option A: Focus URL bar + Show Discover (Chrome-like)"
+  // See UI_IMPLEMENTATION_PLAN.md for alternative options considered
+  function openNewTab(title = '', url = '', icon = 'box') {
+    tabIdCounter++;
+    const newTab = {
+      id: `tab-${tabIdCounter}`,
+      title: title || 'New Tab',
+      url: url,
+      icon: icon,
+      isHome: false
+    };
+    tabs = [...tabs, newTab];
+    activeTabId = newTab.id;
+    
+    if (url) {
+      addressInput = url;
+      navigate();
+    } else {
+      // Option A: Show Discover Apps and focus URL bar
+      showWelcome = true;
+      addressInput = '';
+      // Focus URL bar after DOM updates
+      setTimeout(() => {
+        const urlInput = document.querySelector('.browser-url-input');
+        if (urlInput) urlInput.focus();
+      }, 50);
+    }
+  }
+  
+  function closeTab(tabId) {
+    if (tabs.length <= 1) return; // Don't close last tab
+    
+    const index = tabs.findIndex(t => t.id === tabId);
+    tabs = tabs.filter(t => t.id !== tabId);
+    
+    // Switch to adjacent tab if closing active
+    if (activeTabId === tabId) {
+      const newIndex = Math.min(index, tabs.length - 1);
+      activeTabId = tabs[newIndex].id;
+      const tab = tabs[newIndex];
+      if (tab.isHome) {
+        showWelcome = true;
+        addressInput = '';
+      } else if (tab.url) {
+        addressInput = tab.url;
+        navigate(true);
+      }
+    }
+  }
+  
+  function switchTab(tabId) {
+    if (activeTabId === tabId) return;
+    
+    activeTabId = tabId;
+    const tab = tabs.find(t => t.id === tabId);
+    if (tab) {
+      if (tab.isHome) {
+        showWelcome = true;
+        addressInput = '';
+      } else if (tab.url) {
+        addressInput = tab.url;
+        navigate(true);
+      }
+    }
+  }
+  
+  function updateActiveTab(title, url, icon) {
+    tabs = tabs.map(t => 
+      t.id === activeTabId 
+        ? { ...t, title: title || t.title, url: url || t.url, icon: icon || t.icon }
+        : t
+    );
+  }
+  
+  function handleKeydown(event) {
+    if (event.key === 'Enter') {
+      if (showSuggestions && selectedIndex >= 0 && selectedIndex < suggestions.length) {
+        selectSuggestion(suggestions[selectedIndex]);
+      } else {
+        navigate();
+      }
+    } else if (event.key === 'Escape') {
+      showSuggestions = false;
+      selectedIndex = -1;
+    } else if (event.key === 'ArrowDown') {
+      if (showSuggestions && suggestions.length > 0) {
+        event.preventDefault();
+        selectedIndex = (selectedIndex + 1) % suggestions.length;
+      }
+    } else if (event.key === 'ArrowUp') {
+      if (showSuggestions && suggestions.length > 0) {
+        event.preventDefault();
+        selectedIndex = selectedIndex <= 0 ? suggestions.length - 1 : selectedIndex - 1;
+      }
+    } else if (event.key === 'Tab' && showSuggestions && suggestions.length > 0) {
+      event.preventDefault();
+      const idx = selectedIndex >= 0 ? selectedIndex : 0;
+      // Display just the name (badge provides dero:// prefix)
+      addressInput = suggestions[idx].name;
+      showSuggestions = false;
+    }
+  }
+</script>
+
+<div class="browser-layout">
+  <!-- v6.1 Browser Tabs -->
+  <div class="browser-tabs">
+    {#each tabs as tab}
+      <div
+        class="browser-tab"
+        class:active={activeTabId === tab.id}
+        on:click={() => switchTab(tab.id)}
+        on:keydown={(e) => e.key === 'Enter' && switchTab(tab.id)}
+        role="tab"
+        tabindex="0"
+      >
+        <span class="browser-tab-icon">{tab.isHome ? '⌂' : '◇'}</span>
+        <span class="browser-tab-title">{tab.title}</span>
+        <span 
+          class="browser-tab-close" 
+          on:click|stopPropagation={() => closeTab(tab.id)}
+          on:keydown|stopPropagation={(e) => e.key === 'Enter' && closeTab(tab.id)}
+          role="button"
+          tabindex="0"
+        >×</span>
+      </div>
+    {/each}
+    <div 
+      class="browser-tab-new" 
+      on:click={() => openNewTab()} 
+      on:keydown={(e) => e.key === 'Enter' && openNewTab()}
+      role="button"
+      tabindex="0"
+      title="New Tab"
+    >+</div>
+  </div>
+  
+  <!-- v6.1 Browser Navigation Bar -->
+  <div class="browser-nav">
+      <!-- Navigation Controls -->
+    <div class="browser-nav-controls">
+        <button
+          on:click={goBack}
+          disabled={!canGoBack}
+          class="nav-btn"
+          title="Back"
+        >
+        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+          </svg>
+        </button>
+        <button
+          on:click={goForward}
+          disabled={!canGoForward}
+          class="nav-btn"
+          title="Forward"
+        >
+        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+          </svg>
+        </button>
+        <button
+          on:click={reload}
+          class="nav-btn"
+          title="Reload"
+        >
+        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+        </button>
+        <button
+          on:click={goHome}
+          class="nav-btn"
+          title="Home"
+        >
+        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+          </svg>
+        </button>
+      </div>
+      
+    <!-- v6.1 URL Bar -->
+    <div class="browser-url-container" class:focused={addressBarFocused}>
+      <span class="browser-url-protocol">dero://</span>
+          <input
+            type="text"
+            bind:value={addressInput}
+            on:input={handleAddressInput}
+            on:keydown={handleKeydown}
+            on:focus={() => { addressBarFocused = true; handleAddressInput(); }}
+            on:blur={() => { addressBarFocused = false; setTimeout(() => showSuggestions = false, 200); }}
+            placeholder="dURL or SCID..."
+        class="browser-url-input"
+          />
+          
+      <!-- Go Button -->
+          <button
+            on:click={() => navigate()}
+            disabled={loading}
+        class="browser-go-btn"
+          >
+            {#if loading}
+          <svg width="16" height="16" class="animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            {:else}
+          →
+            {/if}
+          </button>
+      
+      <!-- Favorite Button (in address bar) -->
+      <button
+        on:click={toggleCurrentFavorite}
+        class="browser-url-fav-btn"
+        class:favorited={currentIsFavorited}
+        disabled={!addressInput || showWelcome}
+        title={currentIsFavorited ? 'Remove from favorites' : 'Add to favorites'}
+      >
+        <Heart size={14} fill={currentIsFavorited ? 'currentColor' : 'none'} />
+      </button>
+        </div>
+        
+        <!-- Suggestions Dropdown -->
+        {#if showSuggestions && suggestions.length > 0}
+          <div class="browser-suggestions-dropdown">
+            {#each suggestions as suggestion, i}
+              <button
+                on:click={() => selectSuggestion(suggestion)}
+                on:mouseenter={() => selectedIndex = i}
+                class="browser-suggestion-item"
+                class:selected={i === selectedIndex}
+              >
+                <div class="browser-suggestion-icon">
+                  <Icons name="box" size={18} />
+                </div>
+                <div class="browser-suggestion-info">
+                  <div class="browser-suggestion-name">{suggestion.name}</div>
+                  <div class="browser-suggestion-scid">{suggestion.scid?.substring(0, 20)}...</div>
+                </div>
+                {#if suggestion.avg}
+                  <HoloBadge variant={getRatingBadge(suggestion.avg)}>★ {suggestion.avg}</HoloBadge>
+                {/if}
+              </button>
+            {/each}
+            <div class="browser-suggestions-hint">
+              ↑↓ Navigate • Enter Select • Tab Autocomplete
+            </div>
+          </div>
+        {/if}
+      
+      <!-- Version History Toggle -->
+      <button
+        on:click={openVersionHistory}
+        class="nav-btn"
+        class:active={showVersionHistory}
+        title="Version History"
+        disabled={showWelcome}
+      >
+        <History size={14} />
+      </button>
+      
+      <!-- Console Toggle -->
+      <button
+        on:click={toggleConsole}
+        class="nav-btn"
+        class:active={showConsole}
+        title="Toggle Console"
+      >
+      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+        </svg>
+      </button>
+  </div>
+  
+  <!-- Content Area -->
+  <div class="browser-content-area" tabindex="-1">
+    <!-- Welcome Screen / Discover View -->
+    <div class="browser-welcome-screen" style:display={showWelcome ? 'block' : 'none'}>
+      <!-- Favorites Section -->
+      {#if $favorites.length > 0}
+        <div class="browser-favorites-section">
+          <div class="browser-favorites-inner">
+            <div class="browser-favorites-header">
+              <h2 class="browser-favorites-title">
+                <Icons name="star" size={16} />
+                Favorites
+              </h2>
+              {#if $favorites.length > 6}
+                <button 
+                  class="browser-view-all-btn"
+                  on:click={() => showAllFavorites = !showAllFavorites}
+                >
+                  {showAllFavorites ? 'Show Less' : `View All (${$favorites.length})`}
+                </button>
+              {/if}
+            </div>
+            <div class="browser-favorites-grid">
+              {#each (showAllFavorites ? $favorites : $favorites.slice(0, 6)) as fav}
+                <button
+                  on:click={() => navigateToFavorite(fav)}
+                  class="browser-favorite-card"
+                >
+                  <div class="browser-favorite-icon">
+                    {#if shouldShowIcon(fav.icon)}
+                      <img 
+                        src={fav.icon} 
+                        alt="" 
+                        class="browser-favorite-icon-img" 
+                        on:error={() => handleIconError(fav.icon)}
+                      />
+                    {:else}
+                      <img src={deroIconFallback} alt="" class="browser-favorite-icon-img" />
+                    {/if}
+                  </div>
+                  <div class="browser-favorite-name">{fav.name}</div>
+                  <button
+                    on:click|stopPropagation={() => favorites.remove(fav.scid || fav.durl)}
+                    class="browser-favorite-remove"
+                    title="Remove from favorites"
+                  >
+                    ×
+                  </button>
+                </button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      {/if}
+      
+      <!-- v6.1 Discover Header (Matches page-header pattern exactly) -->
+      <div class="browser-discover-header">
+        <div class="browser-discover-header-inner">
+          <div class="browser-discover-header-left">
+            <h1 class="browser-discover-header-title">
+              <Icons name="grid" size={18} class="browser-discover-header-icon" />
+              DISCOVER APPS
+            </h1>
+            <p class="browser-discover-header-desc">Browse decentralized applications on the DERO blockchain</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- v6.1 Filter Bar -->
+      <div class="browser-filter-bar">
+        <div class="browser-filter-bar-inner">
+          <!-- Category Filters (Left) -->
+          <div class="browser-filter-categories">
+            {#each categories as cat}
+              <button
+                on:click={() => handleCategoryChange(cat.id)}
+                class="browser-filter-category-btn"
+                class:active={selectedCategory === cat.id}
+                title={cat.label}
+              >
+                <Icons name={cat.iconName} size={14} />
+                <span>{cat.label}</span>
+              </button>
+            {/each}
+          </div>
+          
+          <!-- Sort Dropdown (Right) -->
+          <div class="browser-filter-sort">
+            <label for="sort-select" class="browser-filter-sort-label">Sort by:</label>
+            <select
+              id="sort-select"
+              bind:value={sortBy}
+              on:change={handleSortChange}
+              class="browser-filter-sort-select"
+            >
+              <option value="rating">Highest Rated</option>
+              <option value="name">Alphabetical</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Content -->
+      <div class="browser-discover-content">
+        <div class="browser-discover-content-inner">
+          {#if !$appState.gnomonRunning}
+            <div class="browser-empty-state">
+              <div class="browser-empty-icon">
+                <Icons name="wifi" size={48} />
+              </div>
+              <h2 class="browser-empty-title">Gnomon Indexer Not Running</h2>
+              <p class="browser-empty-text">Start the Gnomon indexer to discover applications</p>
+              <button on:click={startIndexer} class="btn btn-primary">
+                Start Gnomon Indexer
+              </button>
+              <label class="gnomon-autostart-option checkbox-wrap">
+                <input type="checkbox" class="checkbox" bind:checked={enableAutostart} />
+                <span class="checkbox-label">Always start automatically</span>
+              </label>
+            </div>
+          {:else if $appState.gnomonProgress < 95 && filteredApps.length === 0}
+            <!-- Gnomon is syncing - show progress instead of "No Apps Found" -->
+            <div class="browser-empty-state">
+              <div class="browser-loading-spinner"></div>
+              <h2 class="browser-empty-title">Syncing Blockchain Index</h2>
+              <p class="browser-empty-text">
+                Indexing block {$appState.gnomonIndexedHeight.toLocaleString()} of {$appState.chainHeight.toLocaleString()}
+              </p>
+              <div class="gnomon-sync-progress">
+                <div class="gnomon-sync-bar">
+                  <div class="gnomon-sync-fill" style="width: {$appState.gnomonProgress}%"></div>
+                </div>
+                <span class="gnomon-sync-percent">{$appState.gnomonProgress.toFixed(1)}%</span>
+              </div>
+              <p class="browser-empty-hint">Apps will appear as they are discovered...</p>
+            </div>
+          {:else if appsLoading}
+            <div class="browser-empty-state">
+              <div class="browser-loading-spinner"></div>
+              <p class="browser-empty-text">Loading apps from blockchain index...</p>
+            </div>
+          {:else if filteredApps.length === 0}
+            <div class="browser-empty-state">
+              <div class="browser-empty-icon">
+                <Icons name="search" size={48} />
+              </div>
+              <h2 class="browser-empty-title">No Apps Found</h2>
+              <p class="browser-empty-text">
+                {selectedCategory === 'top' ? 'No top-rated apps found. Try viewing all apps.' : 'No apps indexed yet'}
+              </p>
+              {#if selectedCategory !== 'all'}
+                <button
+                  on:click={() => handleCategoryChange('all')}
+                  class="btn btn-secondary"
+                >
+                  View All Apps
+                </button>
+              {/if}
+            </div>
+          {:else}
+            <div class="browser-apps-grid">
+              {#each filteredApps as app}
+                <button class="browser-app-card" on:click={() => navigateToApp(app)}>
+                  <!-- Icon on left -->
+                      <div class="browser-app-icon">
+                        {#if shouldShowIcon(app.icon)}
+                          <img 
+                            src={app.icon} 
+                            alt="" 
+                            class="browser-app-icon-img" 
+                            on:error={() => handleIconError(app.icon)}
+                          />
+                        {:else}
+                          <img src={deroIconFallback} alt="" class="browser-app-icon-img browser-app-icon-fallback" />
+                        {/if}
+                      </div>
+                  
+                  <!-- Content on right -->
+                      <div class="browser-app-meta">
+                        <h3 class="browser-app-name">{app.display_name || app.name || 'Unnamed App'}</h3>
+                        {#if app.durl}
+                          <p class="browser-app-durl">dero://{app.durl}</p>
+                        {:else}
+                          <p class="browser-app-scid">{app.scid?.substring(0, 16)}...</p>
+                        {/if}
+                    
+                    <p class="browser-app-desc">{app.description || 'No description available'}</p>
+                    
+                    <div class="browser-app-footer">
+                      {#if app.supports_epoch}
+                        <span class="browser-epoch-badge" title="Supports EPOCH Developer Ecosystem">💎</span>
+                      {/if}
+                      {#if app.rating && app.rating.count > 0}
+                        <HoloBadge variant={getRatingBadge(app.rating.average)}>
+                          ★ {app.rating.average.toFixed(1)}
+                        </HoloBadge>
+                        <button 
+                          class="browser-app-rating-count"
+                          on:click={(e) => openRatingsBreakdown(app, e)}
+                          title="View ratings breakdown"
+                        >{app.rating.count} rating{app.rating.count > 1 ? 's' : ''}</button>
+                      {:else}
+                        <span class="browser-app-no-rating">No ratings yet</span>
+                      {/if}
+                      <button 
+                        class="browser-rate-btn"
+                        on:click={(e) => openRatingModal(app, e)}
+                        title="Rate this app"
+                      >
+                        <Star size={12} />
+                        Rate
+                      </button>
+                      <button 
+                        class="browser-fav-btn"
+                        class:favorited={isAppFavorited(app, $favorites)}
+                        on:click={(e) => toggleAppFavorite(app, e)}
+                        title={isAppFavorited(app, $favorites) ? 'Remove from favorites' : 'Add to favorites'}
+                      >
+                        <Heart size={12} fill={isAppFavorited(app, $favorites) ? 'currentColor' : 'none'} />
+                      </button>
+                    </div>
+                  </div>
+                </button>
+              {/each}
+            </div>
+            
+            <div class="browser-apps-count">
+              Showing {filteredApps.length} of {apps.length} apps
+            </div>
+          {/if}
+        </div>
+      </div>
+    </div>
+    
+    <!-- Loading Indicator -->
+    <div class="browser-loading-state" style:display={loading ? 'flex' : 'none'}>
+      <div class="browser-loading-spinner"></div>
+      <p class="browser-loading-text">Loading from blockchain...</p>
+    </div>
+    
+    <!-- Content Frame -->
+    <iframe
+      bind:this={contentFrame}
+      class="browser-content-frame"
+      style:display={!showWelcome && !loading ? 'block' : 'none'}
+      sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+      title="App Content"
+    ></iframe>
+    
+    <!-- v6.1 Console Panel (matches Settings console) -->
+    {#if showConsole}
+      <div class="browser-console-panel">
+        <div class="browser-console-header">
+          <span class="browser-console-title">
+            <Icons name="terminal" size={12} />
+            CONSOLE
+          </span>
+          <div class="browser-console-actions">
+            <button on:click={() => copyRecentLogs(25)} class="browser-console-btn" title="Copy last 25 lines">
+              Copy 25
+            </button>
+            <button on:click={() => copyRecentLogs(50)} class="browser-console-btn" title="Copy last 50 lines">
+              Copy 50
+            </button>
+            <button on:click={clearConsoleLogs} class="browser-console-btn" title="Clear all logs">
+              Clear
+            </button>
+            <button on:click={toggleConsole} class="browser-console-btn" title="Close console">
+              <Icons name="x" size={12} />
+            </button>
+          </div>
+        </div>
+        <div class="browser-console-viewport" bind:this={consoleViewport} on:scroll={handleConsoleScroll}>
+          {#if consoleLogs.length === 0}
+            <div class="browser-console-empty">Console ready. Navigate to an app to see logs.</div>
+          {:else}
+            {#each consoleLogs as log}
+              <div class="browser-console-line {log.level === 'error' ? 'level-error' : log.level === 'warn' ? 'level-warn' : ''}">
+                <span class="browser-console-timestamp">[{log.timestamp || new Date().toLocaleTimeString()}]</span>
+                <span class="browser-console-message">{log.message}</span>
+              </div>
+            {/each}
+          {/if}
+        </div>
+      </div>
+    {/if}
+  </div>
+</div>
+
+<!-- Rating Modal -->
+<RatingModal 
+  bind:show={showRatingModal}
+  scid={ratingAppScid}
+  appName={ratingAppName}
+  on:rated={handleRated}
+  on:close={() => showRatingModal = false}
+/>
+
+<RatingsBreakdown
+  bind:visible={showRatingsBreakdown}
+  scid={breakdownScid}
+  on:close={() => showRatingsBreakdown = false}
+/>
+
+<!-- Version History Modal -->
+<VersionHistory 
+  scid={versionHistoryScid} 
+  bind:show={showVersionHistory}
+  on:close={closeVersionHistory}
+  on:revert={handleVersionRevert}
+  on:clone={handleVersionClone}
+/>
+
+<style>
+  /* === v6.1 Browser Layout ===
+     ALL browser patterns now come from hologram.css with browser-* prefixes:
+     - Layout: .browser-layout, .browser-content-area, .browser-tabs, .browser-nav
+     - URL: .browser-url-container, .browser-url-input, .browser-go-btn
+     - Favorites: .browser-favorites-*, .browser-favorite-*
+     - Discover: .browser-discover-*, .browser-search-*, .browser-sort-btn
+     - Apps: .browser-apps-grid, .browser-app-*, .browser-empty-*, .browser-loading-*
+     - Suggestions: .browser-suggestions-*, .browser-suggestion-*
+     - Console: .browser-console-*
+  */
+  
+  /* Search icon global style */
+  :global(.browser-search-icon) {
+    color: var(--text-4, #505068);
+    flex-shrink: 0;
+  }
+  
+  /* Animate spin utility (used by loading indicator in URL bar) */
+  .animate-spin {
+    animation: browser-spin 1s linear infinite;
+  }
+  
+  /* Rate button in app cards */
+  .browser-rate-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    margin-left: auto;
+    background: var(--void-up);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  
+  .browser-rate-btn:hover {
+    background: var(--cyan-500);
+    border-color: var(--cyan-500);
+    color: var(--void-base);
+  }
+  
+  /* Favorite button in app cards */
+  .browser-fav-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 6px;
+    background: var(--void-up);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  
+  .browser-fav-btn:hover {
+    background: var(--void-surface);
+    border-color: var(--pink-400);
+    color: var(--pink-400);
+  }
+  
+  .browser-fav-btn.favorited {
+    background: rgba(236, 72, 153, 0.15);
+    border-color: var(--pink-400);
+    color: var(--pink-400);
+  }
+  
+  .browser-fav-btn.favorited:hover {
+    background: rgba(236, 72, 153, 0.25);
+  }
+  
+  /* Favorite button in address bar */
+  .browser-url-fav-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    margin-left: 4px;
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  
+  .browser-url-fav-btn:hover:not(:disabled) {
+    background: var(--void-up);
+    border-color: var(--pink-400);
+    color: var(--pink-400);
+  }
+  
+  .browser-url-fav-btn.favorited {
+    background: rgba(236, 72, 153, 0.15);
+    border-color: var(--pink-400);
+    color: var(--pink-400);
+  }
+  
+  .browser-url-fav-btn.favorited:hover {
+    background: rgba(236, 72, 153, 0.25);
+  }
+  
+  .browser-url-fav-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+  
+  /* Gnomon auto-start checkbox - uses design system .checkbox-wrap, .checkbox, .checkbox-label */
+  .gnomon-autostart-option {
+    margin-top: 16px;
+  }
+  
+  /* Gnomon sync progress */
+  .gnomon-sync-progress {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+    width: 280px;
+  }
+  
+  .gnomon-sync-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--void-mid);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  
+  .gnomon-sync-fill {
+    height: 100%;
+    background: var(--cyan-400);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+  
+  .gnomon-sync-percent {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--cyan-400);
+    min-width: 50px;
+    text-align: right;
+  }
+  
+  .browser-empty-hint {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--text-5);
+    font-style: italic;
+  }
+</style>
