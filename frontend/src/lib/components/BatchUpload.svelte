@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
-  import { walletState, settingsState } from '../stores/appState.js';
+  import { walletState, settingsState, toast } from '../stores/appState.js';
   import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
   import { BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
@@ -97,6 +97,9 @@
         deployedDocs: data.deployedDocs,
         durl: data.durl,
       };
+      
+      // Show success toast
+      toast.success(`Deployment complete! INDEX: ${data.indexScid?.substring(0, 16)}...`);
       
       dispatch('complete', {
         indexScid: data.indexScid,
@@ -703,7 +706,10 @@
           <div class="result-label">INDEX SCID</div>
           <div class="result-scid-row">
             <code class="result-scid">{deploymentResult.indexScid}</code>
-            <button class="btn-copy" on:click={() => copyScid(deploymentResult.indexScid)} title="Copy SCID">
+            <button class="btn-copy" on:click={() => {
+              copyScid(deploymentResult.indexScid);
+              toast.success('INDEX SCID copied to clipboard');
+            }} title="Copy full SCID">
               ◎
             </button>
             <button class="btn-preview" on:click={() => previewIndex(deploymentResult.indexScid)} title="Preview">
@@ -725,8 +731,11 @@
             {#each (deploymentResult.deployedDocs || []) as doc}
               <div class="deployed-doc-row">
                 <span class="deployed-doc-name">{doc.name}</span>
-                <code class="deployed-doc-scid">{doc.scid?.substring(0, 16)}...</code>
-                <button class="btn-copy-sm" on:click={() => copyScid(doc.scid)} title="Copy SCID">
+                <code class="deployed-doc-scid" title={doc.scid}>{doc.scid?.substring(0, 32)}...</code>
+                <button class="btn-copy-sm" on:click={() => {
+                  copyScid(doc.scid);
+                  toast.success(`Copied ${doc.name} SCID`);
+                }} title="Copy full SCID">
                   ◎
                 </button>
               </div>
@@ -734,9 +743,19 @@
           </div>
         </div>
         
-        <button class="btn-reset" on:click={resetDeployment}>
-          Deploy Another Batch
-        </button>
+        <div class="success-actions">
+          <button class="btn-reset" on:click={resetDeployment}>
+            Deploy Another Batch
+          </button>
+          <button class="btn-copy-index" on:click={() => copyScid(deploymentResult.indexScid)} title="Copy INDEX SCID">
+            Copy INDEX SCID
+          </button>
+          {#if deploymentResult.durl}
+            <button class="btn-preview-index" on:click={() => previewIndex(deploymentResult.indexScid)} title="Preview in Browser">
+              Preview in Browser
+            </button>
+          {/if}
+        </div>
       </div>
     {/if}
   {:else}
@@ -1727,10 +1746,17 @@
     color: var(--cyan-400, #22d3ee);
   }
   
-  .btn-reset {
-    width: 100%;
-    padding: var(--s-3, 12px);
+  .success-actions {
+    display: flex;
+    gap: var(--s-2, 8px);
     margin-top: var(--s-4, 16px);
+    flex-wrap: wrap;
+  }
+  
+  .btn-reset {
+    flex: 1;
+    min-width: 140px;
+    padding: var(--s-3, 12px);
     background: var(--void-up, #181824);
     border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
     border-radius: var(--r-lg, 12px);
@@ -1741,6 +1767,26 @@
   }
   
   .btn-reset:hover {
+    background: var(--void-surface, #1e1e2a);
+    border-color: var(--cyan-500, #06b6d4);
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .btn-copy-index,
+  .btn-preview-index {
+    padding: var(--s-3, 12px) var(--s-4, 16px);
+    background: var(--void-up, #181824);
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+    border-radius: var(--r-lg, 12px);
+    color: var(--text-2, #a8a8b8);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 200ms ease-out;
+    white-space: nowrap;
+  }
+  
+  .btn-copy-index:hover,
+  .btn-preview-index:hover {
     background: var(--void-surface, #1e1e2a);
     border-color: var(--cyan-500, #06b6d4);
     color: var(--cyan-400, #22d3ee);

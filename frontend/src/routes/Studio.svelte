@@ -1981,11 +1981,10 @@
           <BatchUpload 
             folderPath={batchFolderPath} 
             on:complete={(e) => {
-              deploymentStatus = { 
-                type: 'success', 
-                message: `Deployed ${e.detail.deployedDocs?.length || 0} DOCs. INDEX: ${e.detail.indexScid?.substring(0, 16)}...` 
-              };
-              batchFolderPath = '';
+              // Show success toast notification
+              toast.success(`Deployment complete! INDEX: ${e.detail.indexScid?.substring(0, 16)}...`);
+              // Don't clear batchFolderPath - let user see the success card and SCIDs
+              // They can click "Choose different folder" button to start over
             }}
           />
           

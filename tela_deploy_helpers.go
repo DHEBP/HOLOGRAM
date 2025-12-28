@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/civilware/tela"
 	"github.com/deroproject/derohe/globals"
@@ -212,14 +213,18 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 		}
 		
 		// Use existing websocket connection (opened by setupNetworkForDeployment)
-		// Only reconnect if not connected
+		// Reconnect if not connected or if connection was lost
 		if !walletapi.Connected {
 			endpoint := walletapi.Daemon_Endpoint_Active
+			if endpoint == "" || endpoint == " " {
+				return "", fmt.Errorf("daemon endpoint is invalid - please restart simulator mode")
+			}
 			a.logToConsole(fmt.Sprintf("[NET] Reconnecting walletapi: %s", endpoint))
 			if err := walletapi.Connect(endpoint); err != nil {
 				a.logToConsole(fmt.Sprintf("[ERR] walletapi.Connect failed: %v", err))
 				return "", fmt.Errorf("failed to connect to simulator daemon: %v", err)
 			}
+			a.logToConsole("[OK] Reconnected to simulator daemon")
 		}
 		
 		// Create default transfer (required for install)
@@ -233,21 +238,113 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 		tx, err := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
 		if err != nil {
 			a.logToConsole(fmt.Sprintf("[ERR] TransferPayload0 failed for %s: %v", prepared.Original.Name, err))
-			return "", fmt.Errorf("transfer build error: %v", err)
+			// Check if it's a websocket error
+			errStr := err.Error()
+			if strings.Contains(errStr, "websocket") || strings.Contains(errStr, "close 1006") || strings.Contains(errStr, "abnormal closure") {
+				// Try to reconnect and retry
+				endpoint := walletapi.Daemon_Endpoint_Active
+				if endpoint != "" && endpoint != " " {
+					a.logToConsole("[NET] Websocket error detected, attempting reconnect...")
+					if reconnectErr := walletapi.Connect(endpoint); reconnectErr == nil {
+						a.logToConsole("[OK] Reconnected, retrying transaction...")
+						// Retry building and sending
+						tx, err = wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
+						if err != nil {
+							return "", fmt.Errorf("transfer build error after reconnect: %v", err)
+						}
+					} else {
+						return "", fmt.Errorf("websocket error and reconnect failed: %v (original: %v)", reconnectErr, err)
+					}
+				} else {
+					return "", fmt.Errorf("websocket error and invalid endpoint: %v", err)
+				}
+			} else {
+				return "", fmt.Errorf("transfer build error: %v", err)
+			}
 		}
 		
 		// Send transaction
 		if err := wallet.SendTransaction(tx); err != nil {
 			a.logToConsole(fmt.Sprintf("[ERR] SendTransaction failed for %s: %v", prepared.Original.Name, err))
+			errStr := err.Error()
+			if strings.Contains(errStr, "websocket") || strings.Contains(errStr, "close 1006") || strings.Contains(errStr, "abnormal closure") {
+				return "", fmt.Errorf("websocket closed during transaction send - daemon may have crashed: %v", err)
+			}
 			return "", fmt.Errorf("transaction dispatch error: %v", err)
 		}
 		
 		txid = tx.GetHash().String()
+		a.logToConsole(fmt.Sprintf("[OK] Transaction sent: %s", txid))
+		
+		// CRITICAL: Wait for transaction confirmation in simulator mode
+		// This ensures the nonce increments before building the next transaction
+		// In simulator, blocks auto-mine instantly, so this is very fast
+		// BUT: Add timeout and health checks to detect daemon crashes early
+		a.logToConsole("[WAIT] Waiting for new block (simulator auto-mines)...")
+		if err := a.waitForNewBlockWithHealthCheck(30 * time.Second); err != nil {
+			// Daemon may have crashed - check connectivity
+			if !walletapi.Connected {
+				return "", fmt.Errorf("daemon connection lost while waiting for block confirmation: %v", err)
+			}
+			// Connection still active but timeout - this shouldn't happen in simulator
+			// but continue anyway and try to sync
+			a.logToConsole(fmt.Sprintf("[WARN] Timeout waiting for block, but connection still active. Continuing..."))
+		} else {
+			a.logToConsole("[OK] New block mined, nonce should be updated")
+		}
 		
 		// CRITICAL: Sync wallet to update nonce for next transaction
 		// This must happen WHILE websocket is still connected
+		// Check connection before syncing
+		if !walletapi.Connected {
+			return "", fmt.Errorf("daemon connection lost - cannot sync wallet. Please restart simulator")
+		}
+		
+		// Try to reconnect if connection was lost during wait
 		if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] Post-tx wallet sync failed for %s: %v", prepared.Original.Name, err))
+			// Check if it's a websocket error
+			errStr := err.Error()
+			if strings.Contains(errStr, "websocket") || strings.Contains(errStr, "close 1006") || strings.Contains(errStr, "abnormal closure") {
+				a.logToConsole(fmt.Sprintf("[WARN] Websocket closed during sync for %s, attempting reconnect...", prepared.Original.Name))
+				
+				// Mark as disconnected
+				walletapi.Connected = false
+				
+				// Try to reconnect
+				endpoint := walletapi.Daemon_Endpoint_Active
+				if endpoint == "" || endpoint == " " {
+					return "", fmt.Errorf("daemon endpoint invalid - cannot reconnect. Please restart simulator")
+				}
+				
+				// Verify daemon is still running
+				if a.daemonClient != nil {
+					_, rpcErr := a.daemonClient.GetInfo()
+					if rpcErr != nil {
+						return "", fmt.Errorf("daemon RPC not responding - daemon may have crashed: %v", rpcErr)
+					}
+				}
+				
+				if err := walletapi.Connect(endpoint); err != nil {
+					return "", fmt.Errorf("failed to reconnect to simulator daemon: %v", err)
+				}
+				a.logToConsole("[OK] Reconnected to simulator daemon")
+				
+				// Retry sync after reconnection
+				if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+					return "", fmt.Errorf("wallet sync failed after reconnection: %v", err)
+				}
+			} else {
+				// Other error - check if connection is still active
+				if !walletapi.Connected {
+					return "", fmt.Errorf("daemon connection lost during wallet sync: %v", err)
+				}
+				a.logToConsole(fmt.Sprintf("[WARN] Post-tx wallet sync failed for %s: %v (continuing anyway)", prepared.Original.Name, err))
+			}
+		}
+		
+		// Final check: Ensure websocket is still connected before continuing to next transaction
+		if !walletapi.Connected {
+			return "", fmt.Errorf("websocket connection lost after sync - cannot continue to next transaction. Please restart simulator")
 		}
 		
 		// Keep websocket open for next transaction (don't close)
@@ -350,5 +447,62 @@ func padHex64(s string) string {
 		return strings.Repeat("0", 64-len(s)) + s
 	}
 	return s
+}
+
+// waitForNewBlockWithHealthCheck waits for a new block with a timeout and periodic health checks
+// This prevents hanging indefinitely if the daemon crashes and detects crashes early
+func (a *App) waitForNewBlockWithHealthCheck(timeout time.Duration) error {
+	done := make(chan bool, 1)
+	healthCheckInterval := 2 * time.Second // Check daemon health every 2 seconds
+	var waitErr error
+	
+	// Start waiting for block in goroutine
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				waitErr = fmt.Errorf("panic in WaitNewHeightBlock: %v", r)
+				done <- true
+			}
+		}()
+		walletapi.WaitNewHeightBlock()
+		done <- true
+	}()
+	
+	// Start health check ticker
+	healthTicker := time.NewTicker(healthCheckInterval)
+	defer healthTicker.Stop()
+	
+	// Create timeout channel
+	timeoutChan := time.After(timeout)
+	
+	// Wait for either block, timeout, or daemon crash
+	for {
+		select {
+		case <-done:
+			return waitErr
+		case <-timeoutChan:
+			// Final check before returning timeout
+			if !walletapi.Connected {
+				return fmt.Errorf("daemon connection lost (detected during timeout)")
+			}
+			return fmt.Errorf("timeout after %v - daemon may have crashed or stopped responding", timeout)
+		case <-healthTicker.C:
+			// Periodic health check - detect daemon crashes early
+			if !walletapi.Connected {
+				done <- true // Signal to exit
+				return fmt.Errorf("daemon connection lost (detected during health check)")
+			}
+			
+			// Also check if daemon RPC is responding (more thorough check)
+			if a.daemonClient != nil {
+				_, err := a.daemonClient.GetInfo()
+				if err != nil {
+					// Daemon RPC not responding - likely crashed
+					done <- true // Signal to exit
+					return fmt.Errorf("daemon RPC not responding: %v", err)
+				}
+			}
+		}
+	}
 }
 
