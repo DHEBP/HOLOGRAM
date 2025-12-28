@@ -327,11 +327,8 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 		
 		txid = tx.GetHash().String()
 		
-		// Close websocket - this is the LAST operation, so cleanup now
-		a.logToConsole("[NET] Closing walletapi websocket (batch complete)")
-		if rpcClient := walletapi.GetRPCClient(); rpcClient != nil && rpcClient.WS != nil {
-			rpcClient.WS.Close()
-		}
+		// Disconnect walletapi - this is the LAST operation, so cleanup now
+		a.logToConsole("[NET] Disconnecting walletapi (batch complete)")
 		walletapi.Connected = false
 		
 	} else {

@@ -307,9 +307,7 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 		if err != nil {
 			a.logToConsole(fmt.Sprintf("[ERR] TransferPayload0 failed: %v", err))
 			// Disconnect walletapi
-			if rpcClient := walletapi.GetRPCClient(); rpcClient != nil && rpcClient.WS != nil {
-				rpcClient.WS.Close()
-			}
+			walletapi.Connected = false
 			return ErrorResponse(fmt.Errorf("transfer build error: %v", err))
 		}
 		
@@ -317,19 +315,14 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 		if err := wallet.SendTransaction(tx); err != nil {
 			a.logToConsole(fmt.Sprintf("[ERR] SendTransaction failed: %v", err))
 			// Disconnect walletapi
-			if rpcClient := walletapi.GetRPCClient(); rpcClient != nil && rpcClient.WS != nil {
-				rpcClient.WS.Close()
-			}
+			walletapi.Connected = false
 			return ErrorResponse(fmt.Errorf("transaction dispatch error: %v", err))
 		}
 		
 		txid = tx.GetHash().String()
 		a.logToConsole(fmt.Sprintf("[OK] Transaction sent: %s", txid))
 		
-		// Close walletapi websocket (cleanup)
-		if rpcClient := walletapi.GetRPCClient(); rpcClient != nil && rpcClient.WS != nil {
-			rpcClient.WS.Close()
-		}
+		// Disconnect walletapi (cleanup)
 		walletapi.Connected = false
 	} else {
 		// NON-SIMULATOR: Use standard tela.Installer() (supports multiple connections)

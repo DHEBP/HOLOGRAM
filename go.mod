@@ -19,7 +19,6 @@ require (
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
 	github.com/creachadair/jrpc2 v0.35.4 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dchest/siphash v1.2.3 // indirect
@@ -31,6 +30,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.1 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
+	github.com/klauspost/compress v1.15.13 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
 	github.com/klauspost/reedsolomon v1.11.5 // indirect
 	github.com/labstack/echo/v4 v4.13.3 // indirect
@@ -80,8 +80,10 @@ require (
 	golang.org/x/time v0.8.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	nhooyr.io/websocket v1.8.7 // indirect
 )
 
 // Local development paths (remove these if using published modules)
-// replace github.com/deroproject/derohe => /path/to/local/derohe
-// replace github.com/civilware/epoch => /path/to/local/epoch
+replace github.com/deroproject/derohe => /Users/home/projects/__Dero/derohe-block-explorer
+
+replace github.com/civilware/epoch => /Users/home/projects/__Dero/epoch-main

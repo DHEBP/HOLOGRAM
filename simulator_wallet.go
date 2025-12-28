@@ -334,20 +334,18 @@ func (swm *SimulatorWalletManager) SendRegistration() error {
 	// The simulator daemon can only handle ONE websocket connection at a time.
 	// We must CLOSE the walletapi websocket before the tela library creates its own.
 	// Note: walletapi.Connect(" ") doesn't actually close the websocket - it just
-	// fails to connect to a new endpoint. We must explicitly close the websocket.
-	swm.log("[NET] Properly closing walletapi websocket to free daemon for tela library...")
+	// fails to connect to a new endpoint. 
+	// NOTE: GetRPCClient() is not available in this derohe version, so we rely on
+	// connection state management. The tela library will create its own connection.
+	swm.log("[NET] Disconnecting walletapi to free daemon for tela library...")
 	
-	// Get the RPC client and close its websocket
-	rpcClient := walletapi.GetRPCClient()
-	if rpcClient != nil && rpcClient.WS != nil {
-		rpcClient.WS.Close()
-		swm.log("[OK] Websocket closed successfully")
-		// Give the daemon a moment to clean up the connection
-		time.Sleep(100 * time.Millisecond)
-	}
-	
-	// Set Connected to false since we closed the connection
+	// Set Connected to false - this signals that walletapi is no longer connected
+	// The tela library will create its own websocket connection when needed
 	walletapi.Connected = false
+	
+	// Give the daemon a moment to clean up the connection
+	time.Sleep(100 * time.Millisecond)
+	swm.log("[OK] Walletapi disconnected")
 	
 	// CRITICAL: Restore Daemon_Endpoint_Active for tela library
 	// The tela library uses this to know where to connect

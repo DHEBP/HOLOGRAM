@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
-  import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode } from '../stores/appState.js';
+  import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode, toast } from '../stores/appState.js';
   import { 
     SetSetting, GetEpochStats, SetNetworkMode,
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus,
@@ -8,6 +8,7 @@
     GetRecentWalletsWithInfo, SwitchWallet, GetActiveXSWDConnections, RevokeXSWDConnection,
     DisconnectXSWD, CloseWallet, RemoveRecentWallet
   } from '../../../wailsjs/go/main/App.js';
+  import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
   import { DotIndicator, Icons } from './holo';
   import Wordmark from './Wordmark.svelte';
   import { 
@@ -25,6 +26,12 @@
   let simulatorStatus = { isInitialized: false, isStarting: false };
   let showSimulatorConfirm = false;
   let simulatorAction = null; // 'start' or 'stop'
+  let simulatorStarting = false;
+  let simulatorProgress = {
+    step: 0,
+    message: '',
+    status: ''
+  };
   
   // Wallet menu state
   let showWalletMenu = false;
@@ -112,6 +119,32 @@
       refreshSimulatorStatus();
       loadConnectedApps(); // Keep connected apps count updated
     }, 5000);
+    
+    // Listen for simulator progress events
+    EventsOn("simulator:progress", (data) => {
+      simulatorProgress = {
+        step: data.step || 0,
+        message: data.message || '',
+        status: data.status || ''
+      };
+    });
+    
+    // Listen for simulator completion
+    EventsOn("simulator:complete", (data) => {
+      simulatorStarting = false;
+      if (data.success) {
+        toast.success(data.message || 'Simulator mode activated!', 3000);
+        // Immediately sync network mode and refresh status
+        syncNetworkMode();
+        refreshSimulatorStatus();
+      }
+    });
+    
+    // Listen for simulator errors
+    EventsOn("simulator:error", (data) => {
+      simulatorStarting = false;
+      toast.error(data.error || 'Simulator startup failed', 5000);
+    });
   });
   
   onDestroy(() => {
@@ -120,6 +153,10 @@
     if (walletDisplayAddress) {
       clearAvatarCache(walletDisplayAddress);
     }
+    // Clean up event listeners
+    EventsOff("simulator:progress");
+    EventsOff("simulator:complete");
+    EventsOff("simulator:error");
   });
   
   async function refreshEpochStatus() {
@@ -207,19 +244,25 @@
     showSimulatorConfirm = false;
     
     if (simulatorAction === 'start') {
-      // Start simulator mode
+      // Start simulator mode with loading state
+      simulatorStarting = true;
+      simulatorProgress = { step: 0, message: 'Starting simulator...', status: 'starting' };
+      
       try {
         const result = await StartSimulatorMode();
+        simulatorStarting = false;
+        
         if (result.success) {
+          // Network mode will be updated via the completion event handler
+          // But also ensure it's set here as a fallback
           await doSwitchNetwork('simulator');
           await refreshSimulatorStatus();
         } else {
-          console.error('Failed to start simulator:', result.error);
-          alert('Failed to start simulator: ' + result.error);
+          toast.error(result.error || 'Failed to start simulator', 5000);
         }
       } catch (e) {
-        console.error('Failed to start simulator:', e);
-        alert('Failed to start simulator: ' + e.message);
+        simulatorStarting = false;
+        toast.error(e.message || 'Failed to start simulator', 5000);
       }
     } else if (simulatorAction === 'stop') {
       // Stop simulator and switch to mainnet
@@ -227,8 +270,10 @@
         await StopSimulatorMode();
         await doSwitchNetwork('mainnet');
         await refreshSimulatorStatus();
+        toast.success('Simulator stopped', 2000);
       } catch (e) {
         console.error('Failed to stop simulator:', e);
+        toast.error('Failed to stop simulator: ' + e.message, 5000);
       }
     }
     
@@ -611,11 +656,22 @@
           
           {#if showNetworkMenu}
             <div class="network-dropdown">
+              {#if simulatorStarting}
+                <div class="simulator-progress">
+                  <div class="progress-spinner"></div>
+                  <div class="progress-text">
+                    <div class="progress-message">{simulatorProgress.message}</div>
+                    <div class="progress-step">Step {simulatorProgress.step}/5</div>
+                  </div>
+                </div>
+              {/if}
+              
               {#each Object.entries(networks) as [id, net]}
                 <button
                   on:click|stopPropagation={() => switchNetwork(id)}
                   class="network-dropdown-option"
                   class:active={$settingsState.network === id}
+                  disabled={simulatorStarting && id !== 'simulator'}
                 >
                   <span class="dot-column">
                     <span class="unified-dot" 
@@ -681,11 +737,22 @@
           
           {#if showNetworkMenu}
             <div class="network-dropdown">
+              {#if simulatorStarting}
+                <div class="simulator-progress">
+                  <div class="progress-spinner"></div>
+                  <div class="progress-text">
+                    <div class="progress-message">{simulatorProgress.message}</div>
+                    <div class="progress-step">Step {simulatorProgress.step}/5</div>
+                  </div>
+                </div>
+              {/if}
+              
               {#each Object.entries(networks) as [id, net]}
                 <button
                   on:click|stopPropagation={() => switchNetwork(id)}
                   class="network-dropdown-option"
                   class:active={$settingsState.network === id}
+                  disabled={simulatorStarting && id !== 'simulator'}
                 >
                   <span class="dot-column">
                     <span class="unified-dot" 
@@ -1738,6 +1805,57 @@
   
   .network-dropdown-option:hover { background: var(--void-hover); }
   .network-dropdown-option.active { color: var(--cyan-400); background: rgba(34, 211, 238, 0.08); }
+  .network-dropdown-option:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  /* Simulator Progress Indicator */
+  .simulator-progress {
+    padding: var(--s-3) var(--s-4);
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    border-bottom: 1px solid var(--border-dim);
+    background: var(--void-deep);
+  }
+  
+  .progress-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border-subtle);
+    border-top-color: var(--cyan-400);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  
+  .progress-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  
+  .progress-message {
+    font-size: 12px;
+    color: var(--text-2);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  .progress-step {
+    font-size: 11px;
+    color: var(--text-4);
+    font-family: var(--font-mono);
+  }
+  
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
   
   /* Wallet Section - 16px horizontal padding to match nav */
   .wallet-section {
