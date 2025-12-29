@@ -13,11 +13,12 @@ import (
 // SimulatorManager provides unified control for all simulator operations
 type SimulatorManager struct {
 	sync.RWMutex
-	app           *App
-	walletManager *SimulatorWalletManager
-	isInitialized bool
-	isStarting    bool
-	baseDir       string
+	app               *App
+	walletManager     *SimulatorWalletManager
+	testWalletManager *TestWalletManager
+	isInitialized     bool
+	isStarting        bool
+	baseDir           string
 }
 
 // SimulatorStatus represents the current state of the simulator
@@ -39,9 +40,10 @@ func NewSimulatorManager(app *App) *SimulatorManager {
 	baseDir := filepath.Join(homeDir, ".dero", "tela-gui")
 
 	return &SimulatorManager{
-		app:           app,
-		walletManager: NewSimulatorWalletManager(app.logToConsole),
-		baseDir:       baseDir,
+		app:               app,
+		walletManager:     NewSimulatorWalletManager(app.logToConsole),
+		testWalletManager: NewTestWalletManager(app.logToConsole),
+		baseDir:           baseDir,
 	}
 }
 
@@ -275,8 +277,10 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 		})
 	}
 	
-	// Ensure wallet exists
-	_, err := sm.walletManager.EnsureWalletExists(sm.baseDir)
+	// Ensure wallet exists with FRESH registration state
+	// forceReset=true deletes old wallet to avoid stale registration state
+	// when the simulator blockchain resets between sessions
+	_, err := sm.walletManager.EnsureWalletExists(sm.baseDir, true)
 	if err != nil {
 		if sm.app.ctx != nil {
 			wailsRuntime.EventsEmit(sm.app.ctx, "simulator:error", map[string]interface{}{
@@ -326,6 +330,27 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 		sm.app.logToConsole("[INFO] You may need to click 'Auto-mines to confirm' to register your wallet")
 	} else {
 		sm.app.logToConsole("[OK] Wallet registration complete")
+	}
+
+	// Step 4c: Set up pre-seeded test wallets (same as original DERO simulator)
+	sm.app.logToConsole("[WALLET] Setting up pre-seeded test wallets...")
+	if sm.app.ctx != nil {
+		wailsRuntime.EventsEmit(sm.app.ctx, "simulator:progress", map[string]interface{}{
+			"step":    4,
+			"message": "Setting up test wallets...",
+			"status":  "wallets",
+		})
+	}
+	if err := sm.testWalletManager.SetupTestWallets(sm.baseDir); err != nil {
+		sm.app.logToConsole(fmt.Sprintf("[WARN] Failed to set up test wallets: %v", err))
+	} else {
+		// Register all test wallets
+		endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
+		if err := sm.testWalletManager.RegisterAllWallets(endpoint); err != nil {
+			sm.app.logToConsole(fmt.Sprintf("[WARN] Failed to register test wallets: %v", err))
+		} else {
+			sm.app.logToConsole(fmt.Sprintf("[OK] %d pre-seeded test wallets ready", sm.testWalletManager.Count()))
+		}
 	}
 
 	// Step 5: Configure Gnomon for simulator network (optional)
@@ -384,12 +409,17 @@ func (sm *SimulatorManager) StopSimulatorMode() map[string]interface{} {
 
 	sm.app.logToConsole("[STOP] Stopping Simulator Mode...")
 
-	// Step 1: Close wallet
+	// Step 1: Close test wallets
+	if sm.testWalletManager != nil {
+		sm.testWalletManager.CloseAll()
+	}
+
+	// Step 2: Close main wallet
 	if sm.walletManager != nil {
 		sm.walletManager.CloseWallet()
 	}
 
-	// Step 2: Stop daemon
+	// Step 3: Stop daemon
 	stopResult := sm.app.StopNode()
 	if !stopResult["success"].(bool) {
 		sm.app.logToConsole(fmt.Sprintf("[WARN] Warning stopping daemon: %v", stopResult["error"]))
@@ -432,6 +462,12 @@ func (sm *SimulatorManager) GetStatus() SimulatorStatus {
 		if balance, _, err := sm.walletManager.GetBalance(); err == nil {
 			status.Balance = balance
 		}
+	}
+
+	// Check test wallets status
+	if sm.testWalletManager != nil {
+		status.Extra["testWalletsCount"] = sm.testWalletManager.Count()
+		status.Extra["testWalletsReady"] = sm.testWalletManager.IsSetup()
 	}
 
 	// RPC endpoint

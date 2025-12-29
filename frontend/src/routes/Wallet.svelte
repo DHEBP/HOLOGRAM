@@ -1,12 +1,14 @@
 <script>
-  import { walletState, appState, settingsState, walletRequestHistory, clearRequestHistory, toast, handleBackendError } from '../lib/stores/appState.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys } from '../../wailsjs/go/main/App.js';
+  import { walletState, appState, settingsState, walletRequestHistory, clearRequestHistory, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
+  import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { 
     Copy, ArrowUp, ArrowDown, ArrowLeftRight, Eye, EyeOff,
     Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe,
     LayoutDashboard, QrCode, History, Coins, Users, FileSignature, RefreshCw,
-    Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield
+    Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield,
+    Key
   } from 'lucide-svelte';
   
   import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
@@ -51,6 +53,12 @@
   let error = null;
   let recentWallets = [];
   let recentWalletsInfo = [];
+  
+  // Test wallets (Simulator mode)
+  let testWallets = [];
+  let testWalletsLoading = false;
+  let selectedTestWallet = null;
+  let testWalletsExpanded = false; // Show all 22 or just first 10
   
   // Create wallet form
   let createPath = '';
@@ -232,6 +240,31 @@
           }));
         }
       }
+      
+      // Load test wallets if in simulator mode
+      if ($settingsState.network === 'simulator') {
+        await loadTestWallets();
+      }
+      
+      // Listen for simulator mode activation
+      EventsOn('simulator:complete', async (data) => {
+        console.log('[WALLET] Simulator complete event received, loading test wallets...');
+        await syncNetworkMode();
+        await loadTestWallets();
+      });
+      
+      // Listen for network mode changes
+      EventsOn('network-mode-changed', async () => {
+        console.log('[WALLET] Network mode changed, checking for test wallets...');
+        await syncNetworkMode();
+        if ($settingsState.network === 'simulator') {
+          await loadTestWallets();
+        } else {
+          // Clear test wallets when switching away from simulator
+          testWallets = [];
+          selectedTestWallet = null;
+        }
+      });
     } catch (err) {
       console.error('Error checking wallet status:', err);
     }
@@ -239,7 +272,105 @@
   
   onDestroy(() => {
     stopPolling();
+    EventsOff('simulator:complete');
+    EventsOff('network-mode-changed');
   });
+  
+  // Reactive: Load test wallets when network mode changes to simulator
+  $: if ($settingsState.network === 'simulator' && !$walletState.isOpen && testWallets.length === 0) {
+    loadTestWallets();
+  }
+  
+  // ============================================
+  // TEST WALLET FUNCTIONS (Simulator Mode)
+  // ============================================
+  async function loadTestWallets() {
+    if (testWalletsLoading) return;
+    testWalletsLoading = true;
+    try {
+      const result = await GetSimulatorTestWallets();
+      if (result.success && result.wallets) {
+        testWallets = result.wallets;
+      } else {
+        testWallets = [];
+      }
+    } catch (err) {
+      console.error('Error loading test wallets:', err);
+      testWallets = [];
+    } finally {
+      testWalletsLoading = false;
+    }
+  }
+  
+  async function syncTestWallets() {
+    testWalletsLoading = true;
+    try {
+      const result = await SyncSimulatorTestWallets();
+      if (result.success && result.wallets) {
+        testWallets = result.wallets;
+        toast.success('Test wallets synced');
+      }
+    } catch (err) {
+      console.error('Error syncing test wallets:', err);
+      toast.error('Failed to sync test wallets');
+    } finally {
+      testWalletsLoading = false;
+    }
+  }
+  
+  async function openTestWallet(wallet) {
+    // Use the dedicated backend function to open test wallets
+    loading = true;
+    error = null;
+    selectedTestWallet = wallet;
+    
+    try {
+      const result = await OpenSimulatorTestWallet(wallet.index);
+      
+      if (result.success) {
+        walletState.update(state => ({
+          ...state,
+          isOpen: true,
+          address: result.address,
+          walletPath: result.path,
+        }));
+        await refreshBalance();
+        await loadTransactionHistory();
+        startPolling();
+        toast.success(`Connected to test wallet #${wallet.index}`);
+      } else {
+        error = result.error || 'Failed to open test wallet';
+        toast.error(error);
+      }
+    } catch (err) {
+      error = err.message || 'Failed to open test wallet';
+      toast.error(error);
+    } finally {
+      loading = false;
+    }
+  }
+  
+  function selectTestWallet(wallet) {
+    selectedTestWallet = wallet;
+  }
+  
+  function copyTestWalletAddress(wallet, e) {
+    e?.stopPropagation();
+    navigator.clipboard.writeText(wallet.address);
+    toast.success('Address copied');
+  }
+  
+  function copyTestWalletSeed(wallet, e) {
+    e?.stopPropagation();
+    navigator.clipboard.writeText(wallet.seed);
+    toast.success('Seed copied');
+  }
+  
+  function formatTestWalletBalance(balance) {
+    // Balance is in atomic units (1 DERO = 100000 atomic)
+    const dero = balance / 100000;
+    return dero.toLocaleString(undefined, { maximumFractionDigits: 5 });
+  }
   
   // ============================================
   // DATA LOADING FUNCTIONS
@@ -1935,247 +2066,381 @@
 
 {:else}
   <!-- ============================================
-       LOGIN FORM
+       LOGIN FORM - New Sidebar Layout
        ============================================ -->
-  <div class="wallet-page">
-    <div class="wallet-container">
-      <div class="login-header">
-        <h1 class="login-title">Wallet</h1>
-        <p class="login-subtitle">Open an existing wallet or create a new one</p>
-      </div>
-      
-      <!-- Tab Navigation -->
-      <div class="tab-nav">
-        <button class="tab-btn" class:active={activeTab === 'open'} on:click={() => activeTab = 'open'}>
-          <FolderOpen size={16} />
-          <span>Open</span>
-        </button>
-        <button class="tab-btn" class:active={activeTab === 'create'} on:click={() => activeTab = 'create'}>
-          <Plus size={16} />
-          <span>Create</span>
-        </button>
-        <button class="tab-btn" class:active={activeTab === 'restore'} on:click={() => activeTab = 'restore'}>
-          <RotateCcw size={16} />
-          <span>Restore</span>
-        </button>
-      </div>
-      
-      <div class="card-shimmer">
-        <div class="card-body-lg">
-          {#if activeTab === 'open'}
-            <!-- Open Wallet Tab -->
-            <div class="form-group">
-              <label class="form-label">Wallet File</label>
-              <div class="input-row">
-                <input type="text" bind:value={walletPath} placeholder="/path/to/wallet.db" class="input" />
-                <button on:click={selectWalletFile} class="btn btn-secondary">Browse</button>
-              </div>
-            </div>
-            
-            <div class="form-group">
-              <label class="form-label">Password</label>
-              <div class="input-wrap">
-                {#if showPassword}
-                  <input type="text" bind:value={password} placeholder="Enter wallet password" class="input" />
-                {:else}
-                  <input type="password" bind:value={password} placeholder="Enter wallet password" class="input" />
-                {/if}
-                <button type="button" on:click={() => showPassword = !showPassword} class="input-action">
-                  {#if showPassword}
-                    <EyeOff size={16} strokeWidth={1.5} />
-                  {:else}
-                    <Eye size={16} strokeWidth={1.5} />
-                  {/if}
-                </button>
-              </div>
-            </div>
-            
-            {#if error}
-              <div class="alert alert-error">
-                <span class="alert-text">{error}</span>
-              </div>
-            {/if}
-            
-            <button on:click={openWallet} disabled={loading || !walletPath} class="btn btn-primary btn-block">
-              {loading ? 'Opening...' : 'Open Wallet'}
-            </button>
-            
-          {:else if activeTab === 'create'}
-            <!-- Create Wallet Tab -->
-            <div class="form-group">
-              <label class="form-label">Wallet Name</label>
-              <input type="text" bind:value={createPath} placeholder="MyWallet" class="input" maxlength="25" />
-              <span class="form-hint">Just enter a name - the wallet file will be created automatically</span>
-            </div>
-            
-            <div class="form-group">
-              <label class="form-label">Password</label>
-              <div class="input-wrap">
-                {#if showCreatePassword}
-                  <input type="text" bind:value={createPassword} placeholder="Create a strong password" class="input" />
-                {:else}
-                  <input type="password" bind:value={createPassword} placeholder="Create a strong password" class="input" />
-                {/if}
-                <button type="button" on:click={() => showCreatePassword = !showCreatePassword} class="input-action">
-                  {#if showCreatePassword}
-                    <EyeOff size={16} strokeWidth={1.5} />
-                  {:else}
-                    <Eye size={16} strokeWidth={1.5} />
-                  {/if}
-                </button>
-              </div>
-            </div>
-            
-            <div class="form-group">
-              <label class="form-label">Confirm Password</label>
-              <input 
-                type="password" 
-                bind:value={createPasswordConfirm} 
-                placeholder="Confirm password" 
-                class="input"
-                class:input-error={createPasswordConfirm && !createPasswordsMatch}
-              />
-              {#if createPasswordConfirm && !createPasswordsMatch}
-                <span class="form-error">Passwords do not match</span>
-              {/if}
-            </div>
-            
-            {#if createError}
-              <div class="alert alert-error">
-                <span class="alert-text">{createError}</span>
-              </div>
-            {/if}
-            
-            <button 
-              on:click={handleCreateWallet} 
-              disabled={createLoading || !createPath || !createPasswordsMatch} 
-              class="btn btn-primary btn-block"
-            >
-              {createLoading ? 'Creating...' : 'Create Wallet'}
-            </button>
-            
-          {:else if activeTab === 'restore'}
-            <!-- Restore Wallet Tab -->
-            <div class="form-group">
-              <label class="form-label">Wallet Name</label>
-              <input type="text" bind:value={restorePath} placeholder="MyWallet" class="input" maxlength="25" />
-              <span class="form-hint">Enter a name for the restored wallet</span>
-            </div>
-            
-            <div class="form-group">
-              <label class="form-label">Recovery Seed (25 words)</label>
-              <textarea
-                bind:value={restoreSeed}
-                placeholder="Enter your 25-word recovery seed..."
-                class="input textarea"
-                rows="4"
-              ></textarea>
-              <span class="form-hint">{seedWordCount} / 25 words</span>
-              {#if restoreSeed && !isValidSeed}
-                <span class="form-error">Seed must be exactly 25 words</span>
-              {/if}
-            </div>
-            
-            <div class="form-group">
-              <label class="form-label">New Password</label>
-              <div class="input-wrap">
-                {#if showRestorePassword}
-                  <input type="text" bind:value={restorePassword} placeholder="Create a password" class="input" />
-                {:else}
-                  <input type="password" bind:value={restorePassword} placeholder="Create a password" class="input" />
-                {/if}
-                <button type="button" on:click={() => showRestorePassword = !showRestorePassword} class="input-action">
-                  {#if showRestorePassword}
-                    <EyeOff size={16} strokeWidth={1.5} />
-                  {:else}
-                    <Eye size={16} strokeWidth={1.5} />
-                  {/if}
-                </button>
-              </div>
-            </div>
-            
-            <div class="form-group">
-              <label class="form-label">Confirm Password</label>
-              <input 
-                type="password" 
-                bind:value={restorePasswordConfirm} 
-                placeholder="Confirm password" 
-                class="input"
-                class:input-error={restorePasswordConfirm && !restorePasswordsMatch}
-              />
-              {#if restorePasswordConfirm && !restorePasswordsMatch}
-                <span class="form-error">Passwords do not match</span>
-              {/if}
-            </div>
-            
-            {#if restoreError}
-              <div class="alert alert-error">
-                <span class="alert-text">{restoreError}</span>
-              </div>
-            {/if}
-            
-            <button 
-              on:click={handleRestoreWallet} 
-              disabled={restoreLoading || !restorePath || !restorePasswordsMatch || !isValidSeed} 
-              class="btn btn-primary btn-block"
-            >
-              {restoreLoading ? 'Restoring...' : 'Restore Wallet'}
-            </button>
-          {/if}
+  <div class="page-layout">
+    <!-- Page Header -->
+    <div class="page-header">
+      <div class="page-header-inner">
+        <div class="page-header-left">
+          <h1 class="page-header-title">
+            <Wallet size={18} class="page-header-icon" strokeWidth={1.5} />
+            Wallet
+          </h1>
+          <p class="page-header-desc">Open an existing wallet or create a new one</p>
         </div>
       </div>
-      
-      <!-- XSWD Alternative -->
-      <div class="xswd-section">
-        <p class="xswd-text">Or connect via XSWD to an external wallet</p>
-        <button
-          on:click={connectXSWD}
-          disabled={$appState.xswdConnected}
-          class="btn btn-secondary"
-        >
-          {$appState.xswdConnected ? 'XSWD Connected' : 'Connect via XSWD'}
-        </button>
-      </div>
-      
-      <!-- Recent Wallets -->
-      {#if activeTab === 'open' && recentWalletsInfo.length > 0}
-        <div class="recent-wallets-section">
-          <div class="recent-wallets-header">
-            <h3 class="recent-wallets-title">RECENT WALLETS</h3>
-            <button 
-              class="recent-wallets-clear-btn"
-              on:click={handleClearRecentWallets}
-              title="Clear all recent wallets"
-            >
-              Clear All
-            </button>
-          </div>
-          <div class="recent-wallets-list">
+    </div>
+
+    <!-- Page Body with Sidebar -->
+    <div class="page-body">
+      <!-- Sidebar with Wallets -->
+      <div class="page-sidebar">
+        <!-- Recent Wallets Section -->
+        <div class="page-sidebar-section">
+          WALLETS
+        </div>
+        <nav class="page-sidebar-nav">
+          {#if recentWalletsInfo.length > 0}
             {#each recentWalletsInfo as wallet}
-              <button 
-                on:click={() => walletPath = wallet.path} 
-                class="recent-wallet-card"
+              <button
+                class="page-sidebar-item"
                 class:active={walletPath === wallet.path}
+                on:click={() => walletPath = wallet.path}
+                title={wallet.path}
               >
-                <span class="recent-wallet-icon">{walletPath === wallet.path ? '✓' : '◇'}</span>
-                <div class="recent-wallet-info">
-                  <span class="recent-wallet-name">{wallet.filename}</span>
-                  {#if wallet.addressPrefix}
-                    <span class="recent-wallet-address">{wallet.addressPrefix}...</span>
-                  {/if}
-                </div>
+                <span class="page-sidebar-item-icon">
+                  <Wallet size={14} strokeWidth={1.5} />
+                </span>
+                <span class="page-sidebar-item-label">{wallet.filename}</span>
                 <button 
-                  class="recent-wallet-remove"
+                  class="sidebar-wallet-remove"
                   on:click={(e) => handleRemoveRecentWallet(wallet.path, e)}
-                  title="Remove from recent wallets"
+                  title="Remove"
                 >
                   ×
                 </button>
               </button>
             {/each}
+            <button class="sidebar-clear-btn" on:click={handleClearRecentWallets}>
+              <Trash2 size={12} />
+              Clear All
+            </button>
+          {:else}
+            <div class="sidebar-empty">
+              <span class="sidebar-empty-text">No recent wallets</span>
+            </div>
+          {/if}
+        </nav>
+
+        <!-- Test Wallets Section (Simulator Mode Only) -->
+        {#if $settingsState.network === 'simulator'}
+          <div class="page-sidebar-section" style="margin-top: var(--s-5)">
+            TEST WALLETS
+            {#if testWallets.length > 0}
+              <span class="sidebar-badge">{testWallets.length}</span>
+            {/if}
           </div>
-        </div>
-      {/if}
+          <nav class="page-sidebar-nav">
+            {#if testWalletsLoading}
+              <div class="sidebar-loading">
+                <Loader2 size={14} class="spin" />
+                <span>Loading...</span>
+              </div>
+            {:else if testWallets.length > 0}
+              {#each testWalletsExpanded ? testWallets : testWallets.slice(0, 10) as wallet}
+                <button
+                  class="page-sidebar-item"
+                  class:active={selectedTestWallet?.index === wallet.index}
+                  on:click={() => selectTestWallet(wallet)}
+                >
+                  <span class="page-sidebar-item-icon test-wallet-index">
+                    #{wallet.index}
+                  </span>
+                  <span class="page-sidebar-item-label test-wallet-addr">
+                    {wallet.address.slice(0, 12)}...
+                  </span>
+                </button>
+              {/each}
+              {#if testWallets.length > 10}
+                <button 
+                  class="sidebar-expand-btn" 
+                  on:click={() => testWalletsExpanded = !testWalletsExpanded}
+                >
+                  {testWalletsExpanded ? 'Show Less' : `Show All ${testWallets.length}`}
+                  <ChevronRight size={12} class={testWalletsExpanded ? 'rotate-down' : ''} />
+                </button>
+              {/if}
+              <button class="sidebar-sync-btn" on:click={syncTestWallets} disabled={testWalletsLoading}>
+                <RefreshCw size={12} />
+                Sync Balances
+              </button>
+            {:else}
+              <div class="sidebar-empty">
+                <span class="sidebar-empty-text">Start simulator to load wallets</span>
+              </div>
+            {/if}
+          </nav>
+        {/if}
+      </div>
+
+      <!-- Content Area -->
+      <div class="page-content">
+        <!-- Selected Test Wallet Details (when in simulator mode and wallet selected) -->
+        {#if $settingsState.network === 'simulator' && selectedTestWallet}
+          <div class="content-section-title">Test Wallet Details</div>
+          <p class="content-section-desc">Pre-seeded wallet for testing</p>
+
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                WALLET #{selectedTestWallet.index}
+              </div>
+              <div class="cmd-panel-meta">
+                <span class="badge badge-cyan">Test Wallet</span>
+              </div>
+            </div>
+            
+            <div class="test-wallet-details">
+              <div class="test-wallet-field">
+                <label class="form-label">Address</label>
+                <div class="test-wallet-value-row">
+                  <code class="test-wallet-code">{selectedTestWallet.address}</code>
+                  <button class="btn-icon-sm" on:click={(e) => copyTestWalletAddress(selectedTestWallet, e)} title="Copy address">
+                    <Copy size={12} />
+                  </button>
+                </div>
+              </div>
+              
+              <div class="test-wallet-field">
+                <label class="form-label">Balance</label>
+                <div class="test-wallet-balance">
+                  <span class="test-wallet-balance-value">{formatTestWalletBalance(selectedTestWallet.balance)}</span>
+                  <span class="test-wallet-balance-unit">DERO</span>
+                  {#if selectedTestWallet.locked > 0}
+                    <span class="test-wallet-balance-locked">+ {formatTestWalletBalance(selectedTestWallet.locked)} locked</span>
+                  {/if}
+                </div>
+              </div>
+              
+              <div class="test-wallet-field">
+                <label class="form-label">RPC Port</label>
+                <div class="test-wallet-value">{selectedTestWallet.rpcPort}</div>
+              </div>
+              
+              <div class="test-wallet-field">
+                <label class="form-label">Seed (Hex)</label>
+                <div class="test-wallet-value-row">
+                  <code class="test-wallet-code test-wallet-seed">{selectedTestWallet.seed}</code>
+                  <button class="btn-icon-sm" on:click={(e) => copyTestWalletSeed(selectedTestWallet, e)} title="Copy seed">
+                    <Key size={12} />
+                  </button>
+                </div>
+              </div>
+              
+              <div class="test-wallet-actions">
+                <button class="btn btn-primary" on:click={() => openTestWallet(selectedTestWallet)} disabled={loading}>
+                  {#if loading}
+                    <Loader2 size={14} class="spin" />
+                    Connecting...
+                  {:else}
+                    <Wallet size={14} />
+                    Use This Wallet
+                  {/if}
+                </button>
+              </div>
+            </div>
+          </div>
+
+        {:else}
+          <!-- Standard Login Form -->
+          <div class="content-section-title">Connect Wallet</div>
+          <p class="content-section-desc">Open an existing wallet, create a new one, or restore from seed</p>
+
+          <!-- Tab Navigation -->
+          <div class="tab-nav">
+            <button class="tab-btn" class:active={activeTab === 'open'} on:click={() => activeTab = 'open'}>
+              <FolderOpen size={16} />
+              <span>Open</span>
+            </button>
+            <button class="tab-btn" class:active={activeTab === 'create'} on:click={() => activeTab = 'create'}>
+              <Plus size={16} />
+              <span>Create</span>
+            </button>
+            <button class="tab-btn" class:active={activeTab === 'restore'} on:click={() => activeTab = 'restore'}>
+              <RotateCcw size={16} />
+              <span>Restore</span>
+            </button>
+          </div>
+          
+          <div class="cmd-stats-panel">
+            <div class="cmd-panel-body">
+              {#if activeTab === 'open'}
+                <!-- Open Wallet Tab -->
+                <div class="form-group">
+                  <label class="form-label">Wallet File</label>
+                  <div class="input-row">
+                    <input type="text" bind:value={walletPath} placeholder="/path/to/wallet.db" class="input" />
+                    <button on:click={selectWalletFile} class="btn btn-secondary">Browse</button>
+                  </div>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">Password</label>
+                  <div class="input-wrap">
+                    {#if showPassword}
+                      <input type="text" bind:value={password} placeholder="Enter wallet password" class="input" />
+                    {:else}
+                      <input type="password" bind:value={password} placeholder="Enter wallet password" class="input" />
+                    {/if}
+                    <button type="button" on:click={() => showPassword = !showPassword} class="input-action">
+                      {#if showPassword}
+                        <EyeOff size={16} strokeWidth={1.5} />
+                      {:else}
+                        <Eye size={16} strokeWidth={1.5} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+                
+                {#if error}
+                  <div class="alert alert-error">
+                    <span class="alert-text">{error}</span>
+                  </div>
+                {/if}
+                
+                <button on:click={openWallet} disabled={loading || !walletPath} class="btn btn-primary btn-block">
+                  {loading ? 'Opening...' : 'Open Wallet'}
+                </button>
+                
+              {:else if activeTab === 'create'}
+                <!-- Create Wallet Tab -->
+                <div class="form-group">
+                  <label class="form-label">Wallet Name</label>
+                  <input type="text" bind:value={createPath} placeholder="MyWallet" class="input" maxlength="25" />
+                  <span class="form-hint">Just enter a name - the wallet file will be created automatically</span>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">Password</label>
+                  <div class="input-wrap">
+                    {#if showCreatePassword}
+                      <input type="text" bind:value={createPassword} placeholder="Create a strong password" class="input" />
+                    {:else}
+                      <input type="password" bind:value={createPassword} placeholder="Create a strong password" class="input" />
+                    {/if}
+                    <button type="button" on:click={() => showCreatePassword = !showCreatePassword} class="input-action">
+                      {#if showCreatePassword}
+                        <EyeOff size={16} strokeWidth={1.5} />
+                      {:else}
+                        <Eye size={16} strokeWidth={1.5} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">Confirm Password</label>
+                  <input 
+                    type="password" 
+                    bind:value={createPasswordConfirm} 
+                    placeholder="Confirm password" 
+                    class="input"
+                    class:input-error={createPasswordConfirm && !createPasswordsMatch}
+                  />
+                  {#if createPasswordConfirm && !createPasswordsMatch}
+                    <span class="form-error">Passwords do not match</span>
+                  {/if}
+                </div>
+                
+                {#if createError}
+                  <div class="alert alert-error">
+                    <span class="alert-text">{createError}</span>
+                  </div>
+                {/if}
+                
+                <button 
+                  on:click={handleCreateWallet} 
+                  disabled={createLoading || !createPath || !createPasswordsMatch} 
+                  class="btn btn-primary btn-block"
+                >
+                  {createLoading ? 'Creating...' : 'Create Wallet'}
+                </button>
+                
+              {:else if activeTab === 'restore'}
+                <!-- Restore Wallet Tab -->
+                <div class="form-group">
+                  <label class="form-label">Wallet Name</label>
+                  <input type="text" bind:value={restorePath} placeholder="MyWallet" class="input" maxlength="25" />
+                  <span class="form-hint">Enter a name for the restored wallet</span>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">Recovery Seed (25 words)</label>
+                  <textarea
+                    bind:value={restoreSeed}
+                    placeholder="Enter your 25-word recovery seed..."
+                    class="input textarea"
+                    rows="4"
+                  ></textarea>
+                  <span class="form-hint">{seedWordCount} / 25 words</span>
+                  {#if restoreSeed && !isValidSeed}
+                    <span class="form-error">Seed must be exactly 25 words</span>
+                  {/if}
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">New Password</label>
+                  <div class="input-wrap">
+                    {#if showRestorePassword}
+                      <input type="text" bind:value={restorePassword} placeholder="Create a password" class="input" />
+                    {:else}
+                      <input type="password" bind:value={restorePassword} placeholder="Create a password" class="input" />
+                    {/if}
+                    <button type="button" on:click={() => showRestorePassword = !showRestorePassword} class="input-action">
+                      {#if showRestorePassword}
+                        <EyeOff size={16} strokeWidth={1.5} />
+                      {:else}
+                        <Eye size={16} strokeWidth={1.5} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">Confirm Password</label>
+                  <input 
+                    type="password" 
+                    bind:value={restorePasswordConfirm} 
+                    placeholder="Confirm password" 
+                    class="input"
+                    class:input-error={restorePasswordConfirm && !restorePasswordsMatch}
+                  />
+                  {#if restorePasswordConfirm && !restorePasswordsMatch}
+                    <span class="form-error">Passwords do not match</span>
+                  {/if}
+                </div>
+                
+                {#if restoreError}
+                  <div class="alert alert-error">
+                    <span class="alert-text">{restoreError}</span>
+                  </div>
+                {/if}
+                
+                <button 
+                  on:click={handleRestoreWallet} 
+                  disabled={restoreLoading || !restorePath || !restorePasswordsMatch || !isValidSeed} 
+                  class="btn btn-primary btn-block"
+                >
+                  {restoreLoading ? 'Restoring...' : 'Restore Wallet'}
+                </button>
+              {/if}
+            </div>
+          </div>
+          
+          <!-- XSWD Alternative -->
+          <div class="xswd-section">
+            <p class="xswd-text">Or connect via XSWD to an external wallet</p>
+            <button
+              on:click={connectXSWD}
+              disabled={$appState.xswdConnected}
+              class="btn btn-secondary"
+            >
+              {$appState.xswdConnected ? 'XSWD Connected' : 'Connect via XSWD'}
+            </button>
+          </div>
+        {/if}
+      </div>
     </div>
   </div>
 {/if}
@@ -2268,6 +2533,207 @@
     font-family: var(--font-mono);
     resize: vertical;
     min-height: 100px;
+  }
+  
+  /* ============================================
+     LOGIN SIDEBAR STYLES
+     ============================================ */
+  
+  /* Sidebar wallet item remove button */
+  .sidebar-wallet-remove {
+    opacity: 0;
+    padding: 2px 6px;
+    background: transparent;
+    border: none;
+    color: var(--text-4);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 150ms ease;
+    margin-left: auto;
+  }
+  .page-sidebar-item:hover .sidebar-wallet-remove { opacity: 1; }
+  .sidebar-wallet-remove:hover { color: var(--red-400); }
+  
+  /* Sidebar clear all button */
+  .sidebar-clear-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+    padding: var(--s-2) var(--s-3);
+    margin: var(--s-2) var(--s-2) 0;
+    background: transparent;
+    border: 1px dashed var(--border-subtle);
+    border-radius: var(--r-sm);
+    color: var(--text-4);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  .sidebar-clear-btn:hover { 
+    color: var(--red-400); 
+    border-color: rgba(248, 113, 113, 0.3);
+  }
+  
+  /* Sidebar empty state */
+  .sidebar-empty {
+    padding: var(--s-4) var(--s-3);
+    text-align: center;
+  }
+  .sidebar-empty-text {
+    font-size: 11px;
+    color: var(--text-4);
+  }
+  
+  /* Sidebar loading state */
+  .sidebar-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    padding: var(--s-4) var(--s-3);
+    color: var(--text-3);
+    font-size: 12px;
+  }
+  
+  /* Sidebar badge (count) */
+  .sidebar-badge {
+    margin-left: auto;
+    padding: 1px 6px;
+    background: rgba(34, 211, 238, 0.15);
+    border-radius: var(--r-full);
+    color: var(--cyan-400);
+    font-size: 10px;
+    font-weight: 600;
+  }
+  
+  /* Sidebar expand button */
+  .sidebar-expand-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-1);
+    width: 100%;
+    padding: var(--s-2) var(--s-3);
+    background: transparent;
+    border: none;
+    color: var(--cyan-400);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  .sidebar-expand-btn:hover { background: var(--void-up); }
+  .sidebar-expand-btn :global(.rotate-down) { transform: rotate(90deg); }
+  
+  /* Sidebar sync button */
+  .sidebar-sync-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-1);
+    width: calc(100% - var(--s-4));
+    margin: var(--s-2);
+    padding: var(--s-2);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    color: var(--text-3);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  .sidebar-sync-btn:hover:not(:disabled) { 
+    background: var(--void-up); 
+    color: var(--cyan-400);
+    border-color: var(--border-accent);
+  }
+  .sidebar-sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  
+  /* Test wallet index in sidebar */
+  .test-wallet-index {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--violet-400);
+  }
+  .test-wallet-addr {
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  
+  /* ============================================
+     TEST WALLET DETAILS PANEL
+     ============================================ */
+  
+  .test-wallet-details {
+    padding: var(--s-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+  }
+  
+  .test-wallet-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  
+  .test-wallet-value-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+  
+  .test-wallet-code {
+    flex: 1;
+    padding: var(--s-2) var(--s-3);
+    background: var(--void-deep);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-sm);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-2);
+    word-break: break-all;
+  }
+  
+  .test-wallet-seed {
+    font-size: 10px;
+    color: var(--violet-400);
+  }
+  
+  .test-wallet-value {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-2);
+  }
+  
+  .test-wallet-balance {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+  }
+  
+  .test-wallet-balance-value {
+    font-family: var(--font-mono);
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--cyan-400);
+  }
+  
+  .test-wallet-balance-unit {
+    font-size: 14px;
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+  
+  .test-wallet-balance-locked {
+    font-size: 12px;
+    color: var(--text-4);
+  }
+  
+  .test-wallet-actions {
+    margin-top: var(--s-2);
+    display: flex;
+    gap: var(--s-2);
   }
   
   /* XSWD Section */

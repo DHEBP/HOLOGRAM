@@ -646,6 +646,14 @@ export function GetSimulatorStatus() {
   return window['go']['main']['App']['GetSimulatorStatus']();
 }
 
+export function GetSimulatorTestWallet(arg1) {
+  return window['go']['main']['App']['GetSimulatorTestWallet'](arg1);
+}
+
+export function GetSimulatorTestWallets() {
+  return window['go']['main']['App']['GetSimulatorTestWallets']();
+}
+
 export function GetSimulatorWalletStatus() {
   return window['go']['main']['App']['GetSimulatorWalletStatus']();
 }
@@ -816,6 +824,10 @@ export function OmniSearch(arg1) {
 
 export function OpenServerInBrowser(arg1) {
   return window['go']['main']['App']['OpenServerInBrowser'](arg1);
+}
+
+export function OpenSimulatorTestWallet(arg1) {
+  return window['go']['main']['App']['OpenSimulatorTestWallet'](arg1);
 }
 
 export function OpenSimulatorWallet() {
@@ -1180,6 +1192,10 @@ export function SubscribeToWalletEvents() {
 
 export function SwitchWallet(arg1, arg2) {
   return window['go']['main']['App']['SwitchWallet'](arg1, arg2);
+}
+
+export function SyncSimulatorTestWallets() {
+  return window['go']['main']['App']['SyncSimulatorTestWallets']();
 }
 
 export function Transfer(arg1, arg2, arg3) {

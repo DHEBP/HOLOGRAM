@@ -324,6 +324,10 @@ export function GetSimulatorDeploymentInfo():Promise<Record<string, any>>;
 
 export function GetSimulatorStatus():Promise<Record<string, any>>;
 
+export function GetSimulatorTestWallet(arg1:number):Promise<Record<string, any>>;
+
+export function GetSimulatorTestWallets():Promise<Record<string, any>>;
+
 export function GetSimulatorWalletStatus():Promise<Record<string, any>>;
 
 export function GetSyncProgress():Promise<Record<string, any>>;
@@ -409,6 +413,8 @@ export function Navigate(arg1:string):Promise<Record<string, any>>;
 export function OmniSearch(arg1:string):Promise<main.SearchResult>;
 
 export function OpenServerInBrowser(arg1:string):Promise<Record<string, any>>;
+
+export function OpenSimulatorTestWallet(arg1:number):Promise<Record<string, any>>;
 
 export function OpenSimulatorWallet():Promise<Record<string, any>>;
 
@@ -591,6 +597,8 @@ export function SubscribeToBlockEvents():Promise<Record<string, any>>;
 export function SubscribeToWalletEvents():Promise<Record<string, any>>;
 
 export function SwitchWallet(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function SyncSimulatorTestWallets():Promise<Record<string, any>>;
 
 export function Transfer(arg1:string,arg2:number,arg3:string):Promise<Record<string, any>>;
 

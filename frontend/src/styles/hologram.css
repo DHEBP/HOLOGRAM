@@ -2731,6 +2731,10 @@
       gap: var(--s-2);
     }
     
+    .cmd-panel-body {
+      padding: var(--s-4);
+    }
+    
     .cmd-timestamp {
       font-family: var(--font-mono);
       font-size: 11px;

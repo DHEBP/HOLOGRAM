@@ -60,8 +60,33 @@ func (swm *SimulatorWalletManager) WalletExists(baseDir string) bool {
 	return err == nil
 }
 
+// ResetWallet deletes the existing simulator wallet to force a fresh registration
+// This is necessary because the simulator blockchain may reset between sessions,
+// but the wallet file persists with stale registration state
+func (swm *SimulatorWalletManager) ResetWallet(baseDir string) error {
+	walletPath := swm.GetWalletPath(baseDir)
+	
+	// Check if wallet exists
+	if _, err := os.Stat(walletPath); os.IsNotExist(err) {
+		swm.log("[INFO] No existing simulator wallet to reset")
+		return nil
+	}
+	
+	swm.log("[WALLET] Resetting simulator wallet (deleting old wallet for fresh registration)...")
+	
+	// Delete the wallet file
+	if err := os.Remove(walletPath); err != nil {
+		return fmt.Errorf("failed to delete old wallet: %v", err)
+	}
+	
+	swm.log("[OK] Old simulator wallet deleted - fresh wallet will be created")
+	return nil
+}
+
 // EnsureWalletExists creates the simulator wallet if it doesn't exist
-func (swm *SimulatorWalletManager) EnsureWalletExists(baseDir string) (string, error) {
+// IMPORTANT: For simulator mode, we always create a fresh wallet to avoid
+// stale registration state when the blockchain resets between sessions
+func (swm *SimulatorWalletManager) EnsureWalletExists(baseDir string, forceReset bool) (string, error) {
 	swm.Lock()
 	defer swm.Unlock()
 
@@ -76,8 +101,17 @@ func (swm *SimulatorWalletManager) EnsureWalletExists(baseDir string) (string, e
 
 	// Check if wallet already exists
 	if _, err := os.Stat(walletPath); err == nil {
-		swm.log(fmt.Sprintf("[OK] Simulator wallet already exists at: %s", walletPath))
-		return walletPath, nil
+		if forceReset {
+			// Delete the old wallet to force fresh registration
+			swm.log("[WALLET] Force reset requested - deleting old wallet for fresh registration...")
+			if err := os.Remove(walletPath); err != nil {
+				return "", fmt.Errorf("failed to delete old wallet: %v", err)
+			}
+			swm.log("[OK] Old wallet deleted")
+		} else {
+			swm.log(fmt.Sprintf("[OK] Simulator wallet already exists at: %s", walletPath))
+			return walletPath, nil
+		}
 	}
 
 	// Create new wallet
@@ -321,12 +355,30 @@ func (swm *SimulatorWalletManager) SendRegistration() error {
 	// The simulator auto-mines blocks, so we just need to give it time
 	swm.log("[WAIT] Waiting for registration to be confirmed...")
 	registered := false
-	for i := 0; i < 10; i++ {
+	hasBalance := false
+	for i := 0; i < 20; i++ { // Increased from 10 to 20 iterations (10 seconds total)
 		time.Sleep(500 * time.Millisecond)
-		if swm.wallet.IsRegistered() {
-			swm.log("[OK] Wallet registration confirmed on blockchain!")
+		
+		// Sync wallet to get latest state
+		if err := swm.wallet.Sync_Wallet_Memory_With_Daemon(); err == nil {
+			// Check both registration status and balance
+			if swm.wallet.IsRegistered() {
+				mature, locked := swm.wallet.Get_Balance()
+				if mature > 0 || locked > 0 {
+					swm.log(fmt.Sprintf("[OK] Wallet registration confirmed on blockchain! Balance: mature=%d, locked=%d", mature, locked))
+					registered = true
+					hasBalance = true
+					break
+				} else if registered {
+					// Registered but no balance yet - wait a bit more
+					swm.log("[WAIT] Wallet registered but balance not yet credited, waiting...")
+				}
+			}
+		}
+		
+		if swm.wallet.IsRegistered() && !registered {
 			registered = true
-			break
+			swm.log("[OK] Wallet registration confirmed (checking balance...)")
 		}
 	}
 	
@@ -351,10 +403,13 @@ func (swm *SimulatorWalletManager) SendRegistration() error {
 	// The tela library uses this to know where to connect
 	walletapi.Daemon_Endpoint_Active = simulatorEndpoint
 	swm.log(fmt.Sprintf("[NET] Daemon_Endpoint_Active set to: %s (websocket closed, tela library will reconnect)", walletapi.Daemon_Endpoint_Active))
-	swm.log("[OK] Wallet registration complete")
 	
 	if !registered {
 		swm.log("[WARN] Registration sent but not yet confirmed - may need to wait longer")
+	} else if !hasBalance {
+		swm.log("[WARN] Wallet registered but balance not yet credited - balance should appear after next block")
+	} else {
+		swm.log("[OK] Wallet registration complete with balance")
 	}
 	
 	return nil
@@ -396,7 +451,8 @@ func (a *App) CreateSimulatorWallet() map[string]interface{} {
 		a.simulatorManager.walletManager = NewSimulatorWalletManager(a.logToConsole)
 	}
 
-	walletPath, err := a.simulatorManager.walletManager.EnsureWalletExists(baseDir)
+	// forceReset=true to ensure fresh registration state
+	walletPath, err := a.simulatorManager.walletManager.EnsureWalletExists(baseDir, true)
 	if err != nil {
 		return map[string]interface{}{
 			"success": false,
