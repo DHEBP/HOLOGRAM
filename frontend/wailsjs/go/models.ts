@@ -116,6 +116,7 @@ export namespace main {
 	    JS: string[];
 	    CSSByName: Record<string, string>;
 	    JSByName: Record<string, string>;
+	    StaticByName: Record<string, string>;
 	    Meta: Record<string, any>;
 	    SCIDs: Record<string, string>;
 	    Files: DocFile[];
@@ -131,6 +132,7 @@ export namespace main {
 	        this.JS = source["JS"];
 	        this.CSSByName = source["CSSByName"];
 	        this.JSByName = source["JSByName"];
+	        this.StaticByName = source["StaticByName"];
 	        this.Meta = source["Meta"];
 	        this.SCIDs = source["SCIDs"];
 	        this.Files = this.convertValues(source["Files"], DocFile);

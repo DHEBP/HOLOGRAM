@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { walletState, settingsState, navigateTo, syncNetworkMode } from '../lib/stores/appState.js';
+  import { walletState, settingsState, navigateTo, syncNetworkMode, toast } from '../lib/stores/appState.js';
   import DropZone from '../lib/components/DropZone.svelte';
   import BatchUpload from '../lib/components/BatchUpload.svelte';
   import DiffViewer from '../lib/components/DiffViewer.svelte';
@@ -1985,6 +1985,10 @@
               toast.success(`Deployment complete! INDEX: ${e.detail.indexScid?.substring(0, 16)}...`);
               // Don't clear batchFolderPath - let user see the success card and SCIDs
               // They can click "Choose different folder" button to start over
+            }}
+            on:preview={(e) => {
+              // Navigate to browser with the SCID
+              previewInBrowser(e.detail.scid);
             }}
           />
           

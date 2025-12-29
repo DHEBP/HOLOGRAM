@@ -173,12 +173,10 @@ func createProxyServer(targetURL, scid string) (string, error) {
 	proxyRegistry.ports[scid] = port
 	proxyRegistry.Unlock()
 
-	// Return proxy URL with the same path as the target URL
-	// The reverse proxy will forward the path correctly
-	proxyURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, target.Path)
-	if target.RawQuery != "" {
-		proxyURL += "?" + target.RawQuery
-	}
+	// Return proxy URL at root - the reverse proxy handles all paths
+	// The tela server URL may include a path (e.g. entry point), but the proxy
+	// should serve the entire site from root
+	proxyURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	return proxyURL, nil
 }

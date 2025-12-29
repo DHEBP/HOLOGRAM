@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -18,14 +19,15 @@ import (
 
 // TELAContent represents assembled TELA application content
 type TELAContent struct {
-	HTML      string
-	CSS       []string
-	JS        []string
-	CSSByName map[string]string // filename -> CSS content for external reference replacement
-	JSByName  map[string]string // filename -> JS content for external reference replacement
-	Meta      map[string]interface{}
-	SCIDs     map[string]string // filename -> SCID mapping
-	Files     []DocFile         // raw files extracted from DOCs
+	HTML         string
+	CSS          []string
+	JS           []string
+	CSSByName    map[string]string // filename -> CSS content for external reference replacement
+	JSByName     map[string]string // filename -> JS content for external reference replacement
+	StaticByName map[string]string // filename -> static file content (SVG, images as data URIs, etc.)
+	Meta         map[string]interface{}
+	SCIDs        map[string]string // filename -> SCID mapping
+	Files        []DocFile         // raw files extracted from DOCs
 }
 
 // DocFile represents a single extracted file from a DOC contract
@@ -93,10 +95,15 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 
 	// Extract INDEX metadata from stringkeys (hex-encoded)
 	// Note: stringKeys was already extracted above for DOC/INDEX detection
-	if nameHex, ok := stringKeys["nameHdr"].(string); ok {
+	// TELA V2 uses "var_header_*" keys, V1 uses "*Hdr" keys
+	if nameHex, ok := stringKeys["var_header_name"].(string); ok {
+		content.Meta["name"] = decodeHexString(nameHex)
+	} else if nameHex, ok := stringKeys["nameHdr"].(string); ok {
 		content.Meta["name"] = decodeHexString(nameHex)
 	}
-	if descrHex, ok := stringKeys["descrHdr"].(string); ok {
+	if descrHex, ok := stringKeys["var_header_description"].(string); ok {
+		content.Meta["description"] = decodeHexString(descrHex)
+	} else if descrHex, ok := stringKeys["descrHdr"].(string); ok {
 		content.Meta["description"] = decodeHexString(descrHex)
 	}
 	if durlHex, ok := stringKeys["dURL"].(string); ok {
@@ -210,18 +217,23 @@ func (a *App) fetchSingleDOC(scid string, docData map[string]interface{}) (*TELA
 	}
 
 	// Extract DOC metadata
+	// TELA V2 uses "var_header_*" keys, V1 uses "*Hdr" keys
 	docType := ""
 	if docTypeHex, ok := stringKeys["docType"].(string); ok {
 		docType = decodeHexString(docTypeHex)
 	}
 
 	fileName := "document"
-	if fileNameHex, ok := stringKeys["nameHdr"].(string); ok {
+	if fileNameHex, ok := stringKeys["var_header_name"].(string); ok {
+		fileName = decodeHexString(fileNameHex)
+	} else if fileNameHex, ok := stringKeys["nameHdr"].(string); ok {
 		fileName = decodeHexString(fileNameHex)
 	}
 
 	// Extract optional metadata
-	if descrHex, ok := stringKeys["descrHdr"].(string); ok {
+	if descrHex, ok := stringKeys["var_header_description"].(string); ok {
+		content.Meta["description"] = decodeHexString(descrHex)
+	} else if descrHex, ok := stringKeys["descrHdr"].(string); ok {
 		content.Meta["description"] = decodeHexString(descrHex)
 	}
 	if durlHex, ok := stringKeys["dURL"].(string); ok {
@@ -527,8 +539,11 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 	}
 	
 	// Get fileName (hex-encoded) - with nil check
+	// TELA V2 uses "var_header_name", V1 uses "nameHdr"
 	fileName := "unknown"
-	if fileNameHex, ok := stringKeys["nameHdr"].(string); ok {
+	if fileNameHex, ok := stringKeys["var_header_name"].(string); ok {
+		fileName = decodeHexString(fileNameHex)
+	} else if fileNameHex, ok := stringKeys["nameHdr"].(string); ok {
 		fileName = decodeHexString(fileNameHex)
 	}
 
@@ -600,6 +615,18 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 		if scid != "" {
 			content.SCIDs[fileName] = scid
 		}
+
+	case strings.HasPrefix(docType, "TELA-STATIC"):
+		// Static files like images, SVGs, etc.
+		// Track by filename for embedding/replacement in HTML
+		if content.StaticByName == nil {
+			content.StaticByName = make(map[string]string)
+		}
+		content.StaticByName[fileName] = fileContent
+		if scid != "" {
+			content.SCIDs[fileName] = scid
+		}
+		a.logToConsole(fmt.Sprintf("  [STATIC] Stored %s for inline embedding", fileName))
 
 	default:
 		a.logToConsole(fmt.Sprintf("  [INFO]  Unknown docType: %s (treating as HTML)", docType))
@@ -765,6 +792,55 @@ func (a *App) assembleFinalHTML(content *TELAContent) error {
 			content.HTML = content.HTML + "\n" + jsBlock
 		}
 		a.logToConsole(fmt.Sprintf("  ✓ Injected %d additional JS files", len(remainingJS)))
+	}
+
+	// Replace static file references (images, SVGs) with inline content or data URIs
+	if len(content.StaticByName) > 0 {
+		// Replace <img src="..."> references
+		imgRegex := regexp.MustCompile(`<img[^>]*src=["']([^"']+)["'][^>]*>`)
+		content.HTML = imgRegex.ReplaceAllStringFunc(content.HTML, func(match string) string {
+			srcMatch := regexp.MustCompile(`src=["']([^"']+)["']`).FindStringSubmatch(match)
+			if len(srcMatch) > 1 {
+				src := srcMatch[1]
+				filename := filepath.Base(src)
+				if staticContent, ok := content.StaticByName[filename]; ok {
+					// Determine MIME type and create data URI
+					ext := strings.ToLower(filepath.Ext(filename))
+					var mimeType string
+					switch ext {
+					case ".svg":
+						mimeType = "image/svg+xml"
+					case ".png":
+						mimeType = "image/png"
+					case ".jpg", ".jpeg":
+						mimeType = "image/jpeg"
+					case ".gif":
+						mimeType = "image/gif"
+					case ".webp":
+						mimeType = "image/webp"
+					case ".ico":
+						mimeType = "image/x-icon"
+					default:
+						mimeType = "application/octet-stream"
+					}
+					
+					// For SVG, we can inline directly; for binary, use base64
+					if ext == ".svg" {
+						// SVG can be inlined directly as data URI
+						dataURI := "data:" + mimeType + "," + url.PathEscape(staticContent)
+						a.logToConsole(fmt.Sprintf("  ✓ Inlined static: %s (SVG)", filename))
+						return strings.Replace(match, src, dataURI, 1)
+					} else {
+						// Binary images would need base64 encoding
+						// For now, just inline as data URI if small enough
+						dataURI := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString([]byte(staticContent))
+						a.logToConsole(fmt.Sprintf("  ✓ Inlined static: %s (base64)", filename))
+						return strings.Replace(match, src, dataURI, 1)
+					}
+				}
+			}
+			return match
+		})
 	}
 
 	a.logToConsole("[OK] HTML assembly complete")

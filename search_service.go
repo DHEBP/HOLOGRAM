@@ -971,9 +971,12 @@ func (a *App) SearchMyINDEXes() map[string]interface{} {
 
 // SearchMyContent returns all content (DOCs and INDEXes) owned by the connected wallet
 func (a *App) SearchMyContent() map[string]interface{} {
+	a.logToConsole("[SEARCH] Loading My Content...")
+	
 	// Get wallet address
 	walletAddress := a.getConnectedWalletAddress()
 	if walletAddress == "" {
+		a.logToConsole("[WARN] My Content: No wallet connected")
 		return map[string]interface{}{
 			"success": false,
 			"error":   "No wallet connected. Open a wallet to search your content.",
@@ -981,17 +984,30 @@ func (a *App) SearchMyContent() map[string]interface{} {
 			"indexes": []map[string]interface{}{},
 		}
 	}
+	a.logToConsole(fmt.Sprintf("[SEARCH] Wallet address: %s...", walletAddress[:20]))
 
 	// Check if Gnomon is running
-	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
+	if a.gnomonClient == nil {
+		a.logToConsole("[WARN] My Content: Gnomon client is nil")
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Gnomon indexer is not running. Enable it in Settings to search your content.",
+			"error":   "Gnomon indexer is not available. Start Gnomon in Settings to index your deployed content.",
+			"docs":    []map[string]interface{}{},
+			"indexes": []map[string]interface{}{},
+		}
+	}
+	
+	if !a.gnomonClient.IsRunning() {
+		a.logToConsole("[WARN] My Content: Gnomon is not running")
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Gnomon indexer is not running. Start Gnomon in Settings to index your deployed content, or use the SCID directly in the Browser.",
 			"docs":    []map[string]interface{}{},
 			"indexes": []map[string]interface{}{},
 		}
 	}
 
+	a.logToConsole("[SEARCH] Querying Gnomon for owned contracts...")
 	docs := a.gnomonClient.GetMyDOCs(walletAddress, "")
 	indexes := a.gnomonClient.GetMyINDEXes(walletAddress)
 
