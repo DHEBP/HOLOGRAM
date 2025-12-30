@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/civilware/tela"
 	"github.com/deroproject/derohe/globals"
@@ -262,18 +263,22 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 	var txid string
 	if isSimulator {
 		// SIMULATOR MODE: Bypass tela.Installer() to avoid websocket conflicts
-		// The issue is:
-		// - tela.GetGasEstimate() creates its own websocket
-		// - wallet.TransferPayload0() needs walletapi's websocket
-		// - The simulator can only handle ONE websocket at a time
-		// 
-		// Solution: In simulator mode (where gas is FREE), we:
-		// 1. Build install args using tela.NewInstallArgs()
-		// 2. Connect walletapi (single websocket)
-		// 3. Use a fixed gas value (skip GetGasEstimate entirely)
-		// 4. Call TransferPayload0 and SendTransaction directly
+		// Uses retry logic similar to tela-cli tests for better reliability
 		
 		a.logToConsole("[DOC] Using simulator-specific installation (bypassing GetGasEstimate)")
+		
+		// PRE-DEPLOYMENT HEALTH CHECK: Verify daemon is alive
+		if a.daemonClient != nil {
+			if _, err := a.daemonClient.GetInfo(); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] Simulator daemon not responding: %v", err))
+				return map[string]interface{}{
+					"success":        false,
+					"error":          "Cannot connect to simulator daemon. Please restart simulator mode.",
+					"technicalError": err.Error(),
+				}
+			}
+			a.logToConsole("[OK] Simulator daemon responding")
+		}
 		
 		// Build install arguments
 		args, err := tela.NewInstallArgs(&doc)
@@ -282,48 +287,84 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 			return ErrorResponse(err)
 		}
 		
-		// Connect walletapi (this will be the ONLY websocket)
-		a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi for transaction: %s", endpoint))
-		if err := walletapi.Connect(endpoint); err != nil {
-			a.logToConsole(fmt.Sprintf("[ERR] walletapi.Connect failed: %v", err))
-			return map[string]interface{}{
-				"success":        false,
-				"error":          "Failed to connect to simulator daemon",
-				"technicalError": err.Error(),
-			}
-		}
-		
 		// Create default transfer (required for install)
 		_, defaultDest := tela.GetDefaultNetworkAddress()
 		transfers := []rpc.Transfer{{Destination: defaultDest, Amount: 0}}
 		
 		// Use a reasonable default gas fee for simulator (it's free anyway)
-		// The minimum is typically around 50000 atomic units
 		gasFees := uint64(100000)
 		a.logToConsole(fmt.Sprintf("[DOC] Using default gas fee: %d (FREE in simulator)", gasFees))
 		
-		// Build transaction
-		tx, err := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
-		if err != nil {
-			a.logToConsole(fmt.Sprintf("[ERR] TransferPayload0 failed: %v", err))
-			// Disconnect walletapi
-			walletapi.Connected = false
-			return ErrorResponse(fmt.Errorf("transfer build error: %v", err))
+		// RETRY LOOP: Similar to tela-cli tests, retry up to 3 times
+		const maxRetries = 3
+		var lastErr error
+		
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			if attempt > 1 {
+				a.logToConsole(fmt.Sprintf("[RETRY] Attempt %d/%d...", attempt, maxRetries))
+				// Wait for a new block before retrying
+				if err := a.waitForNewBlockWithHealthCheck(15 * time.Second); err != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Block wait failed: %v", err))
+				}
+			}
+			
+			// Connect walletapi (temporary connection)
+			a.logToConsole(fmt.Sprintf("[NET] Temporary connect for transaction (attempt %d): %s", attempt, endpoint))
+			if err := walletapi.Connect(endpoint); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] walletapi.Connect failed (attempt %d): %v", attempt, err))
+				lastErr = fmt.Errorf("failed to connect to simulator daemon: %v", err)
+				a.disconnectWalletAPI()
+				continue
+			}
+			
+			// Sync wallet to get correct nonce
+			if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Pre-tx sync failed: %v", err))
+			}
+			time.Sleep(100 * time.Millisecond) // Brief settle time
+			
+			// Build transaction
+			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
+			if buildErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] TransferPayload0 failed (attempt %d): %v", attempt, buildErr))
+				lastErr = fmt.Errorf("transfer build error: %v", buildErr)
+				a.disconnectWalletAPI()
+				continue
+			}
+			
+			if tx == nil {
+				lastErr = fmt.Errorf("transaction is nil after build")
+				a.disconnectWalletAPI()
+				continue
+			}
+			
+			// Send transaction
+			if err := wallet.SendTransaction(tx); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] SendTransaction failed (attempt %d): %v", attempt, err))
+				lastErr = fmt.Errorf("transaction dispatch error: %v", err)
+				a.disconnectWalletAPI()
+				continue
+			}
+			
+			txid = tx.GetHash().String()
+			a.logToConsole(fmt.Sprintf("[OK] Transaction sent: %s", txid))
+			
+			// Disconnect walletapi (cleanup)
+			a.disconnectWalletAPI()
+			a.logToConsole("[NET] Disconnected after send")
+			
+			// SUCCESS! Exit retry loop
+			lastErr = nil
+			break
 		}
 		
-		// Send transaction
-		if err := wallet.SendTransaction(tx); err != nil {
-			a.logToConsole(fmt.Sprintf("[ERR] SendTransaction failed: %v", err))
-			// Disconnect walletapi
-			walletapi.Connected = false
-			return ErrorResponse(fmt.Errorf("transaction dispatch error: %v", err))
+		if lastErr != nil {
+			return map[string]interface{}{
+				"success":        false,
+				"error":          fmt.Sprintf("Failed after %d attempts: %v", maxRetries, lastErr),
+				"technicalError": lastErr.Error(),
+			}
 		}
-		
-		txid = tx.GetHash().String()
-		a.logToConsole(fmt.Sprintf("[OK] Transaction sent: %s", txid))
-		
-		// Disconnect walletapi (cleanup)
-		walletapi.Connected = false
 	} else {
 		// NON-SIMULATOR: Use standard tela.Installer() (supports multiple connections)
 		var err error
@@ -998,6 +1039,33 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 	}
 	a.logToConsole(fmt.Sprintf("[START] [TELA] DeployTELABatch: Starting batch deployment...%s", modeStr))
 
+	// PRE-DEPLOYMENT HEALTH CHECK: Verify daemon is alive before starting
+	if isSimulator {
+		a.logToConsole("[CHECK] Verifying simulator daemon is healthy before deployment...")
+		if a.daemonClient == nil {
+			errMsg := "Simulator daemon client not initialized. Restart simulator mode."
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{"error": errMsg})
+			return map[string]interface{}{"success": false, "error": errMsg}
+		}
+		info, err := a.daemonClient.GetInfo()
+		if err != nil {
+			errMsg := fmt.Sprintf("Cannot connect to simulator daemon: %v. Please restart simulator mode.", err)
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{"error": errMsg})
+			return map[string]interface{}{"success": false, "error": errMsg}
+		}
+		if info == nil {
+			errMsg := "Simulator daemon returned empty response. Please restart simulator mode."
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{"error": errMsg})
+			return map[string]interface{}{"success": false, "error": errMsg}
+		}
+		// Log daemon status
+		if height, ok := info["topoheight"].(float64); ok {
+			a.logToConsole(fmt.Sprintf("[OK] Simulator daemon healthy (height: %.0f)", height))
+		} else {
+			a.logToConsole("[OK] Simulator daemon responding")
+		}
+	}
+
 	// Check wallet
 	wallet := a.getWalletForDeployment(isSimulator)
 	if wallet == nil {
@@ -1085,12 +1153,26 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 				a.logToConsole(fmt.Sprintf("[WARN] Post-deploy wallet sync failed: %v", err))
 			}
 		}
+		
+		// SIMULATOR MODE: Add delay between deployments (like tela-cli tests do)
+		// This gives the simulator daemon time to process and prevents transaction conflicts
+		if isSimulator && i < len(batch.Files)-1 {
+			a.logToConsole("[WAIT] Brief delay before next DOC deployment...")
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
 
 	// Create INDEX
 	runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
 		"current": len(batch.Files), "total": len(batch.Files), "fileName": "INDEX", "status": "creating_index",
 	})
+
+	// SIMULATOR MODE: Add delay before INDEX creation to let all DOC transactions settle
+	// This gives the simulator daemon time to fully process all DOC transactions
+	if isSimulator {
+		a.logToConsole("[WAIT] Waiting for DOC transactions to settle before INDEX creation...")
+		time.Sleep(1 * time.Second)
+	}
 
 	// Sync wallet before INDEX creation to ensure nonce is correct
 	// NOTE: Skip in simulator mode - tela library manages its own connections

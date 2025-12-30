@@ -17,6 +17,15 @@ var UserFriendlyErrors = map[string]string{
 	"dial tcp":                     "Cannot connect to the node. Is derod running?",
 	"EOF":                          "Connection closed unexpectedly. Try reconnecting.",
 	
+	// Simulator-specific errors
+	"daemon connection lost":       "Simulator daemon connection lost. Please restart simulator mode.",
+	"daemon crashed":               "Simulator daemon crashed. Please restart simulator mode.",
+	"daemon endpoint is invalid":   "Simulator not properly configured. Please restart simulator mode.",
+	"could not be built":           "Transaction build failed. Retrying with fresh nonce...",
+	"simulator daemon not responding": "Simulator daemon not responding. Please restart simulator mode.",
+	"websocket: close":             "Connection closed unexpectedly. Retrying...",
+	"abnormal closure":             "Connection interrupted. The operation will be retried.",
+	
 	// Wallet errors
 	"wallet not open":              "Please open a wallet first.",
 	"wallet is not open":           "Please open a wallet first.",
