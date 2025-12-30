@@ -13,7 +13,7 @@
   import Wordmark from './Wordmark.svelte';
   import { 
     Globe, Palette, Blocks, Wallet, Settings, 
-    Diamond,
+    Diamond, User,
     Globe2, FlaskConical, Gamepad2, Radio
   } from 'lucide-svelte';
   import { getAvatarUrl, clearAvatarCache } from '../utils/avatarService.js';
@@ -336,6 +336,14 @@
         dispatch('statusClick', { type: 'block', tab: 'explorer', block: $appState.chainHeight });
         break;
     }
+  }
+  
+  // Navigate directly to Avatar Editor when clicking the avatar
+  function handleAvatarClick(event) {
+    event.stopPropagation();
+    event.preventDefault();
+    // Navigate to Wallet tab > My Identity section
+    dispatch('statusClick', { type: 'avatar', tab: 'wallet', section: 'avatar' });
   }
   
   async function handleConnectWallet() {
@@ -861,9 +869,11 @@
         {#if walletIsConnected && walletAvatarUrl}
           <img 
             src={walletAvatarUrl} 
-            alt="Wallet Avatar"
-            class="wallet-avatar wallet-avatar-collapsed"
+            alt="Edit Avatar"
+            title="Click to customize your avatar"
+            class="wallet-avatar wallet-avatar-collapsed wallet-avatar-clickable"
             class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
+            on:click={handleAvatarClick}
           />
         {:else}
           <span class="wallet-dot" 
@@ -899,9 +909,11 @@
           {#if walletIsConnected && walletAvatarUrl}
             <img 
               src={walletAvatarUrl} 
-              alt="Wallet Avatar"
-              class="wallet-avatar wallet-avatar-expanded"
+              alt="Edit Avatar"
+              title="Click to customize your avatar"
+              class="wallet-avatar wallet-avatar-expanded wallet-avatar-clickable"
               class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
+              on:click={handleAvatarClick}
             />
           {:else}
             <span class="wallet-dot" 
@@ -1023,6 +1035,17 @@
               {/each}
             </div>
           {/if}
+          
+          <!-- Edit Avatar Button -->
+          <div class="wallet-menu-action">
+            <button
+              on:click|stopPropagation={() => { showWalletMenu = false; handleAvatarClick(new Event('click')); }}
+              class="edit-avatar-btn"
+            >
+              <User size={14} />
+              <span>Edit Avatar</span>
+            </button>
+          </div>
           
           <!-- Connected Apps (XSWD Connections) -->
           <div class="connected-apps-section">
@@ -1988,6 +2011,22 @@
     transform: scale(1.05);
   }
   
+  /* Clickable avatar with enhanced visual cues */
+  .wallet-avatar-clickable {
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  }
+  
+  .wallet-avatar-clickable:hover {
+    transform: scale(1.1);
+    box-shadow: 0 0 12px rgba(0, 255, 255, 0.5);
+    border-color: var(--cyan-300);
+  }
+  
+  .wallet-avatar-clickable:active {
+    transform: scale(0.95);
+  }
+  
   .wallet-avatar-collapsed {
     width: 24px;
     height: 24px;
@@ -2239,6 +2278,34 @@
   
   .wallet-disconnect-btn:hover {
     background: rgba(248, 113, 113, 0.08);
+  }
+  
+  /* Edit Avatar Button in Menu */
+  .wallet-menu-action {
+    padding: var(--s-2) var(--s-3);
+    border-bottom: 1px solid var(--border-dim);
+  }
+  
+  .edit-avatar-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--cyan-400);
+    background: transparent;
+    border: none;
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: background var(--dur-fast), color var(--dur-fast);
+    text-align: left;
+  }
+  
+  .edit-avatar-btn:hover {
+    background: rgba(0, 255, 255, 0.08);
+    color: var(--cyan-300);
   }
   
   .wallet-switch-section {

@@ -8,12 +8,13 @@
     Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe,
     LayoutDashboard, QrCode, History, Coins, Users, FileSignature, RefreshCw,
     Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield,
-    Key
+    Key, User
   } from 'lucide-svelte';
   
   import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
   import QRCodeComponent from '../lib/components/QRCode.svelte';
   import AddContactModal from '../lib/components/AddContactModal.svelte';
+  import AvatarEditor from '../lib/components/AvatarEditor.svelte';
   
   // ============================================
   // NAVIGATION STATE
@@ -23,6 +24,9 @@
   const sidebarSections = {
     overview: [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    ],
+    identity: [
+      { id: 'avatar', label: 'My Identity', icon: User },
     ],
     transactions: [
       { id: 'send', label: 'Send', icon: ArrowUp },
@@ -265,6 +269,17 @@
           selectedTestWallet = null;
         }
       });
+      
+      // Listen for section navigation from Sidebar (e.g., avatar click → My Identity)
+      const handleNavigateSection = (e) => {
+        const { section } = e.detail;
+        if (section && Object.values(sidebarSections).flat().find(s => s.id === section)) {
+          activeSection = section;
+        }
+      };
+      window.addEventListener('navigate-section', handleNavigateSection);
+      // Store handler for cleanup
+      window._walletNavigateHandler = handleNavigateSection;
     } catch (err) {
       console.error('Error checking wallet status:', err);
     }
@@ -274,6 +289,11 @@
     stopPolling();
     EventsOff('simulator:complete');
     EventsOff('network-mode-changed');
+    // Clean up section navigation listener
+    if (window._walletNavigateHandler) {
+      window.removeEventListener('navigate-section', window._walletNavigateHandler);
+      delete window._walletNavigateHandler;
+    }
   });
   
   // Reactive: Load test wallets when network mode changes to simulator
@@ -1517,6 +1537,16 @@
           <p class="content-section-desc">View and manage your token holdings</p>
           
           <TokenPortfolio />
+        {/if}
+
+        <!-- ============================================
+             MY IDENTITY / AVATAR SECTION
+             ============================================ -->
+        {#if activeSection === 'avatar'}
+          <div class="content-section-title">My Identity</div>
+          <p class="content-section-desc">Create and customize your Villager avatar</p>
+          
+          <AvatarEditor />
         {/if}
 
         <!-- ============================================
