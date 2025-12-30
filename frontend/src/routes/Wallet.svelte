@@ -372,6 +372,7 @@
   
   function selectTestWallet(wallet) {
     selectedTestWallet = wallet;
+    walletPath = ''; // Clear regular wallet selection when selecting a test wallet
   }
   
   function copyTestWalletAddress(wallet, e) {
@@ -453,6 +454,11 @@
         }));
         settingsState.update(s => ({ ...s, lastWalletPath: walletPath }));
         password = '';
+        
+        // Show network warning if wallet was from different network
+        if (result.networkWarning) {
+          toast.warning(result.networkWarning);
+        }
         
         await refreshBalance();
         await loadTransactionHistory();
@@ -2125,8 +2131,11 @@
             {#each recentWalletsInfo as wallet}
               <button
                 class="page-sidebar-item"
-                class:active={walletPath === wallet.path}
-                on:click={() => walletPath = wallet.path}
+                class:active={walletPath === wallet.path && !selectedTestWallet}
+                on:click={() => {
+                  walletPath = wallet.path;
+                  selectedTestWallet = null; // Clear test wallet selection when selecting a regular wallet
+                }}
                 title={wallet.path}
               >
                 <span class="page-sidebar-item-icon">

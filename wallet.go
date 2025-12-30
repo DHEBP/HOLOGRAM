@@ -41,8 +41,19 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	walletManager.Lock()
 	defer walletManager.Unlock()
 
-	a.logToConsole(fmt.Sprintf("[WALLET] Opening wallet: %s", filePath))
-	a.logToConsole(fmt.Sprintf("[NET] Network: Mainnet=%v Testnet=%v", globals.IsMainnet(), !globals.IsMainnet()))
+	// Determine current network mode - check multiple ways for robustness
+	currentNetwork := "mainnet"
+	simArg := globals.Arguments["--simulator"]
+	testArg := globals.Arguments["--testnet"]
+
+	// Check if simulator (can be bool or interface{})
+	if simArg == true || simArg == "true" || fmt.Sprintf("%v", simArg) == "true" {
+		currentNetwork = "simulator"
+	} else if testArg == true || testArg == "true" || fmt.Sprintf("%v", testArg) == "true" {
+		currentNetwork = "testnet"
+	}
+
+	a.logToConsole(fmt.Sprintf("[WALLET] Opening wallet: %s (network: %s)", filePath, currentNetwork))
 
 	// Check if file exists
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
@@ -50,6 +61,49 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Wallet file not found",
+		}
+	}
+
+	// Check if this wallet was last used on a different network
+	var networkWarning string
+	existingData := loadRecentWalletsData()
+	for _, w := range existingData {
+		if w.Path == filePath {
+			storedNetwork := w.Network
+
+			// For legacy wallets without stored network, infer from address prefix
+			if storedNetwork == "" && w.AddressPrefix != "" {
+				if len(w.AddressPrefix) >= 4 {
+					prefix := w.AddressPrefix[:4]
+					if prefix == "dero" {
+						storedNetwork = "mainnet"
+					} else if prefix == "deto" {
+						storedNetwork = "testnet" // testnet and simulator both use deto1
+					}
+				}
+			}
+
+			if storedNetwork != "" && storedNetwork != currentNetwork {
+				// Wallet was previously used on a different network
+				if currentNetwork == "simulator" && storedNetwork == "mainnet" {
+					networkWarning = "This wallet was last used on mainnet. In simulator mode, your mainnet balance will not be shown."
+					a.logToConsole(fmt.Sprintf("[WARN] Opening mainnet wallet in simulator mode"))
+				} else if currentNetwork == "simulator" && storedNetwork == "testnet" {
+					networkWarning = "This wallet was last used on testnet. In simulator mode, your testnet balance will not be shown."
+					a.logToConsole(fmt.Sprintf("[WARN] Opening testnet wallet in simulator mode"))
+				} else if storedNetwork == "simulator" && currentNetwork == "mainnet" {
+					networkWarning = "This wallet was last used in simulator mode. Now connecting to mainnet."
+					a.logToConsole("[WARN] Opening simulator wallet on mainnet")
+				} else if storedNetwork == "simulator" && currentNetwork == "testnet" {
+					networkWarning = "This wallet was last used in simulator mode. Now connecting to testnet."
+					a.logToConsole("[WARN] Opening simulator wallet on testnet")
+				} else if storedNetwork != currentNetwork {
+					// Generic mismatch warning
+					networkWarning = fmt.Sprintf("This wallet was last used on %s. You are now on %s.", storedNetwork, currentNetwork)
+					a.logToConsole(fmt.Sprintf("[WARN] Network mismatch: stored=%s, current=%s", storedNetwork, currentNetwork))
+				}
+			}
+			break
 		}
 	}
 
@@ -89,16 +143,23 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	// Get wallet info (now with correct network prefix)
 	address := wallet.GetAddress().String()
 
-	// Add to recent wallets with address info
+	// Add to recent wallets with address info (updates network to current)
 	addToRecentWalletsWithInfo(filePath, address)
 
 	a.logToConsole(fmt.Sprintf("[OK] Wallet opened successfully: %s", address[:16]+"..."))
 
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"success": true,
 		"address": address,
 		"message": "Wallet opened successfully",
 	}
+
+	// Include network warning if applicable
+	if networkWarning != "" {
+		result["networkWarning"] = networkWarning
+	}
+
+	return result
 }
 
 // CloseWallet closes the currently open wallet
@@ -964,6 +1025,7 @@ type WalletInfo struct {
 	AddressPrefix string `json:"addressPrefix"`
 	LastUsed      int64  `json:"lastUsed"`
 	IsCurrent     bool   `json:"isCurrent"`
+	Network       string `json:"network"` // "mainnet", "testnet", or "simulator"
 }
 
 // SwitchWallet closes the current wallet and opens a different one
@@ -1056,17 +1118,30 @@ type recentWalletData struct {
 	Path          string `json:"path"`
 	AddressPrefix string `json:"addressPrefix"`
 	LastUsed      int64  `json:"lastUsed"`
+	Network       string `json:"network"` // "mainnet", "testnet", or "simulator"
 }
 
 func addToRecentWalletsWithInfo(path, address string) {
 	// Load existing data
 	existing := loadRecentWalletsData()
 
+	// Determine current network mode - check multiple ways for robustness
+	network := "mainnet"
+	simArg := globals.Arguments["--simulator"]
+	testArg := globals.Arguments["--testnet"]
+
+	if simArg == true || simArg == "true" || fmt.Sprintf("%v", simArg) == "true" {
+		network = "simulator"
+	} else if testArg == true || testArg == "true" || fmt.Sprintf("%v", testArg) == "true" {
+		network = "testnet"
+	}
+
 	// Create new entry
 	newEntry := recentWalletData{
 		Path:          path,
 		AddressPrefix: "",
 		LastUsed:      nowUnix(),
+		Network:       network,
 	}
 	if len(address) >= 16 {
 		newEntry.AddressPrefix = address[:16] + "..."
@@ -1146,12 +1221,27 @@ func loadRecentWalletsWithInfo() []WalletInfo {
 	data := loadRecentWalletsData()
 	result := make([]WalletInfo, len(data))
 	for i, d := range data {
+		// Default to mainnet if not set (for backward compatibility)
+		network := d.Network
+		if network == "" {
+			// Infer from address prefix if possible
+			if len(d.AddressPrefix) > 4 {
+				if d.AddressPrefix[:4] == "deto" {
+					network = "testnet" // or simulator - we can't distinguish
+				} else {
+					network = "mainnet"
+				}
+			} else {
+				network = "mainnet"
+			}
+		}
 		result[i] = WalletInfo{
 			Path:          d.Path,
 			Filename:      filepath.Base(d.Path),
 			AddressPrefix: d.AddressPrefix,
 			LastUsed:      d.LastUsed,
 			IsCurrent:     false,
+			Network:       network,
 		}
 	}
 	return result
