@@ -4,6 +4,7 @@
   import DropZone from '../lib/components/DropZone.svelte';
   import BatchUpload from '../lib/components/BatchUpload.svelte';
   import DiffViewer from '../lib/components/DiffViewer.svelte';
+  import ModPickerModal from '../lib/components/ModPickerModal.svelte';
   import FileShardModal from '../lib/components/FileShardModal.svelte';
   import VersionHistory from '../lib/components/VersionHistory.svelte';
   import { 
@@ -58,6 +59,7 @@
   let indexEnableMods = false;        // Toggle to enable MODs
   let indexSelectedVsMod = '';        // Variable Store MOD (single selection)
   let indexSelectedTxMods = [];       // Transfer MODs (multi-selection)
+  let showModPickerModal = false;     // Modal for advanced MOD selection
   // Note: Uses allMods and modsLoading from MODULES section below
   
   // =====================================================
@@ -73,6 +75,7 @@
   let showConfirmModal = false;
   let confirmModalType = '';   // 'doc' or 'index'
   let confirmModalData = null;
+  let deployAcknowledged = false; // User must check acknowledgement box
   
   // Update INDEX state
   let updateIndexScid = '';
@@ -777,12 +780,12 @@
     try {
       const result = await CloneTELA(selectedLibrary.scid, false);
       if (result.success) {
-        alert(`Library cloned to: ${result.directory}`);
+        toast.success(`Library cloned to: ${result.directory}`);
       } else {
-        alert(`Clone failed: ${result.error}`);
+        toast.error(`Clone failed: ${result.error}`);
       }
     } catch (e) {
-      alert(`Clone error: ${e.message}`);
+      toast.error(`Clone error: ${e.message}`);
     }
   }
   
@@ -792,6 +795,25 @@
       window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'browser' }));
       closeLibraryDetails();
     }
+  }
+  
+  // Embed library into Install INDEX (adds SCID to DOC references)
+  function embedLibraryInIndex() {
+    if (!selectedLibrary?.scid) return;
+    
+    // Check if already added
+    if (indexDocScids.includes(selectedLibrary.scid)) {
+      toast.info(`Library already added to INDEX`);
+      return;
+    }
+    
+    // Add to DOC references
+    indexDocScids = [...indexDocScids, selectedLibrary.scid];
+    closeLibraryDetails();
+    
+    // Switch to Install INDEX tab
+    activeTab = 'install-index';
+    toast.success(`Added ${selectedLibrary.durl || 'library'} to DOC references`);
   }
   
   // Navigate to Settings to enable Gnomon
@@ -1357,6 +1379,128 @@
     indexSelectedTxMods = [];
   }
   
+  // =====================================================
+  // Icon URL Validation (matching tela-cli format support)
+  // =====================================================
+  // Valid formats:
+  // - Empty (optional field)
+  // - HTTPS URL: https://example.com/icon.png
+  // - HTTP URL: http://example.com/icon.png (warning: not recommended)
+  // - SCID: 64 hex characters (on-chain image reference)
+  // - IPFS: ipfs://... (future support)
+  
+  function validateIconURL(url) {
+    if (!url || url.trim() === '') {
+      return { valid: true, type: 'empty', message: '' };
+    }
+    
+    const trimmed = url.trim();
+    
+    // Check if it's a valid SCID (64 hex characters)
+    const scidPattern = /^[a-fA-F0-9]{64}$/;
+    if (scidPattern.test(trimmed)) {
+      return { valid: true, type: 'scid', message: 'Valid SCID (on-chain reference)' };
+    }
+    
+    // Check for HTTPS URL
+    if (trimmed.startsWith('https://')) {
+      // Basic URL validation
+      try {
+        new URL(trimmed);
+        return { valid: true, type: 'https', message: 'HTTPS URL' };
+      } catch {
+        return { valid: false, type: 'invalid', message: 'Invalid URL format' };
+      }
+    }
+    
+    // Check for HTTP URL (warning)
+    if (trimmed.startsWith('http://')) {
+      try {
+        new URL(trimmed);
+        return { valid: true, type: 'http', message: 'HTTP URL (HTTPS recommended)', warning: true };
+      } catch {
+        return { valid: false, type: 'invalid', message: 'Invalid URL format' };
+      }
+    }
+    
+    // Check for IPFS
+    if (trimmed.startsWith('ipfs://')) {
+      return { valid: true, type: 'ipfs', message: 'IPFS reference' };
+    }
+    
+    // Unknown format - might be invalid
+    return { valid: false, type: 'unknown', message: 'Use HTTPS URL, SCID (64 chars), or IPFS' };
+  }
+  
+  // Reactive icon validation for Install INDEX
+  $: indexIconValidation = validateIconURL(indexIconURL);
+  
+  // =====================================================
+  // dURL Tag Detection (matching tela-cli conventions)
+  // =====================================================
+  // Special dURL suffixes indicate content type:
+  // - .lib     = Library (collection of reusable DOCs)
+  // - .shard   = DocShard DOC
+  // - .shards  = DocShards INDEX (requires reconstruction)
+  // - .bootstrap = Bootstrap INDEX (collection of apps)
+  
+  const DURL_TAGS = {
+    '.lib': {
+      name: 'Library',
+      icon: '📚',
+      description: 'A collection of reusable DOCs that can be embedded in other apps',
+      color: 'violet'
+    },
+    '.shard': {
+      name: 'DocShard',
+      icon: '🧩',
+      description: 'A shard DOC (part of a larger file split across multiple contracts)',
+      color: 'cyan'
+    },
+    '.shards': {
+      name: 'DocShards',
+      icon: '📦',
+      description: 'An INDEX containing DocShards that require reconstruction',
+      color: 'cyan'
+    },
+    '.bootstrap': {
+      name: 'Bootstrap',
+      icon: '🚀',
+      description: 'A collection of TELA apps/content for bootstrapping',
+      color: 'amber'
+    }
+  };
+  
+  function detectDurlTag(durl) {
+    if (!durl || durl.trim() === '') {
+      return null;
+    }
+    
+    const trimmed = durl.trim().toLowerCase();
+    
+    for (const [tag, info] of Object.entries(DURL_TAGS)) {
+      if (trimmed.endsWith(tag)) {
+        return { tag, ...info };
+      }
+    }
+    
+    // Standard .tela suffix (optional but conventional)
+    if (trimmed.endsWith('.tela')) {
+      return {
+        tag: '.tela',
+        name: 'Standard',
+        icon: '◇',
+        description: 'Standard TELA application',
+        color: 'default'
+      };
+    }
+    
+    return null;
+  }
+  
+  // Reactive dURL tag detection for Install INDEX
+  $: indexDurlTag = detectDurlTag(indexDURL);
+  
   // Get MODs grouped by class (uses allMods from MODULES section)
   function getVsModOptions() {
     return allMods.filter(m => m.tag.startsWith('vs'));
@@ -1391,6 +1535,17 @@
     indexRingsize = 2; // MODs require ringsize 2
   }
   
+  // Handle MOD picker modal confirmation
+  function handleModPickerConfirm(event) {
+    const { vsMod, txMods } = event.detail;
+    indexSelectedVsMod = vsMod;
+    indexSelectedTxMods = txMods;
+    if (vsMod || txMods.length > 0) {
+      indexEnableMods = true;
+    }
+    showModPickerModal = false;
+  }
+  
   // =====================================================
   // Confirmation Modal Functions
   // =====================================================
@@ -1405,10 +1560,13 @@
     showConfirmModal = false;
     confirmModalType = '';
     confirmModalData = null;
+    deployAcknowledged = false;
   }
   
   async function confirmDeployment() {
+    if (!deployAcknowledged) return; // Extra safety check
     showConfirmModal = false;
+    deployAcknowledged = false;
     
     if (confirmModalType === 'doc') {
       await deployBatch();
@@ -2100,18 +2258,30 @@
               />
             </div>
             
-            <!-- dURL (Required for INDEX) -->
+            <!-- dURL (Required for INDEX) with tag detection -->
             <div class="form-group">
               <label class="form-label">
                 dURL <span class="required">*</span>
+                {#if indexDurlTag}
+                  <span class="durl-tag-badge" class:tag-violet={indexDurlTag.color === 'violet'} class:tag-cyan={indexDurlTag.color === 'cyan'} class:tag-amber={indexDurlTag.color === 'amber'}>
+                    <span class="tag-icon">{indexDurlTag.icon}</span>
+                    {indexDurlTag.name}
+                  </span>
+                {/if}
               </label>
               <input
                 type="text"
                 bind:value={indexDURL}
-                placeholder="my-app"
+                placeholder="my-app.tela"
                 class="input"
               />
-              <p class="form-hint">Accessible via dero://{indexDURL || 'my-app'}</p>
+              {#if indexDurlTag && indexDurlTag.tag !== '.tela'}
+                <p class="form-hint durl-tag-hint" class:hint-violet={indexDurlTag.color === 'violet'} class:hint-cyan={indexDurlTag.color === 'cyan'} class:hint-amber={indexDurlTag.color === 'amber'}>
+                  {indexDurlTag.description}
+                </p>
+              {:else}
+                <p class="form-hint">Accessible via dero://{indexDURL || 'my-app'}</p>
+              {/if}
             </div>
             
             <!-- Description -->
@@ -2125,16 +2295,38 @@
               ></textarea>
             </div>
             
-            <!-- Icon URL -->
+            <!-- Icon URL with validation -->
             <div class="form-group">
               <label class="form-label">Icon URL</label>
-              <input
-                type="text"
-                bind:value={indexIconURL}
-                placeholder="https://example.com/icon.png or SCID"
-                class="input"
-              />
-              <p class="form-hint">URL or SCID of an image for the app icon</p>
+              <div class="icon-url-input-wrapper">
+                <input
+                  type="text"
+                  bind:value={indexIconURL}
+                  placeholder="https://example.com/icon.png or SCID"
+                  class="input"
+                  class:input-valid={indexIconURL && indexIconValidation.valid && !indexIconValidation.warning}
+                  class:input-warning={indexIconValidation.warning}
+                  class:input-error={indexIconURL && !indexIconValidation.valid}
+                />
+                {#if indexIconURL}
+                  <span class="icon-url-status" class:valid={indexIconValidation.valid && !indexIconValidation.warning} class:warning={indexIconValidation.warning} class:invalid={!indexIconValidation.valid}>
+                    {#if indexIconValidation.valid && !indexIconValidation.warning}
+                      <CheckCircle size={14} />
+                    {:else if indexIconValidation.warning}
+                      <AlertTriangle size={14} />
+                    {:else}
+                      <X size={14} />
+                    {/if}
+                  </span>
+                {/if}
+              </div>
+              {#if indexIconURL && indexIconValidation.message}
+                <p class="form-hint" class:hint-valid={indexIconValidation.valid && !indexIconValidation.warning} class:hint-warning={indexIconValidation.warning} class:hint-error={!indexIconValidation.valid}>
+                  {indexIconValidation.message}
+                </p>
+              {:else}
+                <p class="form-hint">URL or SCID of an image for the app icon</p>
+              {/if}
             </div>
             
             <!-- DOC References Section -->
@@ -2221,16 +2413,26 @@
                   <Puzzle size={14} />
                   TELA-MODs
                 </label>
-                <button 
-                  class="mods-toggle"
-                  class:enabled={indexEnableMods}
-                  on:click={() => indexEnableMods = !indexEnableMods}
-                >
-                  <div class="mods-toggle-track">
-                    <div class="mods-toggle-thumb"></div>
-                  </div>
-                  <span>{indexEnableMods ? 'Enabled' : 'Disabled'}</span>
-                </button>
+                <div class="mods-header-actions">
+                  <button 
+                    class="mods-advanced-btn"
+                    on:click={() => showModPickerModal = true}
+                    title="Open MOD picker"
+                  >
+                    <Wrench size={12} />
+                    Advanced
+                  </button>
+                  <button 
+                    class="mods-toggle"
+                    class:enabled={indexEnableMods}
+                    on:click={() => indexEnableMods = !indexEnableMods}
+                  >
+                    <div class="mods-toggle-track">
+                      <div class="mods-toggle-thumb"></div>
+                    </div>
+                    <span>{indexEnableMods ? 'Enabled' : 'Disabled'}</span>
+                  </button>
+                </div>
               </div>
               
               {#if indexEnableMods}
@@ -3783,6 +3985,10 @@
         </button>
         <div class="lib-modal-footer-right">
           <button on:click={closeLibraryDetails} class="btn btn-secondary">Cancel</button>
+          <button on:click={embedLibraryInIndex} class="btn btn-secondary lib-embed-btn" title="Add library SCID to Install INDEX DOC references">
+            <Link size={14} />
+            Embed in INDEX
+          </button>
           <button on:click={previewLibrary} class="btn btn-primary">
             <Eye size={14} />
             Open in Browser
@@ -4157,6 +4363,18 @@
           <AlertTriangle size={14} />
           <span>Mainnet transactions are permanent and cost real DERO. Double-check before confirming.</span>
         </div>
+        
+        <!-- Acknowledgement Checkbox -->
+        <label class="deploy-acknowledge">
+          <input 
+            type="checkbox" 
+            bind:checked={deployAcknowledged}
+            class="acknowledge-checkbox"
+          />
+          <span class="acknowledge-text">
+            I understand this deployment is <strong>permanent</strong> and will consume <strong>real DERO</strong>
+          </span>
+        </label>
       </div>
       
       <!-- Actions -->
@@ -4164,13 +4382,27 @@
         <button class="sim-modal-btn secondary" on:click={cancelConfirmation}>
           Cancel
         </button>
-        <button class="sim-modal-btn primary" on:click={confirmDeployment}>
+        <button 
+          class="sim-modal-btn primary" 
+          on:click={confirmDeployment}
+          disabled={!deployAcknowledged}
+        >
+          <Lock size={14} />
           Confirm & Deploy
         </button>
       </div>
     </div>
   </div>
 {/if}
+
+<!-- MOD Picker Modal for Install INDEX -->
+<ModPickerModal 
+  show={showModPickerModal}
+  selectedVsMod={indexSelectedVsMod}
+  selectedTxMods={indexSelectedTxMods}
+  on:confirm={handleModPickerConfirm}
+  on:close={() => showModPickerModal = false}
+/>
 
 <style>
   /* === STUDIO PAGE - v5.6 Unified Framework === */
@@ -4531,6 +4763,32 @@
   
   .mods-toggle.enabled .mods-toggle-thumb {
     transform: translateX(12px);
+  }
+  
+  .mods-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+  }
+  
+  .mods-advanced-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1, 4px);
+    padding: var(--s-1, 4px) var(--s-2, 8px);
+    background: var(--void-up, #181824);
+    border: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
+    border-radius: var(--r-sm, 5px);
+    color: var(--text-4, #505068);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  
+  .mods-advanced-btn:hover {
+    background: var(--void-surface, #1e1e2a);
+    border-color: var(--violet-500, #8b5cf6);
+    color: var(--violet-400, #a78bfa);
   }
   
   .mods-content {
@@ -5983,6 +6241,107 @@
     margin-top: var(--s-1, 4px);
   }
   
+  /* Icon URL Validation Styles */
+  .icon-url-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  
+  .icon-url-input-wrapper .input {
+    padding-right: 36px;
+  }
+  
+  .icon-url-status {
+    position: absolute;
+    right: 12px;
+    display: flex;
+    align-items: center;
+    pointer-events: none;
+  }
+  
+  .icon-url-status.valid {
+    color: var(--status-ok, #34d399);
+  }
+  
+  .icon-url-status.warning {
+    color: var(--status-warn, #fbbf24);
+  }
+  
+  .icon-url-status.invalid {
+    color: var(--status-err, #f87171);
+  }
+  
+  .input.input-valid {
+    border-color: var(--status-ok, #34d399);
+  }
+  
+  .input.input-warning {
+    border-color: var(--status-warn, #fbbf24);
+  }
+  
+  .input.input-error {
+    border-color: var(--status-err, #f87171);
+  }
+  
+  .form-hint.hint-valid {
+    color: var(--status-ok, #34d399);
+  }
+  
+  .form-hint.hint-warning {
+    color: var(--status-warn, #fbbf24);
+  }
+  
+  .form-hint.hint-error {
+    color: var(--status-err, #f87171);
+  }
+  
+  /* dURL Tag Detection Styles */
+  .durl-tag-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    margin-left: var(--s-2, 8px);
+    font-size: 10px;
+    font-weight: 500;
+    border-radius: var(--r-sm, 5px);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-3, #707088);
+    vertical-align: middle;
+  }
+  
+  .durl-tag-badge.tag-violet {
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--violet-400, #a78bfa);
+  }
+  
+  .durl-tag-badge.tag-cyan {
+    background: rgba(6, 182, 212, 0.15);
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .durl-tag-badge.tag-amber {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--status-warn, #fbbf24);
+  }
+  
+  .tag-icon {
+    font-size: 11px;
+  }
+  
+  .durl-tag-hint.hint-violet {
+    color: var(--violet-400, #a78bfa);
+  }
+  
+  .durl-tag-hint.hint-cyan {
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .durl-tag-hint.hint-amber {
+    color: var(--status-warn, #fbbf24);
+  }
+  
   .install-error,
   .install-warning {
     display: flex;
@@ -6371,6 +6730,53 @@
     display: flex;
     align-items: flex-start;
     gap: var(--s-2);
+  }
+  
+  /* Deploy Acknowledgement Checkbox */
+  .deploy-acknowledge {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-3);
+    padding: var(--s-3);
+    background: rgba(139, 92, 246, 0.08);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: var(--r-md);
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  
+  .deploy-acknowledge:hover {
+    background: rgba(139, 92, 246, 0.12);
+    border-color: rgba(139, 92, 246, 0.3);
+  }
+  
+  .acknowledge-checkbox {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    margin-top: 1px;
+    accent-color: var(--violet-500, #8b5cf6);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  
+  .acknowledge-text {
+    font-size: 12px;
+    color: var(--text-3, #707088);
+    line-height: 1.4;
+  }
+  
+  .acknowledge-text strong {
+    color: var(--text-1, #f8f8fc);
+  }
+  
+  .deploy-acknowledge:has(.acknowledge-checkbox:checked) {
+    border-color: var(--violet-500, #8b5cf6);
+    background: rgba(139, 92, 246, 0.15);
+  }
+  
+  .deploy-acknowledge:has(.acknowledge-checkbox:checked) .acknowledge-text {
+    color: var(--text-2, #a8a8b8);
   }
   
   /* =====================================================
@@ -7863,6 +8269,16 @@
   .lib-modal-footer-right {
     display: flex;
     gap: var(--s-3);
+  }
+  
+  .lib-embed-btn {
+    border-color: var(--violet-500, #8b5cf6);
+    color: var(--violet-400, #a78bfa);
+  }
+  
+  .lib-embed-btn:hover {
+    background: rgba(139, 92, 246, 0.15);
+    border-color: var(--violet-400, #a78bfa);
   }
 </style>
 

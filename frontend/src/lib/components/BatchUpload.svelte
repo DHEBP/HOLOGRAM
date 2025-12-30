@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { walletState, settingsState, toast } from '../stores/appState.js';
-  import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode } from '../../../wailsjs/go/main/App.js';
+  import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
   import { BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
   
@@ -31,6 +31,13 @@
   let enableCompression = false; // Global compression toggle (matching tela-cli)
   let isSimulator = false;
   let showConfirmModal = false;
+  
+  // TELA-MODs state (matching tela-cli modsPrompt)
+  let enableMods = false;
+  let selectedVsMod = '';      // Variable Store MOD (single selection)
+  let selectedTxMods = [];     // Transfer MODs (multi-selection)
+  let allMods = [];
+  let modsLoading = false;
   
   // Deployment result
   let deploymentResult = null; // { indexScid, deployedDocs, durl }
@@ -125,6 +132,124 @@
     if (unsubscribeComplete) unsubscribeComplete();
     if (unsubscribeError) unsubscribeError();
   });
+  
+  // Load MODs data when MODs are enabled
+  async function loadModsData() {
+    if (modsLoading || allMods.length > 0) return;
+    modsLoading = true;
+    try {
+      const result = await GetMODsList();
+      if (result.success && result.mods) {
+        allMods = result.mods;
+      }
+    } catch (e) {
+      console.error('Failed to load MODs:', e);
+    } finally {
+      modsLoading = false;
+    }
+  }
+  
+  // Get MODs grouped by class
+  function getVsModOptions() {
+    return allMods.filter(m => m.tag?.startsWith('vs'));
+  }
+  
+  function getTxModOptions() {
+    return allMods.filter(m => m.tag?.startsWith('tx'));
+  }
+  
+  // Toggle a Transfer MOD
+  function toggleTxMod(tag) {
+    if (selectedTxMods.includes(tag)) {
+      selectedTxMods = selectedTxMods.filter(t => t !== tag);
+    } else {
+      selectedTxMods = [...selectedTxMods, tag];
+    }
+  }
+  
+  // Get combined MOD tags string
+  function getModTags() {
+    const tags = [];
+    if (selectedVsMod) tags.push(selectedVsMod);
+    tags.push(...selectedTxMods);
+    return tags.join(',');
+  }
+  
+  // Icon URL Validation
+  function validateIconURL(url) {
+    if (!url || url.trim() === '') {
+      return { valid: true, type: 'empty', message: '' };
+    }
+    
+    const trimmed = url.trim();
+    
+    // Check if it's a valid SCID (64 hex characters)
+    const scidPattern = /^[a-fA-F0-9]{64}$/;
+    if (scidPattern.test(trimmed)) {
+      return { valid: true, type: 'scid', message: 'Valid SCID (on-chain reference)' };
+    }
+    
+    // Check for HTTPS URL
+    if (trimmed.startsWith('https://')) {
+      try {
+        new URL(trimmed);
+        return { valid: true, type: 'https', message: 'HTTPS URL' };
+      } catch {
+        return { valid: false, type: 'invalid', message: 'Invalid URL format' };
+      }
+    }
+    
+    // Check for HTTP URL (warning)
+    if (trimmed.startsWith('http://')) {
+      try {
+        new URL(trimmed);
+        return { valid: true, type: 'http', message: 'HTTP URL (HTTPS recommended)', warning: true };
+      } catch {
+        return { valid: false, type: 'invalid', message: 'Invalid URL format' };
+      }
+    }
+    
+    // Check for IPFS
+    if (trimmed.startsWith('ipfs://')) {
+      return { valid: true, type: 'ipfs', message: 'IPFS reference' };
+    }
+    
+    // Unknown format
+    return { valid: false, type: 'unknown', message: 'Use HTTPS URL, SCID (64 chars), or IPFS' };
+  }
+  
+  // Reactive icon validation
+  $: iconValidation = validateIconURL(indexIcon);
+  
+  // dURL Tag Detection
+  const DURL_TAGS = {
+    '.lib': { name: 'Library', icon: '📚', description: 'A collection of reusable DOCs', color: 'violet' },
+    '.shard': { name: 'DocShard', icon: '🧩', description: 'A shard DOC (part of a larger file)', color: 'cyan' },
+    '.shards': { name: 'DocShards', icon: '📦', description: 'DocShards INDEX that requires reconstruction', color: 'cyan' },
+    '.bootstrap': { name: 'Bootstrap', icon: '🚀', description: 'A collection of TELA apps for bootstrapping', color: 'amber' }
+  };
+  
+  function detectDurlTag(durl) {
+    if (!durl || durl.trim() === '') return null;
+    const trimmed = durl.trim().toLowerCase();
+    for (const [tag, info] of Object.entries(DURL_TAGS)) {
+      if (trimmed.endsWith(tag)) return { tag, ...info };
+    }
+    if (trimmed.endsWith('.tela')) {
+      return { tag: '.tela', name: 'Standard', icon: '◇', description: 'Standard TELA application', color: 'default' };
+    }
+    return null;
+  }
+  
+  $: durlTag = detectDurlTag(indexDURL);
+  
+  // Watch for MODs toggle to load MODs and force ringsize
+  $: if (enableMods) {
+    if (allMods.length === 0 && !modsLoading) {
+      loadModsData();
+    }
+    ringsize = 2; // MODs require ringsize 2
+  }
   
   $: if (folderPath) {
     scanFolder();
@@ -237,6 +362,7 @@
         description: indexDescription,
         iconUrl: indexIcon,
         ringsize: ringsize,
+        mods: enableMods ? getModTags() : '', // MOD tags if enabled
       };
       
       // Note: Events will handle progress updates and completion
@@ -572,14 +698,27 @@
         </div>
         
         <div class="config-field">
-          <label class="config-label">dURL (optional)</label>
+          <label class="config-label">
+            dURL (optional)
+            {#if durlTag}
+              <span class="durl-tag-badge" class:tag-violet={durlTag.color === 'violet'} class:tag-cyan={durlTag.color === 'cyan'} class:tag-amber={durlTag.color === 'amber'}>
+                <span class="tag-icon">{durlTag.icon}</span>
+                {durlTag.name}
+              </span>
+            {/if}
+          </label>
           <input
             type="text"
             bind:value={indexDURL}
-            placeholder="my-app"
+            placeholder="my-app.tela"
             disabled={deploying}
             class="config-input"
           />
+          {#if durlTag && durlTag.tag !== '.tela'}
+            <p class="durl-hint" class:hint-violet={durlTag.color === 'violet'} class:hint-cyan={durlTag.color === 'cyan'} class:hint-amber={durlTag.color === 'amber'}>
+              {durlTag.description}
+            </p>
+          {/if}
         </div>
       </div>
       
@@ -596,13 +735,34 @@
       
       <div class="config-field">
         <label class="config-label">Icon URL (optional)</label>
-        <input
-          type="text"
-          bind:value={indexIcon}
-          placeholder="https://example.com/icon.png"
-          disabled={deploying}
-          class="config-input"
-        />
+        <div class="icon-input-wrapper">
+          <input
+            type="text"
+            bind:value={indexIcon}
+            placeholder="https://example.com/icon.png or SCID"
+            disabled={deploying}
+            class="config-input"
+            class:input-valid={indexIcon && iconValidation.valid && !iconValidation.warning}
+            class:input-warning={iconValidation.warning}
+            class:input-error={indexIcon && !iconValidation.valid}
+          />
+          {#if indexIcon}
+            <span class="icon-status" class:valid={iconValidation.valid && !iconValidation.warning} class:warning={iconValidation.warning} class:invalid={!iconValidation.valid}>
+              {#if iconValidation.valid && !iconValidation.warning}
+                ✓
+              {:else if iconValidation.warning}
+                ⚠
+              {:else}
+                ✗
+              {/if}
+            </span>
+          {/if}
+        </div>
+        {#if indexIcon && iconValidation.message}
+          <p class="icon-hint" class:hint-valid={iconValidation.valid && !iconValidation.warning} class:hint-warning={iconValidation.warning} class:hint-error={!iconValidation.valid}>
+            {iconValidation.message}
+          </p>
+        {/if}
       </div>
       
       <!-- Ringsize Selector -->
@@ -622,12 +782,14 @@
           <button
             type="button"
             class="ringsize-btn {ringsize === 16 ? 'active immutable' : ''}"
-            on:click={() => ringsize = 16}
-            disabled={deploying}
+            class:disabled={enableMods}
+            on:click={() => !enableMods && (ringsize = 16)}
+            disabled={deploying || enableMods}
+            title={enableMods ? 'MODs require updateable INDEX (Ring 2)' : ''}
           >
             <span class="ringsize-icon">◆</span>
             <span class="ringsize-label">Immutable</span>
-            <span class="ringsize-desc">Ring 16 • Permanent, cannot change</span>
+            <span class="ringsize-desc">{enableMods ? 'Disabled when MODs enabled' : 'Ring 16 • Permanent, cannot change'}</span>
           </button>
         </div>
       </div>
@@ -661,6 +823,111 @@
           {/if}
         </div>
       {/if}
+      
+      <!-- TELA-MODs Section (matching tela-cli modsPrompt) -->
+      <div class="config-field mods-section">
+        <div class="mods-header">
+          <label class="config-label">
+            <span class="mods-icon">⬡</span>
+            TELA-MODs
+          </label>
+          <button 
+            type="button"
+            class="mods-toggle {enableMods ? 'active' : ''}"
+            on:click={() => enableMods = !enableMods}
+            disabled={deploying}
+          >
+            <div class="mods-toggle-track">
+              <div class="mods-toggle-thumb"></div>
+            </div>
+            <span class="mods-toggle-label">{enableMods ? 'Enabled' : 'Disabled'}</span>
+          </button>
+        </div>
+        
+        {#if enableMods}
+          <div class="mods-content">
+            {#if modsLoading}
+              <div class="mods-loading">
+                <div class="mods-spinner"></div>
+                <span>Loading MODs...</span>
+              </div>
+            {:else}
+              <p class="mods-description">
+                MODs add smart contract functionality to your INDEX. MODs require Ring 2 (updateable).
+              </p>
+              
+              <!-- Variable Store MOD (single selection) -->
+              <div class="mod-group">
+                <label class="mod-group-label">
+                  <span class="mod-icon">◈</span>
+                  Variable Store
+                  <span class="mod-group-hint">(select one)</span>
+                </label>
+                <div class="mod-options">
+                  <button 
+                    type="button"
+                    class="mod-option {selectedVsMod === '' ? 'selected' : ''}"
+                    on:click={() => selectedVsMod = ''}
+                    disabled={deploying}
+                  >
+                    <span class="mod-option-name">None</span>
+                  </button>
+                  {#each getVsModOptions() as mod}
+                    <button 
+                      type="button"
+                      class="mod-option {selectedVsMod === mod.tag ? 'selected' : ''}"
+                      on:click={() => selectedVsMod = mod.tag}
+                      disabled={deploying}
+                      title={mod.description}
+                    >
+                      <span class="mod-option-tag">{mod.tag}</span>
+                      <span class="mod-option-name">{mod.name?.replace('Variable store ', '') || mod.tag}</span>
+                    </button>
+                  {/each}
+                </div>
+              </div>
+              
+              <!-- Transfer MODs (multi-selection) -->
+              <div class="mod-group">
+                <label class="mod-group-label">
+                  <span class="mod-icon">◆</span>
+                  Transfers
+                  <span class="mod-group-hint">(select multiple)</span>
+                </label>
+                <div class="mod-options">
+                  {#each getTxModOptions() as mod}
+                    <button 
+                      type="button"
+                      class="mod-option {selectedTxMods.includes(mod.tag) ? 'selected' : ''}"
+                      on:click={() => toggleTxMod(mod.tag)}
+                      disabled={deploying}
+                      title={mod.description}
+                    >
+                      <span class="mod-option-tag">{mod.tag}</span>
+                      <span class="mod-option-name">{mod.name || mod.tag}</span>
+                      {#if selectedTxMods.includes(mod.tag)}
+                        <span class="mod-check">✓</span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+              
+              <!-- Selected MODs summary -->
+              {#if getModTags()}
+                <div class="mods-summary">
+                  <span class="mods-summary-label">Selected:</span>
+                  <code class="mods-summary-tags">{getModTags()}</code>
+                </div>
+              {/if}
+            {/if}
+          </div>
+        {:else}
+          <p class="mods-hint">
+            Enable to add smart contract functionality (variable stores, deposits, transfers)
+          </p>
+        {/if}
+      </div>
     </div>
     
     <!-- Deploy Button -->
@@ -1915,6 +2182,333 @@
   
   .btn-confirm:hover {
     background: var(--cyan-400, #22d3ee);
+  }
+  
+  /* === TELA-MODs Styles === */
+  .mods-section {
+    border-top: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
+    padding-top: var(--s-4, 16px);
+  }
+  
+  .mods-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--s-2, 8px);
+  }
+  
+  .mods-icon {
+    color: var(--violet-400, #a78bfa);
+    margin-right: var(--s-1, 4px);
+  }
+  
+  .mods-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: var(--s-1, 4px);
+  }
+  
+  .mods-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  .mods-toggle-track {
+    width: 36px;
+    height: 20px;
+    background: var(--void-surface, #1e1e2a);
+    border-radius: 10px;
+    position: relative;
+    transition: background 200ms ease-out;
+  }
+  
+  .mods-toggle.active .mods-toggle-track {
+    background: var(--violet-500, #8b5cf6);
+  }
+  
+  .mods-toggle-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: var(--text-4, #505068);
+    border-radius: 50%;
+    transition: all 200ms ease-out;
+  }
+  
+  .mods-toggle.active .mods-toggle-thumb {
+    left: 18px;
+    background: #fff;
+  }
+  
+  .mods-toggle-label {
+    font-size: 12px;
+    color: var(--text-4, #505068);
+  }
+  
+  .mods-toggle.active .mods-toggle-label {
+    color: var(--violet-400, #a78bfa);
+  }
+  
+  .mods-content {
+    background: var(--void-deep, #08080e);
+    border-radius: var(--r-lg, 12px);
+    padding: var(--s-3, 12px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3, 12px);
+  }
+  
+  .mods-loading {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    justify-content: center;
+    padding: var(--s-4, 16px);
+    color: var(--text-4, #505068);
+    font-size: 13px;
+  }
+  
+  .mods-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--violet-500, #8b5cf6);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  
+  .mods-description {
+    font-size: 12px;
+    color: var(--text-4, #505068);
+    line-height: 1.5;
+  }
+  
+  .mods-hint {
+    font-size: 12px;
+    color: var(--text-5, #404058);
+    margin-top: var(--s-1, 4px);
+  }
+  
+  .mod-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2, 8px);
+  }
+  
+  .mod-group-label {
+    font-size: 12px;
+    color: var(--text-3, #707088);
+    display: flex;
+    align-items: center;
+    gap: var(--s-1, 4px);
+  }
+  
+  .mod-icon {
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .mod-group-hint {
+    font-size: 11px;
+    color: var(--text-5, #404058);
+    margin-left: auto;
+  }
+  
+  .mod-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1, 4px);
+  }
+  
+  .mod-option {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1, 4px);
+    padding: var(--s-1, 4px) var(--s-2, 8px);
+    background: var(--void-up, #181824);
+    border: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
+    border-radius: var(--r-sm, 5px);
+    font-size: 11px;
+    color: var(--text-3, #707088);
+    cursor: pointer;
+    transition: all 150ms ease-out;
+  }
+  
+  .mod-option:hover {
+    border-color: var(--border-subtle, rgba(255, 255, 255, 0.06));
+    background: var(--void-surface, #1e1e2a);
+  }
+  
+  .mod-option.selected {
+    border-color: var(--violet-500, #8b5cf6);
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--violet-400, #a78bfa);
+  }
+  
+  .mod-option:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  .mod-option-tag {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: 10px;
+    padding: 1px 4px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+    text-transform: uppercase;
+  }
+  
+  .mod-option.selected .mod-option-tag {
+    background: rgba(139, 92, 246, 0.3);
+  }
+  
+  .mod-option-name {
+    font-size: 11px;
+  }
+  
+  .mod-check {
+    color: var(--violet-400, #a78bfa);
+    font-size: 10px;
+    margin-left: var(--s-1, 4px);
+  }
+  
+  .mods-summary {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px);
+    background: rgba(139, 92, 246, 0.08);
+    border-radius: var(--r-md, 8px);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+  }
+  
+  .mods-summary-label {
+    font-size: 12px;
+    color: var(--text-4, #505068);
+  }
+  
+  .mods-summary-tags {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: 12px;
+    color: var(--violet-400, #a78bfa);
+  }
+  
+  /* Icon URL Validation Styles */
+  .icon-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  
+  .icon-input-wrapper .config-input {
+    padding-right: 32px;
+  }
+  
+  .icon-status {
+    position: absolute;
+    right: 12px;
+    font-size: 12px;
+    pointer-events: none;
+  }
+  
+  .icon-status.valid {
+    color: var(--status-ok, #34d399);
+  }
+  
+  .icon-status.warning {
+    color: var(--status-warn, #fbbf24);
+  }
+  
+  .icon-status.invalid {
+    color: var(--status-err, #f87171);
+  }
+  
+  .config-input.input-valid {
+    border-color: var(--status-ok, #34d399);
+  }
+  
+  .config-input.input-warning {
+    border-color: var(--status-warn, #fbbf24);
+  }
+  
+  .config-input.input-error {
+    border-color: var(--status-err, #f87171);
+  }
+  
+  .icon-hint {
+    font-size: 11px;
+    margin-top: var(--s-1, 4px);
+    color: var(--text-4, #505068);
+  }
+  
+  .icon-hint.hint-valid {
+    color: var(--status-ok, #34d399);
+  }
+  
+  .icon-hint.hint-warning {
+    color: var(--status-warn, #fbbf24);
+  }
+  
+  .icon-hint.hint-error {
+    color: var(--status-err, #f87171);
+  }
+  
+  /* dURL Tag Detection Styles */
+  .durl-tag-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 6px;
+    margin-left: var(--s-1, 4px);
+    font-size: 10px;
+    font-weight: 500;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-3, #707088);
+    vertical-align: middle;
+  }
+  
+  .durl-tag-badge.tag-violet {
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--violet-400, #a78bfa);
+  }
+  
+  .durl-tag-badge.tag-cyan {
+    background: rgba(6, 182, 212, 0.15);
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .durl-tag-badge.tag-amber {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--status-warn, #fbbf24);
+  }
+  
+  .tag-icon {
+    font-size: 10px;
+  }
+  
+  .durl-hint {
+    font-size: 11px;
+    margin-top: var(--s-1, 4px);
+    color: var(--text-4, #505068);
+  }
+  
+  .durl-hint.hint-violet {
+    color: var(--violet-400, #a78bfa);
+  }
+  
+  .durl-hint.hint-cyan {
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .durl-hint.hint-amber {
+    color: var(--status-warn, #fbbf24);
   }
 </style>
 
