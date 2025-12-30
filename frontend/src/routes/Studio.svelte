@@ -3902,32 +3902,35 @@
               </div>
             </div>
           {:else if libraries.length === 0}
-            <div class="libs-empty">
-              <div class="libs-empty-illustration">
-                <Library size={48} />
+            <!-- Empty State - Using content-card pattern like Clone/Serve/DocShards -->
+            <div class="content-card">
+              <div class="content-card-header">
+                <Library size={32} class="content-card-icon" />
+                <p class="content-card-title">No Libraries Found</p>
+                <p class="content-card-text">Libraries are TELA content with a <code>.lib</code> suffix in their dURL.</p>
               </div>
-              <h3 class="libs-empty-title">No Libraries Found</h3>
-              <p class="libs-empty-desc">
-                Libraries are TELA content with a <code>.lib</code> suffix in their dURL.
-              </p>
-              <div class="libs-empty-info">
-                <div class="libs-info-item">
-                  <Package size={14} class="libs-info-icon" />
-                  <span>Deploy reusable JavaScript, CSS, or HTML snippets</span>
-                </div>
-                <div class="libs-info-item">
-                  <Link size={14} class="libs-info-icon" />
-                  <span>Reference libraries in your TELA apps using dURL</span>
-                </div>
-                <div class="libs-info-item">
-                  <Lightbulb size={14} class="libs-info-icon" />
-                  <span>Example: <code>mylib.lib</code> or <code>utils.lib</code></span>
-                </div>
-              </div>
-              <button on:click={() => loadLibrariesData(true)} class="btn btn-secondary">
-                <RefreshCw size={14} />
+              
+              <button 
+                class="btn btn-primary btn-block" 
+                style="margin-top: var(--s-4);"
+                on:click={() => loadLibrariesData(true)}
+              >
+                <RefreshCw size={16} />
                 Check Again
               </button>
+            </div>
+            
+            <!-- Info Panel - Using info-panel pattern like Clone/DocShards -->
+            <div class="info-panel" style="margin-top: var(--s-4);">
+              <div class="info-panel-icon">◎</div>
+              <div class="info-panel-content">
+                <p class="info-panel-title">About Libraries</p>
+                <ul class="info-list">
+                  <li>Deploy reusable JavaScript, CSS, or HTML snippets</li>
+                  <li>Reference libraries in your TELA apps using dURL</li>
+                  <li>Example: <code>mylib.lib</code> or <code>utils.lib</code></li>
+                </ul>
+              </div>
             </div>
           {:else if filteredLibraries.length === 0}
             <div class="libs-no-results">
@@ -8095,80 +8098,8 @@
     margin-top: var(--s-2);
   }
   
-  /* Empty State */
-  .libs-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--s-4);
-    padding: var(--s-10);
-    background: var(--void-mid);
-    border: 1px dashed var(--border-subtle);
-    border-radius: var(--r-lg);
-    text-align: center;
-  }
-  
-  .libs-empty-illustration {
-    width: 80px;
-    height: 80px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, rgba(34, 211, 238, 0.1), rgba(139, 92, 246, 0.05));
-    border: 1px solid var(--border-dim);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-4);
-  }
-  
-  .libs-empty-title {
-    font-size: 16px;
-    font-weight: 500;
-    color: var(--text-2);
-    margin: 0;
-  }
-  
-  .libs-empty-desc {
-    font-size: 13px;
-    color: var(--text-4);
-    margin: 0;
-  }
-  
-  .libs-empty-desc code {
-    color: var(--cyan-400);
-    background: rgba(34, 211, 238, 0.1);
-    padding: 2px 6px;
-    border-radius: var(--r-xs);
-  }
-  
-  .libs-empty-info {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-2);
-    margin: var(--s-3) 0;
-    text-align: left;
-  }
-  
-  .libs-info-item {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    font-size: 12px;
-    color: var(--text-4);
-  }
-  
-  .libs-info-item :global(.libs-info-icon) {
-    color: var(--cyan-400);
-    flex-shrink: 0;
-  }
-  
-  .libs-info-item code {
-    color: var(--cyan-400);
-    background: rgba(34, 211, 238, 0.1);
-    padding: 2px 6px;
-    border-radius: var(--r-xs);
-    font-size: 11px;
-  }
+  /* Empty State - Now uses global .content-card pattern from hologram.css */
+  /* Old .libs-empty* styles removed - using standard content-card + info-panel */
   
   /* No Results */
   .libs-no-results {
