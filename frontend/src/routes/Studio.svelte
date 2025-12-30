@@ -5,13 +5,13 @@
   import BatchUpload from '../lib/components/BatchUpload.svelte';
   import DiffViewer from '../lib/components/DiffViewer.svelte';
   import ModPickerModal from '../lib/components/ModPickerModal.svelte';
-  import FileShardModal from '../lib/components/FileShardModal.svelte';
   import VersionHistory from '../lib/components/VersionHistory.svelte';
   import { 
-    SetSetting, GetGasEstimate, InstallDOC, InstallINDEX, GetINDEXInfo, UpdateINDEX, SelectFolder,
+    SetSetting, GetGasEstimate, InstallDOC, InstallINDEX, GetINDEXInfo, UpdateINDEX, SelectFolder, SelectFile,
     IsInSimulatorMode, GetSimulatorDeploymentInfo, CloneTELA, GetClonePath,
     StartLocalDevServer, StopLocalDevServer, GetLocalDevServerStatus, RefreshLocalDevServer,
-    StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus, SetNetworkMode
+    StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus, SetNetworkMode,
+    ShardFile, ConstructFromShards
   } from '../../wailsjs/go/main/App.js';
   import { BrowserOpenURL, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
   import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff } from '../../wailsjs/runtime/runtime.js';
@@ -20,7 +20,8 @@
     Package, Copy, Server, GitCompare, AlertTriangle, X, Plus, Loader2, Lock, Eye, Square,
     Puzzle, Library, Palette, Zap, Database, Shield, Wrench, Search, ArrowRight, Check,
     Radio, Wallet, Diamond, ExternalLink, CheckCircle, Clipboard, FileArchive,
-    Link, Lightbulb, ThumbsUp, ThumbsDown, Minus, GitBranch, History, RotateCcw
+    Link, Lightbulb, ThumbsUp, ThumbsDown, Minus, GitBranch, History, RotateCcw,
+    Scissors, FolderOpen
   } from 'lucide-svelte';
   import { GetMODsList, GetMODInfo, GetAllMODClasses, PrepareMODInstall, GetTELALibraries, EnsureGnomonRunning, SearchMyContent, SearchMyDOCs, SearchMyINDEXes, GetAvailableDOCTypes, GetCommitHistory, GetCommitContent, DiffCommits } from '../../wailsjs/go/main/App.js';
   
@@ -128,7 +129,18 @@
   let actionsLoading = false;
   let actionsContentInfo = null;  // Info about the loaded content
   let actionsError = '';
-  
+
+  // =====================================================
+  // DocShards state (inline - matching Clone/Serve pattern)
+  // =====================================================
+  let shardMode = 'shard';        // 'shard' or 'reconstruct'
+  let shardFilePath = '';         // File to shard
+  let shardFolderPath = '';       // Folder containing shards to reconstruct
+  let shardCompress = true;       // Enable GZIP compression
+  let shardLoading = false;
+  let shardResult = null;
+  let shardError = '';
+
   // Dropzone element reference for native drag-and-drop
   let batchDropzoneElement;
   
@@ -320,7 +332,106 @@
       activeTab = 'serve';
     }
   }
+
+  // =====================================================
+  // DocShards Functions (matching Clone/Serve inline pattern)
+  // =====================================================
   
+  async function selectShardFile() {
+    try {
+      const path = await SelectFile();
+      if (path) {
+        shardFilePath = path;
+        shardError = '';
+      }
+    } catch (e) {
+      console.error('File selection error:', e);
+      shardError = 'Failed to select file';
+    }
+  }
+  
+  async function selectShardFolder() {
+    try {
+      const path = await SelectFolder();
+      if (path) {
+        shardFolderPath = path;
+        shardError = '';
+      }
+    } catch (e) {
+      console.error('Folder selection error:', e);
+      shardError = 'Failed to select folder';
+    }
+  }
+  
+  async function performShard() {
+    if (!shardFilePath) {
+      toast.warning('Please select a file to shard');
+      return;
+    }
+    
+    shardLoading = true;
+    shardResult = null;
+    shardError = '';
+    
+    try {
+      const res = await ShardFile(shardFilePath, shardCompress);
+      if (res.success) {
+        shardResult = { ...res, mode: 'shard' };
+        toast.success(`File sharded into ${res.shardCount} parts`);
+      } else {
+        shardError = res.error || 'Sharding failed';
+        toast.error(shardError);
+      }
+    } catch (e) {
+      shardError = e.message || 'Sharding failed';
+      toast.error(shardError);
+    } finally {
+      shardLoading = false;
+    }
+  }
+  
+  async function performReconstruct() {
+    if (!shardFolderPath) {
+      toast.warning('Please select a folder containing shard files');
+      return;
+    }
+    
+    shardLoading = true;
+    shardResult = null;
+    shardError = '';
+    
+    try {
+      const res = await ConstructFromShards(shardFolderPath);
+      if (res.success) {
+        shardResult = { ...res, mode: 'reconstruct' };
+        toast.success('File reconstructed successfully');
+      } else {
+        shardError = res.error || 'Reconstruction failed';
+        toast.error(shardError);
+      }
+    } catch (e) {
+      shardError = e.message || 'Reconstruction failed';
+      toast.error(shardError);
+    } finally {
+      shardLoading = false;
+    }
+  }
+  
+  function resetShard() {
+    shardFilePath = '';
+    shardFolderPath = '';
+    shardResult = null;
+    shardError = '';
+  }
+  
+  function formatShardBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
   // =====================================================
   // My Content Functions (matching tela-cli search my docs/indexes)
   // =====================================================
@@ -3895,12 +4006,192 @@
       </div>
     
     {:else if activeTab === 'shards'}
-      <!-- DocShards Tools -->
-      <div class="content-section shards-section">
+      <!-- DocShards Tools - Inline pattern matching Clone/Serve -->
+      <div class="content-section">
         <h2 class="content-section-title">DocShard Manager</h2>
         <p class="content-section-desc">Split large files into shards for deployment, or reconstruct files from their shards.</p>
         
-        <FileShardModal visible={true} on:close={() => {}} />
+        <!-- Error Display -->
+        {#if shardError}
+          <div class="alert alert-error" style="margin-bottom: var(--s-4);">
+            <AlertTriangle size={16} />
+            <span>{shardError}</span>
+          </div>
+        {/if}
+        
+        <!-- Success Display -->
+        {#if shardResult}
+          <div class="clone-success-card">
+            <div class="clone-success-header">
+              <CheckCircle size={24} class="clone-success-icon" />
+              <div>
+                {#if shardResult.mode === 'shard'}
+                  <h3 class="clone-success-title">File Sharded Successfully!</h3>
+                  <p class="clone-success-subtitle">{shardResult.shardCount} shards created</p>
+                {:else}
+                  <h3 class="clone-success-title">File Reconstructed!</h3>
+                  <p class="clone-success-subtitle">Original file restored</p>
+                {/if}
+              </div>
+            </div>
+            
+            <div class="clone-result-details">
+              {#if shardResult.mode === 'shard'}
+                <div class="clone-detail-row">
+                  <span class="clone-detail-label">Shards Created</span>
+                  <span class="clone-detail-value">{shardResult.shardCount}</span>
+                </div>
+                <div class="clone-detail-row">
+                  <span class="clone-detail-label">Output Directory</span>
+                  <code class="clone-detail-value">{shardResult.outputDir}</code>
+                </div>
+                <div class="clone-detail-row">
+                  <span class="clone-detail-label">Compression</span>
+                  <span class="clone-detail-value">{shardResult.compressed ? 'GZIP Enabled' : 'None'}</span>
+                </div>
+              {:else}
+                <div class="clone-detail-row">
+                  <span class="clone-detail-label">Output File</span>
+                  <code class="clone-detail-value">{shardResult.outputPath}</code>
+                </div>
+                <div class="clone-detail-row">
+                  <span class="clone-detail-label">File Size</span>
+                  <span class="clone-detail-value">{formatShardBytes(shardResult.size)}</span>
+                </div>
+              {/if}
+            </div>
+            
+            <div class="clone-actions">
+              <button class="btn btn-ghost" on:click={resetShard}>
+                {shardMode === 'shard' ? 'Shard Another File' : 'Reconstruct Another'}
+              </button>
+            </div>
+          </div>
+        {:else}
+          <!-- Mode Selector Tabs -->
+          <div class="shard-mode-tabs">
+            <button 
+              class="shard-mode-tab" 
+              class:active={shardMode === 'shard'}
+              on:click={() => { shardMode = 'shard'; resetShard(); }}
+            >
+              <Scissors size={16} />
+              Shard File
+            </button>
+            <button 
+              class="shard-mode-tab" 
+              class:active={shardMode === 'reconstruct'}
+              on:click={() => { shardMode = 'reconstruct'; resetShard(); }}
+            >
+              <Layers size={16} />
+              Reconstruct
+            </button>
+          </div>
+          
+          {#if shardMode === 'shard'}
+            <!-- Shard File Card -->
+            <div class="content-card">
+              <div class="content-card-header">
+                <Scissors size={32} class="content-card-icon" />
+                <p class="content-card-title">Shard File</p>
+                <p class="content-card-text">Split a large file into smaller DocShard pieces for deployment as multiple TELA-DOC contracts. Useful for files exceeding single-contract size limits.</p>
+              </div>
+              
+              <div class="form-group" style="margin-top: var(--s-4);">
+                <label class="form-label">File to Shard</label>
+                <div class="shard-input-row">
+                  <input
+                    type="text"
+                    bind:value={shardFilePath}
+                    placeholder="Select file to split into shards..."
+                    class="input input-mono"
+                    readonly
+                  />
+                  <button class="btn btn-secondary" on:click={selectShardFile}>
+                    Browse
+                  </button>
+                </div>
+              </div>
+              
+              <div class="form-group" style="margin-top: var(--s-3);">
+                <label class="form-label shard-checkbox-label">
+                  <input type="checkbox" bind:checked={shardCompress} class="shard-checkbox" />
+                  Enable GZIP Compression
+                </label>
+                <span class="form-hint">Reduces shard sizes but requires decompression on reconstruction</span>
+              </div>
+              
+              <button 
+                class="btn btn-primary btn-block" 
+                style="margin-top: var(--s-4);"
+                on:click={performShard}
+                disabled={shardLoading || !shardFilePath}
+              >
+                {#if shardLoading}
+                  <Loader2 size={16} class="spinner" />
+                  Sharding...
+                {:else}
+                  <Scissors size={16} />
+                  Shard File
+                {/if}
+              </button>
+            </div>
+          {:else}
+            <!-- Reconstruct Card -->
+            <div class="content-card">
+              <div class="content-card-header">
+                <Layers size={32} class="content-card-icon" />
+                <p class="content-card-title">Reconstruct File</p>
+                <p class="content-card-text">Reconstruct an original file from its DocShard pieces. Select a folder containing the shard files.</p>
+              </div>
+              
+              <div class="form-group" style="margin-top: var(--s-4);">
+                <label class="form-label">Shard Folder</label>
+                <div class="shard-input-row">
+                  <input
+                    type="text"
+                    bind:value={shardFolderPath}
+                    placeholder="Select folder containing shard files..."
+                    class="input input-mono"
+                    readonly
+                  />
+                  <button class="btn btn-secondary" on:click={selectShardFolder}>
+                    <FolderOpen size={14} />
+                    Browse
+                  </button>
+                </div>
+              </div>
+              
+              <button 
+                class="btn btn-primary btn-block" 
+                style="margin-top: var(--s-4);"
+                on:click={performReconstruct}
+                disabled={shardLoading || !shardFolderPath}
+              >
+                {#if shardLoading}
+                  <Loader2 size={16} class="spinner" />
+                  Reconstructing...
+                {:else}
+                  <Layers size={16} />
+                  Reconstruct File
+                {/if}
+              </button>
+            </div>
+          {/if}
+          
+          <!-- Info Panel -->
+          <div class="info-panel" style="margin-top: var(--s-4);">
+            <div class="info-panel-icon">◎</div>
+            <div class="info-panel-content">
+              <p class="info-panel-title">About DocShards</p>
+              <ul class="info-list">
+                <li>DocShards allow large files to be deployed across multiple TELA-DOC contracts</li>
+                <li>Each shard is deployed separately and can be reconstructed client-side</li>
+                <li>Shard metadata is embedded in each piece for seamless reconstruction</li>
+              </ul>
+            </div>
+          </div>
+        {/if}
       </div>
     {/if}
     </div>
@@ -6983,6 +7274,68 @@
   /* Modal warning icon */
   .modal-icon.warning {
     color: var(--status-warn);
+  }
+  
+  /* =====================================================
+     DocShards Styles (Inline - matching Clone/Serve pattern)
+     ===================================================== */
+  
+  .shard-mode-tabs {
+    display: flex;
+    gap: var(--s-2);
+    margin-bottom: var(--s-4);
+    padding: var(--s-1);
+    background: var(--void-deep);
+    border-radius: var(--r-lg);
+  }
+  
+  .shard-mode-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-4);
+    border-radius: var(--r-md);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-4);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: all var(--dur-fast);
+  }
+  
+  .shard-mode-tab:hover {
+    color: var(--text-2);
+    background: var(--void-up);
+  }
+  
+  .shard-mode-tab.active {
+    color: var(--void-pure);
+    background: var(--cyan-400);
+  }
+  
+  .shard-input-row {
+    display: flex;
+    gap: var(--s-2);
+  }
+  
+  .shard-input-row .input {
+    flex: 1;
+  }
+  
+  .shard-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    cursor: pointer;
+  }
+  
+  .shard-checkbox {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--cyan-400);
   }
   
   /* =====================================================
