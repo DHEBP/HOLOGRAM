@@ -162,6 +162,7 @@ export namespace main {
 	    addressPrefix: string;
 	    lastUsed: number;
 	    isCurrent: boolean;
+	    network: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new WalletInfo(source);
@@ -174,6 +175,7 @@ export namespace main {
 	        this.addressPrefix = source["addressPrefix"];
 	        this.lastUsed = source["lastUsed"];
 	        this.isCurrent = source["isCurrent"];
+	        this.network = source["network"];
 	    }
 	}
 

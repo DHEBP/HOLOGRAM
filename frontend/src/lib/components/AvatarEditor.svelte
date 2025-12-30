@@ -227,6 +227,31 @@
     return hex;
   }
   
+  // Valid palette characters (must match Villager SC exactly)
+  const VALID_PALETTE_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  
+  /**
+   * Validate that an avatar string contains only valid palette characters
+   * @param {string} str - 576-character avatar string
+   * @returns {boolean} - true if valid, false otherwise
+   */
+  function isValidAvatarString(str) {
+    if (!str || str.length !== 576) return false;
+    return str.split('').every(c => VALID_PALETTE_CHARS.includes(c));
+  }
+  
+  /**
+   * Sanitize avatar string by replacing invalid characters with transparent
+   * @param {string} str - avatar string (may contain invalid chars)
+   * @returns {string} - sanitized 576-char string
+   */
+  function sanitizeAvatarString(str) {
+    if (!str) return EMPTY_CHAR.repeat(576);
+    return str.split('').map(c => 
+      VALID_PALETTE_CHARS.includes(c) ? c : EMPTY_CHAR
+    ).join('');
+  }
+  
   async function loadFromSC() {
     if (!$walletState.address) return;
     
@@ -234,28 +259,36 @@
     try {
       const scid = getVillagerSCID();
       
-      // Fetch avatar AND devFee in one call
+      // Fetch devFee separately using keysuint64 (Fix #5: proper type handling)
+      try {
+        const feeResponse = await CallXSWD(JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "DERO.GetSC",
+          params: {
+            scid: scid,
+            keysuint64: ['devFee']
+          }
+        }));
+        
+        if (feeResponse?.result?.valuesuint64?.[0] > 0) {
+          devFee = feeResponse.result.valuesuint64[0];
+        }
+      } catch (feeErr) {
+        console.warn('Failed to fetch devFee, using default:', feeErr);
+        // Keep default devFee value
+      }
+      
+      // Fetch avatar string separately
       const response = await CallXSWD(JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
         method: "DERO.GetSC",
         params: {
           scid: scid,
-          keysstring: [`avatar_${$walletState.address}`, 'devFee']
+          keysstring: [`avatar_${$walletState.address}`]
         }
       }));
-      
-      // Extract devFee if available
-      if (response?.result?.valuesuint64) {
-        // devFee is the second key we requested
-        const feeValues = response.result.valuesuint64;
-        if (feeValues.length > 1 && feeValues[1] > 0) {
-          devFee = feeValues[1];
-        } else if (feeValues.length > 0 && feeValues[0] > 0) {
-          // Might be in first position if avatar doesn't exist
-          devFee = feeValues[0];
-        }
-      }
       
       if (response?.result?.valuesstring?.[0]) {
         let avatarStr = response.result.valuesstring[0];
@@ -266,14 +299,19 @@
           avatarStr = hexToString(avatarStr);
         }
         
+        // Fix #2: Validate and sanitize the avatar string
         if (avatarStr && avatarStr.length === 576) {
+          if (!isValidAvatarString(avatarStr)) {
+            console.warn('Avatar contains invalid palette characters, sanitizing...');
+            avatarStr = sanitizeAvatarString(avatarStr);
+          }
           pixels = avatarStr.split('');
           originalPixels = [...pixels];
           hasChanges = false;
           await updatePreview();
           toast.success('Avatar loaded from blockchain');
         } else {
-          // Invalid avatar, use empty
+          // Invalid avatar length, use empty
           pixels = Array(TOTAL_PIXELS).fill(EMPTY_CHAR);
           originalPixels = [...pixels];
           hasChanges = false;

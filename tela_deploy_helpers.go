@@ -47,6 +47,26 @@ type PreparedDOC struct {
 func (a *App) setupNetworkForDeployment(wallet *walletapi.Wallet_Disk, isSimulator bool) (string, error) {
 	endpoint := "127.0.0.1:20000"
 
+	// PRE-DEPLOYMENT HEALTH CHECK: Verify daemon is alive before starting
+	if isSimulator {
+		a.logToConsole("[CHECK] Verifying simulator daemon is healthy...")
+		if a.daemonClient != nil {
+			info, err := a.daemonClient.GetInfo()
+			if err != nil {
+				return "", fmt.Errorf("simulator daemon is not responding - please restart simulator mode: %v", err)
+			}
+			if info == nil {
+				return "", fmt.Errorf("simulator daemon returned empty response - please restart simulator mode")
+			}
+			// Log daemon status
+			if height, ok := info["topoheight"].(float64); ok {
+				a.logToConsole(fmt.Sprintf("[OK] Simulator daemon healthy (height: %.0f)", height))
+			} else {
+				a.logToConsole("[OK] Simulator daemon responding")
+			}
+		}
+	}
+
 	if isSimulator {
 		globals.Arguments["--testnet"] = true
 		globals.Arguments["--simulator"] = true
@@ -498,19 +518,35 @@ func (a *App) waitForNewBlockWithHealthCheck(timeout time.Duration) error {
 		return fmt.Errorf("daemon client not available")
 	}
 	
-	pollInterval := 500 * time.Millisecond // Poll every 500ms (simulator auto-mines fast)
+	// Start with faster polling to detect daemon crashes quickly
+	// Then slow down after confirming daemon is alive
+	fastPollInterval := 200 * time.Millisecond  // Fast initial polls
+	normalPollInterval := 500 * time.Millisecond // Normal interval
 	timeoutTime := time.Now().Add(timeout)
+	pollCount := 0
+	consecutiveFailures := 0
 	
 	for time.Now().Before(timeoutTime) {
-		time.Sleep(pollInterval)
+		pollCount++
+		// Use fast polling for first 5 polls (1 second), then normal
+		interval := normalPollInterval
+		if pollCount <= 5 {
+			interval = fastPollInterval
+		}
+		time.Sleep(interval)
 		
 		// Check daemon via HTTP RPC (not websocket)
 		if a.daemonClient != nil {
 			info, err := a.daemonClient.GetInfo()
 			if err != nil {
-				// Daemon not responding - might have crashed
-				return fmt.Errorf("daemon RPC not responding (may have crashed): %v", err)
+				consecutiveFailures++
+				// If we get 2 consecutive failures, daemon is likely crashed
+				if consecutiveFailures >= 2 {
+					return fmt.Errorf("daemon crashed - please restart simulator mode (error: %v)", err)
+				}
+				continue
 			}
+			consecutiveFailures = 0 // Reset on success
 			
 			// Extract topoheight from map
 			var currentHeight int64

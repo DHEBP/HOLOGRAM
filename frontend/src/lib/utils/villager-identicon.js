@@ -363,12 +363,92 @@ const VillagerIdenticon = (function () {
 			canvas.toBlob(blob => resolve(URL.createObjectURL(blob)), 'image/png');
 		});
 	}
+    // ──────────────────────────────────────────────────────────────
+    // 5. Validation utilities (for defensive programming)
+    // ──────────────────────────────────────────────────────────────
+    
+    // All valid palette characters
+    const VALID_PALETTE_CHARS = Object.keys(Char_To_Color);
+    const VALID_CHARS_SET = new Set(VALID_PALETTE_CHARS);
+    
+    /**
+     * Validate that an avatar string contains only valid palette characters
+     * @param {string} str - 576-character avatar string
+     * @returns {boolean} - true if valid, false otherwise
+     */
+    function isValidAvatarString(str) {
+        if (!str || typeof str !== 'string' || str.length !== 576) return false;
+        for (let i = 0; i < str.length; i++) {
+            if (!VALID_CHARS_SET.has(str[i])) return false;
+        }
+        return true;
+    }
+    
+    /**
+     * Sanitize avatar string by replacing invalid characters with transparent ('z')
+     * @param {string} str - avatar string (may contain invalid chars)
+     * @returns {string} - sanitized 576-char string, or empty avatar if input is invalid
+     */
+    function sanitizeAvatarString(str) {
+        if (!str || typeof str !== 'string') return 'z'.repeat(576);
+        
+        let result = '';
+        for (let i = 0; i < 576; i++) {
+            const c = str[i];
+            result += (c && VALID_CHARS_SET.has(c)) ? c : 'z';
+        }
+        return result;
+    }
+    
+    /**
+     * Get validation report for an avatar string
+     * @param {string} str - avatar string to validate
+     * @returns {object} - { valid: boolean, length: number, invalidChars: string[], invalidPositions: number[] }
+     */
+    function validateAvatarString(str) {
+        const result = {
+            valid: true,
+            length: str?.length || 0,
+            expectedLength: 576,
+            invalidChars: [],
+            invalidPositions: []
+        };
+        
+        if (!str || typeof str !== 'string') {
+            result.valid = false;
+            return result;
+        }
+        
+        if (str.length !== 576) {
+            result.valid = false;
+        }
+        
+        for (let i = 0; i < str.length; i++) {
+            if (!VALID_CHARS_SET.has(str[i])) {
+                result.valid = false;
+                if (!result.invalidChars.includes(str[i])) {
+                    result.invalidChars.push(str[i]);
+                }
+                result.invalidPositions.push(i);
+            }
+        }
+        
+        return result;
+    }
+
     return {
         render: renderSmart,
         clearCache: () => {
             avatarCache.forEach(url => URL.revokeObjectURL(url));
             avatarCache.clear();
-        }
+        },
+        // Validation utilities (Fix #2)
+        isValid: isValidAvatarString,
+        sanitize: sanitizeAvatarString,
+        validate: validateAvatarString,
+        // Expose palette info for external tools
+        PALETTE_CHARS: VALID_PALETTE_CHARS,
+        PALETTE: Char_To_Color
     };
 })();
 

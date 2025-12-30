@@ -314,13 +314,14 @@
         dispatch('statusClick', { type: 'node', tab: 'settings', section: 'node' });
         break;
       case 'wallet':
-        // Context-aware: dropdown if connected, modal if not
+        // Context-aware behavior based on wallet state
         if (walletIsConnected) {
           // Open wallet menu
           toggleWalletMenu();
         } else {
-          // Open connect wallet modal
-          handleConnectWallet();
+          // No wallet connected: navigate to Wallet page
+          // (User can choose to open a wallet file, create new, or connect via XSWD)
+          dispatch('statusClick', { type: 'wallet', tab: 'wallet' });
         }
         break;
       case 'epoch':
