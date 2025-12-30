@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { writable, get } from 'svelte/store';
-  import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, browserHistory, browserHistoryIndex, pushToHistory, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast } from '../lib/stores/appState.js';
+  import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
   import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart } from '../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -27,12 +27,38 @@ let addressInput = '';
   let previousWalletRequestCount = 0;
   let addressBarFocused = false;
   
-  // Browser tabs state
+  // Browser tabs state - each tab has its own history
   let tabs = [
-    { id: 'discover', title: 'Discover Apps', icon: 'home', isHome: true }
+    { id: 'discover', title: 'Discover Apps', icon: 'home', isHome: true, history: [], historyIndex: -1 }
   ];
   let activeTabId = 'discover';
   let tabIdCounter = 1;
+  
+  // Helper to get current tab
+  function getCurrentTab() {
+    return tabs.find(t => t.id === activeTabId);
+  }
+  
+  // Helper to update current tab's history
+  function pushToTabHistory(url) {
+    tabs = tabs.map(t => {
+      if (t.id === activeTabId) {
+        // Truncate forward history if navigating from middle
+        let newHistory = t.history;
+        if (t.historyIndex < t.history.length - 1) {
+          newHistory = t.history.slice(0, t.historyIndex + 1);
+        }
+        // Add new entry
+        newHistory = [...newHistory, url];
+        // Limit history size (keep last 50 per tab)
+        if (newHistory.length > 50) {
+          newHistory.shift();
+        }
+        return { ...t, history: newHistory, historyIndex: newHistory.length - 1 };
+      }
+      return t;
+    });
+  }
   
   // Console panel state
   let showConsole = false;
@@ -818,8 +844,9 @@ let addressInput = '';
         addToHistory(scid);
         addConsoleLog(`Resolved SCID: ${scid}`);
         
+        // Add to per-tab history (not global)
         if (!fromHistory) {
-          pushToHistory(cleanInput);
+          pushToTabHistory(cleanInput);
         }
         
         let result;
@@ -870,8 +897,9 @@ let addressInput = '';
       const dirName = status.directory.split('/').pop() || 'Local Dev';
       updateActiveTab(`📁 ${dirName}`, url, 'server');
       
+      // Add to per-tab history
       if (!fromHistory) {
-        pushToHistory(url);
+        pushToTabHistory(url);
       }
       
       // Fetch HTML from local server and inject XSWD bridge
@@ -952,17 +980,24 @@ let addressInput = '';
         // Start real HTTP server for this TELA content
         const serverResult = await ServeTELAContent(scid);
         
-        if (serverResult.success && serverResult.url) {
-          addConsoleLog(`🌐 TELA server started: ${serverResult.url}`);
-          activeTelaServer = serverResult.name;
-          
-          // Load iframe from real HTTP URL
-          if (contentFrame) {
-            contentFrame.src = serverResult.url;
-            showWelcome = false;
-          }
-          return;
-        } else {
+      if (serverResult.success && serverResult.url) {
+        addConsoleLog(`🌐 TELA server started: ${serverResult.url}`);
+        activeTelaServer = serverResult.name;
+        
+        // Load iframe from real HTTP URL
+        if (contentFrame) {
+          // Remove srcdoc attribute entirely (it takes precedence over src when present)
+          // Setting srcdoc='' still keeps the attribute and shows blank page
+          contentFrame.removeAttribute('srcdoc');
+          // Add cache-busting to force reload even if URL is the same port
+          // This is needed because proxy servers reuse ports (50000+) and
+          // the browser won't reload if src URL appears unchanged
+          const cacheBustedUrl = `${serverResult.url}?_t=${Date.now()}`;
+          contentFrame.src = cacheBustedUrl;
+          showWelcome = false;
+        }
+        return;
+      } else {
           addConsoleLog(`⚠️ HTTP server failed, falling back to srcdoc: ${serverResult.error || 'Unknown'}`);
         }
       } catch (e) {
@@ -1163,9 +1198,14 @@ let addressInput = '';
         injectedHtml = bridgeScript + html;
       }
       
-      // Try srcdoc first - simpler and works for many apps
+      // Remove src attribute - we're using srcdoc for inline content
+      // This ensures clean state when switching between HTTP and inline modes
+      contentFrame.removeAttribute('src');
+      
+      // Use srcdoc for inline content (fallback when HTTP server fails)
       // blob: URLs cause protocol issues (location.protocol = 'blob:')
       contentFrame.srcdoc = injectedHtml;
+      showWelcome = false;
       
       // Wait for iframe to load, then inject telaHost API
       contentFrame.onload = () => {
@@ -1353,19 +1393,30 @@ let addressInput = '';
   }
   
   async function goBack() {
-    if ($browserHistoryIndex > 0) {
-      const newIndex = $browserHistoryIndex - 1;
-      browserHistoryIndex.set(newIndex);
-      addressInput = $browserHistory[newIndex];
+    const tab = getCurrentTab();
+    if (!tab) return;
+    
+    // If we have history in this tab, go back within the tab
+    if (tab.historyIndex > 0) {
+      const newIndex = tab.historyIndex - 1;
+      tabs = tabs.map(t => t.id === activeTabId ? { ...t, historyIndex: newIndex } : t);
+      addressInput = tab.history[newIndex];
       await navigate(true);
+    } else if (!tab.isHome) {
+      // No history but not on home - go to Discover (home)
+      goHome();
     }
+    // If already at home with no history, do nothing (button should be disabled)
   }
   
   async function goForward() {
-    if ($browserHistoryIndex < $browserHistory.length - 1) {
-      const newIndex = $browserHistoryIndex + 1;
-      browserHistoryIndex.set(newIndex);
-      addressInput = $browserHistory[newIndex];
+    const tab = getCurrentTab();
+    if (!tab) return;
+    
+    if (tab.historyIndex < tab.history.length - 1) {
+      const newIndex = tab.historyIndex + 1;
+      tabs = tabs.map(t => t.id === activeTabId ? { ...t, historyIndex: newIndex } : t);
+      addressInput = tab.history[newIndex];
       await navigate(true);
     }
   }
@@ -1373,14 +1424,12 @@ let addressInput = '';
   function goHome() {
     showWelcome = true;
     addressInput = '';
+    // Update current tab to show it's at home
+    updateActiveTab('Discover Apps', '', 'home');
     if (contentFrame) {
       try {
-        const doc = contentFrame.contentDocument || contentFrame.contentWindow?.document;
-        if (doc) {
-          doc.open();
-          doc.write('');
-          doc.close();
-        }
+        contentFrame.removeAttribute('src');
+        contentFrame.removeAttribute('srcdoc');
       } catch (e) {}
     }
   }
@@ -1389,8 +1438,10 @@ let addressInput = '';
     if (addressInput) navigate(true);
   }
   
-  $: canGoBack = $browserHistoryIndex > 0;
-  $: canGoForward = $browserHistoryIndex < $browserHistory.length - 1;
+  // Per-tab navigation state - reactive based on current tab's history
+  $: currentTab = tabs.find(t => t.id === activeTabId);
+  $: canGoBack = currentTab ? (currentTab.historyIndex > 0 || !currentTab.isHome) : false;
+  $: canGoForward = currentTab ? currentTab.historyIndex < currentTab.history.length - 1 : false;
   
   // Tab management functions
   // Design Decision: New tab behavior uses "Option A: Focus URL bar + Show Discover (Chrome-like)"
@@ -1402,7 +1453,9 @@ let addressInput = '';
       title: title || 'New Tab',
       url: url,
       icon: icon,
-      isHome: false
+      isHome: false,
+      history: [],      // Per-tab history
+      historyIndex: -1  // Per-tab history index
     };
     tabs = [...tabs, newTab];
     activeTabId = newTab.id;
