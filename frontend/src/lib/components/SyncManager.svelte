@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { get } from 'svelte/store';
   import {
     BatchPrefetchFavorites,
@@ -49,6 +49,9 @@
     isSyncing = true;
     error = null;
     lastSyncResult = null;
+    
+    // Allow DOM to update before starting async work
+    await tick();
 
     try {
       const favs = get(favorites);
@@ -66,6 +69,9 @@
       }));
 
       const result = await BatchPrefetchFavorites(favsData, minRating);
+      
+      // Let DOM settle before updating result state
+      await tick();
       lastSyncResult = result;
       
       if (result.success) {
@@ -75,6 +81,7 @@
       error = e.message;
     } finally {
       isSyncing = false;
+      await tick(); // Ensure final state update is smooth
     }
   }
 
@@ -83,9 +90,15 @@
     error = null;
     lastUpdateCheck = null;
     syncStatuses = [];
+    
+    // Allow DOM to update before starting async work
+    await tick();
 
     try {
       const result = await CheckAllForUpdates();
+      
+      // Let DOM settle before updating result state
+      await tick();
       lastUpdateCheck = result;
       
       if (result.success) {
@@ -96,6 +109,7 @@
       error = e.message;
     } finally {
       isCheckingUpdates = false;
+      await tick(); // Ensure final state update is smooth
     }
   }
 
@@ -158,7 +172,7 @@
   $: favoritesCount = $favorites.length;
 </script>
 
-<div class="sync-manager">
+<div class="sync-manager" tabindex="-1">
   {#if error}
     <div class="alert alert-error">
       <Icons name="alert-triangle" size={14} />

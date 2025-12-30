@@ -17,6 +17,9 @@
   import { EventsOn } from '../wailsjs/runtime/runtime.js';
   import { waitForWails } from './lib/utils/wails.js';
   
+  // Module-level interval ID to prevent duplicates during HMR
+  let statusPollingInterval = null;
+  
   let currentTab = 'explorer'; // Default to explorer (landing page)
   let sidebarCollapsed = false;
   let showWizard = false;
@@ -121,7 +124,11 @@
     });
     
     // Fallback polling in case events don't fire (e.g., during reconnection)
-    const interval = setInterval(updateStatus, 30000); // Reduced frequency as backup
+    // Clear any existing interval first (prevents duplicates during HMR)
+    if (statusPollingInterval) {
+      clearInterval(statusPollingInterval);
+    }
+    statusPollingInterval = setInterval(updateStatus, 30000); // Reduced frequency as backup
     
     // Listen for tab switch events from child components
     const handleTabSwitch = (e) => {
@@ -266,7 +273,10 @@
     });
     
     return () => {
-      clearInterval(interval);
+      if (statusPollingInterval) {
+        clearInterval(statusPollingInterval);
+        statusPollingInterval = null;
+      }
       window.removeEventListener('switch-tab', handleTabSwitch);
       window.removeEventListener('search-navigate', handleSearchNavigate);
       window.removeEventListener('keydown', handleGlobalKeydown);

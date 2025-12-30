@@ -618,15 +618,14 @@ func withHashAndVersion(meta map[string]interface{}, version int64, hash string)
 }
 
 func (a *App) GetNetworkInfo() map[string]interface{} {
-	a.logToConsole("[NET] Calling DERO.GetInfo (direct daemon)...")
-
+	// Note: This is called frequently by status polling - avoid verbose logging
 	result, err := a.daemonClient.GetInfo()
 	if err != nil {
+		// Only log errors, not routine calls
 		a.logToConsole(fmt.Sprintf("[ERR] DERO.GetInfo failed: %v", err))
 		return ErrorResponse(err)
 	}
 
-	a.logToConsole("[OK] DERO.GetInfo successful - Node is online!")
 	return map[string]interface{}{
 		"success": true,
 		"info":    result,
