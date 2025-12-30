@@ -1,6 +1,8 @@
 /*
 villager-identicon.js
-Official standalone Villager identicon renderer.
+Official Villager identicon renderer for HOLOGRAM.
+
+Mainnet SCID: f0b29081c1ed35fe942cb3402cd9d7bf0cf27639201bbc96223bdc99c4c6aa9f
 
 How developers can fetch the avatar data:
 ──────────────────────────────────────────────────────────────
@@ -10,12 +12,12 @@ const socket = new WebSocket("http://ip:10102/ws"); // or your own node endpoint
 // Call example (get all avatars)
 method: "DERO.GetSC",
 params: {
-scid: VILLAGER_SCID, // Replace with actual mainnet scid
+scid: "f0b29081c1ed35fe942cb3402cd9d7bf0cf27639201bbc96223bdc99c4c6aa9f",
 variables: true,
 code: false
 }
 
-// Response handler example (for all avatars)
+// Response handler example (for all avatars/identicons)
 for (const key in stringKeys) {
 	if (key.startsWith("avatar_") && typeof stringKeys[key] === "string" && stringKeys[key].length > 0) {
 		let avatarStr = stringKeys[key];
@@ -29,10 +31,10 @@ for (const key in stringKeys) {
 	}
 }
 ──────────────────────────────────────────────────────────────
-// Alternative: Get single avatar string
+// Alternative: Get single avatar/identicon string
 method: "DERO.GetSC",
 params: {
-scid: VILLAGER_SCID,
+scid: "f0b29081c1ed35fe942cb3402cd9d7bf0cf27639201bbc96223bdc99c4c6aa9f",
 keysstring: ["avatar_dero1qyre7td6x9r88y4cavdgpv6k7lvx6j39lfsx420hpvh3ydpcrtxrxqga4mp52"] // Replace with target address
 }
 
@@ -168,8 +170,8 @@ const VillagerIdenticon = (function () {
 		if (avatarStr.length !== 576) return Promise.reject("Invalid avatar string");
 
 		const uniquePart = address.startsWith('dero1') ? address.slice(5) : address;
-		const frameSeed = simpleHash(uniquePart);
-		const bgSeed   = simpleHash(uniquePart + "VILLAGER420");
+		const frameSeed = simpleHash(uniquePart + "FRAME");
+		const bgSeed   = simpleHash(uniquePart + "BACKGROUND");
 
 		const canvas = document.createElement('canvas');
 		const ctx = canvas.getContext('2d');

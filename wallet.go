@@ -879,9 +879,7 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			scArgs = append(scArgs, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
 		}
 		
-		// Transfer amount attached to SC call
-		transferAmount := uint64(0)
-		// Check for transfers attached to SC call
+		// Check for transfers attached to SC call (including burns for dev donations)
 		var transfers []rpc.Transfer
 		if t, ok := params["transfers"].([]interface{}); ok {
 			for _, item := range t {
@@ -890,10 +888,24 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 					if a, ok := tf["amount"].(float64); ok {
 						amt = uint64(a)
 					}
-					// Only burn transfers supported in SC calls usually, or transfers to SC
-					if amt > 0 {
-						transferAmount += amt
-						transfers = append(transfers, rpc.Transfer{Destination: scid, Amount: amt, Burn: 0}) // Sending to SC
+					
+					burn := uint64(0)
+					if b, ok := tf["burn"].(float64); ok {
+						burn = uint64(b)
+					}
+					
+					dest := ""
+					if d, ok := tf["destination"].(string); ok {
+						dest = d
+					}
+					
+					// Include transfer if it has amount OR burn (burn is used for dev donations)
+					if amt > 0 || burn > 0 {
+						transfers = append(transfers, rpc.Transfer{
+							Destination: dest,
+							Amount:      amt,
+							Burn:        burn,
+						})
 					}
 				}
 			}

@@ -1,9 +1,8 @@
 import VillagerIdenticon from './villager-identicon.js';
 import { CallXSWD } from '../../../wailsjs/go/main/App.js';
 
-// Villager Smart Contract ID
-// TODO: Update with actual mainnet SCID when deployed
-let VILLAGER_SCID = '0000000000000000000000000000000000000000000000000000000000000000';
+// Villager Smart Contract ID (Mainnet)
+let VILLAGER_SCID = 'f0b29081c1ed35fe942cb3402cd9d7bf0cf27639201bbc96223bdc99c4c6aa9f';
 
 // Empty avatar string (576 'z' characters = all transparent pixels)
 const EMPTY_AVATAR = 'z'.repeat(576);
