@@ -130,6 +130,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   // Console viewport for auto-scroll
   let consoleViewport;
   let consoleUserScrolled = false; // Track if user has scrolled up
+  let previousLogCount = 0; // Track log count to detect new logs
   
   // Advanced Node Options state
   let fastSyncEnabled = false;
@@ -470,6 +471,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     try {
       await ClearBackendLogs();
       clearConsoleLogs(); // Also clear frontend store
+      previousLogCount = 0; // Reset count so auto-scroll works again
+      consoleUserScrolled = false; // Reset scroll state
     } catch (e) {
       console.error('Failed to clear logs:', e);
     }
@@ -479,17 +482,25 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   function handleConsoleScroll() {
     if (!consoleViewport) return;
     const { scrollTop, scrollHeight, clientHeight } = consoleViewport;
-    // Consider "at bottom" if within 50px of the bottom
-    consoleUserScrolled = scrollHeight - scrollTop - clientHeight > 50;
+    // Consider "at bottom" if within 100px of the bottom (more generous threshold)
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    consoleUserScrolled = distanceFromBottom > 100;
   }
   
-  // Auto-scroll console to bottom only if user hasn't scrolled up
-  $: if ($consoleLogs && consoleViewport && !consoleUserScrolled) {
-    setTimeout(() => {
-      if (consoleViewport && !consoleUserScrolled) {
-        consoleViewport.scrollTop = consoleViewport.scrollHeight;
-      }
-    }, 0);
+  // Auto-scroll console to bottom ONLY when new logs are added AND user is at bottom
+  // This prevents the "fighting" behavior where scroll keeps jumping back
+  $: if ($consoleLogs && consoleViewport) {
+    const currentLogCount = $consoleLogs.length;
+    // Only scroll if new logs were added (not just on any reactive trigger)
+    if (currentLogCount > previousLogCount && !consoleUserScrolled) {
+      // Use requestAnimationFrame for smoother scrolling
+      requestAnimationFrame(() => {
+        if (consoleViewport && !consoleUserScrolled) {
+          consoleViewport.scrollTop = consoleViewport.scrollHeight;
+        }
+      });
+    }
+    previousLogCount = currentLogCount;
   }
   
   // Start polling when Console section becomes active

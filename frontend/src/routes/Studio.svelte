@@ -111,6 +111,7 @@
   // =====================================================
   let myContentLoading = false;
   let myContentError = '';
+  let myContentGnomonRequired = false;  // True when Gnomon needs to be started
   let myDocs = [];
   let myIndexes = [];
   let myContentTab = 'all';  // 'all', 'docs', 'indexes'
@@ -329,6 +330,7 @@
     
     myContentLoading = true;
     myContentError = '';
+    myContentGnomonRequired = false;
     
     try {
       const result = await SearchMyContent();
@@ -336,7 +338,6 @@
       if (result.success) {
         myDocs = result.docs || [];
         myIndexes = result.indexes || [];
-        myContentLoaded = true;
         
         // Also load available doc types for filtering
         const typesResult = await GetAvailableDOCTypes();
@@ -344,12 +345,20 @@
           availableDocTypes = typesResult.types || [];
         }
       } else {
-        myContentError = result.error || 'Failed to load content';
+        // Check if the error is about Gnomon not running
+        const errorMsg = result.error || 'Failed to load content';
+        if (errorMsg.toLowerCase().includes('gnomon')) {
+          myContentGnomonRequired = true;
+        }
+        myContentError = errorMsg;
       }
     } catch (e) {
       myContentError = e.message || 'Failed to load content';
     } finally {
       myContentLoading = false;
+      // IMPORTANT: Always mark as loaded to prevent infinite loop
+      // The error state will be shown instead of retrying automatically
+      myContentLoaded = true;
     }
   }
   
@@ -393,6 +402,8 @@
   
   function refreshMyContent() {
     myContentLoaded = false;
+    myContentError = '';
+    myContentGnomonRequired = false;
     loadMyContent();
   }
   
@@ -2927,6 +2938,26 @@
               <Wallet size={16} />
               Open Wallet
             </button>
+          </div>
+        {:else if myContentGnomonRequired}
+          <!-- Gnomon Required State - Special handling to prevent infinite loop -->
+          <div class="content-card">
+            <div class="content-card-header">
+              <Database size={32} class="content-card-icon" style="color: var(--cyan-400);" />
+              <p class="content-card-title">Gnomon Indexer Required</p>
+              <p class="content-card-text">The Gnomon indexer needs to be running to discover your deployed content. Start Gnomon in Settings, or use the SCID directly in the Browser.</p>
+            </div>
+            
+            <div style="display: flex; gap: var(--s-3); margin-top: var(--s-5);">
+              <button class="btn btn-primary" on:click={() => window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'settings' }))}>
+                <Database size={16} />
+                Open Settings
+              </button>
+              <button class="btn btn-secondary" on:click={refreshMyContent}>
+                <RefreshCw size={16} />
+                Retry
+              </button>
+            </div>
           </div>
         {:else if myContentError}
           <!-- Error State -->
