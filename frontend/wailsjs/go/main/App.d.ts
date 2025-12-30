@@ -16,6 +16,8 @@ export function ApproveWalletConnection():Promise<Record<string, any>>;
 
 export function BatchDeployToSimulator(arg1:string):Promise<Record<string, any>>;
 
+export function BatchPrefetchFavorites(arg1:Array<Record<string, any>>,arg2:number):Promise<Record<string, any>>;
+
 export function BuildRating(arg1:number,arg2:number):Promise<Record<string, any>>;
 
 export function BuildTextIndex():Promise<void>;
@@ -24,7 +26,11 @@ export function CallXSWD(arg1:string):Promise<Record<string, any>>;
 
 export function CaptureSCState(arg1:string):Promise<Record<string, any>>;
 
+export function CheckAllForUpdates():Promise<Record<string, any>>;
+
 export function CheckAppFilter(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:boolean):Promise<Record<string, any>>;
+
+export function CheckAppForUpdate(arg1:string):Promise<Record<string, any>>;
 
 export function CheckAppSupportsEpoch(arg1:string):Promise<Record<string, any>>;
 
@@ -85,6 +91,8 @@ export function DetectDocTypes(arg1:string):Promise<Record<string, any>>;
 export function DetectExistingBlockchain():Promise<Record<string, any>>;
 
 export function DetectRunningNode():Promise<Record<string, any>>;
+
+export function DiffCachedVsOnChain(arg1:string):Promise<Record<string, any>>;
 
 export function DiffCommits(arg1:string,arg2:number,arg3:number):Promise<Record<string, any>>;
 
@@ -607,6 +615,8 @@ export function TransferToken(arg1:string,arg2:string,arg3:number,arg4:string):P
 export function UnsubscribeFromEvents():Promise<void>;
 
 export function UnwatchSmartContract(arg1:string):Promise<Record<string, any>>;
+
+export function UpdateCachedApp(arg1:string):Promise<Record<string, any>>;
 
 export function UpdateContact(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 

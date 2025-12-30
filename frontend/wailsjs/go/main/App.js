@@ -30,6 +30,10 @@ export function BatchDeployToSimulator(arg1) {
   return window['go']['main']['App']['BatchDeployToSimulator'](arg1);
 }
 
+export function BatchPrefetchFavorites(arg1, arg2) {
+  return window['go']['main']['App']['BatchPrefetchFavorites'](arg1, arg2);
+}
+
 export function BuildRating(arg1, arg2) {
   return window['go']['main']['App']['BuildRating'](arg1, arg2);
 }
@@ -46,8 +50,16 @@ export function CaptureSCState(arg1) {
   return window['go']['main']['App']['CaptureSCState'](arg1);
 }
 
+export function CheckAllForUpdates() {
+  return window['go']['main']['App']['CheckAllForUpdates']();
+}
+
 export function CheckAppFilter(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['CheckAppFilter'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function CheckAppForUpdate(arg1) {
+  return window['go']['main']['App']['CheckAppForUpdate'](arg1);
 }
 
 export function CheckAppSupportsEpoch(arg1) {
@@ -168,6 +180,10 @@ export function DetectExistingBlockchain() {
 
 export function DetectRunningNode() {
   return window['go']['main']['App']['DetectRunningNode']();
+}
+
+export function DiffCachedVsOnChain(arg1) {
+  return window['go']['main']['App']['DiffCachedVsOnChain'](arg1);
 }
 
 export function DiffCommits(arg1, arg2, arg3) {
@@ -1212,6 +1228,10 @@ export function UnsubscribeFromEvents() {
 
 export function UnwatchSmartContract(arg1) {
   return window['go']['main']['App']['UnwatchSmartContract'](arg1);
+}
+
+export function UpdateCachedApp(arg1) {
+  return window['go']['main']['App']['UpdateCachedApp'](arg1);
 }
 
 export function UpdateContact(arg1, arg2, arg3, arg4) {

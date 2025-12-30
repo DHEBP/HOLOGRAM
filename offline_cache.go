@@ -39,6 +39,36 @@ type CachedApp struct {
 	SupportsEpoch bool              `json:"supports_epoch"`
 	Files         []CachedFile      `json:"files,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
+
+	// Sync/Update tracking
+	OnChainVersion    int       `json:"onchain_version,omitempty"`    // Latest version on blockchain
+	HasUpdate         bool      `json:"has_update,omitempty"`         // True if on-chain > cached
+	LastSyncCheck     time.Time `json:"last_sync_check,omitempty"`    // When we last checked for updates
+	ContentHash       string    `json:"content_hash,omitempty"`       // Hash of cached content for diff detection
+	Rating            int       `json:"rating,omitempty"`             // Community rating (0-99)
+	DURL              string    `json:"durl,omitempty"`               // dero:// URL if available
+}
+
+// SyncStatus represents the result of checking an app for updates
+type SyncStatus struct {
+	SCID            string    `json:"scid"`
+	Name            string    `json:"name"`
+	CachedVersion   int       `json:"cached_version"`
+	OnChainVersion  int       `json:"onchain_version"`
+	HasUpdate       bool      `json:"has_update"`
+	BytesDiff       int64     `json:"bytes_diff,omitempty"`       // Size difference if known
+	FilesChanged    int       `json:"files_changed,omitempty"`    // Number of files with changes
+	LastChecked     time.Time `json:"last_checked"`
+	Error           string    `json:"error,omitempty"`
+}
+
+// BatchSyncResult represents the result of a batch sync operation
+type BatchSyncResult struct {
+	TotalChecked    int           `json:"total_checked"`
+	UpdatesFound    int           `json:"updates_found"`
+	FailedChecks    int           `json:"failed_checks"`
+	Apps            []SyncStatus  `json:"apps"`
+	Duration        time.Duration `json:"duration"`
 }
 
 // CachedFile represents a single cached file within an app
@@ -746,5 +776,416 @@ func (a *App) ClearOfflineCache() map[string]interface{} {
 		"success": true,
 		"message": "Cache cleared",
 	}
+}
+
+// ==================== Batch Sync Operations ====================
+
+// BatchPrefetchFavorites caches all favorite apps that meet the rating threshold
+// favorites: list of SCIDs or dURLs to prefetch
+// minRating: minimum rating (0-99) - apps below this are skipped
+func (a *App) BatchPrefetchFavorites(favorites []map[string]interface{}, minRating int) map[string]interface{} {
+	if a.offlineCache == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Offline cache not initialized",
+		}
+	}
+
+	startTime := time.Now()
+	a.logToConsole(fmt.Sprintf("🔄 Batch prefetch starting: %d favorites, min rating: %d", len(favorites), minRating))
+
+	results := []map[string]interface{}{}
+	prefetched := 0
+	skipped := 0
+	failed := 0
+	alreadyCached := 0
+
+	for _, fav := range favorites {
+		scid, _ := fav["scid"].(string)
+		durl, _ := fav["durl"].(string)
+		name, _ := fav["name"].(string)
+
+		if scid == "" && durl == "" {
+			continue
+		}
+
+		// Resolve dURL to SCID if needed
+		targetSCID := scid
+		if targetSCID == "" && durl != "" {
+			if a.gnomonClient != nil {
+				if resolvedSCID, found := a.gnomonClient.ResolveDURL(durl); found {
+					targetSCID = resolvedSCID
+				}
+			}
+			if targetSCID == "" {
+				results = append(results, map[string]interface{}{
+					"scid":    durl,
+					"name":    name,
+					"status":  "failed",
+					"error":   "Could not resolve dURL",
+				})
+				failed++
+				continue
+			}
+		}
+
+		// Check if already cached
+		isCached, cachedApp, _ := a.offlineCache.IsAppCached(targetSCID)
+		if isCached {
+			results = append(results, map[string]interface{}{
+				"scid":    targetSCID,
+				"name":    cachedApp.Name,
+				"status":  "already_cached",
+				"version": cachedApp.Version,
+			})
+			alreadyCached++
+			continue
+		}
+
+		// Check rating if content filter is available
+		if a.contentFilter != nil && minRating > 0 {
+			rating := a.getAppRating(targetSCID)
+			if rating < minRating && rating >= 0 {
+				results = append(results, map[string]interface{}{
+					"scid":   targetSCID,
+					"name":   name,
+					"status": "skipped",
+					"reason": fmt.Sprintf("Rating %d below threshold %d", rating, minRating),
+					"rating": rating,
+				})
+				skipped++
+				continue
+			}
+		}
+
+		// Prefetch the app
+		prefetchResult := a.PrefetchApp(targetSCID)
+		if success, ok := prefetchResult["success"].(bool); ok && success {
+			results = append(results, map[string]interface{}{
+				"scid":   targetSCID,
+				"name":   name,
+				"status": "prefetched",
+			})
+			prefetched++
+		} else {
+			errMsg := "Unknown error"
+			if e, ok := prefetchResult["error"].(string); ok {
+				errMsg = e
+			}
+			results = append(results, map[string]interface{}{
+				"scid":   targetSCID,
+				"name":   name,
+				"status": "failed",
+				"error":  errMsg,
+			})
+			failed++
+		}
+	}
+
+	duration := time.Since(startTime)
+	a.logToConsole(fmt.Sprintf("✅ Batch prefetch complete: %d prefetched, %d already cached, %d skipped, %d failed (took %v)",
+		prefetched, alreadyCached, skipped, failed, duration.Round(time.Millisecond)))
+
+	return map[string]interface{}{
+		"success":        true,
+		"total":          len(favorites),
+		"prefetched":     prefetched,
+		"already_cached": alreadyCached,
+		"skipped":        skipped,
+		"failed":         failed,
+		"duration_ms":    duration.Milliseconds(),
+		"results":        results,
+	}
+}
+
+// CheckAllForUpdates checks all cached apps against their on-chain versions
+func (a *App) CheckAllForUpdates() map[string]interface{} {
+	if a.offlineCache == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Offline cache not initialized",
+		}
+	}
+
+	startTime := time.Now()
+	a.logToConsole("🔍 Checking all cached apps for updates...")
+
+	cachedApps, err := a.offlineCache.GetCachedApps()
+	if err != nil {
+		return ErrorResponse(err)
+	}
+
+	if len(cachedApps) == 0 {
+		return map[string]interface{}{
+			"success":       true,
+			"message":       "No cached apps to check",
+			"total_checked": 0,
+			"updates_found": 0,
+			"apps":          []SyncStatus{},
+		}
+	}
+
+	statuses := []SyncStatus{}
+	updatesFound := 0
+	failedChecks := 0
+
+	for _, app := range cachedApps {
+		status := a.checkAppForUpdate(&app)
+		statuses = append(statuses, status)
+
+		if status.HasUpdate {
+			updatesFound++
+			a.logToConsole(fmt.Sprintf("📦 Update available: %s (v%d → v%d)", app.Name, app.Version, status.OnChainVersion))
+		}
+		if status.Error != "" {
+			failedChecks++
+		}
+	}
+
+	duration := time.Since(startTime)
+	a.logToConsole(fmt.Sprintf("✅ Update check complete: %d apps, %d updates available (took %v)",
+		len(cachedApps), updatesFound, duration.Round(time.Millisecond)))
+
+	return map[string]interface{}{
+		"success":       true,
+		"total_checked": len(cachedApps),
+		"updates_found": updatesFound,
+		"failed_checks": failedChecks,
+		"duration_ms":   duration.Milliseconds(),
+		"apps":          statuses,
+	}
+}
+
+// CheckAppForUpdate checks a single app for updates
+func (a *App) CheckAppForUpdate(scid string) map[string]interface{} {
+	if a.offlineCache == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Offline cache not initialized",
+		}
+	}
+
+	isCached, cachedApp, _ := a.offlineCache.IsAppCached(scid)
+	if !isCached {
+		return map[string]interface{}{
+			"success":    false,
+			"error":      "App not in cache",
+			"has_update": false,
+		}
+	}
+
+	status := a.checkAppForUpdate(cachedApp)
+	return map[string]interface{}{
+		"success":          true,
+		"scid":             scid,
+		"name":             cachedApp.Name,
+		"cached_version":   status.CachedVersion,
+		"onchain_version":  status.OnChainVersion,
+		"has_update":       status.HasUpdate,
+		"files_changed":    status.FilesChanged,
+		"error":            status.Error,
+	}
+}
+
+// UpdateCachedApp updates a cached app to the latest on-chain version
+func (a *App) UpdateCachedApp(scid string) map[string]interface{} {
+	if a.offlineCache == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Offline cache not initialized",
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("⬆️ Updating cached app: %s", scid[:16]+"..."))
+
+	// Remove old cached version
+	_ = a.offlineCache.RemoveCachedApp(scid)
+
+	// Re-prefetch (gets latest version)
+	result := a.PrefetchApp(scid)
+	if success, ok := result["success"].(bool); !ok || !success {
+		return result
+	}
+
+	a.logToConsole(fmt.Sprintf("✅ Cache updated: %s", scid[:16]+"..."))
+	result["updated"] = true
+	return result
+}
+
+// DiffCachedVsOnChain compares cached content with current on-chain content
+func (a *App) DiffCachedVsOnChain(scid string) map[string]interface{} {
+	if a.offlineCache == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Offline cache not initialized",
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("📊 Diffing cached vs on-chain: %s", scid[:16]+"..."))
+
+	// Get cached content
+	cachedHTML, hasCached, _ := a.offlineCache.GetCachedContent(scid, "index.html")
+	if !hasCached {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "App not in cache or no index.html",
+		}
+	}
+
+	// Get on-chain content
+	telaContent, err := a.FetchTELAContent(scid)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to fetch on-chain content: %v", err),
+		}
+	}
+
+	// Generate diff
+	cachedStr := string(cachedHTML)
+	onChainStr := telaContent.HTML
+	diff := generateDiff(cachedStr, onChainStr)
+
+	// Summary stats
+	linesAdded := 0
+	linesRemoved := 0
+	linesModified := 0
+	for _, d := range diff {
+		switch d["type"] {
+		case "added":
+			linesAdded++
+		case "removed":
+			linesRemoved++
+		case "modified":
+			linesModified++
+		}
+	}
+
+	return map[string]interface{}{
+		"success":        true,
+		"has_changes":    len(diff) > 0,
+		"lines_added":    linesAdded,
+		"lines_removed":  linesRemoved,
+		"lines_modified": linesModified,
+		"diff":           diff,
+		"cached_size":    len(cachedHTML),
+		"onchain_size":   len(onChainStr),
+	}
+}
+
+// checkAppForUpdate is the internal helper for checking a single app
+func (a *App) checkAppForUpdate(cachedApp *CachedApp) SyncStatus {
+	status := SyncStatus{
+		SCID:           cachedApp.SCID,
+		Name:           cachedApp.Name,
+		CachedVersion:  cachedApp.Version,
+		OnChainVersion: cachedApp.Version, // Default same
+		HasUpdate:      false,
+		LastChecked:    time.Now(),
+	}
+
+	// Get on-chain version from SC variables
+	vars, err := a.daemonClient.GetSCVariables(cachedApp.SCID, true, true)
+	if err != nil {
+		status.Error = fmt.Sprintf("Failed to fetch SC: %v", err)
+		return status
+	}
+
+	// Look for "C" (commit counter) in string keys - this is the version
+	if stringKeys, ok := vars["stringkeys"].(map[string]interface{}); ok {
+		if cVal, exists := stringKeys["C"]; exists {
+			version := parseVersionFromVal(cVal)
+			status.OnChainVersion = version
+			status.HasUpdate = version > cachedApp.Version
+		}
+	}
+
+	// Also check content hash if we have both
+	if status.OnChainVersion == cachedApp.Version {
+		// Same version number but content might still differ (edge case)
+		// Quick check by comparing HTML size
+		cachedHTML, hasCached, _ := a.offlineCache.GetCachedContent(cachedApp.SCID, "index.html")
+		if hasCached {
+			telaContent, err := a.FetchTELAContent(cachedApp.SCID)
+			if err == nil && len(telaContent.HTML) != len(cachedHTML) {
+				status.HasUpdate = true
+				status.BytesDiff = int64(len(telaContent.HTML) - len(cachedHTML))
+			}
+		}
+	}
+
+	// Update the cached app metadata with sync info
+	cachedApp.OnChainVersion = status.OnChainVersion
+	cachedApp.HasUpdate = status.HasUpdate
+	cachedApp.LastSyncCheck = status.LastChecked
+	_ = a.offlineCache.updateAppMetadata(cachedApp)
+
+	return status
+}
+
+// getAppRating retrieves the community rating for an app
+func (a *App) getAppRating(scid string) int {
+	if a.contentFilter == nil {
+		return -1 // Unknown
+	}
+
+	// Try to get rating from filter/rating system
+	// This integrates with the rating system if available
+	vars, err := a.daemonClient.GetSCVariables(scid, true, true)
+	if err != nil {
+		return -1
+	}
+
+	// Look for rating in metadata (simplified - actual implementation depends on rating SC)
+	if stringKeys, ok := vars["stringkeys"].(map[string]interface{}); ok {
+		if ratingVal, exists := stringKeys["rating"]; exists {
+			rating := parseVersionFromVal(ratingVal)
+			if rating >= 0 && rating <= 99 {
+				return rating
+			}
+		}
+	}
+
+	return -1 // Not rated
+}
+
+// parseVersionFromVal parses a version/count from SC variable value
+func parseVersionFromVal(val interface{}) int {
+	switch v := val.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case string:
+		var n int
+		fmt.Sscanf(v, "%d", &n)
+		return n
+	}
+	return 0
+}
+
+// updateAppMetadata updates just the metadata for a cached app
+func (c *OfflineCache) updateAppMetadata(app *CachedApp) error {
+	c.Lock()
+	defer c.Unlock()
+
+	ss, err := c.store.LoadSnapshot(0)
+	if err != nil {
+		return err
+	}
+
+	appTree, _ := ss.GetTree(TreeCachedApps)
+
+	appBytes, err := json.Marshal(app)
+	if err != nil {
+		return err
+	}
+
+	if err := appTree.Put([]byte(app.SCID), appBytes); err != nil {
+		return err
+	}
+
+	_, err = graviton.Commit(appTree)
+	return err
 }
 

@@ -5,7 +5,9 @@
     GetOfflineCacheStats,
     RemoveCachedApp,
     ClearOfflineCache,
-    SetOfflineCacheEnabled
+    SetOfflineCacheEnabled,
+    CheckAppForUpdate,
+    UpdateCachedApp
   } from '../../../wailsjs/go/main/App.js';
   import { HoloCard, Icons } from './holo';
 
@@ -210,7 +212,12 @@
                 </span>
               </div>
               <div class="app-actions">
-                {#if app.IsComplete}
+                {#if app.HasUpdate}
+                  <span class="update-badge" title="Update available: v{app.Version} → v{app.OnChainVersion}">
+                    <Icons name="arrow-up" size={12} />
+                    Update
+                  </span>
+                {:else if app.IsComplete}
                   <span class="complete-badge">
                     <Icons name="check" size={12} />
                     Complete
@@ -543,6 +550,23 @@
     color: var(--warn, #eab308);
     border-radius: 4px;
     font-size: 11px;
+  }
+
+  .update-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--amber, #f59e0b);
+    border-radius: 4px;
+    font-size: 11px;
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+    50% { box-shadow: 0 0 8px 2px rgba(245, 158, 11, 0.3); }
   }
 
   /* Info Card */

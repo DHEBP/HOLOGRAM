@@ -19,6 +19,7 @@
     SetGnomonAutostart, GetGnomonAutostart
   } from '../../wailsjs/go/main/App.js';
   import OfflineCacheManager from '../lib/components/OfflineCacheManager.svelte';
+  import SyncManager from '../lib/components/SyncManager.svelte';
   import SafeBrowsingSettings from '../lib/components/SafeBrowsingSettings.svelte';
 import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo';
   import ServerManager from '../lib/components/ServerManager.svelte';
@@ -32,6 +33,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     { id: 'simulator', label: 'Simulator', iconName: 'gamepad' },
     { id: 'servers', label: 'TELA Servers', iconName: 'globe' },
     { id: 'offline-cache', label: 'Offline Cache', iconName: 'download' },
+    { id: 'sync-manager', label: 'Sync Manager', iconName: 'refresh-cw' },
     { id: 'safe-browsing', label: 'Safe Browsing', iconName: 'shield' },
     { id: 'network', label: 'Network', iconName: 'globe' },
     { id: 'gnomon', label: 'Gnomon', iconName: 'database' },
@@ -1313,6 +1315,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       {:else if activeSection === 'offline-cache'}
         <!-- Offline Cache Manager -->
         <OfflineCacheManager />
+      
+      {:else if activeSection === 'sync-manager'}
+        <!-- Sync Manager - Batch prefetch & updates -->
+        <SyncManager />
       
       {:else if activeSection === 'safe-browsing'}
         <!-- Safe Browsing Settings -->

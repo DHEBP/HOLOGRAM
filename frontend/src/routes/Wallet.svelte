@@ -2318,9 +2318,9 @@
                   <label class="form-label">Password</label>
                   <div class="input-wrap">
                     {#if showPassword}
-                      <input type="text" bind:value={password} placeholder="Enter wallet password" class="input" />
+                      <input type="text" bind:value={password} placeholder="Enter wallet password" class="input" on:keydown={(e) => e.key === 'Enter' && !loading && walletPath && openWallet()} />
                     {:else}
-                      <input type="password" bind:value={password} placeholder="Enter wallet password" class="input" />
+                      <input type="password" bind:value={password} placeholder="Enter wallet password" class="input" on:keydown={(e) => e.key === 'Enter' && !loading && walletPath && openWallet()} />
                     {/if}
                     <button type="button" on:click={() => showPassword = !showPassword} class="input-action">
                       {#if showPassword}
