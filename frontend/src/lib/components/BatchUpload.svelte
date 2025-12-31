@@ -255,6 +255,9 @@
     scanFolder();
   }
   
+  // Simulator balance requirement (from backend)
+  let simulatorBalanceRequired = 0;
+  
   async function scanFolder() {
     if (!folderPath) return;
     
@@ -267,6 +270,7 @@
         files = result.files || [];
         totalSize = result.totalSize || 0;
         totalGas = result.totalGas || 0;
+        simulatorBalanceRequired = result.simulatorBalanceRequired || 0;
         
         // Auto-populate index name from folder name
         if (!indexName) {
@@ -566,7 +570,23 @@
       <div class="files-header">
         <span class="files-count">{files.length} files • {formatSize(totalSize)}</span>
         <span class="files-gas">~{totalGas.toLocaleString()} gas</span>
+        {#if isSimulator && simulatorBalanceRequired > 0}
+          <span class="files-balance-req" title="Minimum balance needed in simulator mode">
+            Min: {simulatorBalanceRequired.toLocaleString()} atomic
+          </span>
+        {/if}
       </div>
+      
+      {#if isSimulator && $walletState.balance < simulatorBalanceRequired && simulatorBalanceRequired > 0}
+        <div class="balance-warning">
+          <span class="warning-icon">⚠</span>
+          <span class="warning-text">
+            Insufficient balance! Need {simulatorBalanceRequired.toLocaleString()} atomic units, 
+            but wallet has {($walletState.balance || 0).toLocaleString()}. 
+            Use a wallet with more balance (main simulator wallet receives mining rewards).
+          </span>
+        </div>
+      {/if}
       
       <div class="files-list">
         {#each files as file, i}
@@ -1196,6 +1216,36 @@
   .files-gas {
     font-size: 13px;
     color: var(--cyan-400, #22d3ee);
+  }
+  
+  .files-balance-req {
+    font-size: 12px;
+    color: var(--violet-400, #a78bfa);
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    padding: 2px 8px;
+    background: rgba(167, 139, 250, 0.1);
+    border-radius: var(--r-sm, 4px);
+  }
+  
+  .balance-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2, 8px);
+    padding: var(--s-3, 12px) var(--s-4, 16px);
+    background: rgba(251, 191, 36, 0.1);
+    border-bottom: 1px solid rgba(251, 191, 36, 0.2);
+  }
+  
+  .balance-warning .warning-icon {
+    color: var(--status-warn, #fbbf24);
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+  
+  .balance-warning .warning-text {
+    font-size: 12px;
+    color: var(--status-warn, #fbbf24);
+    line-height: 1.5;
   }
   
   .files-list {

@@ -31,12 +31,12 @@ func (a *App) DeployToSimulator(code string) map[string]interface{} {
 		}
 	}
 
-	// Check wallet
-	wallet := a.simulatorManager.walletManager.GetWallet()
+	// Check wallet (use primary wallet #0)
+	wallet := a.simulatorManager.walletManager.GetPrimaryWallet()
 	if wallet == nil {
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Simulator wallet is not open",
+			"error":   "Simulator wallet is not available",
 		}
 	}
 
@@ -77,7 +77,7 @@ func (a *App) deployRawSC(code string) (string, error) {
 	// Use the daemon client to install SC
 	// This is a simplified version - in production, you'd use proper SC installation
 	
-	wallet := a.simulatorManager.walletManager.GetWallet()
+	wallet := a.simulatorManager.walletManager.GetPrimaryWallet()
 	if wallet == nil {
 		return "", fmt.Errorf("no wallet available")
 	}

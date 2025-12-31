@@ -936,7 +936,11 @@
             {#if $appState.pendingXSWDRequests?.length > 0}
               <span class="status-warn">{$appState.pendingXSWDRequests.length === 1 ? 'App requesting access' : `${$appState.pendingXSWDRequests.length} apps requesting access`}</span>
             {:else if walletMode === 'integrated'}
-              <span class="status-ok">Wallet Ready</span>
+              {#if $settingsState.network === 'simulator'}
+                <span class="status-sim">Simulator Wallet</span>
+              {:else}
+                <span class="status-ok">Wallet Ready</span>
+              {/if}
               {#if connectedApps.length > 0}
                 <span class="wallet-status-separator">·</span>
                 <span class="wallet-apps-count">{connectedApps.length} {connectedApps.length === 1 ? 'app' : 'apps'}</span>
@@ -2422,6 +2426,10 @@
   /* Status color helpers (used in wallet anchor) */
   .status-ok { 
     color: var(--status-ok) !important; 
+  }
+  
+  .status-sim {
+    color: var(--emerald-400, #34d399) !important;
   }
   
   .status-warn { 

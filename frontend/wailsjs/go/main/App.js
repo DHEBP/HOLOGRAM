@@ -66,6 +66,10 @@ export function CheckAppSupportsEpoch(arg1) {
   return window['go']['main']['App']['CheckAppSupportsEpoch'](arg1);
 }
 
+export function CheckBalanceForBatchDeployment(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CheckBalanceForBatchDeployment'](arg1, arg2, arg3);
+}
+
 export function CheckDerodStatus() {
   return window['go']['main']['App']['CheckDerodStatus']();
 }
@@ -106,10 +110,6 @@ export function CloneTELA(arg1, arg2) {
   return window['go']['main']['App']['CloneTELA'](arg1, arg2);
 }
 
-export function CloseSimulatorWallet() {
-  return window['go']['main']['App']['CloseSimulatorWallet']();
-}
-
 export function CloseWallet() {
   return window['go']['main']['App']['CloseWallet']();
 }
@@ -128,10 +128,6 @@ export function ConstructFromShards(arg1) {
 
 export function CreatePaymentRequest(arg1, arg2) {
   return window['go']['main']['App']['CreatePaymentRequest'](arg1, arg2);
-}
-
-export function CreateSimulatorWallet() {
-  return window['go']['main']['App']['CreateSimulatorWallet']();
 }
 
 export function CreateWallet(arg1, arg2) {
@@ -264,6 +260,10 @@ export function FilterSearchResults(arg1) {
 
 export function FormatBlockAge(arg1) {
   return window['go']['main']['App']['FormatBlockAge'](arg1);
+}
+
+export function FundTestWallet(arg1, arg2) {
+  return window['go']['main']['App']['FundTestWallet'](arg1, arg2);
 }
 
 export function GenerateSubDirs(arg1, arg2) {
@@ -670,6 +670,10 @@ export function GetSimulatorTestWallets() {
   return window['go']['main']['App']['GetSimulatorTestWallets']();
 }
 
+export function GetSimulatorWalletInfo() {
+  return window['go']['main']['App']['GetSimulatorWalletInfo']();
+}
+
 export function GetSimulatorWalletStatus() {
   return window['go']['main']['App']['GetSimulatorWalletStatus']();
 }
@@ -846,10 +850,6 @@ export function OpenSimulatorTestWallet(arg1) {
   return window['go']['main']['App']['OpenSimulatorTestWallet'](arg1);
 }
 
-export function OpenSimulatorWallet() {
-  return window['go']['main']['App']['OpenSimulatorWallet']();
-}
-
 export function OpenWallet(arg1, arg2) {
   return window['go']['main']['App']['OpenWallet'](arg1, arg2);
 }
@@ -894,12 +894,12 @@ export function RefreshLocalDevServer() {
   return window['go']['main']['App']['RefreshLocalDevServer']();
 }
 
-export function RefreshWatchedSCs() {
-  return window['go']['main']['App']['RefreshWatchedSCs']();
+export function RefreshTestWalletBalance(arg1) {
+  return window['go']['main']['App']['RefreshTestWalletBalance'](arg1);
 }
 
-export function RegisterSimulatorWallet() {
-  return window['go']['main']['App']['RegisterSimulatorWallet']();
+export function RefreshWatchedSCs() {
+  return window['go']['main']['App']['RefreshWatchedSCs']();
 }
 
 export function Reload() {
@@ -1240,6 +1240,10 @@ export function UpdateContact(arg1, arg2, arg3, arg4) {
 
 export function UpdateINDEX(arg1, arg2) {
   return window['go']['main']['App']['UpdateINDEX'](arg1, arg2);
+}
+
+export function UseSimulatorWallet() {
+  return window['go']['main']['App']['UseSimulatorWallet']();
 }
 
 export function ValidateProof(arg1) {

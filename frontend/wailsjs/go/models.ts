@@ -181,3 +181,64 @@ export namespace main {
 
 }
 
+export namespace walletapi {
+	
+	export class KDF {
+	    hash: string;
+	    keylen: number;
+	    iterations: number;
+	    salt: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new KDF(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hash = source["hash"];
+	        this.keylen = source["keylen"];
+	        this.iterations = source["iterations"];
+	        this.salt = source["salt"];
+	    }
+	}
+	export class Wallet_Disk {
+	    // Go type: semver
+	    version: any;
+	    secret: number[];
+	    // Go type: KDF
+	    kdf: any;
+	    account_encrypted: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Wallet_Disk(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = this.convertValues(source["version"], null);
+	        this.secret = source["secret"];
+	        this.kdf = this.convertValues(source["kdf"], null);
+	        this.account_encrypted = source["account_encrypted"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+

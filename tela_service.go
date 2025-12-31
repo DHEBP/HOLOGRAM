@@ -1014,14 +1014,19 @@ func (a *App) ParseFolderForTELA(folderPath string) map[string]interface{} {
 		a.logToConsole(fmt.Sprintf("[WARN] [TELA] ParseFolderForTELA: %d errors encountered", len(errors)))
 	}
 
+	// Calculate simulator balance requirement (for informational display)
+	// Each DOC + 1 INDEX, each costs SimulatorGasFee (100,000 atomic units)
+	simulatorBalanceRequired := uint64(len(files)+1) * SimulatorGasFee
+
 	return map[string]interface{}{
-		"success":      true,
-		"files":        files,
-		"totalFiles":   len(files),
-		"totalSize":    totalSize,
-		"totalGas":     totalGas,
-		"errors":       errors,
-		"folderPath":   folderPath,
+		"success":                  true,
+		"files":                    files,
+		"totalFiles":               len(files),
+		"totalSize":                totalSize,
+		"totalGas":                 totalGas,
+		"errors":                   errors,
+		"folderPath":               folderPath,
+		"simulatorBalanceRequired": simulatorBalanceRequired,
 	}
 }
 
@@ -1088,6 +1093,39 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 	if _, err := a.setupNetworkForDeployment(wallet, isSimulator); err != nil {
 		runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{"error": err.Error()})
 		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+
+	// PRE-DEPLOYMENT BALANCE CHECK: Verify wallet has sufficient balance for all deployments
+	if isSimulator {
+		sufficient, currentBalance, requiredBalance, err := a.CheckBalanceForBatchDeployment(wallet, len(batch.Files), isSimulator)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Balance check failed: %v (continuing anyway)", err))
+		} else if !sufficient {
+			// Calculate how many files can be deployed with current balance
+			maxFiles := int(currentBalance / SimulatorGasFee)
+			if maxFiles > 0 {
+				maxFiles-- // Reserve 1 for INDEX
+			}
+
+			errMsg := fmt.Sprintf("Insufficient balance for deployment. Need %d atomic units (%d files × %d), but wallet only has %d. Can deploy max %d files. Use the main simulator wallet (receives mining rewards) or a test wallet with more balance.",
+				requiredBalance, len(batch.Files)+1, SimulatorGasFee, currentBalance, maxFiles)
+			a.logToConsole(fmt.Sprintf("[ERR] %s", errMsg))
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{
+				"error":           errMsg,
+				"currentBalance":  currentBalance,
+				"requiredBalance": requiredBalance,
+				"maxFiles":        maxFiles,
+			})
+			return map[string]interface{}{
+				"success":         false,
+				"error":           errMsg,
+				"currentBalance":  currentBalance,
+				"requiredBalance": requiredBalance,
+				"maxFiles":        maxFiles,
+			}
+		} else {
+			a.logToConsole(fmt.Sprintf("[OK] Balance check passed: %d available, %d required", currentBalance, requiredBalance))
+		}
 	}
 
 	// Emit start event
@@ -1450,11 +1488,11 @@ func parseVersionCount(val string) int {
 // Helper functions
 
 // getWalletForDeployment returns the appropriate wallet for TELA deployments
-// In simulator mode, it returns the simulator's wallet; otherwise the main app wallet
+// In simulator mode, it returns the primary simulator wallet (#0); otherwise the main app wallet
 func (a *App) getWalletForDeployment(isSimulator bool) *walletapi.Wallet_Disk {
 	if isSimulator {
 		if a.simulatorManager != nil && a.simulatorManager.walletManager != nil {
-			return a.simulatorManager.walletManager.GetWallet()
+			return a.simulatorManager.walletManager.GetPrimaryWallet()
 		}
 		return nil
 	}

@@ -209,6 +209,50 @@ func (a *App) disconnectWalletAPI() {
 	time.Sleep(10 * time.Millisecond)
 }
 
+// SimulatorGasFee is the gas fee per transaction in simulator mode
+// Each DOC deployment costs this amount from the wallet balance
+const SimulatorGasFee = uint64(100000)
+
+// CheckBalanceForBatchDeployment checks if the wallet has sufficient balance
+// for deploying the specified number of files (DOCs + 1 INDEX)
+func (a *App) CheckBalanceForBatchDeployment(wallet *walletapi.Wallet_Disk, fileCount int, isSimulator bool) (bool, uint64, uint64, error) {
+	if !isSimulator {
+		// Non-simulator mode doesn't need pre-check (uses real gas estimation)
+		return true, 0, 0, nil
+	}
+
+	// Calculate required balance: (fileCount DOCs + 1 INDEX) * gas fee
+	requiredBalance := uint64(fileCount+1) * SimulatorGasFee
+
+	// Get current balance via temporary connection
+	endpoint := walletapi.Daemon_Endpoint_Active
+	if endpoint == "" || endpoint == " " {
+		return false, 0, requiredBalance, fmt.Errorf("daemon endpoint not configured")
+	}
+
+	// Temporarily connect to check balance
+	if err := walletapi.Connect(endpoint); err != nil {
+		return false, 0, requiredBalance, fmt.Errorf("failed to connect to daemon: %v", err)
+	}
+
+	// Sync wallet to get current balance
+	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+		walletapi.Connected = false
+		return false, 0, requiredBalance, fmt.Errorf("failed to sync wallet: %v", err)
+	}
+
+	mature, _ := wallet.Get_Balance()
+
+	// Disconnect
+	walletapi.Connected = false
+
+	if mature < requiredBalance {
+		return false, mature, requiredBalance, nil
+	}
+
+	return true, mature, requiredBalance, nil
+}
+
 // deployDOC installs a single prepared DOC and returns the SCID
 // For simulator mode, uses retry logic similar to tela-cli tests
 func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ringsize uint64, isSimulator bool) (string, error) {

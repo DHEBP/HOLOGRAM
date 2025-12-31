@@ -1055,10 +1055,10 @@ func (a *App) getConnectedWalletAddress() string {
 	}
 	walletManager.RUnlock()
 
-	// Check simulator wallet
+	// Check simulator wallet (primary wallet = wallet #0)
 	if a.simulatorManager != nil && a.simulatorManager.walletManager != nil {
-		if a.simulatorManager.walletManager.IsOpen() {
-			return a.simulatorManager.walletManager.GetAddress()
+		if a.simulatorManager.walletManager.IsSetup() {
+			return a.simulatorManager.walletManager.GetPrimaryAddress()
 		}
 	}
 

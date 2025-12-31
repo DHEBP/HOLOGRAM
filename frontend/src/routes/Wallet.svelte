@@ -1,7 +1,7 @@
 <script>
   import { walletState, appState, settingsState, walletRequestHistory, clearRequestHistory, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { 
     Copy, ArrowUp, ArrowDown, ArrowLeftRight, Eye, EyeOff,
@@ -63,6 +63,7 @@
   let testWalletsLoading = false;
   let selectedTestWallet = null;
   let testWalletsExpanded = false; // Show all 22 or just first 10
+  let fundingWallet = false;
   
   // Create wallet form
   let createPath = '';
@@ -304,6 +305,47 @@
   // ============================================
   // TEST WALLET FUNCTIONS (Simulator Mode)
   // ============================================
+  
+  // Fund a test wallet by consolidating balance from other wallets
+  async function fundWallet(targetIndex, amount = 2000000) {
+    if (fundingWallet) return;
+    fundingWallet = true;
+    try {
+      const result = await FundTestWallet(targetIndex, amount);
+      if (result.success) {
+        toast.success(`Funded wallet with ${(result.totalTransferred / 100000).toFixed(5)} DERO`);
+        
+        // The backend already syncs the balance, but we need to refresh the UI
+        // Use the new direct balance refresh for the target wallet
+        const refreshResult = await RefreshTestWalletBalance(targetIndex);
+        if (refreshResult.success && refreshResult.wallet) {
+          // Update the selected wallet with the new balance
+          selectedTestWallet = refreshResult.wallet;
+          
+          // Update in the list too
+          const idx = testWallets.findIndex(w => w.index === targetIndex);
+          if (idx >= 0) {
+            testWallets[idx] = refreshResult.wallet;
+            testWallets = [...testWallets]; // Trigger reactivity
+          }
+        }
+        
+        // Also refresh all wallets to update source wallet balances
+        await syncTestWallets(false);
+        
+        // If this wallet is currently connected, refresh the dashboard balance
+        if ($walletState.isOpen && selectedTestWallet?.index === targetIndex) {
+          await refreshBalance();
+        }
+      } else {
+        toast.error(result.error || 'Failed to fund wallet');
+      }
+    } catch (err) {
+      toast.error('Failed to fund wallet: ' + err.message);
+    } finally {
+      fundingWallet = false;
+    }
+  }
   async function loadTestWallets() {
     if (testWalletsLoading) return;
     testWalletsLoading = true;
@@ -322,17 +364,35 @@
     }
   }
   
-  async function syncTestWallets() {
+  async function syncTestWallets(showToast = true) {
     testWalletsLoading = true;
     try {
       const result = await SyncSimulatorTestWallets();
       if (result.success && result.wallets) {
         testWallets = result.wallets;
-        toast.success('Test wallets synced');
+        
+        // Update selectedTestWallet if it exists
+        if (selectedTestWallet) {
+          const updated = result.wallets.find(w => w.index === selectedTestWallet.index);
+          if (updated) {
+            selectedTestWallet = updated;
+          }
+        }
+        
+        // Also refresh the main wallet balance if a test wallet is connected
+        if ($walletState.isOpen) {
+          await refreshBalance();
+        }
+        
+        if (showToast) {
+          toast.success('Test wallets synced');
+        }
       }
     } catch (err) {
       console.error('Error syncing test wallets:', err);
-      toast.error('Failed to sync test wallets');
+      if (showToast) {
+        toast.error('Failed to sync test wallets');
+      }
     } finally {
       testWalletsLoading = false;
     }
@@ -2189,6 +2249,9 @@
                   <span class="page-sidebar-item-label test-wallet-addr">
                     {wallet.address.slice(0, 12)}...
                   </span>
+                  <span class="test-wallet-balance-mini">
+                    {(wallet.balance / 100000).toFixed(2)}
+                  </span>
                 </button>
               {/each}
               {#if testWallets.length > 10}
@@ -2277,7 +2340,27 @@
                     Use This Wallet
                   {/if}
                 </button>
+                <button 
+                  class="btn btn-ghost" 
+                  on:click={() => fundWallet(selectedTestWallet.index, 2000000)} 
+                  disabled={fundingWallet}
+                  title="Transfer funds from other test wallets to this one"
+                >
+                  {#if fundingWallet}
+                    <Loader2 size={14} class="spin" />
+                    Funding...
+                  {:else}
+                    <Coins size={14} />
+                    Fund Wallet
+                  {/if}
+                </button>
               </div>
+              {#if selectedTestWallet.balance < 1200000}
+                <div class="test-wallet-hint">
+                  <AlertTriangle size={14} />
+                  <span>Low balance for batch deployments. Click "Fund Wallet" to transfer from other test wallets.</span>
+                </div>
+              {/if}
             </div>
           </div>
 
@@ -2666,6 +2749,14 @@
   }
   .sidebar-sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   
+  /* Test wallet mini balance in sidebar */
+  .test-wallet-balance-mini {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-5);
+    margin-left: auto;
+  }
+  
   /* Test wallet index in sidebar */
   .test-wallet-index {
     font-family: var(--font-mono);
@@ -2752,6 +2843,18 @@
     margin-top: var(--s-2);
     display: flex;
     gap: var(--s-2);
+  }
+  .test-wallet-hint {
+    margin-top: var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid rgba(251, 191, 36, 0.2);
+    border-radius: var(--r-md);
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font-size: 12px;
+    color: var(--status-warn);
   }
   
   /* XSWD Section */

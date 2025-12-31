@@ -1237,19 +1237,20 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               </div>
               <div class="stat-grid">
                 <div class="stat-block">
-                  <span class="stat-label">Block Height</span>
+                  <span class="stat-label">BLOCK HEIGHT</span>
                   <span class="stat-value">{simulatorStatus.blockHeight?.toLocaleString() || '0'}</span>
-                </div>
-                <div class="stat-block">
-                  <span class="stat-label">Test Balance</span>
-                  <span class="stat-value">{simulatorStatus.balanceDERO?.toFixed(2) || '0'} DERO</span>
                 </div>
               </div>
               {#if simulatorStatus.walletAddress}
-                <div class="settings-row">
+                <div class="settings-row" style="flex-direction: column; align-items: stretch; gap: var(--s-2);">
                   <div class="settings-row-info">
                     <div class="settings-row-label">Wallet</div>
                     <div class="settings-row-desc mono">{formatSimulatorAddress(simulatorStatus.walletAddress)}</div>
+                  </div>
+                  <div class="sim-wallet-balance-row">
+                    <span class="sim-wallet-balance-label">Balance:</span>
+                    <span class="sim-wallet-balance-value">{simulatorStatus.balanceDERO?.toFixed(5) || '0'} DERO</span>
+                    <span class="sim-wallet-balance-hint">(receives mining rewards)</span>
                   </div>
                 </div>
               {/if}
@@ -3352,6 +3353,34 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--s-3, 12px);
+  }
+  
+  /* Simulator wallet balance row */
+  .sim-wallet-balance-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(52, 211, 153, 0.08);
+    border-radius: var(--r-md, 8px);
+    border: 1px solid rgba(52, 211, 153, 0.15);
+  }
+  .sim-wallet-balance-label {
+    font-size: 12px;
+    color: var(--text-4, #505068);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .sim-wallet-balance-value {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--emerald-400, #34d399);
+  }
+  .sim-wallet-balance-hint {
+    font-size: 11px;
+    color: var(--text-5, #404058);
+    margin-left: auto;
   }
   
   /* Action Input Group for Simulator Quick Actions */
