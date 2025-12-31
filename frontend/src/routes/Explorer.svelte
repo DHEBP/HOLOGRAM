@@ -1122,44 +1122,47 @@
     {#if searchResult}
       <!-- Search Result -->
       <div class="explorer-content-inner">
-        <!-- v6.1 Navigation Bar -->
+        <!-- v6.2 Navigation Bar - Design System Compliant -->
         <div class="nav-bar">
-          <button
-            on:click={goBack}
-            disabled={currentNavIndex <= 0}
-            class="nav-btn"
-            title="Go Back"
-          >
-            <ArrowLeft size={14} strokeWidth={1.5} />
-            <span>Back</span>
-          </button>
-          <button
-            on:click={goToHome}
-            class="nav-btn"
-            title="Go to Home"
-          >
-            <Home size={14} strokeWidth={1.5} />
-            <span>Home</span>
-          </button>
+          <!-- Back/Home Group -->
+          <div class="nav-group">
+            <button
+              on:click={goBack}
+              disabled={currentNavIndex <= 0}
+              class="nav-group-btn"
+              title="Go Back"
+            >
+              <ArrowLeft size={14} strokeWidth={1.5} />
+              <span>Back</span>
+            </button>
+            <button
+              on:click={goToHome}
+              class="nav-group-btn"
+              title="Go to Home"
+            >
+              <Home size={14} strokeWidth={1.5} />
+              <span>Home</span>
+            </button>
+          </div>
           
           {#if searchResult.type === 'block'}
-            <div class="nav-spacer"></div>
-            <div class="block-nav">
+            <!-- Block Navigation Group -->
+            <div class="nav-group block-nav">
               <button
                 on:click={goToPrevBlock}
                 disabled={searchResult.data?.block_header?.height <= 1}
-                class="block-nav-btn"
+                class="nav-group-btn"
               >
                 <ChevronLeft size={14} strokeWidth={1.5} />
                 Prev
               </button>
               <span class="block-nav-current">
-                #{searchResult.data?.block_header?.height || searchQuery}
+                #{(searchResult.data?.block_header?.height || searchQuery).toLocaleString()}
               </span>
               <button
                 on:click={goToNextBlock}
                 disabled={(searchResult.data?.block_header?.height || 0) >= $appState.chainHeight}
-                class="block-nav-btn"
+                class="nav-group-btn"
               >
                 Next
                 <ChevronRight size={14} strokeWidth={1.5} />
@@ -1168,6 +1171,28 @@
           {/if}
           
           <div class="nav-spacer"></div>
+          
+          <!-- Result Type Badge -->
+          <span class="nav-type-badge" class:nav-type-block={searchResult.type === 'block'} class:nav-type-tx={searchResult.type === 'tx'} class:nav-type-sc={searchResult.type === 'sc' || searchResult.type === 'scid'} class:nav-type-address={searchResult.type === 'address'} class:nav-type-key={searchResult.type === 'key'} class:nav-type-value={searchResult.type === 'value'} class:nav-type-code={searchResult.type === 'code'}>
+            {#if searchResult.type === 'block'}
+              BLOCK
+            {:else if searchResult.type === 'tx'}
+              TX
+            {:else if searchResult.type === 'sc' || searchResult.type === 'scid'}
+              SC
+            {:else if searchResult.type === 'address'}
+              ADDRESS
+            {:else if searchResult.type === 'key'}
+              KEY
+            {:else if searchResult.type === 'value'}
+              VALUE
+            {:else if searchResult.type === 'code'}
+              CODE
+            {:else}
+              RESULT
+            {/if}
+          </span>
+          
           <button
             on:click={goToHome}
             class="nav-close"
@@ -3490,11 +3515,11 @@
     background: var(--grad-primary);
   }
   
-  /* v6.1 Navigation Bar */
+  /* v6.2 Navigation Bar - Design System Compliant */
   .nav-bar {
     display: flex;
     align-items: center;
-    gap: var(--s-2);
+    gap: var(--s-3);
     margin-bottom: var(--s-4);
     padding: var(--s-3);
     background: var(--void-mid);
@@ -3502,6 +3527,129 @@
     border-radius: var(--r-lg);
   }
   
+  /* Navigation Button Group (Back/Home, Prev/Next) */
+  .nav-group {
+    display: flex;
+    align-items: center;
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    overflow: hidden;
+  }
+  
+  .nav-group-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    font-size: 12px;
+    color: var(--text-3);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  
+  .nav-group-btn:hover {
+    color: var(--text-1);
+    background: var(--void-hover);
+  }
+  
+  .nav-group-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+  
+  .nav-group-btn:disabled:hover {
+    background: transparent;
+    color: var(--text-3);
+  }
+  
+  /* Subtle divider between grouped buttons */
+  .nav-group-btn:not(:last-child) {
+    border-right: 1px solid var(--border-dim);
+  }
+  
+  /* Block navigation specific styling */
+  .nav-group.block-nav {
+    background: var(--void-up);
+  }
+  
+  .block-nav-current {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--cyan-400);
+    padding: 0 var(--s-3);
+    border-left: 1px solid var(--border-dim);
+    border-right: 1px solid var(--border-dim);
+  }
+  
+  /* Result Type Badge */
+  .nav-type-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--s-1) var(--s-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    border-radius: var(--r-sm);
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-3);
+  }
+  
+  .nav-type-badge.nav-type-block {
+    color: var(--cyan-400);
+    border-color: rgba(34, 211, 238, 0.3);
+  }
+  
+  .nav-type-badge.nav-type-tx {
+    color: var(--violet-400);
+    border-color: rgba(167, 139, 250, 0.3);
+  }
+  
+  .nav-type-badge.nav-type-sc {
+    color: var(--emerald-400);
+    border-color: rgba(52, 211, 153, 0.3);
+  }
+  
+  .nav-type-badge.nav-type-address {
+    color: var(--pink-400);
+    border-color: rgba(236, 72, 153, 0.3);
+  }
+  
+  .nav-type-badge.nav-type-key,
+  .nav-type-badge.nav-type-value,
+  .nav-type-badge.nav-type-code {
+    color: var(--amber-400);
+    border-color: rgba(251, 191, 36, 0.3);
+  }
+  
+  /* Close Button */
+  .nav-close {
+    padding: var(--s-2);
+    color: var(--text-4);
+    background: transparent;
+    border: none;
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  
+  .nav-close:hover {
+    color: var(--text-1);
+    background: var(--void-hover);
+  }
+  
+  /* Spacer */
+  .nav-spacer {
+    flex: 1;
+  }
+  
+  /* Legacy styles removed - using nav-group pattern now */
   .nav-btn {
     display: flex;
     align-items: center;
@@ -3524,21 +3672,6 @@
   .nav-btn:disabled {
     opacity: 0.3;
     cursor: not-allowed;
-  }
-  
-  .nav-close {
-    padding: var(--s-2);
-    color: var(--text-4);
-    background: transparent;
-    border: none;
-    border-radius: var(--r-sm);
-    cursor: pointer;
-    transition: all 150ms ease;
-  }
-  
-  .nav-close:hover {
-    color: var(--text-1);
-    background: var(--void-hover);
   }
   
   .block-nav {
@@ -3571,12 +3704,7 @@
     cursor: not-allowed;
   }
   
-  .block-nav-current {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--cyan-400);
-    padding: 0 var(--s-2);
-  }
+  /* .block-nav-current moved to nav-group section above */
   
   /* Copy buttons */
   .copy-btn-sm {
