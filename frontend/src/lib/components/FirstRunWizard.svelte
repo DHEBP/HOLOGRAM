@@ -489,52 +489,47 @@
         </div>
       
       {:else if step === 'epoch_info'}
-        <!-- Status Bar -->
+        <!-- Status Bar - matches found_external -->
         <div class="wizard-status-bar">
           <div class="wizard-status-left">
             <span class="wizard-status-dot"></span>
             <span class="wizard-status-text">Ready</span>
           </div>
+          <span class="wizard-badge">OPTIONAL</span>
         </div>
         
-        <div class="wizard-center" style="padding-top: var(--s-2);">
-          <div class="wizard-icon wizard-icon-epoch">
-            <Zap size={28} strokeWidth={1.5} />
+        <!-- Compact info card - same structure as node card for button alignment -->
+        <div class="wizard-node-card">
+          <div class="wizard-node-header">
+            <div class="wizard-epoch-icon">
+              <Zap size={20} strokeWidth={1.5} />
+            </div>
+            <div class="wizard-block-info">
+              <span class="wizard-block-height" style="font-size: 18px;">Developer Support</span>
+              <span class="wizard-block-label">passive background hashing</span>
+            </div>
           </div>
-          <h2 class="wizard-step-title">Developer Support</h2>
-          <p class="wizard-step-desc epoch-desc">
-            Allow Hologram to use a small amount of CPU for background mining 
-            that supports this app and DERO dApps you use.
-          </p>
-        </div>
-        
-        <div class="epoch-features">
-          <div class="epoch-feature">
-            <span class="epoch-feature-icon">◎</span>
-            <span>Very light (~2 threads)</span>
-          </div>
-          <div class="epoch-feature">
-            <span class="epoch-feature-icon">◎</span>
-            <span>Won't drain your battery</span>
-          </div>
-          <div class="epoch-feature">
-            <span class="epoch-feature-icon">◎</span>
-            <span>100% private contributions</span>
+          
+          <div class="wizard-node-details">
+            <div class="wizard-detail-row">
+              <span class="wizard-detail-label">Impact</span>
+              <span class="wizard-detail-value">Very light (~2 threads)</span>
+            </div>
+            <div class="wizard-detail-row">
+              <span class="wizard-detail-label">Privacy</span>
+              <span class="wizard-detail-value">100% private contributions</span>
+            </div>
           </div>
         </div>
         
-        <div class="wizard-buttons epoch-buttons">
+        <div class="wizard-buttons">
           <button on:click={enableEpochAndComplete} class="wizard-btn wizard-btn-primary">
             Enable Developer Support
           </button>
-          <button on:click={disableEpochAndComplete} class="wizard-btn wizard-btn-ghost">
+          <button on:click={disableEpochAndComplete} class="wizard-btn wizard-btn-secondary">
             No Thanks
           </button>
         </div>
-        
-        <p class="epoch-opt-out-note">
-          You can change this anytime in <span class="c-cyan">Settings</span>
-        </p>
       
       {:else if step === 'error'}
         <!-- Status Bar -->
