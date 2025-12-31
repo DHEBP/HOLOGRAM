@@ -138,10 +138,3 @@
   strokeWidth={strokeWidth}
   class="holo-icon {className}"
 />
-
-<style>
-  :global(.holo-icon) {
-    flex-shrink: 0;
-  }
-</style>
-

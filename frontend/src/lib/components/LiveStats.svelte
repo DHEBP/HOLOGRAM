@@ -3,6 +3,7 @@
   import { appState } from '../stores/appState.js';
   import { GetLiveStats } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
+  import { Zap } from 'lucide-svelte';
   
   // Local state for live stats
   let stats = {

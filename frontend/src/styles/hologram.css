@@ -1207,6 +1207,11 @@
       height: 32px;
     }
     
+    /* Holo Icons (lucide-svelte wrapper) */
+    .holo-icon {
+      flex-shrink: 0;
+    }
+    
     /* Button Sizes */
     .btn-sm { padding: var(--s-1) var(--s-3); font-size: 11px; }
     .btn-lg { padding: var(--s-3) var(--s-6); font-size: 14px; }

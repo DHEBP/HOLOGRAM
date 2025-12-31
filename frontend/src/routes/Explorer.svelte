@@ -3089,21 +3089,6 @@
     color: var(--cyan);
   }
 
-  .explorer-guide-list {
-    list-style: none;
-    padding: 0;
-    margin: 0 0 var(--s-4) 0;
-  }
-
-  .explorer-guide-list li {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    padding: var(--s-2) 0;
-    font-size: 13px;
-    color: var(--text-3);
-  }
-  
   .explorer-bullet {
     color: var(--cyan);
     font-weight: 600;
@@ -3412,30 +3397,6 @@
   
   .block-row:hover {
     background: var(--void-up);
-  }
-  
-  .block-row .block-height {
-    color: var(--cyan-400);
-    font-weight: 500;
-    min-width: 120px;
-  }
-  
-  .block-row .block-meta {
-    color: var(--text-3);
-    font-size: 12px;
-    min-width: 60px;
-  }
-  
-  .block-row .block-age {
-    color: var(--text-4);
-    font-size: 12px;
-    flex: 1;
-  }
-  
-  .block-row .block-hash {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--text-4);
   }
   
   /* Explorer Loading */
@@ -4409,65 +4370,6 @@
     gap: var(--s-2);
     max-height: 300px;
     overflow-y: auto;
-  }
-  
-  .scid-item {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-1);
-    padding: var(--s-3);
-    background: var(--void-mid);
-    border: 1px solid var(--border-dim);
-    border-radius: var(--r-md);
-    cursor: pointer;
-    transition: all 150ms ease;
-    text-align: left;
-    position: relative;
-  }
-  
-  .scid-item:hover {
-    background: rgba(167, 139, 250, 0.08);
-    border-color: rgba(167, 139, 250, 0.3);
-  }
-  
-  .scid-item-main {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--s-2);
-  }
-  
-  .scid-name {
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-1);
-  }
-  
-  .scid-hash {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-5);
-  }
-  
-  .scid-desc {
-    font-size: 11px;
-    color: var(--text-4);
-    line-height: 1.3;
-  }
-  
-  .scid-view {
-    position: absolute;
-    right: var(--s-3);
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 11px;
-    color: var(--violet-400);
-    opacity: 0;
-    transition: opacity 150ms ease;
-  }
-  
-  .scid-item:hover .scid-view {
-    opacity: 1;
   }
   
   .empty-scids {

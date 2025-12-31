@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import AddressDisplay from './AddressDisplay.svelte';
+  import { Link, Lock, Copy } from 'lucide-svelte';
   
   export let ringMembers = [];
   export let ringSize = 0;
@@ -319,27 +320,6 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-  }
-  
-  .address-text {
-    font-family: monospace;
-    font-size: 0.8rem;
-    color: rgba(255, 255, 255, 0.85);
-    word-break: break-all;
-  }
-  
-  .copy-btn {
-    background: none;
-    border: none;
-    font-size: 0.9rem;
-    cursor: pointer;
-    opacity: 0.6;
-    transition: opacity 0.2s;
-    padding: 0.25rem;
-  }
-  
-  .copy-btn:hover {
-    opacity: 1;
   }
   
   /* Ring Container */

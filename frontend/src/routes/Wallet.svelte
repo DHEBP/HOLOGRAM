@@ -2542,27 +2542,6 @@
   .tab-btn:hover { color: var(--text-1); background: var(--void-up); }
   .tab-btn.active { background: var(--void-mid); color: var(--cyan-400); }
   
-  /* Login Header */
-  .login-header { 
-    text-align: center; 
-    margin-bottom: var(--s-5);
-    padding-top: var(--s-4);
-  }
-  .login-title {
-    font-family: var(--font-mono);
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: var(--text-1);
-    margin: 0 0 var(--s-2) 0;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-  .login-subtitle { 
-    font-size: 13px; 
-    color: var(--text-3); 
-    margin: 0; 
-  }
-  
   /* Input Row */
   .input-row { display: flex; gap: var(--s-2); }
   .input-row .input { flex: 1; }
@@ -2792,143 +2771,6 @@
     margin: 0;
   }
   
-  /* Recent Wallets - Card Style */
-  .recent-wallets-section {
-    padding-top: var(--s-4);
-  }
-  
-  .recent-wallets-title {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
-    color: var(--text-4);
-    margin-bottom: var(--s-3);
-  }
-  
-  .recent-wallets-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-2);
-  }
-  
-  .recent-wallet-card {
-    display: flex;
-    align-items: center;
-    gap: var(--s-3);
-    width: 100%;
-    padding: var(--s-3) var(--s-4);
-    background: var(--void-deep);
-    border: 1px solid var(--border-dim);
-    border-radius: var(--r-md);
-    cursor: pointer;
-    transition: all 150ms ease;
-    text-align: left;
-  }
-  
-  .recent-wallet-card:hover {
-    background: var(--void-up);
-    border-color: var(--border-subtle);
-  }
-  
-  .recent-wallet-card.active {
-    background: rgba(6, 182, 212, 0.08);
-    border-color: rgba(6, 182, 212, 0.3);
-  }
-  
-  .recent-wallet-icon {
-    font-size: 14px;
-    color: var(--text-4);
-    flex-shrink: 0;
-  }
-  
-  .recent-wallet-card.active .recent-wallet-icon {
-    color: var(--cyan-400);
-  }
-  
-  .recent-wallet-info {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  
-  .recent-wallet-name {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-1);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  
-  .recent-wallet-address {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-4);
-  }
-  
-  /* Recent Wallets Header */
-  .recent-wallets-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: var(--s-3);
-  }
-  
-  .recent-wallets-header .recent-wallets-title {
-    margin-bottom: 0;
-  }
-  
-  .recent-wallets-clear-btn {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--text-4);
-    background: transparent;
-    border: none;
-    cursor: pointer;
-    padding: 4px 8px;
-    border-radius: var(--r-sm);
-    transition: all 150ms ease;
-  }
-  
-  .recent-wallets-clear-btn:hover {
-    color: var(--status-err);
-    background: rgba(248, 113, 113, 0.1);
-  }
-  
-  /* Remove button on wallet cards */
-  .recent-wallet-remove {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-    background: transparent;
-    border: none;
-    border-radius: var(--r-sm);
-    color: var(--text-5);
-    font-size: 14px;
-    cursor: pointer;
-    opacity: 0;
-    transition: all 150ms ease;
-  }
-  
-  .recent-wallet-card:hover .recent-wallet-remove {
-    opacity: 1;
-  }
-  
-  .recent-wallet-remove:hover {
-    color: var(--status-err);
-    background: rgba(248, 113, 113, 0.15);
-  }
-  
   /* Seed Display */
   .seed-display {
     background: var(--void-mid);
@@ -3135,14 +2977,6 @@
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-  }
-  
-  /* Wallet Stats Grid */
-  .wallet-stats-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    padding: var(--s-4);
-    gap: var(--s-4);
   }
   
   /* Transaction Lists */
@@ -3546,34 +3380,6 @@
   .tx-timestamp {
     font-size: 11px;
     color: var(--text-4);
-  }
-  
-  /* Coming Soon Panel */
-  .coming-soon-panel {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--s-4);
-    padding: var(--s-10);
-    background: var(--void-mid);
-    border: 1px solid var(--border-dim);
-    border-radius: var(--r-lg);
-    color: var(--text-3);
-    text-align: center;
-  }
-  
-  .coming-soon-panel h3 {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text-1);
-    margin: 0;
-  }
-  
-  .coming-soon-panel p {
-    font-size: 13px;
-    margin: 0;
-    max-width: 300px;
   }
   
   /* Spin Animation */

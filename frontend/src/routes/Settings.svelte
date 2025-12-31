@@ -3002,33 +3002,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     }
   }
   
-  /* Analytics link button */
-  .analytics-link {
-    display: flex;
-    align-items: center;
-    gap: var(--s-3, 12px);
-    width: 100%;
-    padding: var(--s-4, 16px);
-    background: var(--void-mid, #12121a);
-    border: 1px solid var(--cyan-dim, rgba(0, 212, 170, 0.2));
-    border-radius: 12px;
-    color: var(--text-2, #a8a8b8);
-    font-size: 14px;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  
-  .analytics-link:hover {
-    background: var(--void-up, #1a1a24);
-    border-color: var(--cyan, #00d4aa);
-    color: var(--cyan, #00d4aa);
-  }
-  
-  .analytics-link span {
-    flex: 1;
-    text-align: left;
-  }
-  
   /* === Phase 2 v6.1 Spacing Classes === */
   
   /* Info List */
@@ -3107,31 +3080,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     margin-top: var(--s-1, 4px);
   }
   
-  .benchmark-stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--s-3, 12px);
-    font-size: 13px;
-  }
-  
-  .benchmark-stat {
-    padding: var(--s-2, 8px);
-    background: var(--void-mid, #12121c);
-    border-radius: var(--r-md, 8px);
-  }
-  
-  .benchmark-stat .stat-label {
-    display: block;
-    color: var(--text-5, #404058);
-    font-size: 12px;
-  }
-  
-  .benchmark-stat .stat-value {
-    display: block;
-    color: var(--text-2, #a8a8b8);
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  }
-  
   .benchmark-per-thread {
     margin-top: var(--s-3, 12px);
   }
@@ -3157,44 +3105,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     color: var(--text-3);
   }
   
-  /* EPOCH Info Card */
-  /* Developer Support Section Styles */
-  
-  /* Subpage header - consistent with OfflineCacheManager pattern */
-  .page-content > .page-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: var(--s-6, 24px);
-  }
-
-  .page-content > .page-header .header-left {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .page-content > .page-header .header-right {
-    display: flex;
-    align-items: center;
-  }
-
-  .page-content > .page-header .page-title {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2, 8px);
-    font-size: 20px;
-    font-weight: 600;
-    color: var(--text-1);
-    margin: 0;
-  }
-
-  .page-content > .page-header .page-desc {
-    font-size: 13px;
-    color: var(--text-4);
-    margin: 0;
-  }
-
   /* Toggle label + switch for page headers */
   .toggle-label {
     display: flex;

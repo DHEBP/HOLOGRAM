@@ -14,7 +14,7 @@
   import { 
     Globe, Palette, Blocks, Wallet, Settings, 
     Diamond, User,
-    Globe2, FlaskConical, Gamepad2, Radio
+    Globe2, FlaskConical, Gamepad2, Radio, FolderOpen
   } from 'lucide-svelte';
   import { getAvatarUrl, clearAvatarCache } from '../utils/avatarService.js';
   
@@ -1654,53 +1654,6 @@
     padding: 3px 6px;
   }
   
-  /* Status indicator content - SINGLE-LINE layout (label + value on same row) */
-  .unified-indicator-content {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  
-  .unified-indicator-label {
-    font-size: 9px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-4);
-    flex-shrink: 0;
-  }
-  
-  .unified-indicator-value {
-    font-size: 10px;
-    font-weight: 500;
-    color: var(--text-2);
-    white-space: nowrap;
-    text-align: right;
-  }
-  
-  .unified-indicator-value.value-ok { color: var(--status-ok); }
-  .unified-indicator-value.value-warn { color: var(--status-warn); }
-  .unified-indicator-value.value-err { color: var(--status-err); }
-  .unified-indicator-value.value-cyan { color: var(--cyan-400); }
-  
-  /* Chevron appears on hover */
-  .unified-indicator-chevron {
-    color: var(--text-5);
-    opacity: 0;
-    transition: opacity 150ms ease;
-    font-size: 11px;
-    margin-left: auto;
-  }
-  
-  .unified-indicator:hover .unified-indicator-chevron {
-    opacity: 1;
-    color: var(--text-3);
-  }
-  
   /* v6.2 Unified Dot - 6px with glow */
   .unified-dot {
     width: 6px;
@@ -2125,18 +2078,6 @@
     color: var(--text-3);
   }
   
-  .wallet-anchor-chevron {
-    color: var(--text-4);
-    opacity: 0.5;
-    transition: opacity 150ms ease;
-    font-size: 12px;
-  }
-  
-  .wallet-anchor:hover .wallet-anchor-chevron {
-    opacity: 1;
-    color: var(--cyan-400);
-  }
-  
   /* Wallet Menu - Positioned relative to wallet display */
   .wallet-menu {
     position: absolute;
@@ -2493,10 +2434,6 @@
   
   .status-xswd {
     color: var(--cyan-400) !important;
-  }
-  
-  .status-dim {
-    color: var(--text-4) !important;
   }
   
   /* XSWD-only address styling */

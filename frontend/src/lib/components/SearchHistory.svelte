@@ -1,5 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
+  import { Search } from 'lucide-svelte';
   
   const dispatch = createEventDispatcher();
   
