@@ -838,7 +838,7 @@
       
       if (!gnomonResult.success && !gnomonResult.alreadyRunning) {
         gnomonRequired = true;
-        librariesError = 'Gnomon indexer is required to browse libraries. Enable it in Settings → Network.';
+        librariesError = 'Gnomon indexer is required to browse libraries. Enable it in Settings → Gnomon.';
         librariesLoading = false;
         return;
       }
@@ -938,9 +938,9 @@
     toast.success(`Added ${selectedLibrary.durl || 'library'} to DOC references`);
   }
   
-  // Navigate to Settings to enable Gnomon
+  // Navigate to Settings > Gnomon section to enable Gnomon
   function goToSettings() {
-    window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'settings' }));
+    window.dispatchEvent(new CustomEvent('status-click', { detail: { tab: 'settings', section: 'gnomon' } }));
   }
   
   // Load MODs data
@@ -3060,7 +3060,7 @@
             </div>
             
             <div style="display: flex; gap: var(--s-3); margin-top: var(--s-5);">
-              <button class="btn btn-primary" on:click={() => window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'settings' }))}>
+              <button class="btn btn-primary" on:click={() => window.dispatchEvent(new CustomEvent('status-click', { detail: { tab: 'settings', section: 'gnomon' } }))}>
                 <Database size={16} />
                 Open Settings
               </button>
@@ -3138,8 +3138,8 @@
             <!-- DOC Type Filter (for docs tab) -->
             {#if myContentTab === 'docs' && availableDocTypes.length > 0}
               <div class="mc-filter">
-                <label class="form-label">Filter by Type:</label>
-                <select class="input" style="max-width: 200px;" bind:value={myContentDocTypeFilter} on:change={loadMyDOCs}>
+                <label class="mc-filter-label">FILTER BY TYPE:</label>
+                <select class="mc-filter-select" bind:value={myContentDocTypeFilter} on:change={loadMyDOCs}>
                   <option value="">All Types</option>
                   {#each availableDocTypes as docType}
                     <option value={docType}>{docType}</option>
@@ -7621,6 +7621,54 @@
     align-items: center;
     gap: var(--s-3);
     margin-bottom: var(--s-4);
+  }
+  
+  .mc-filter-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-4);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  
+  /* HOLOGRAM Design System Compliant Select */
+  .mc-filter-select {
+    padding: var(--s-2) var(--s-3);
+    padding-right: 32px; /* Room for dropdown arrow */
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-2);
+    background: var(--void-deep);
+    /* Custom dropdown arrow - HOLOGRAM standard */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23707088' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-md);
+    /* CRITICAL: Remove native OS styling */
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    cursor: pointer;
+    outline: none;
+    transition: all 150ms ease;
+    min-width: 140px;
+  }
+  
+  .mc-filter-select:hover {
+    border-color: var(--cyan-500);
+  }
+  
+  .mc-filter-select:focus {
+    border-color: var(--cyan-400);
+    box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.15);
+  }
+  
+  .mc-filter-select option {
+    background: var(--void-deep);
+    color: var(--text-1);
+    padding: var(--s-2);
   }
   
   /* Content List */

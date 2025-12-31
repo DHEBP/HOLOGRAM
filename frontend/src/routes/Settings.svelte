@@ -1688,7 +1688,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   <span style="color: var(--text-muted);">({searchExclusions.length} active filters)</span>
                 </div>
               </div>
-              <div class="btn-group">
+              <div class="settings-row-actions">
                 <button
                   on:click={() => showExclusionModal = true}
                   class="btn btn-secondary"
@@ -1716,7 +1716,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   Filter search results by minimum like ratio. 0 = show all.
                 </div>
               </div>
-              <div class="input-group" style="width: 120px;">
+              <div class="settings-row-actions">
                 <input
                   type="number"
                   min="0"
@@ -1724,7 +1724,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   bind:value={searchMinLikes}
                   on:change={updateMinLikes}
                   class="form-input"
-                  style="text-align: center;"
+                  style="width: 70px; text-align: center;"
                 />
                 <span class="input-suffix">%</span>
               </div>
@@ -2246,8 +2246,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
 </div>
 
 <style>
-  /* === HOLOGRAM v6.1 Settings Page Styles === */
-  /* Strict compliance with HOLOGRAM-DESIGN-SYSTEM-RULEBOOK.md */
+  /* === HOLOGRAM v7.0 Settings Page Styles === */
+  /* Strict compliance with HOLOGRAM-DESIGN-SYSTEM.md */
   /* Utilitarian Card Headers (Explorer Style) */
   
   /* === Card Wrapper === */
@@ -2326,6 +2326,13 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   .settings-row-info {
     flex: 1;
+  }
+  
+  .settings-row-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex-shrink: 0;
   }
   
   .settings-row-label {
