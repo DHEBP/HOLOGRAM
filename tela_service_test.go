@@ -144,9 +144,15 @@ func TestDOCInfo_DataFieldExcludedFromJSON(t *testing.T) {
 		t.Fatalf("Failed to marshal: %v", err)
 	}
 
-	// Data should not appear in JSON (json:"-" tag)
-	if strings.Contains(string(jsonData), "data") {
-		t.Error("Data field should be excluded from JSON marshaling")
+	// Data []byte field has json:"-" tag, so binary data should NOT appear in JSON
+	// Note: DataString (json:"data") is a separate field for frontend input
+	// The binary Data field should not be serialized to avoid large base64 output
+	jsonStr := string(jsonData)
+	
+	// Check that the binary content is NOT in the output
+	// (if Data were serialized, it would appear as base64: "PGh0bWw+dGVzdDwvaHRtbD4=")
+	if strings.Contains(jsonStr, "PGh0bWw") {
+		t.Error("Data []byte field should be excluded from JSON marshaling (found base64 content)")
 	}
 }
 

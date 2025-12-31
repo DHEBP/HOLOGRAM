@@ -191,12 +191,6 @@ func TestNewQueryCache(t *testing.T) {
 		t.Fatal("NewQueryCache should not return nil")
 	}
 
-	if qc.dailyStats == nil {
-		t.Error("dailyStats cache should be initialized")
-	}
-	if qc.appContribs == nil {
-		t.Error("appContribs cache should be initialized")
-	}
 	if qc.nrsNames == nil {
 		t.Error("nrsNames cache should be initialized")
 	}
@@ -205,52 +199,6 @@ func TestNewQueryCache(t *testing.T) {
 	}
 	if qc.telApps == nil {
 		t.Error("telApps cache should be initialized")
-	}
-}
-
-func TestQueryCacheDailyStats(t *testing.T) {
-	qc := NewQueryCache()
-
-	record := &DailyHashRecord{
-		Date:        "2025-12-05",
-		TotalHashes: 100000,
-		MinerHashes: 80000,
-		EpochHashes: 20000,
-	}
-
-	qc.SetDailyStat("2025-12-05", record)
-
-	cached, ok := qc.GetDailyStat("2025-12-05")
-	if !ok {
-		t.Error("GetDailyStat should return true for cached entry")
-	}
-	if cached.TotalHashes != 100000 {
-		t.Errorf("TotalHashes = %d, expected 100000", cached.TotalHashes)
-	}
-
-	_, ok = qc.GetDailyStat("2025-12-06")
-	if ok {
-		t.Error("GetDailyStat should return false for missing entry")
-	}
-}
-
-func TestQueryCacheAppContribs(t *testing.T) {
-	qc := NewQueryCache()
-
-	contrib := &EpochAppContribution{
-		AppSCID:     "testscid123...",
-		TotalHashes: 50000,
-		TotalMinis:  10,
-	}
-
-	qc.SetAppContrib("testscid123...", contrib)
-
-	cached, ok := qc.GetAppContrib("testscid123...")
-	if !ok {
-		t.Error("GetAppContrib should return true for cached entry")
-	}
-	if cached.TotalHashes != 50000 {
-		t.Errorf("TotalHashes = %d, expected 50000", cached.TotalHashes)
 	}
 }
 
@@ -319,15 +267,13 @@ func TestQueryCacheTELAApps(t *testing.T) {
 func TestQueryCacheInvalidateApp(t *testing.T) {
 	qc := NewQueryCache()
 
-	qc.SetAppContrib("scid1", &EpochAppContribution{AppSCID: "scid1"})
 	qc.SetTELAApp("scid1", map[string]interface{}{"name": "App1"})
 
 	qc.InvalidateApp("scid1")
 
-	_, okContrib := qc.GetAppContrib("scid1")
 	_, okApp := qc.GetTELAApp("scid1")
 
-	if okContrib || okApp {
+	if okApp {
 		t.Error("InvalidateApp should remove app from all caches")
 	}
 }
@@ -335,8 +281,6 @@ func TestQueryCacheInvalidateApp(t *testing.T) {
 func TestQueryCacheClearAll(t *testing.T) {
 	qc := NewQueryCache()
 
-	qc.SetDailyStat("2025-12-05", &DailyHashRecord{})
-	qc.SetAppContrib("scid", &EpochAppContribution{})
 	qc.SetNameForAddr("addr", "name")
 	qc.SetSCState("scid", 0, map[string]interface{}{})
 	qc.SetTELAApp("scid", map[string]interface{}{})

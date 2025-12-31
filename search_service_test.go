@@ -340,17 +340,18 @@ func TestGetMapKeysContents(t *testing.T) {
 // ============================================================================
 
 // TestDetectQueryType64DigitNumeric tests the edge case where a 64-digit
-// all-numeric string is detected as "block" rather than "hash"
-// This documents the current behavior where numeric check takes priority
+// all-numeric string is detected as "hash" (potential SCID) rather than "block"
+// Session 86 fixed this: 64-char hex check comes BEFORE block height check
+// to properly handle all-digit SCIDs like Genesis SC (0000...0001)
 func TestDetectQueryType64DigitNumeric(t *testing.T) {
-	// A 64-digit all-numeric string
+	// A 64-digit all-numeric string (valid hex, could be SCID)
 	input := "1234567890123456789012345678901234567890123456789012345678901234"
 	result := detectQueryType(input)
 	
-	// Current behavior: numeric check comes first, so this is "block"
-	// even though real block heights don't reach 64 digits
-	if result != "block" {
-		t.Errorf("detectQueryType(%q) = %q, expected 'block' (numeric check priority)", input, result)
+	// Current behavior: 64-char hex check comes first, so this is "hash"
+	// This allows proper handling of Genesis SC SCID (0000...0001)
+	if result != "hash" {
+		t.Errorf("detectQueryType(%q) = %q, expected 'hash' (64-char hex priority)", input, result)
 	}
 }
 
