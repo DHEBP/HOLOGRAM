@@ -63,8 +63,8 @@
     'NORMAL': { color: '#52c8db', bg: 'rgba(82,200,219,0.15)', icon: '💸', label: 'Normal' },
     'SC': { color: '#a855f7', bg: 'rgba(168,85,247,0.15)', icon: '📜', label: 'Smart Contract' },
     'BURN': { color: '#ef4444', bg: 'rgba(239,68,68,0.15)', icon: '🔥', label: 'Burn' },
-    'REGISTRATION': { color: '#4ade80', bg: 'rgba(74,222,128,0.15)', icon: '📝', label: 'Registration' },
-    'PREMINE': { color: '#f97316', bg: 'rgba(249,115,22,0.15)', icon: '💎', label: 'Premine' },
+    'REGISTRATION': { color: '#4ade80', bg: 'rgba(74,222,128,0.15)', icon: 'R', label: 'Registration' },
+    'PREMINE': { color: '#f97316', bg: 'rgba(249,115,22,0.15)', icon: 'P', label: 'Premine' },
   };
   
   $: typeInfo = txTypeConfig[txType] || txTypeConfig['NORMAL'];
@@ -80,7 +80,7 @@
     
     {#if actualRingSize > 0}
       <div class="ring-size-badge">
-        <span class="ring-icon">🔗</span>
+        <span class="ring-icon"><Link size={12} /></span>
         <span class="ring-count">Ring Size: {actualRingSize}</span>
       </div>
     {/if}
@@ -188,7 +188,7 @@
     
     <!-- Privacy explanation -->
     <div class="privacy-note">
-      <span class="note-icon">🔒</span>
+      <span class="note-icon"><Lock size={12} /></span>
       <span class="note-text">
         The actual sender is hidden among {actualRingSize} possible addresses. This is DERO's ring signature privacy.
       </span>
@@ -212,7 +212,7 @@
             <span class="item-index" style="background: {getColor(i)}">{i + 1}</span>
             <span class="item-address">{formatAddress(member, 20)}</span>
             <button class="item-copy" on:click|stopPropagation={() => copyAddress(member)} title="Copy">
-              📋
+              <Copy size={12} />
             </button>
           </div>
         {/each}

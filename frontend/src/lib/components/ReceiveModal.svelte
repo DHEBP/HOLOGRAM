@@ -84,11 +84,11 @@
         
         <div class="modal-info-section">
           <div class="modal-info-item">
-            <span class="modal-info-icon">💡</span>
+            <span class="modal-info-icon"><Info size={14} /></span>
             <span class="modal-info-text">Share this address to receive DERO payments.</span>
           </div>
           <div class="modal-info-item modal-info-item-warning">
-            <span class="modal-info-icon">⚠️</span>
+            <span class="modal-info-icon"><AlertTriangle size={14} /></span>
             <span class="modal-info-text">Only send DERO to this address. Sending other cryptocurrencies may result in permanent loss.</span>
           </div>
         </div>

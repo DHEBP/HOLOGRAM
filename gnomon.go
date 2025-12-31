@@ -566,7 +566,7 @@ func (g *GnomonClient) GetTELAAppsWithEpochInfo() []map[string]interface{} {
             supportsEpoch := g.CheckAppSupportsEpoch(scid)
             apps[i]["supports_epoch"] = supportsEpoch
             if supportsEpoch {
-                apps[i]["epoch_badge"] = "💎 Supports Ecosystem"
+                apps[i]["epoch_badge"] = "EPOCH Enabled"
             }
         }
     }

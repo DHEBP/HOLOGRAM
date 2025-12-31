@@ -187,7 +187,7 @@ func (a *App) startNodeProcess(binaryPath string, args []string, fullDataDir str
 	cmd := exec.Command(binaryPath, args...)
 	cmd.Dir = filepath.Dir(binaryPath)
 
-	a.logToConsole(fmt.Sprintf("🔧 Executing: %s %s", binaryPath, strings.Join(args, " ")))
+	a.logToConsole(fmt.Sprintf("[Exec] %s %s", binaryPath, strings.Join(args, " ")))
 
 	// Set up pipes
 	stdout, err := cmd.StdoutPipe()

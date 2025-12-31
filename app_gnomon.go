@@ -222,7 +222,7 @@ func (a *App) CleanGnomonDB(network string) map[string]interface{} {
 // ResyncGnomon stops Gnomon, cleans the DB, and restarts it
 func (a *App) ResyncGnomon() map[string]interface{} {
 	network := a.getNetworkName()
-	a.logToConsole(fmt.Sprintf("🔄 Resyncing Gnomon for %s...", network))
+	a.logToConsole(fmt.Sprintf("[Gnomon] Resyncing for %s...", network))
 
 	if a.gnomonClient.IsRunning() {
 		a.StopGnomon()
@@ -298,13 +298,13 @@ func (a *App) GetDiscoveredApps() map[string]interface{} {
 			supportsEpoch := a.gnomonClient.CheckAppSupportsEpoch(scid)
 			apps[i]["supports_epoch"] = supportsEpoch
 			if supportsEpoch {
-				apps[i]["epoch_badge"] = "💎 Supports Ecosystem"
+				apps[i]["epoch_badge"] = "EPOCH Enabled"
 				epochCount++
 			}
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("📱 Found %d TELA apps (%d with EPOCH support)", len(apps), epochCount))
+	a.logToConsole(fmt.Sprintf("[Gnomon] Found %d TELA apps (%d with EPOCH support)", len(apps), epochCount))
 
 	return map[string]interface{}{
 		"success": true,
@@ -339,7 +339,7 @@ func (a *App) GetTELALibraries() map[string]interface{} {
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("📚 Found %d TELA libraries", len(libs)))
+	a.logToConsole(fmt.Sprintf("[Gnomon] Found %d TELA libraries", len(libs)))
 
 	return map[string]interface{}{
 		"success":   true,
@@ -398,7 +398,7 @@ func (a *App) GetRandomSmartContracts(limit int) map[string]interface{} {
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("🎲 Random SC discovery: Found %d contracts (from %d total)", len(results), len(allSCs)))
+	a.logToConsole(fmt.Sprintf("[Gnomon] Random SC discovery: Found %d contracts (from %d total)", len(results), len(allSCs)))
 
 	return map[string]interface{}{
 		"success":   true,

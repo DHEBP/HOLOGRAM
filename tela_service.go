@@ -783,7 +783,7 @@ func (a *App) GetINDEXInfo(scid string) map[string]interface{} {
 
 // CloneTELA downloads TELA content from a SCID
 func (a *App) CloneTELA(scid string, allowUpdates bool) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("📋 Cloning TELA content: %s", scid))
+	a.logToConsole(fmt.Sprintf("[Clone] TELA content: %s", scid))
 
 	// Validate SCID format
 	// Standard SCID = 64 chars, at commit = scid@txid = 129 chars

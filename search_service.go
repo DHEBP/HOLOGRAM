@@ -394,7 +394,7 @@ func (a *App) searchAddress(query string) SearchResult {
 		data["owned_count"] = len(ownedApps)
 		data["total_scids_owned"] = len(ownedSCIDs)
 
-		a.logToConsole(fmt.Sprintf("📱 Found %d TELA apps owned by address", len(ownedApps)))
+		a.logToConsole(fmt.Sprintf("[Search] Found %d TELA apps owned by address", len(ownedApps)))
 	} else {
 		data["gnomonData"] = "unavailable"
 		data["owned_apps"] = []map[string]interface{}{}

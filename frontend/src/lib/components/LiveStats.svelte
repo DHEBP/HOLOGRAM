@@ -224,7 +224,7 @@
     </div>
     
     <div class="cmd-stat-cell" class:changed={changes.hashrate}>
-      <div class="cmd-stat-icon">⚡</div>
+      <div class="cmd-stat-icon"><Zap size={14} strokeWidth={1.5} /></div>
       <div class="cmd-stat-value">{formatHashrate(stats.hashrate)}</div>
       <div class="cmd-stat-label">HASHRATE</div>
     </div>

@@ -353,7 +353,7 @@ let addressInput = '';
       const currentCount = requests.length;
       // When a request completes (count decreases), restore focus to iframe
       if (previousWalletRequestCount > currentCount && contentFrame) {
-        addConsoleLog('🎯 [Browser] Wallet request completed, restoring iframe focus');
+        addConsoleLog('[Browser] Wallet request completed, restoring iframe focus');
         // Multiple attempts to ensure focus is restored
         [100, 300, 500, 1000].forEach(delay => {
           setTimeout(() => {
@@ -401,13 +401,13 @@ let addressInput = '';
     // PostMessage handler for XSWD bridge communication from iframe
     const handleXSWDMessage = async (event) => {
       if (contentFrame && event.source === contentFrame.contentWindow && event.data?.type === 'xswd-request') {
-        addConsoleLog(`📨 [Browser] Received: action=${event.data.action}, id=${event.data.id}`);
+        addConsoleLog(`[Browser] Received: action=${event.data.action}, id=${event.data.id}`);
       }
       
       // Only handle messages from our iframe
       if (!contentFrame || event.source !== contentFrame.contentWindow) {
         if (event.data && event.data.type === 'xswd-request') {
-          addConsoleLog(`⚠️ [Browser] Message from unexpected source`);
+          addConsoleLog(`[Warn] Message from unexpected source`);
         }
         return;
       }
@@ -416,7 +416,7 @@ let addressInput = '';
       }
       
       const { id, action, payload } = event.data;
-      addConsoleLog(`🔌 [Browser] Processing: ${action} (id=${id})`);
+      addConsoleLog(`[Browser] Processing: ${action} (id=${id})`);
       
       try {
         let result;
@@ -429,43 +429,43 @@ let addressInput = '';
             break;
             
           case 'connect':
-            addConsoleLog(`🔌 [Browser] Connect request from: ${payload.appInfo?.name || 'Unknown App'}`);
+            addConsoleLog(`[Browser] Connect request from: ${payload.appInfo?.name || 'Unknown App'}`);
             // Request wallet connection approval
             const settings = get(settingsState);
-            addConsoleLog(`🔌 [Browser] integratedWallet setting: ${settings.integratedWallet}`);
+            addConsoleLog(`[Browser] integratedWallet setting: ${settings.integratedWallet}`);
             if (settings.integratedWallet) {
               try {
                 // Auto-approve during hot reload to avoid modal interruption
                 if (hotReloadInProgress) {
-                  addConsoleLog('🔄 [Browser] Hot reload in progress - auto-approving XSWD reconnection');
+                  addConsoleLog('[Browser] Hot reload in progress - auto-approving XSWD reconnection');
                   const approveResult = await ApproveWalletConnection();
-                  addConsoleLog(`🔌 [Browser] Auto-approve result: ${JSON.stringify(approveResult)}`);
+                  addConsoleLog(`[Browser] Auto-approve result: ${JSON.stringify(approveResult)}`);
                   result = true;
                 } else {
-                  addConsoleLog('🔌 [Browser] Requesting wallet approval via modal...');
+                  addConsoleLog('[Browser] Requesting wallet approval via modal...');
                   const approval = await requestWalletApproval({
                     type: 'connect',
                     appName: payload.appInfo?.name || currentMeta.name || 'App',
                     origin: addressInput,
                     description: payload.appInfo?.description || ''
                   });
-                  addConsoleLog(`🔌 [Browser] Approval result: approved=${approval?.approved}`);
+                  addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
                   if (approval && approval.approved) {
-                    addConsoleLog('🔌 [Browser] Calling ApproveWalletConnection...');
+                    addConsoleLog('[Browser] Calling ApproveWalletConnection...');
                     const approveResult = await ApproveWalletConnection();
-                    addConsoleLog(`🔌 [Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
+                    addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
                     result = true;
                   } else {
-                    addConsoleLog('🔌 [Browser] User denied connection');
+                    addConsoleLog('[Browser] User denied connection');
                     result = false;
                   }
                 }
               } catch (e) {
-                addConsoleLog(`❌ [Browser] Approval error: ${e.message}`);
+                addConsoleLog(`[Error] Approval error: ${e.message}`);
                 result = false;
               }
             } else {
-              addConsoleLog('🔌 [Browser] Using external XSWD (integratedWallet=false)');
+              addConsoleLog('[Browser] Using external XSWD (integratedWallet=false)');
               result = await ConnectXSWD();
             }
             break;
@@ -509,7 +509,7 @@ let addressInput = '';
               
               if (callSettings.integratedWallet && isWalletMethod) {
                 // Use internal wallet for all wallet methods when integrated wallet is enabled
-                addConsoleLog(`🔌 [Browser] Using integrated wallet for: ${method}`);
+                addConsoleLog(`[Browser] Using integrated wallet for: ${method}`);
                 
                 if (isSigningMethod) {
                   // Signing methods need user approval each time
@@ -524,7 +524,7 @@ let addressInput = '';
                     const walletResult = await InternalWalletCall(method, params, approval.password);
                     if (walletResult && walletResult.success) {
                       result = walletResult.result;
-                      addConsoleLog(`✅ [Browser] ${method} succeeded`);
+                      addConsoleLog(`[OK] ${method} succeeded`);
                     } else {
                       throw new Error(walletResult?.error || 'Internal wallet call failed');
                     }
@@ -535,27 +535,27 @@ let addressInput = '';
                   // Read methods (GetAddress, GetBalance, etc.) don't need password
                   // They just read from the already-open wallet
                   const walletResult = await InternalWalletCall(method, params || {}, '');
-                  addConsoleLog(`🔌 [Browser] InternalWalletCall result: success=${walletResult?.success}`);
+                  addConsoleLog(`[Browser] InternalWalletCall result: success=${walletResult?.success}`);
                   if (walletResult && walletResult.success) {
                     result = walletResult.result;
-                    addConsoleLog(`✅ [Browser] ${method} succeeded: ${JSON.stringify(result).substring(0, 100)}`);
+                    addConsoleLog(`[OK] ${method} succeeded: ${JSON.stringify(result).substring(0, 100)}`);
                   } else {
                     const errorMsg = walletResult?.error || 'Internal wallet call failed';
-                    addConsoleLog(`❌ [Browser] ${method} failed: ${errorMsg}`);
+                    addConsoleLog(`[Error] ${method} failed: ${errorMsg}`);
                     throw new Error(errorMsg);
                   }
                 }
               } else {
                 // Use external XSWD for non-wallet methods or when integrated wallet is disabled
-                addConsoleLog(`🔌 [Browser] Calling external XSWD: ${method}`);
+                addConsoleLog(`[Browser] Calling external XSWD: ${method}`);
                 const xswdResult = await CallXSWD(JSON.stringify({ method, params }));
-                addConsoleLog(`🔌 [Browser] XSWD result: success=${xswdResult?.success}, error=${xswdResult?.error || 'none'}`);
+                addConsoleLog(`[Browser] XSWD result: success=${xswdResult?.success}, error=${xswdResult?.error || 'none'}`);
                 if (xswdResult && xswdResult.success) {
                   result = xswdResult.result;
-                  addConsoleLog(`✅ [Browser] ${method} succeeded`);
+                  addConsoleLog(`[OK] ${method} succeeded`);
                 } else {
                   const errorMsg = xswdResult?.error || xswdResult?.technicalError || 'XSWD call failed';
-                  addConsoleLog(`❌ [Browser] ${method} failed: ${errorMsg}`);
+                  addConsoleLog(`[Error] ${method} failed: ${errorMsg}`);
                   throw new Error(errorMsg);
                 }
               }
@@ -567,7 +567,7 @@ let addressInput = '';
         }
         
         // Send response back to iframe
-        addConsoleLog(`✅ [Browser] Sending response for ${action}: ${typeof result === 'object' ? JSON.stringify(result).substring(0, 100) : result}`);
+        addConsoleLog(`[OK] Sending response for ${action}: ${typeof result === 'object' ? JSON.stringify(result).substring(0, 100) : result}`);
         event.source.postMessage({
           type: 'xswd-response',
           id: id,
@@ -576,7 +576,7 @@ let addressInput = '';
         
       } catch (error) {
         // Send error response back to iframe
-        addConsoleLog(`❌ [Browser] Error in ${action}: ${error.message || String(error)}`);
+        addConsoleLog(`[Error] Error in ${action}: ${error.message || String(error)}`);
         event.source.postMessage({
           type: 'xswd-response',
           id: id,
@@ -636,7 +636,7 @@ let addressInput = '';
       if (!hrefMatch) continue;
       
       const href = hrefMatch[1];
-      addConsoleLog(`🔍 Found CSS link: href="${href}"`);
+      addConsoleLog(`[CSS] Found CSS link: href="${href}"`);
       
       // Skip if already absolute
       if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('//')) {
@@ -647,7 +647,7 @@ let addressInput = '';
       matches.push({ full: linkTag, href });
     }
     
-    addConsoleLog(`🎨 Found ${matches.length} CSS file(s) to inline`);
+    addConsoleLog(`[CSS] Found ${matches.length} CSS file(s) to inline`);
     
     // Fetch and inline each CSS file
     for (const { full, href } of matches) {
@@ -658,7 +658,7 @@ let addressInput = '';
         
         // Add cache-busting for CSS too
         const cssFetchUrl = cssUrl + (cssUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
-        addConsoleLog(`📥 Fetching CSS: ${cssFetchUrl}`);
+        addConsoleLog(`[CSS] Fetching: ${cssFetchUrl}`);
         const cssResponse = await fetch(cssFetchUrl);
         
         if (cssResponse.ok) {
@@ -674,12 +674,12 @@ let addressInput = '';
           const styleClose = ['</', 'style>'].join('');
           const styleTag = styleOpen + '\n' + fetchedCSS + '\n' + styleClose;
           html = html.replace(full, styleTag);
-          addConsoleLog(`✅ Inlined CSS: ${href} (${fetchedCSS.length} bytes)`);
+          addConsoleLog(`[OK] Inlined CSS: ${href} (${fetchedCSS.length} bytes)`);
         } else {
-          addConsoleLog(`⚠️ Failed to fetch CSS: ${cssUrl} (${cssResponse.status})`, 'warn');
+          addConsoleLog(`[Warn] Failed to fetch CSS: ${cssUrl} (${cssResponse.status})`, 'warn');
         }
       } catch (cssError) {
-        addConsoleLog(`❌ Error inlining CSS ${href}: ${cssError}`, 'error');
+        addConsoleLog(`[Error] Error inlining CSS ${href}: ${cssError}`, 'error');
       }
     }
     
@@ -718,7 +718,7 @@ let addressInput = '';
   // Handle hot reload events from local dev server
   async function handleLocalDevReload(data) {
     if (isLocalDevMode && localDevUrl) {
-      addConsoleLog(`🔄 Hot reload: ${data.file || 'file changed'}`);
+      addConsoleLog(`[Reload] Hot reload: ${data.file || 'file changed'}`);
       
       try {
         // Set flag to auto-approve XSWD reconnection during hot reload
@@ -727,7 +727,7 @@ let addressInput = '';
         // Refetch the HTML from local server with cache-busting (same as initial load)
         const cacheBuster = `?_t=${Date.now()}`;
         const fetchUrl = localDevUrl + cacheBuster;
-        addConsoleLog(`📡 Hot reload fetching: ${fetchUrl}`);
+        addConsoleLog(`[Reload] Fetching: ${fetchUrl}`);
         
         const response = await fetch(fetchUrl);
         if (!response.ok) {
@@ -742,14 +742,14 @@ let addressInput = '';
         
         // Re-render with XSWD bridge injection
         renderContent(html);
-        addConsoleLog('✅ Hot reload complete');
+        addConsoleLog('[OK] Hot reload complete');
         
         // Clear flag after a delay to allow XSWD to reconnect
         setTimeout(() => {
           hotReloadInProgress = false;
         }, 3000);
       } catch (err) {
-        addConsoleLog(`❌ Hot reload failed: ${err}`, 'error');
+        addConsoleLog(`[Error] Hot reload failed: ${err}`, 'error');
         hotReloadInProgress = false;
       }
     }
@@ -878,7 +878,7 @@ let addressInput = '';
       const status = await GetLocalDevServerStatus();
       
       if (!status.running) {
-        addConsoleLog('❌ Local dev server is not running. Start it from Studio → Serve.', 'error');
+        addConsoleLog('[Error] Local dev server is not running. Start it from Studio > Serve.', 'error');
         toast.error('Local dev server not running. Start it from Studio → Serve.');
         showWelcome = true;
         loading = false;
@@ -887,7 +887,7 @@ let addressInput = '';
       
       // Check if the directory matches (only warn if directories differ)
       if (directory && status.directory !== directory) {
-        addConsoleLog(`⚠️ Local server serving different directory: ${status.directory}`, 'warn');
+        addConsoleLog(`[Warn] Local server serving different directory: ${status.directory}`, 'warn');
       }
       
       isLocalDevMode = true;
@@ -895,7 +895,7 @@ let addressInput = '';
       
       // Update tab
       const dirName = status.directory.split('/').pop() || 'Local Dev';
-      updateActiveTab(`📁 ${dirName}`, url, 'server');
+      updateActiveTab(`${dirName}`, url, 'server');
       
       // Add to per-tab history
       if (!fromHistory) {
@@ -903,14 +903,14 @@ let addressInput = '';
       }
       
       // Fetch HTML from local server and inject XSWD bridge
-      addConsoleLog(`🚀 Loading local dev server: ${status.url}`);
+      addConsoleLog(`[Server] Loading local dev server: ${status.url}`);
       addConsoleLog(`📂 Server directory: ${status.directory}`);
       
       try {
         // Add cache-busting to ensure fresh content
         const cacheBuster = `?_t=${Date.now()}`;
         const fetchUrl = status.url + cacheBuster;
-        addConsoleLog(`📡 Fetching: ${fetchUrl}`);
+        addConsoleLog(`[Fetch] Fetching: ${fetchUrl}`);
         
         const response = await fetch(fetchUrl);
         if (!response.ok) {
@@ -934,10 +934,10 @@ let addressInput = '';
         
         // Render using the same method as blockchain content (allows telaHost injection)
         renderContent(html);
-        addConsoleLog(`✅ Local content rendered (${html.length} bytes)`);
+        addConsoleLog(`[OK] Local content rendered (${html.length} bytes)`);
         
       } catch (fetchError) {
-        addConsoleLog(`❌ Failed to fetch from local server: ${fetchError}`, 'error');
+        addConsoleLog(`[Error] Failed to fetch from local server: ${fetchError}`, 'error');
         toast.error(`Failed to load local content: ${fetchError.message}`);
         showWelcome = true;
       }
@@ -971,17 +971,17 @@ let addressInput = '';
         try {
           const xswdResult = await ConnectXSWD();
           if (xswdResult.success) {
-            addConsoleLog('🔌 XSWD server ready');
+            addConsoleLog('[XSWD] Server ready');
           }
         } catch (e) {
-          addConsoleLog(`⚠️ XSWD: ${e.message}`);
+          addConsoleLog(`[Warn] XSWD: ${e.message}`);
         }
         
         // Start real HTTP server for this TELA content
         const serverResult = await ServeTELAContent(scid);
         
       if (serverResult.success && serverResult.url) {
-        addConsoleLog(`🌐 TELA server started: ${serverResult.url}`);
+        addConsoleLog(`[Server] TELA server started: ${serverResult.url}`);
         activeTelaServer = serverResult.name;
         
         // Load iframe from real HTTP URL
@@ -998,10 +998,10 @@ let addressInput = '';
         }
         return;
       } else {
-          addConsoleLog(`⚠️ HTTP server failed, falling back to srcdoc: ${serverResult.error || 'Unknown'}`);
+          addConsoleLog(`[Warn] HTTP server failed, falling back to srcdoc: ${serverResult.error || 'Unknown'}`);
         }
       } catch (e) {
-        addConsoleLog(`⚠️ HTTP server error, falling back to srcdoc: ${e.message}`);
+        addConsoleLog(`[Warn] HTTP server error, falling back to srcdoc: ${e.message}`);
       }
       
       // Fallback to srcdoc (with bridge injection)
@@ -1023,7 +1023,7 @@ let addressInput = '';
     try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*'); } catch(e) {}
   }
   
-  log('🔌 [Bridge] Initializing...');
+  log('[Bridge] Initializing...');
   
   // Spoof location to look like a normal HTTP page (Engram serves at localhost:8082)
   // Many apps check protocol and refuse to run on about: or blob:
@@ -1044,15 +1044,15 @@ let addressInput = '';
     // Try to override location (may not work in all browsers)
     try {
       Object.defineProperty(window, 'location', { value: fakeLocation, writable: false });
-      log('🔍 [Env] location spoofed to http://localhost:8082');
+      log('[Env] location spoofed to http://localhost:8082');
     } catch(e) {
-      log('🔍 [Env] Could not spoof location: ' + e.message);
+      log('[Env] Could not spoof location: ' + e.message);
     }
     
-    log('🔍 [Env] location.protocol: ' + window.location.protocol);
-    log('🔍 [Env] in iframe: ' + (window.parent !== window));
+    log('[Env] location.protocol: ' + window.location.protocol);
+    log('[Env] in iframe: ' + (window.parent !== window));
   } catch(e) {
-    log('🔍 [Env] Error: ' + e.message);
+    log('[Env] Error: ' + e.message);
   }
   
   // Store original WebSocket
@@ -1093,12 +1093,12 @@ let addressInput = '';
     self._auth = 'pending';
     self._queue = [];
     
-    log('🔌 XSWD connection intercepted: ' + url);
+    log('[XSWD] Connection intercepted: ' + url);
     
     // Simulate connection open (like Engram does)
     setTimeout(function() {
       self.readyState = 1;
-      log('🔌 XSWD WebSocket opened');
+      log('[XSWD] WebSocket opened');
       if (self.onopen) self.onopen({ type: 'open', target: self });
       // Process queued
       while (self._queue.length) self._handle(self._queue.shift());
@@ -1115,13 +1115,13 @@ let addressInput = '';
     var self = this;
     try {
       var msg = typeof data === 'string' ? JSON.parse(data) : data;
-      log('📨 XSWD: ' + (msg.method || 'handshake'));
+      log('[XSWD] ' + (msg.method || 'handshake'));
       
       // Handshake (has name/description, no method)
       if (!msg.method && (msg.name || msg.description)) {
         request('connect', { appInfo: msg }).then(function(ok) {
           self._auth = ok ? 'ok' : 'denied';
-          log(ok ? '✅ Connection approved' : '❌ Connection denied');
+          log(ok ? '[OK] Connection approved' : '[Denied] Connection denied');
           self._respond({ accepted: !!ok });
         }).catch(function(e) {
           self._auth = 'denied';
@@ -1137,7 +1137,7 @@ let addressInput = '';
         self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
       });
     } catch(e) {
-      log('❌ XSWD error: ' + e.message);
+      log('[Error] XSWD error: ' + e.message);
     }
   };
   
@@ -1169,7 +1169,7 @@ let addressInput = '';
   window.WebSocket.CLOSING = 2;
   window.WebSocket.CLOSED = 3;
   
-  log('🔌 [Bridge] Ready - WebSocket interception active');
+  log('[Bridge] Ready - WebSocket interception active');
   
   // Monitor what happens after page loads
   window.addEventListener('DOMContentLoaded', function() {
@@ -1343,7 +1343,7 @@ let addressInput = '';
         // Ignore notification errors
       }
       
-      addConsoleLog('✅ telaHost API injected');
+      addConsoleLog('[OK] telaHost API injected');
     } catch (error) {
       console.error('Failed to inject telaHost API:', error);
       // Silently fail for cross-origin - explorer can use WebSocket directly
@@ -1911,7 +1911,7 @@ let addressInput = '';
                     
                     <div class="browser-app-footer">
                       {#if app.supports_epoch}
-                        <span class="browser-epoch-badge" title="Supports EPOCH Developer Ecosystem">💎</span>
+                        <span class="browser-epoch-badge" title="Supports EPOCH Developer Ecosystem">EPOCH</span>
                       {/if}
                       {#if app.rating && app.rating.count > 0}
                         <HoloBadge variant={getRatingBadge(app.rating.average)}>

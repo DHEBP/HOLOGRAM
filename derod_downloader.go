@@ -203,7 +203,7 @@ func (d *DerodDownloader) DownloadDerod(url string, version string) error {
 			if totalSize > 0 {
 				pct := int(float64(downloaded) / float64(totalSize) * 100)
 				if pct%10 == 0 {
-					d.app.logToConsole(fmt.Sprintf("📥 Download progress: %d%% (%d/%d MB)", pct, downloaded/1024/1024, totalSize/1024/1024))
+					d.app.logToConsole(fmt.Sprintf("[Download] Progress: %d%% (%d/%d MB)", pct, downloaded/1024/1024, totalSize/1024/1024))
 				}
 			}
 		}

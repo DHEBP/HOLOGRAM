@@ -226,13 +226,13 @@
   <div class="actions-header">
     <h4>Quick Actions</h4>
     {#if supportsEpoch}
-      <span class="epoch-indicator" title="Supports EPOCH Developer Ecosystem">💎 EPOCH</span>
+      <span class="epoch-indicator" title="Supports EPOCH Developer Ecosystem">EPOCH</span>
     {/if}
   </div>
   
   {#if !xswdConnected}
     <div class="xswd-notice">
-      <p>🔗 Connect wallet via XSWD to interact</p>
+      <p>Connect wallet via XSWD to interact</p>
     </div>
   {:else}
     <!-- Rating Section -->

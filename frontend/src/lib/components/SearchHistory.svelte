@@ -81,13 +81,13 @@
   
   function getTypeIcon(type) {
     switch (type) {
-      case 'block': return '📦';
+      case 'block': return 'B';
       case 'tx': return '💸';
       case 'scid': return '📜';
-      case 'hash': return '🔗';
-      case 'durl': return '🌐';
-      case 'address': return '👤';
-      default: return '🔍';
+      case 'hash': return '#';
+      case 'durl': return '@';
+      case 'address': return 'A';
+      default: return '?';
     }
   }
   
@@ -136,7 +136,7 @@
       
       <div class="modal-toolbar">
         <div class="filter-input">
-          <span class="filter-icon">🔍</span>
+          <span class="filter-icon"><Search size={12} /></span>
           <input 
             type="text" 
             placeholder="Filter searches..."

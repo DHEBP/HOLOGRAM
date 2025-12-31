@@ -142,7 +142,7 @@ func (a *App) startup(ctx context.Context) {
 			go a.xswdServer.Start()
 		} else {
 			go func() {
-				a.logToConsole("🔌 Auto-connecting to XSWD (external wallet)...")
+				a.logToConsole("[XSWD] Auto-connecting to XSWD (external wallet)...")
 				a.ConnectXSWD()
 			}()
 		}
@@ -251,7 +251,7 @@ func (a *App) waitForNodeSync(maxWait time.Duration) bool {
 // ================== XSWD Functions ==================
 
 func (a *App) ConnectXSWD() map[string]interface{} {
-	log.Println("🔌 Connecting to XSWD...")
+	log.Println("[XSWD] Connecting...")
 
 	if integrated, ok := a.settings["integrated_wallet"].(bool); ok && integrated {
 		if a.xswdServer != nil && !a.xswdServer.IsRunning() {
@@ -286,7 +286,7 @@ func (a *App) ConnectXSWD() map[string]interface{} {
 }
 
 func (a *App) DisconnectXSWD() map[string]interface{} {
-	log.Println("🔌 Disconnecting from XSWD...")
+	log.Println("[XSWD] Disconnecting...")
 
 	a.xswdClient.Disconnect()
 
@@ -308,7 +308,7 @@ func (a *App) CallXSWD(methodJSON string) map[string]interface{} {
 		return xswdError("Invalid request format. Please check your input.", err.Error())
 	}
 
-	log.Printf("📞 Calling XSWD method: %s", request.Method)
+	log.Printf("[XSWD] Calling method: %s", request.Method)
 
 	integratedWallet := false
 	if val, ok := a.settings["integrated_wallet"].(bool); ok {

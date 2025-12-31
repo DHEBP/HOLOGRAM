@@ -168,7 +168,7 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		log.Printf("📥 Raw XSWD Message: %s", string(message))
+		log.Printf("[XSWD] Raw Message: %s", string(message))
 
 		var req JSONRPCRequest
 		if err := json.Unmarshal(message, &req); err != nil {
@@ -185,7 +185,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	var errRes *JSONRPCError
 
 	// Log request method
-	log.Printf("📨 XSWD Request: %s", req.Method)
+	log.Printf("[XSWD] Request: %s", req.Method)
 
 	// Some dApps send a handshake payload (application metadata) before JSON-RPC calls.
 	if req.Method == "" {
@@ -536,7 +536,7 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 	s.pendingLock.Unlock()
 
 	// Notify frontend
-	log.Printf("🔔 Emitting xswd:request for %s", req.Method)
+	log.Printf("[XSWD] Emitting xswd:request for %s", req.Method)
 	runtime.EventsEmit(s.app.ctx, "xswd:request", map[string]interface{}{
 		"id":      reqID,
 		"method":  req.Method,

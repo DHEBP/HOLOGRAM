@@ -32,11 +32,11 @@
   let pendingSection = null;
   
   const tabs = [
-    { id: 'explorer', label: 'Explorer', icon: '🔍' },
-    { id: 'browser', label: 'Browser', icon: '🌐' },
-    { id: 'wallet', label: 'Wallet', icon: '💰' },
-    { id: 'studio', label: 'Studio', icon: '🎨' },
-    { id: 'settings', label: 'Settings', icon: '⚙️' },
+    { id: 'explorer', label: 'Explorer', icon: 'search' },
+    { id: 'browser', label: 'Browser', icon: 'globe' },
+    { id: 'wallet', label: 'Wallet', icon: 'wallet' },
+    { id: 'studio', label: 'Studio', icon: 'palette' },
+    { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
 
   function handleTabChange(tabId) {

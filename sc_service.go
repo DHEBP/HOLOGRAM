@@ -188,7 +188,7 @@ func (a *App) ExecuteSCViaXSWD(scid, functionName, paramsJSON string) map[string
 
 // GetMODsList returns all available TELA MODs
 func (a *App) GetMODsList() map[string]interface{} {
-	a.logToConsole("📚 Getting TELA MODs list...")
+	a.logToConsole("[MODs] Getting TELA MODs list...")
 
 	// Get all available MODs from tela library
 	modList := []map[string]interface{}{}
@@ -245,7 +245,7 @@ func (a *App) GetMODInfo(tag string) map[string]interface{} {
 
 // GetMODsByClass returns all MODs in a specific class
 func (a *App) GetMODsByClass(className string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("📚 Getting MODs by class: %s", className))
+	a.logToConsole(fmt.Sprintf("[MODs] Getting MODs by class: %s", className))
 
 	// Get MODs filtered by class
 	filteredMods := []map[string]interface{}{}
@@ -280,7 +280,7 @@ func (a *App) GetMODsByClass(className string) map[string]interface{} {
 
 // GetAllMODClasses returns all available MOD classes
 func (a *App) GetAllMODClasses() map[string]interface{} {
-	a.logToConsole("📚 Getting all MOD classes...")
+	a.logToConsole("[MODs] Getting all MOD classes...")
 
 	allClasses := tela.Mods.GetAllClasses()
 	classes := []map[string]interface{}{}
@@ -315,7 +315,7 @@ func (a *App) GetAllMODClasses() map[string]interface{} {
 // PrepareMODInstall prepares a MOD installation by returning the updated code
 // The actual installation requires calling UpdateSC via XSWD or a custom SC call
 func (a *App) PrepareMODInstall(scid, modTag string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("🔧 Preparing MOD %s for SCID %s...", modTag, scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[MODs] Preparing MOD %s for SCID %s...", modTag, scid[:16]+"..."))
 
 	// Validate SCID
 	if scid == "" || len(scid) != 64 {
@@ -390,7 +390,7 @@ func (a *App) PrepareMODInstall(scid, modTag string) map[string]interface{} {
 
 // GetSCVariables returns all variables stored in a smart contract
 func (a *App) GetSCVariables(scid string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("📋 Getting SC variables: %s", scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[SC] Getting SC variables: %s", scid[:16]+"..."))
 
 	if !a.gnomonClient.IsRunning() {
 		return map[string]interface{}{

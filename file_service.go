@@ -131,7 +131,7 @@ func (a *App) ShardFile(filePath string, compress bool) map[string]interface{} {
 
 // ConstructFromShards reconstructs a file from DocShards
 func (a *App) ConstructFromShards(shardPath string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("🔧 Constructing file from shards: %s", shardPath))
+	a.logToConsole(fmt.Sprintf("[Shards] Constructing file from shards: %s", shardPath))
 
 	// Check shard path exists
 	info, err := os.Stat(shardPath)

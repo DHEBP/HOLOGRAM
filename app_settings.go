@@ -34,7 +34,7 @@ func (a *App) SetSetting(settingJSON string) map[string]interface{} {
 
 	for k, v := range data {
 		a.settings[k] = v
-		log.Printf("⚙️ Setting updated: %s = %v", k, v)
+		log.Printf("[Settings] Updated: %s = %v", k, v)
 	}
 
 	return map[string]interface{}{

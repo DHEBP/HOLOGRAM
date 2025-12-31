@@ -196,12 +196,12 @@ func getXSWDBridgeScript() string {
     try { console.log('[XSWD Bridge]', msg); } catch(e) {}
   }
   
-  log('🔌 [Bridge] Initializing...');
+  log('[Bridge] Initializing...');
   
   // CRITICAL: Override WebSocket IMMEDIATELY before any other scripts can use it
   // Store original WebSocket FIRST, before anything else
   var OriginalWebSocket = window.WebSocket;
-  log('🔌 [Bridge] Original WebSocket stored');
+  log('[Bridge] Original WebSocket stored');
   
   // Store original WebSocket
   var OriginalWebSocket = window.WebSocket;
@@ -225,11 +225,11 @@ func getXSWDBridgeScript() string {
       var id = ++reqId;
       pending[id] = { resolve: resolve, reject: reject };
       var message = { type: 'xswd-request', id: id, action: action, payload: payload };
-      log('📤 [Bridge] Sending postMessage to parent: ' + JSON.stringify({ id: id, action: action, payloadKeys: Object.keys(payload || {}) }));
+      log('[Bridge] Sending postMessage to parent: ' + JSON.stringify({ id: id, action: action, payloadKeys: Object.keys(payload || {}) }));
       window.parent.postMessage(message, '*');
       setTimeout(function() { 
         if (pending[id]) { 
-          log('⏱️ [Bridge] Request ' + id + ' timed out after 60s');
+          log('[Bridge] Request ' + id + ' timed out after 60s');
           delete pending[id]; 
           reject(new Error('timeout')); 
         } 
@@ -252,16 +252,16 @@ func getXSWDBridgeScript() string {
     Object.defineProperty(self, 'onopen', {
       get: function() { return originalOnopen; },
       set: function(value) {
-        log('🔌 [Bridge] onopen handler being set by dApp');
+        log('[Bridge] onopen handler being set by dApp');
         originalOnopen = value;
         // If connection is already open and handler is being set, trigger it
         if (self.readyState === 1 && value && !self._handshakeSent) {
           setTimeout(function() {
-            log('🔌 [Bridge] Triggering onopen handler (set after connection opened)');
+            log('[Bridge] Triggering onopen handler (set after connection opened)');
             try {
               value({ type: 'open', target: self });
             } catch(e) {
-              log('❌ onopen error (late set): ' + e.message);
+              log('[Error] onopen error (late set): ' + e.message);
             }
           }, 0);
         }
@@ -279,31 +279,31 @@ func getXSWDBridgeScript() string {
     self._queue = [];
     self._handshakeSent = false;
     
-    log('🔌 XSWD connection intercepted: ' + url);
+    log('[XSWD] Connection intercepted: ' + url);
     
     // Simulate connection open - use setTimeout to give dApp time to set handlers
     // Real WebSocket takes a moment to connect, so this delay is realistic
     setTimeout(function() {
       self.readyState = 1; // OPEN
-      log('🔌 XSWD WebSocket opened (readyState = OPEN)');
+      log('[XSWD] WebSocket opened (readyState = OPEN)');
       if (self.onopen) {
-        log('✅ onopen handler is set, calling it');
+        log('[OK] onopen handler is set, calling it');
         try {
           self.onopen({ type: 'open', target: self });
         } catch(e) {
-          log('❌ onopen error: ' + e.message);
+          log('[Error] onopen error: ' + e.message);
         }
       } else {
-        log('⚠️ No onopen handler set yet - dApp may set it later');
+        log('[Warn] No onopen handler set yet - dApp may set it later');
       }
       // Process queued messages
       var queuedCount = self._queue.length;
       if (queuedCount > 0) {
-        log('📦 Processing ' + queuedCount + ' queued message(s)');
+        log('[Queue] Processing ' + queuedCount + ' queued message(s)');
       }
       while (self._queue.length) {
         var msg = self._queue.shift();
-        log('📦 Processing queued message:', typeof msg === 'string' ? msg.substring(0, 200) : JSON.stringify(msg).substring(0, 200));
+        log('[Queue] Processing queued message:', typeof msg === 'string' ? msg.substring(0, 200) : JSON.stringify(msg).substring(0, 200));
         self._handle(msg);
       }
     }, 10);
@@ -313,11 +313,11 @@ func getXSWDBridgeScript() string {
     [50, 100, 200, 500, 1000].forEach(function(delay) {
       setTimeout(function() {
         if (self.onopen && !self._handshakeSent && self.readyState === 1) {
-          log('🔌 onopen handler now set (delayed ' + delay + 'ms), triggering manually');
+          log('[Bridge] onopen handler now set (delayed ' + delay + 'ms), triggering manually');
           try {
             self.onopen({ type: 'open', target: self });
           } catch(e) {
-            log('❌ onopen error (delayed ' + delay + 'ms): ' + e.message);
+            log('[Error] onopen error (delayed ' + delay + 'ms): ' + e.message);
           }
         }
       }, delay);
@@ -333,9 +333,9 @@ func getXSWDBridgeScript() string {
   
   // Now define all methods on the prototype
   XSWDProxy.prototype.send = function(data) {
-    log('📤 [Bridge] WebSocket.send() called with data:', typeof data === 'string' ? data.substring(0, 200) : JSON.stringify(data).substring(0, 200));
+    log('[Bridge] WebSocket.send() called with data:', typeof data === 'string' ? data.substring(0, 200) : JSON.stringify(data).substring(0, 200));
     if (this.readyState === 0) { 
-      log('📦 [Bridge] Queueing message (connection not open yet)');
+      log('[Bridge] Queueing message (connection not open yet)');
       this._queue.push(data); 
       return; 
     }
@@ -347,7 +347,7 @@ func getXSWDBridgeScript() string {
     var self = this;
     try {
       var msg = typeof data === 'string' ? JSON.parse(data) : data;
-      log('📨 XSWD: ' + (msg.method || 'handshake') + ' | Full message: ' + JSON.stringify(msg).substring(0, 200));
+      log('[XSWD] ' + (msg.method || 'handshake') + ' | Full message: ' + JSON.stringify(msg).substring(0, 200));
       
       // Handshake detection - multiple patterns
       // Pattern 1: Plain object with name/description (no method)
@@ -358,7 +358,7 @@ func getXSWDBridgeScript() string {
       var isHandshake3 = self._auth === 'pending' && !msg.method && Object.keys(msg).length > 0;
       
       if (isHandshake1 || isHandshake2 || isHandshake3) {
-        log('🔌 [Bridge] Detected handshake message (pattern: ' + (isHandshake1 ? '1' : isHandshake2 ? '2' : '3') + ')');
+        log('[Bridge] Detected handshake message (pattern: ' + (isHandshake1 ? '1' : isHandshake2 ? '2' : '3') + ')');
         self._handshakeSent = true;
         // Normalize handshake data
         var handshakeData = msg.params || msg;
@@ -367,10 +367,10 @@ func getXSWDBridgeScript() string {
           description: handshakeData.description || msg.description || handshakeData.desc || msg.desc || '',
           url: handshakeData.url || msg.url || handshakeData.origin || msg.origin || window.location.href
         };
-        log('🔌 [Bridge] Sending connect request with appInfo:', JSON.stringify(appInfo));
+        log('[Bridge] Sending connect request with appInfo:', JSON.stringify(appInfo));
         request('connect', { appInfo: appInfo }).then(function(ok) {
           self._auth = ok ? 'accepted' : 'denied';
-          log(ok ? '✅ Connection approved' : '❌ Connection denied');
+          log(ok ? '[OK] Connection approved' : '[Denied] Connection denied');
           // Match real XSWD server response format exactly - dApp checks for both 'accepted' and 'message'
           if (ok) {
             self._respond({ accepted: true, message: 'Wallet connection approved' });
@@ -379,7 +379,7 @@ func getXSWDBridgeScript() string {
           }
         }).catch(function(e) {
           self._auth = 'denied';
-          log('❌ Handshake error: ' + e.message);
+          log('[Error] Handshake error: ' + e.message);
           self._respond({ accepted: false, message: e.message || 'Connection failed' });
         });
         return;
@@ -387,8 +387,8 @@ func getXSWDBridgeScript() string {
       
       // RPC call - but check if we need to authenticate first
       if (!self._handshakeSent && self._auth === 'pending') {
-        log('⚠️ [Bridge] RPC call received before handshake - triggering connection request');
-        log('⚠️ [Bridge] Method: ' + msg.method + ', will request connection approval');
+        log('[Bridge] RPC call received before handshake - triggering connection request');
+        log('[Bridge] Method: ' + msg.method + ', will request connection approval');
         // Treat this as a handshake attempt - trigger connection modal
         var appInfo = {
           name: msg.method ? (msg.method.replace('DERO.', '').replace('Gnomon.', '') + ' App') : 'Unknown App',
@@ -396,25 +396,25 @@ func getXSWDBridgeScript() string {
           url: window.location.href
         };
         self._handshakeSent = true;
-        log('🔌 [Bridge] Requesting connection with appInfo:', JSON.stringify(appInfo));
+        log('[Bridge] Requesting connection with appInfo:', JSON.stringify(appInfo));
         request('connect', { appInfo: appInfo }).then(function(ok) {
-          log('🔌 [Bridge] Connection request resolved:', ok);
+          log('[Bridge] Connection request resolved:', ok);
           self._auth = ok ? 'accepted' : 'denied';
           if (ok) {
-            log('✅ [Bridge] Connection approved, processing original RPC call');
+            log('[OK] Connection approved, processing original RPC call');
             // Now process the original RPC call
             request('call', { method: msg.method, params: msg.params, authState: self._auth }).then(function(r) {
               self._respond({ jsonrpc: '2.0', id: msg.id, result: r });
             }).catch(function(e) {
-              log('❌ [Bridge] RPC call failed:', e.message);
+              log('[Error] RPC call failed:', e.message);
               self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
             });
           } else {
-            log('❌ [Bridge] Connection denied');
+            log('[Denied] Connection denied');
             self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32003, message: 'Connection denied' } });
           }
         }).catch(function(e) {
-          log('❌ [Bridge] Connection request error:', e.message);
+          log('[Error] Connection request error:', e.message);
           self._auth = 'denied';
           self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
         });
@@ -428,7 +428,7 @@ func getXSWDBridgeScript() string {
         self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
       });
     } catch(e) {
-      log('❌ XSWD error: ' + e.message);
+      log('[Error] XSWD error: ' + e.message);
     }
   };
   
@@ -440,15 +440,15 @@ func getXSWDBridgeScript() string {
   XSWDProxy.prototype.addEventListener = function(event, handler) {
     var self = this;
     if (event === 'open') {
-      log('🔌 [Bridge] addEventListener("open") called');
+      log('[Bridge] addEventListener("open") called');
       if (self.readyState === 1) {
         // Connection already open, trigger immediately
         setTimeout(function() {
-          log('🔌 [Bridge] Triggering addEventListener("open") handler (connection already open)');
+          log('[Bridge] Triggering addEventListener("open") handler (connection already open)');
           try {
             handler({ type: 'open', target: self });
           } catch(e) {
-            log('❌ addEventListener("open") error: ' + e.message);
+            log('[Error] addEventListener("open") error: ' + e.message);
           }
         }, 0);
       } else {
@@ -513,18 +513,18 @@ func getXSWDBridgeScript() string {
   
   // Override WebSocket IMMEDIATELY - must happen before any dApp code runs
   window.WebSocket = function(url, protocols) {
-    log('🔌 [Bridge] WebSocket constructor called: ' + (url || 'no url'));
+    log('[Bridge] WebSocket constructor called: ' + (url || 'no url'));
     // XSWD ports: 44326 (mainnet), 44325 (testnet)
     if (url && (url.indexOf('44326') !== -1 || url.indexOf('44325') !== -1 || url.indexOf('xswd') !== -1)) {
-      log('🔌 [Bridge] Intercepting XSWD connection: ' + url);
+      log('[Bridge] Intercepting XSWD connection: ' + url);
       try {
         // Create proxy - it already has the right prototype from XSWDProxy.prototype
         var proxy = new XSWDProxy(url);
-        log('🔌 [Bridge] XSWDProxy created successfully');
+        log('[Bridge] XSWDProxy created successfully');
         return proxy;
       } catch(e) {
-        log('❌ [Bridge] Error creating XSWDProxy: ' + e.message);
-        log('❌ [Bridge] Error stack: ' + (e.stack || 'no stack'));
+        log('[Error] Error creating XSWDProxy: ' + e.message);
+        log('[Error] Error stack: ' + (e.stack || 'no stack'));
         // Fallback to original WebSocket
         return protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
       }
@@ -537,7 +537,7 @@ func getXSWDBridgeScript() string {
   window.WebSocket.CLOSING = 2;
   window.WebSocket.CLOSED = 3;
   
-  log('🔌 [Bridge] Ready - WebSocket interception active');
+  log('[Bridge] Ready - WebSocket interception active');
   
   // NOTE: We do NOT inject telaHost here because:
   // 1. The real telaHost is injected by Browser.svelte's injectTelaHostAPI() after iframe loads
@@ -563,7 +563,7 @@ func shutdownProxyServer(scid string) {
 
 // ListActiveServers returns all currently running TELA servers
 func (a *App) ListActiveServers() map[string]interface{} {
-	a.logToConsole("📋 Listing active servers...")
+	a.logToConsole("[Server] Listing active servers...")
 
 	serverRegistry.RLock()
 	defer serverRegistry.RUnlock()
@@ -866,7 +866,7 @@ func (a *App) GetServerPortRange() map[string]interface{} {
 
 // SetServerPortStart sets the starting port for TELA servers
 func (a *App) SetServerPortStart(port int) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("⚙️ Setting server port start: %d", port))
+	a.logToConsole(fmt.Sprintf("[Server] Setting port start: %d", port))
 
 	if port < 1024 || port > 65535 {
 		return map[string]interface{}{
@@ -886,7 +886,7 @@ func (a *App) SetServerPortStart(port int) map[string]interface{} {
 
 // SetMaxServers sets the maximum number of active TELA servers
 func (a *App) SetMaxServers(max int) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("⚙️ Setting max servers: %d", max))
+	a.logToConsole(fmt.Sprintf("[Server] Setting max servers: %d", max))
 
 	if max < 1 || max > 100 {
 		return map[string]interface{}{

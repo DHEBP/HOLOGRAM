@@ -194,7 +194,7 @@
       
       {#if !xswdConnected}
         <div class="modal-alert modal-alert-warning" style="margin: var(--s-8) var(--s-5); justify-content: center;">
-          <p>⚠️ Connect to XSWD wallet to use payment tools</p>
+          <p>Connect to XSWD wallet to use payment tools</p>
         </div>
       {:else}
         <div class="modal-body">

@@ -792,7 +792,7 @@ func (a *App) BatchPrefetchFavorites(favorites []map[string]interface{}, minRati
 	}
 
 	startTime := time.Now()
-	a.logToConsole(fmt.Sprintf("🔄 Batch prefetch starting: %d favorites, min rating: %d", len(favorites), minRating))
+	a.logToConsole(fmt.Sprintf("[Cache] Batch prefetch starting: %d favorites, min rating: %d", len(favorites), minRating))
 
 	results := []map[string]interface{}{}
 	prefetched := 0
@@ -883,7 +883,7 @@ func (a *App) BatchPrefetchFavorites(favorites []map[string]interface{}, minRati
 	}
 
 	duration := time.Since(startTime)
-	a.logToConsole(fmt.Sprintf("✅ Batch prefetch complete: %d prefetched, %d already cached, %d skipped, %d failed (took %v)",
+	a.logToConsole(fmt.Sprintf("[Cache] Batch prefetch complete: %d prefetched, %d already cached, %d skipped, %d failed (took %v)",
 		prefetched, alreadyCached, skipped, failed, duration.Round(time.Millisecond)))
 
 	return map[string]interface{}{
@@ -908,7 +908,7 @@ func (a *App) CheckAllForUpdates() map[string]interface{} {
 	}
 
 	startTime := time.Now()
-	a.logToConsole("🔍 Checking all cached apps for updates...")
+	a.logToConsole("[Cache] Checking all cached apps for updates...")
 
 	cachedApps, err := a.offlineCache.GetCachedApps()
 	if err != nil {
@@ -935,7 +935,7 @@ func (a *App) CheckAllForUpdates() map[string]interface{} {
 
 		if status.HasUpdate {
 			updatesFound++
-			a.logToConsole(fmt.Sprintf("📦 Update available: %s (v%d → v%d)", app.Name, app.Version, status.OnChainVersion))
+			a.logToConsole(fmt.Sprintf("[Cache] Update available: %s (v%d -> v%d)", app.Name, app.Version, status.OnChainVersion))
 		}
 		if status.Error != "" {
 			failedChecks++
@@ -943,7 +943,7 @@ func (a *App) CheckAllForUpdates() map[string]interface{} {
 	}
 
 	duration := time.Since(startTime)
-	a.logToConsole(fmt.Sprintf("✅ Update check complete: %d apps, %d updates available (took %v)",
+	a.logToConsole(fmt.Sprintf("[Cache] Update check complete: %d apps, %d updates available (took %v)",
 		len(cachedApps), updatesFound, duration.Round(time.Millisecond)))
 
 	return map[string]interface{}{
@@ -996,7 +996,7 @@ func (a *App) UpdateCachedApp(scid string) map[string]interface{} {
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("⬆️ Updating cached app: %s", scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[Cache] Updating cached app: %s", scid[:16]+"..."))
 
 	// Remove old cached version
 	_ = a.offlineCache.RemoveCachedApp(scid)
@@ -1007,7 +1007,7 @@ func (a *App) UpdateCachedApp(scid string) map[string]interface{} {
 		return result
 	}
 
-	a.logToConsole(fmt.Sprintf("✅ Cache updated: %s", scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[Cache] Updated: %s", scid[:16]+"..."))
 	result["updated"] = true
 	return result
 }
@@ -1021,7 +1021,7 @@ func (a *App) DiffCachedVsOnChain(scid string) map[string]interface{} {
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("📊 Diffing cached vs on-chain: %s", scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[Cache] Diffing cached vs on-chain: %s", scid[:16]+"..."))
 
 	// Get cached content
 	cachedHTML, hasCached, _ := a.offlineCache.GetCachedContent(scid, "index.html")

@@ -943,7 +943,7 @@ func (a *App) monitorNode() {
 	if err != nil {
 		a.logToConsole(fmt.Sprintf("[WARN] Node process exited with error: %v", err))
 		if len(lastLines) > 0 {
-			a.logToConsole("📋 Last output from derod:")
+			a.logToConsole("[Node] Last output from derod:")
 			for _, line := range lastLines {
 				a.logToConsole(fmt.Sprintf("   %s", line))
 			}
@@ -1056,7 +1056,7 @@ func (a *App) SetNodeAdvancedConfig(fastSync bool, pruneHistory int) map[string]
 	nodeManager.fastSyncEnabled = fastSync
 	nodeManager.pruneHistory = pruneHistory
 
-	a.logToConsole(fmt.Sprintf("⚙️ Node advanced config: fastSync=%v, pruneHistory=%d", fastSync, pruneHistory))
+	a.logToConsole(fmt.Sprintf("[Node] Advanced config: fastSync=%v, pruneHistory=%d", fastSync, pruneHistory))
 
 	return map[string]interface{}{
 		"success":      true,
@@ -1546,7 +1546,7 @@ func (a *App) SetNodeConfig(config map[string]interface{}) map[string]interface{
 		}
 	}
 
-	a.logToConsole("⚙️ Node configuration updated")
+	a.logToConsole("[Node] Configuration updated")
 
 	return map[string]interface{}{
 		"success": true,

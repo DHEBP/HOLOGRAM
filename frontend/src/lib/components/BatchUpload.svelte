@@ -223,10 +223,10 @@
   
   // dURL Tag Detection
   const DURL_TAGS = {
-    '.lib': { name: 'Library', icon: '📚', description: 'A collection of reusable DOCs', color: 'violet' },
+    '.lib': { name: 'Library', icon: 'lib', description: 'A collection of reusable DOCs', color: 'violet' },
     '.shard': { name: 'DocShard', icon: '🧩', description: 'A shard DOC (part of a larger file)', color: 'cyan' },
-    '.shards': { name: 'DocShards', icon: '📦', description: 'DocShards INDEX that requires reconstruction', color: 'cyan' },
-    '.bootstrap': { name: 'Bootstrap', icon: '🚀', description: 'A collection of TELA apps for bootstrapping', color: 'amber' }
+    '.shards': { name: 'DocShards', icon: 'shards', description: 'DocShards INDEX that requires reconstruction', color: 'cyan' },
+    '.bootstrap': { name: 'Bootstrap', icon: 'bootstrap', description: 'A collection of TELA apps for bootstrapping', color: 'amber' }
   };
   
   function detectDurlTag(durl) {

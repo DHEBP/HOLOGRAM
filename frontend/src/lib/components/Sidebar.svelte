@@ -1017,7 +1017,7 @@
                     on:click|stopPropagation={() => handleQuickSwitch(wallet)}
                     class="wallet-option"
                   >
-                    <span class="wallet-option-icon">📁</span>
+                    <span class="wallet-option-icon"><FolderOpen size={14} /></span>
                     <div class="wallet-option-info">
                       <p class="wallet-option-name">{wallet.filename}</p>
                       {#if wallet.addressPrefix}
@@ -1082,13 +1082,13 @@
                         {#if app.subscriptions}
                           <div class="app-subscriptions">
                             {#if app.subscriptions.new_topoheight}
-                              <span class="sub-badge">📊 Height</span>
+                              <span class="sub-badge">Height</span>
                             {/if}
                             {#if app.subscriptions.new_balance}
-                              <span class="sub-badge">💰 Balance</span>
+                              <span class="sub-badge">Balance</span>
                             {/if}
                             {#if app.subscriptions.new_entry}
-                              <span class="sub-badge">📝 Entries</span>
+                              <span class="sub-badge">Entries</span>
                             {/if}
                           </div>
                         {/if}

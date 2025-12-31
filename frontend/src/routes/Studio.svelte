@@ -1569,7 +1569,7 @@
   const DURL_TAGS = {
     '.lib': {
       name: 'Library',
-      icon: '📚',
+      icon: 'lib',
       description: 'A collection of reusable DOCs that can be embedded in other apps',
       color: 'violet'
     },
@@ -1581,13 +1581,13 @@
     },
     '.shards': {
       name: 'DocShards',
-      icon: '📦',
+      icon: 'shards',
       description: 'An INDEX containing DocShards that require reconstruction',
       color: 'cyan'
     },
     '.bootstrap': {
       name: 'Bootstrap',
-      icon: '🚀',
+      icon: 'bootstrap',
       description: 'A collection of TELA apps/content for bootstrapping',
       color: 'amber'
     }

@@ -1254,7 +1254,7 @@
                 </div>
                 
                 <div class="cmd-stat-cell">
-                  <div class="cmd-stat-icon">⚡</div>
+                  <div class="cmd-stat-icon"><Zap size={14} strokeWidth={1.5} /></div>
                   <div class="cmd-stat-value">{searchResult.totalFees ? (searchResult.totalFees / 100000).toFixed(5) : '0'}</div>
                   <div class="cmd-stat-label">TOTAL FEES</div>
                 </div>
@@ -1449,7 +1449,7 @@
                   <div class="cmd-stat-label">TX SIZE</div>
                 </div>
                 <div class="cmd-stat-cell">
-                  <div class="cmd-stat-icon">⚡</div>
+                  <div class="cmd-stat-icon"><Zap size={14} strokeWidth={1.5} /></div>
                   <div class="cmd-stat-value">{searchResult.assets?.length || searchResult.ringMembers?.length || 1}</div>
                   <div class="cmd-stat-label">PAYLOADS</div>
                 </div>
@@ -2505,7 +2505,7 @@
                       <div class="cmd-stat-label">TOTAL SIZE</div>
                     </div>
                     <div class="cmd-stat-cell">
-                      <div class="cmd-stat-icon">⚡</div>
+                      <div class="cmd-stat-icon"><Zap size={14} strokeWidth={1.5} /></div>
                       <div class="cmd-stat-value">{mempoolData.type_stats?.NORMAL || 0}</div>
                       <div class="cmd-stat-label">NORMAL</div>
                     </div>

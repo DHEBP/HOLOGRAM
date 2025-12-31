@@ -256,9 +256,9 @@ export async function loadSettings() {
       ...mappedSettings,
     }));
 
-    console.log('✅ Settings loaded from backend:', mappedSettings);
+    console.log('[Settings] Loaded from backend:', mappedSettings);
   } catch (error) {
-    console.error('❌ Failed to load settings:', error);
+    console.error('[Error] Failed to load settings:', error);
   }
 }
 
@@ -272,7 +272,7 @@ export async function saveSetting(frontendKey, value) {
   // Save to backend with the correct key
   try {
     await SetSetting(JSON.stringify({ [backendKey]: value }));
-    console.log(`⚙️ Setting saved: ${backendKey} = ${value}`);
+    console.log(`[Settings] Saved: ${backendKey} = ${value}`);
   } catch (error) {
     console.error(`Failed to save setting ${backendKey}:`, error);
   }
@@ -375,10 +375,10 @@ export async function syncNetworkMode() {
         daemonEndpoint: endpoint,
       }));
       
-      console.log('✅ Network mode synced:', { network, endpoint });
+      console.log('[Network] Mode synced:', { network, endpoint });
     }
   } catch (error) {
-    console.error('❌ Failed to sync network mode:', error);
+    console.error('[Error] Failed to sync network mode:', error);
   }
 }
 

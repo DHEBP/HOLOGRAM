@@ -172,10 +172,10 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
     // Assemble final HTML (unless already assembled via shards or library view)
     duStr, hasDU := content.Meta["durl"].(string)
     if hasDU && isLibraryDURL(duStr) {
-        a.logToConsole("📚 Library dURL detected; rendering library info view")
+        a.logToConsole("[TELA] Library dURL detected; rendering library info view")
         content.HTML = renderLibraryInfo(content)
     } else if !(content.HTML != "" && hasDU && isShardIndexDURL(duStr)) {
-        a.logToConsole("🔧 Assembling final HTML...")
+        a.logToConsole("[TELA] Assembling final HTML...")
         if err := a.assembleFinalHTML(content); err != nil {
             a.logToConsole(fmt.Sprintf("[ERR] Assembly failed: %v", err))
             return nil, err
@@ -354,7 +354,7 @@ code { color: #fbbf24; }
 </style>
 </head><body>
 <div class="header">
-<h1>⚡ %s</h1>
+<h1>%s</h1>
 <div class="meta">Type: JavaScript</div>
 <div class="meta">SCID: <span class="scid">%s</span></div>
 </div>
@@ -376,7 +376,7 @@ pre { background: #12121c; border: 1px solid rgba(255,255,255,0.06); border-radi
 </style>
 </head><body>
 <div class="header">
-<h1>📝 %s</h1>
+<h1>%s</h1>
 <div class="meta">Type: Markdown</div>
 <div class="meta">SCID: <span class="scid">%s</span></div>
 </div>
@@ -496,7 +496,7 @@ func extractDOCsSCIDs(indexData map[string]interface{}) []string {
 		return scids
 	}
 
-	log.Println("  📋 Found stringkeys, extracting DOC SCIDs...")
+	log.Println("  [TELA] Found stringkeys, extracting DOC SCIDs...")
 
 	// Look for DOC1, DOC2, DOC3, etc.
 	for i := 1; i <= 100; i++ { // Max 100 DOCs
@@ -690,7 +690,7 @@ func (a *App) assembleFinalHTML(content *TELAContent) error {
 		return fmt.Errorf("no HTML content found")
 	}
 
-	a.logToConsole("🔧 Assembling final HTML...")
+	a.logToConsole("[TELA] Assembling final HTML...")
 
 	// Track which files were inlined (so we don't double-add them)
 	inlinedCSS := make(map[string]bool)

@@ -710,12 +710,12 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       if (result.found) {
         // Update settings with detected endpoint
         await updateSetting('daemonEndpoint', result.endpoint);
-        detectionMessage = `✅ Found node at ${result.endpoint}`;
+        detectionMessage = `Found node at ${result.endpoint}`;
       } else {
         detectionMessage = 'ℹ️ No running node detected';
       }
     } catch (error) {
-      detectionMessage = `❌ Error: ${error.message || 'Failed to detect node'}`;
+      detectionMessage = `Error: ${error.message || 'Failed to detect node'}`;
     } finally {
       detecting = false;
       // Clear message after 5 seconds
