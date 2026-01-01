@@ -287,9 +287,10 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 			return ErrorResponse(err)
 		}
 		
-		// Create default transfer (required for install)
-		_, defaultDest := tela.GetDefaultNetworkAddress()
-		transfers := []rpc.Transfer{{Destination: defaultDest, Amount: 0}}
+		// Create transfer with safe destination (avoids "Sending to self" error)
+		senderAddr := wallet.GetAddress().String()
+		destAddr := a.getSimulatorTransferDestination(senderAddr)
+		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
 		
 		// Use a reasonable default gas fee for simulator (it's free anyway)
 		gasFees := uint64(100000)

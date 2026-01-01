@@ -330,12 +330,6 @@
     color: var(--text-3, #707088);
   }
   
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2, 8px);
-  }
-  
   .btn-icon {
     display: flex;
     align-items: center;

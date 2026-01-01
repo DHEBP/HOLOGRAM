@@ -17,6 +17,28 @@ import (
 	"github.com/deroproject/derohe/walletapi"
 )
 
+// SimulatorWallet1Address is the address of wallet #1 in the simulator
+// This is used as the destination for transactions when deploying from wallet #0,
+// because wallet #0's address is the same as the default simulator destination
+// (which would cause "Sending to self is not supported" error)
+const SimulatorWallet1Address = "deto1qy0ehnqjpr0wxqnknyc66du2fsxyktppkr8m8e6jvplp954klfjz2qqdzcd8p"
+
+// getSimulatorTransferDestination returns a safe destination address for simulator transfers
+// that is guaranteed to be different from the sender's address
+func (a *App) getSimulatorTransferDestination(senderAddress string) string {
+	// Get the default simulator destination
+	_, defaultDest := tela.GetDefaultNetworkAddress()
+	
+	// If the sender is the same as the default destination (wallet #0),
+	// use wallet #1's address instead to avoid "Sending to self" error
+	if senderAddress != "" && strings.HasPrefix(defaultDest, senderAddress[:20]) {
+		a.logToConsole("[DEBUG] Sender is default simulator address, using wallet #1 as destination")
+		return SimulatorWallet1Address
+	}
+	
+	return defaultDest
+}
+
 // BatchDeployConfig holds the configuration for a batch deployment
 type BatchDeployConfig struct {
 	Files       []DOCInfo `json:"files"`
@@ -285,9 +307,10 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 			return "", err
 		}
 		
-		// Create default transfer (required for install)
-		_, defaultDest := tela.GetDefaultNetworkAddress()
-		transfers := []rpc.Transfer{{Destination: defaultDest, Amount: 0}}
+		// Create transfer with safe destination (avoids "Sending to self" error)
+		senderAddr := wallet.GetAddress().String()
+		destAddr := a.getSimulatorTransferDestination(senderAddr)
+		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
 		
 		// Use a reasonable default gas fee for simulator (it's free anyway)
 		gasFees := uint64(100000)
@@ -435,9 +458,10 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 			return "", err
 		}
 		
-		// Create default transfer
-		_, defaultDest := tela.GetDefaultNetworkAddress()
-		transfers := []rpc.Transfer{{Destination: defaultDest, Amount: 0}}
+		// Create transfer with safe destination (avoids "Sending to self" error)
+		senderAddr := wallet.GetAddress().String()
+		destAddr := a.getSimulatorTransferDestination(senderAddr)
+		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
 		gasFees := uint64(100000)
 		
 		// RETRY LOOP: Similar to tela-cli tests, retry up to 3 times
