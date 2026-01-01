@@ -393,9 +393,6 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 		destAddr := a.getSimulatorTransferDestination(senderAddr)
 		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
 		
-		// Use a reasonable default gas fee for simulator (it's free anyway)
-		gasFees := uint64(100000)
-		
 		// RETRY LOOP: Similar to tela-cli tests, retry up to 3 times
 		const maxRetries = 3
 		var lastErr error
@@ -431,6 +428,18 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 				lastErr = fmt.Errorf("wallet has zero balance - registration may not have completed")
 				continue
 			}
+			
+			// Get gas estimate from daemon - this validates the SC code before building the transaction
+			// This is critical: tela-cli uses GetGasEstimate which validates the SC on the daemon
+			// If the SC code is invalid, this will return an error BEFORE we crash the daemon
+			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
+			if gasErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed (attempt %d): %v", attempt, gasErr))
+				a.disconnectWalletAPI()
+				lastErr = fmt.Errorf("gas estimate error (SC validation failed): %v", gasErr)
+				continue
+			}
+			a.logToConsole(fmt.Sprintf("[DEBUG] Gas estimate: %d", gasFees))
 			
 			// Build transaction
 			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
@@ -543,7 +552,6 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 		senderAddr := wallet.GetAddress().String()
 		destAddr := a.getSimulatorTransferDestination(senderAddr)
 		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
-		gasFees := uint64(100000)
 		
 		// RETRY LOOP: Similar to tela-cli tests, retry up to 3 times
 		const maxRetries = 3
@@ -602,6 +610,16 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 				wallet.Sync_Wallet_Memory_With_Daemon()
 				time.Sleep(100 * time.Millisecond)
 			}
+			
+			// Get gas estimate from daemon - validates the SC code before building
+			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
+			if gasErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed for INDEX (attempt %d): %v", attempt, gasErr))
+				a.disconnectWalletAPI()
+				lastErr = fmt.Errorf("gas estimate error (INDEX validation failed): %v", gasErr)
+				continue
+			}
+			a.logToConsole(fmt.Sprintf("[DEBUG] INDEX gas estimate: %d", gasFees))
 			
 			// Build transaction
 			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
