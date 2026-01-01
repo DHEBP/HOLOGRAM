@@ -17,23 +17,49 @@ import (
 	"github.com/deroproject/derohe/walletapi"
 )
 
-// SimulatorWallet1Address is the address of wallet #1 in the simulator
-// This is used as the destination for transactions when deploying from wallet #0,
-// because wallet #0's address is the same as the default simulator destination
-// (which would cause "Sending to self is not supported" error)
-const SimulatorWallet1Address = "deto1qy0ehnqjpr0wxqnknyc66du2fsxyktppkr8m8e6jvplp954klfjz2qqdzcd8p"
-
 // getSimulatorTransferDestination returns a safe destination address for simulator transfers
-// that is guaranteed to be different from the sender's address
+// that is guaranteed to be different from the sender's address AND is registered on the blockchain.
+// 
+// The issue: wallet #0's address is the same as tela.GetDefaultNetworkAddress() for simulator mode.
+// If we deploy from wallet #0 to wallet #0, we get "Sending to self is not supported".
+// If we use an unregistered address, we get "Account Unregistered".
+// 
+// Solution: Use a REGISTERED wallet from the simulator wallet manager that's different from the sender.
 func (a *App) getSimulatorTransferDestination(senderAddress string) string {
 	// Get the default simulator destination
 	_, defaultDest := tela.GetDefaultNetworkAddress()
 	
-	// If the sender is the same as the default destination (wallet #0),
-	// use wallet #1's address instead to avoid "Sending to self" error
-	if senderAddress != "" && strings.HasPrefix(defaultDest, senderAddress[:20]) {
-		a.logToConsole("[DEBUG] Sender is default simulator address, using wallet #1 as destination")
-		return SimulatorWallet1Address
+	// Check if sender is the same as default destination (wallet #0)
+	senderIsDefault := senderAddress != "" && len(senderAddress) >= 20 && strings.HasPrefix(defaultDest, senderAddress[:20])
+	
+	if !senderIsDefault {
+		// Sender is not wallet #0, so we can use the default destination
+		return defaultDest
+	}
+	
+	// Sender IS wallet #0 - we need to find a different REGISTERED wallet
+	a.logToConsole("[DEBUG] Sender is default simulator address, looking for alternate registered destination...")
+	
+	// Try to get wallet #1 from the simulator wallet manager
+	if a.simulatorManager != nil && a.simulatorManager.walletManager != nil {
+		wallet1 := a.simulatorManager.walletManager.GetWallet(1)
+		if wallet1 != nil && wallet1.Address != "" && wallet1.Registered {
+			a.logToConsole(fmt.Sprintf("[DEBUG] Using registered wallet #1 as destination: %s...", wallet1.Address[:20]))
+			return wallet1.Address
+		}
+		
+		// Wallet #1 not registered, try other wallets
+		for i := 2; i < 22; i++ {
+			wallet := a.simulatorManager.walletManager.GetWallet(i)
+			if wallet != nil && wallet.Address != "" && wallet.Registered && wallet.Address != senderAddress {
+				a.logToConsole(fmt.Sprintf("[DEBUG] Using registered wallet #%d as destination: %s...", i, wallet.Address[:20]))
+				return wallet.Address
+			}
+		}
+		
+		a.logToConsole("[WARN] No registered alternate wallet found, using default (may fail)")
+	} else {
+		a.logToConsole("[WARN] Simulator wallet manager not available, using default destination")
 	}
 	
 	return defaultDest
