@@ -305,8 +305,29 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 				}
 			}
 			
-			// Connect walletapi (temporary connection)
-			a.logToConsole(fmt.Sprintf("[NET] Temporary connect for transaction (attempt %d): %s", attempt, endpoint))
+			// CRITICAL: The simulator daemon can only handle ONE websocket connection at a time.
+			// tela.GetGasEstimate() creates its own websocket connection internally.
+			// So we must: 1) Call GetGasEstimate (creates/closes its own WS), 2) Then connect walletapi
+			
+			// STEP 1: Ensure walletapi is DISCONNECTED before calling GetGasEstimate
+			a.disconnectWalletAPI()
+			time.Sleep(50 * time.Millisecond) // Brief settle time for daemon
+			
+			// STEP 2: Get gas estimate - this validates SC code AND creates its own temporary websocket
+			a.logToConsole(fmt.Sprintf("[GAS] Getting gas estimate (attempt %d)...", attempt))
+			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
+			if gasErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed (attempt %d): %v", attempt, gasErr))
+				lastErr = fmt.Errorf("failed to get gas estimate: %v", gasErr)
+				continue
+			}
+			a.logToConsole(fmt.Sprintf("[OK] Gas estimate: %d", gasFees))
+			
+			// Brief pause to let GetGasEstimate's websocket fully close
+			time.Sleep(100 * time.Millisecond)
+			
+			// STEP 3: NOW connect walletapi for sync/build/send
+			a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi (attempt %d): %s", attempt, endpoint))
 			if err := walletapi.Connect(endpoint); err != nil {
 				a.logToConsole(fmt.Sprintf("[ERR] walletapi.Connect failed (attempt %d): %v", attempt, err))
 				lastErr = fmt.Errorf("failed to connect to simulator daemon: %v", err)
@@ -318,18 +339,7 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 			if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] Pre-tx sync failed: %v", err))
 			}
-			time.Sleep(100 * time.Millisecond) // Brief settle time
-			
-			// Use tela.GetGasEstimate to get actual gas fees AND validate SC code on daemon
-			// This is CRITICAL - it prevents daemon crashes from invalid SC code
-			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
-			if gasErr != nil {
-				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed (attempt %d): %v", attempt, gasErr))
-				lastErr = fmt.Errorf("failed to get gas estimate: %v", gasErr)
-				a.disconnectWalletAPI()
-				continue
-			}
-			a.logToConsole(fmt.Sprintf("[OK] Gas estimate: %d", gasFees))
+			time.Sleep(50 * time.Millisecond) // Brief settle time
 			
 			// Build transaction
 			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
@@ -1022,9 +1032,10 @@ func (a *App) ParseFolderForTELA(folderPath string) map[string]interface{} {
 		a.logToConsole(fmt.Sprintf("[WARN] [TELA] ParseFolderForTELA: %d errors encountered", len(errors)))
 	}
 
-	// Calculate simulator balance requirement (for informational display)
-	// Each DOC + 1 INDEX, each costs SimulatorGasFee (100,000 atomic units)
-	simulatorBalanceRequired := uint64(len(files)+1) * SimulatorGasFee
+	// Calculate estimated gas (for informational display only)
+	// Note: This is a rough estimate. Actual gas in simulator is FREE.
+	// Real gas estimation happens via tela.GetGasEstimate() during deployment.
+	estimatedGas := totalGas
 
 	return map[string]interface{}{
 		"success":                  true,
@@ -1034,7 +1045,7 @@ func (a *App) ParseFolderForTELA(folderPath string) map[string]interface{} {
 		"totalGas":                 totalGas,
 		"errors":                   errors,
 		"folderPath":               folderPath,
-		"simulatorBalanceRequired": simulatorBalanceRequired,
+		"estimatedGas": estimatedGas,
 	}
 }
 
@@ -1103,38 +1114,11 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		return map[string]interface{}{"success": false, "error": err.Error()}
 	}
 
-	// PRE-DEPLOYMENT BALANCE CHECK: Verify wallet has sufficient balance for all deployments
-	if isSimulator {
-		sufficient, currentBalance, requiredBalance, err := a.CheckBalanceForBatchDeployment(wallet, len(batch.Files), isSimulator)
-		if err != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] Balance check failed: %v (continuing anyway)", err))
-		} else if !sufficient {
-			// Calculate how many files can be deployed with current balance
-			maxFiles := int(currentBalance / SimulatorGasFee)
-			if maxFiles > 0 {
-				maxFiles-- // Reserve 1 for INDEX
-			}
-
-			errMsg := fmt.Sprintf("Insufficient balance for deployment. Need %d atomic units (%d files × %d), but wallet only has %d. Can deploy max %d files. Use the main simulator wallet (receives mining rewards) or a test wallet with more balance.",
-				requiredBalance, len(batch.Files)+1, SimulatorGasFee, currentBalance, maxFiles)
-			a.logToConsole(fmt.Sprintf("[ERR] %s", errMsg))
-			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{
-				"error":           errMsg,
-				"currentBalance":  currentBalance,
-				"requiredBalance": requiredBalance,
-				"maxFiles":        maxFiles,
-			})
-			return map[string]interface{}{
-				"success":         false,
-				"error":           errMsg,
-				"currentBalance":  currentBalance,
-				"requiredBalance": requiredBalance,
-				"maxFiles":        maxFiles,
-			}
-		} else {
-			a.logToConsole(fmt.Sprintf("[OK] Balance check passed: %d available, %d required", currentBalance, requiredBalance))
-		}
-	}
+	// NOTE: Pre-deployment balance check REMOVED for simulator mode (Session 103)
+	// Reason: The hardcoded SimulatorGasFee (100,000) was overly conservative and blocked
+	// deployments that would have succeeded. Gas is FREE in simulator mode anyway.
+	// The actual deployment uses tela.GetGasEstimate() which validates SC code properly.
+	// For mainnet/testnet, real gas estimation happens per-transaction in deployDOC().
 
 	// Emit start event
 	runtime.EventsEmit(a.ctx, "tela:deploy:start", map[string]interface{}{

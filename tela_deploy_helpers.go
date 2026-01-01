@@ -199,8 +199,8 @@ func (a *App) setupNetworkForDeployment(wallet *walletapi.Wallet_Disk, isSimulat
 			} else {
 				a.logToConsole("[OK] Wallet synced with daemon")
 			}
-			// Disconnect immediately to free daemon
-			walletapi.Connected = false
+			// Disconnect immediately to free daemon for tela library calls
+			a.disconnectWalletAPI()
 			a.logToConsole("[NET] Disconnected after initial sync")
 		}
 	} else {
@@ -406,8 +406,30 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 				}
 			}
 			
-			// TEMPORARY CONNECTION: Connect, sync, build, send, disconnect
-			a.logToConsole(fmt.Sprintf("[NET] Temporary connect for %s (attempt %d)...", prepared.Original.Name, attempt))
+			// CRITICAL: The simulator daemon can only handle ONE websocket connection at a time.
+			// tela.GetGasEstimate() creates its own websocket connection internally.
+			// So we must: 1) Call GetGasEstimate (creates/closes its own WS), 2) Then connect walletapi
+			
+			// STEP 1: Ensure walletapi is DISCONNECTED before calling GetGasEstimate
+			// (GetGasEstimate creates its own websocket which would conflict)
+			a.disconnectWalletAPI()
+			time.Sleep(50 * time.Millisecond) // Brief settle time for daemon
+			
+			// STEP 2: Get gas estimate - this validates SC code AND creates its own temporary websocket
+			a.logToConsole(fmt.Sprintf("[GAS] Getting gas estimate for %s (attempt %d)...", prepared.Original.Name, attempt))
+			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
+			if gasErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed (attempt %d): %v", attempt, gasErr))
+				lastErr = fmt.Errorf("gas estimate error (SC validation failed): %v", gasErr)
+				continue
+			}
+			a.logToConsole(fmt.Sprintf("[OK] Gas estimate: %d", gasFees))
+			
+			// Brief pause to let GetGasEstimate's websocket fully close
+			time.Sleep(100 * time.Millisecond)
+			
+			// STEP 3: NOW connect walletapi for sync/build/send
+			a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi for %s (attempt %d)...", prepared.Original.Name, attempt))
 			if err := walletapi.Connect(endpoint); err != nil {
 				lastErr = fmt.Errorf("failed to connect to simulator daemon: %v", err)
 				a.disconnectWalletAPI()
@@ -418,7 +440,7 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 			if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] Pre-tx sync failed: %v", err))
 			}
-			time.Sleep(100 * time.Millisecond) // Brief settle time (increased from 50ms)
+			time.Sleep(50 * time.Millisecond) // Brief settle time
 			
 			// Check wallet balance
 			mature, locked := wallet.Get_Balance()
@@ -429,19 +451,7 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 				continue
 			}
 			
-			// Get gas estimate from daemon - this validates the SC code before building the transaction
-			// This is critical: tela-cli uses GetGasEstimate which validates the SC on the daemon
-			// If the SC code is invalid, this will return an error BEFORE we crash the daemon
-			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
-			if gasErr != nil {
-				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed (attempt %d): %v", attempt, gasErr))
-				a.disconnectWalletAPI()
-				lastErr = fmt.Errorf("gas estimate error (SC validation failed): %v", gasErr)
-				continue
-			}
-			a.logToConsole(fmt.Sprintf("[DEBUG] Gas estimate: %d", gasFees))
-			
-			// Build transaction
+			// STEP 4: Build transaction (walletapi is connected)
 			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
 			if buildErr != nil {
 				a.logToConsole(fmt.Sprintf("[ERR] TransferPayload0 failed (attempt %d): %v", attempt, buildErr))
@@ -566,8 +576,29 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 				}
 			}
 			
-			// TEMPORARY CONNECTION: Connect, sync, build, send, disconnect
-			a.logToConsole(fmt.Sprintf("[NET] Temporary connect for INDEX (attempt %d)...", attempt))
+			// CRITICAL: The simulator daemon can only handle ONE websocket connection at a time.
+			// tela.GetGasEstimate() creates its own websocket connection internally.
+			// So we must: 1) Call GetGasEstimate (creates/closes its own WS), 2) Then connect walletapi
+			
+			// STEP 1: Ensure walletapi is DISCONNECTED before calling GetGasEstimate
+			a.disconnectWalletAPI()
+			time.Sleep(50 * time.Millisecond) // Brief settle time for daemon
+			
+			// STEP 2: Get gas estimate - this validates INDEX SC code AND creates its own temporary websocket
+			a.logToConsole(fmt.Sprintf("[GAS] Getting gas estimate for INDEX (attempt %d)...", attempt))
+			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
+			if gasErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed for INDEX (attempt %d): %v", attempt, gasErr))
+				lastErr = fmt.Errorf("gas estimate error (INDEX validation failed): %v", gasErr)
+				continue
+			}
+			a.logToConsole(fmt.Sprintf("[OK] INDEX gas estimate: %d", gasFees))
+			
+			// Brief pause to let GetGasEstimate's websocket fully close
+			time.Sleep(100 * time.Millisecond)
+			
+			// STEP 3: NOW connect walletapi for sync/build/send
+			a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi for INDEX (attempt %d)...", attempt))
 			if err := walletapi.Connect(endpoint); err != nil {
 				lastErr = fmt.Errorf("failed to connect for INDEX: %v", err)
 				a.disconnectWalletAPI()
@@ -578,7 +609,7 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 			if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] Pre-INDEX sync failed: %v", err))
 			}
-			time.Sleep(100 * time.Millisecond) // Settle time
+			time.Sleep(50 * time.Millisecond) // Settle time
 			
 			// Check wallet balance
 			mature, locked := wallet.Get_Balance()
@@ -608,18 +639,8 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 					continue
 				}
 				wallet.Sync_Wallet_Memory_With_Daemon()
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond)
 			}
-			
-			// Get gas estimate from daemon - validates the SC code before building
-			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
-			if gasErr != nil {
-				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed for INDEX (attempt %d): %v", attempt, gasErr))
-				a.disconnectWalletAPI()
-				lastErr = fmt.Errorf("gas estimate error (INDEX validation failed): %v", gasErr)
-				continue
-			}
-			a.logToConsole(fmt.Sprintf("[DEBUG] INDEX gas estimate: %d", gasFees))
 			
 			// Build transaction
 			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
