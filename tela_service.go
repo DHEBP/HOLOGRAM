@@ -265,7 +265,7 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 		// SIMULATOR MODE: Bypass tela.Installer() to avoid websocket conflicts
 		// Uses retry logic similar to tela-cli tests for better reliability
 		
-		a.logToConsole("[DOC] Using simulator-specific installation (bypassing GetGasEstimate)")
+		a.logToConsole("[DOC] Using simulator-specific installation with GetGasEstimate validation")
 		
 		// PRE-DEPLOYMENT HEALTH CHECK: Verify daemon is alive
 		if a.daemonClient != nil {
@@ -291,10 +291,6 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 		senderAddr := wallet.GetAddress().String()
 		destAddr := a.getSimulatorTransferDestination(senderAddr)
 		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
-		
-		// Use a reasonable default gas fee for simulator (it's free anyway)
-		gasFees := uint64(100000)
-		a.logToConsole(fmt.Sprintf("[DOC] Using default gas fee: %d (FREE in simulator)", gasFees))
 		
 		// RETRY LOOP: Similar to tela-cli tests, retry up to 3 times
 		const maxRetries = 3
@@ -323,6 +319,17 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 				a.logToConsole(fmt.Sprintf("[WARN] Pre-tx sync failed: %v", err))
 			}
 			time.Sleep(100 * time.Millisecond) // Brief settle time
+			
+			// Use tela.GetGasEstimate to get actual gas fees AND validate SC code on daemon
+			// This is CRITICAL - it prevents daemon crashes from invalid SC code
+			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
+			if gasErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed (attempt %d): %v", attempt, gasErr))
+				lastErr = fmt.Errorf("failed to get gas estimate: %v", gasErr)
+				a.disconnectWalletAPI()
+				continue
+			}
+			a.logToConsole(fmt.Sprintf("[OK] Gas estimate: %d", gasFees))
 			
 			// Build transaction
 			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
