@@ -373,18 +373,17 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     }
   }
   
+  // Track if we're showing the reset confirmation
+  let showResetConfirm = false;
+  
   async function resetSimulator() {
-    console.log('[Settings] Reset button clicked');
-    
-    // Use a simple confirm - if it doesn't work in Wails, just proceed
-    const confirmed = confirm('This will delete all simulator data and start fresh. Continue?');
-    console.log('[Settings] Confirm result:', confirmed);
-    
-    if (!confirmed) {
-      console.log('[Settings] Reset cancelled by user');
-      return;
-    }
-    
+    console.log('[Settings] Reset button clicked, showing confirmation');
+    showResetConfirm = true;
+  }
+  
+  async function confirmReset() {
+    console.log('[Settings] Reset confirmed, proceeding...');
+    showResetConfirm = false;
     simulatorLoading = true;
     simulatorError = '';
     simulatorSuccess = '';
@@ -406,6 +405,11 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     } finally {
       simulatorLoading = false;
     }
+  }
+  
+  function cancelReset() {
+    console.log('[Settings] Reset cancelled');
+    showResetConfirm = false;
   }
   
   function formatSimulatorAddress(addr) {
@@ -1296,7 +1300,14 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   <div class="settings-row-label">Reset All Data</div>
                   <div class="settings-row-desc">Delete all simulator data and start fresh</div>
                 </div>
-                <button class="btn btn-ghost btn-sm" on:click={resetSimulator} disabled={simulatorLoading}>Reset</button>
+                {#if showResetConfirm}
+                  <div class="confirm-buttons">
+                    <button class="btn btn-danger btn-sm" on:click={confirmReset} disabled={simulatorLoading}>Confirm</button>
+                    <button class="btn btn-ghost btn-sm" on:click={cancelReset} disabled={simulatorLoading}>Cancel</button>
+                  </div>
+                {:else}
+                  <button class="btn btn-ghost btn-sm" on:click={resetSimulator} disabled={simulatorLoading}>Reset</button>
+                {/if}
               </div>
             </div>
           </div>
@@ -2823,6 +2834,11 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
 
   .btn-danger:hover {
     background: rgba(248, 113, 113, 0.25);
+  }
+  
+  .confirm-buttons {
+    display: flex;
+    gap: 8px;
   }
 
   /* Permission Reference v6.1 */
