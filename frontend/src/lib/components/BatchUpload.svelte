@@ -14,6 +14,7 @@
   let deploying = false;
   let deployProgress = { current: 0, total: 0, status: '', fileName: '', phase: 'idle' };
   let error = null;
+  let errorDetails = null; // Detailed TELA error with fix guidance
   let totalSize = 0;
   let totalGas = 0;
   
@@ -116,7 +117,20 @@
     });
     
     unsubscribeError = EventsOn('tela:deploy:error', (data) => {
-      error = data.error;
+      // Check if this is a detailed TELA error with fix guidance
+      if (data.isTELAError && data.description) {
+        error = data.error;
+        errorDetails = {
+          description: data.description,
+          fix: data.fix,
+          example: data.example,
+          fileName: data.fileName,
+          technicalError: data.technicalError
+        };
+      } else {
+        error = data.error;
+        errorDetails = null;
+      }
       deploying = false;
       if (data.fileName) {
         fileStatuses[data.fileName] = 'failed';
@@ -557,6 +571,34 @@
     <div class="alert-error">
       <span class="alert-icon">!</span> {error}
     </div>
+    {#if errorDetails}
+      <div class="error-details">
+        {#if errorDetails.fileName}
+          <div class="error-file">File: <code>{errorDetails.fileName}</code></div>
+        {/if}
+        {#if errorDetails.description}
+          <div class="error-section">
+            <div class="error-section-title">What happened:</div>
+            <div class="error-section-content">{errorDetails.description}</div>
+          </div>
+        {/if}
+        {#if errorDetails.fix}
+          <div class="error-section">
+            <div class="error-section-title">How to fix:</div>
+            <div class="error-section-content">{errorDetails.fix}</div>
+          </div>
+        {/if}
+        {#if errorDetails.example}
+          <div class="error-section">
+            <div class="error-section-title">Example:</div>
+            <pre class="error-example">{errorDetails.example}</pre>
+          </div>
+        {/if}
+        <button class="error-dismiss" on:click={() => { error = null; errorDetails = null; }}>
+          Dismiss
+        </button>
+      </div>
+    {/if}
   {/if}
   
   <!-- Files List -->
@@ -1153,6 +1195,80 @@
   
   .alert-icon {
     font-weight: 700;
+  }
+  
+  /* Detailed Error Display */
+  .error-details {
+    margin-top: var(--s-3, 12px);
+    padding: var(--s-4, 16px);
+    background: var(--void-deep, #0a0a12);
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+    border-radius: var(--r-md, 8px);
+  }
+  
+  .error-file {
+    font-size: 12px;
+    color: var(--text-3, #707088);
+    margin-bottom: var(--s-3, 12px);
+  }
+  
+  .error-file code {
+    color: var(--cyan-400, #22d3ee);
+    background: rgba(34, 211, 238, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  }
+  
+  .error-section {
+    margin-bottom: var(--s-3, 12px);
+  }
+  
+  .error-section:last-of-type {
+    margin-bottom: var(--s-4, 16px);
+  }
+  
+  .error-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-4, #505068);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: var(--s-1, 4px);
+  }
+  
+  .error-section-content {
+    font-size: 13px;
+    color: var(--text-2, #a0a0b8);
+    line-height: 1.5;
+  }
+  
+  .error-example {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: 12px;
+    background: var(--void-pure, #000000);
+    color: var(--emerald-400, #34d399);
+    padding: var(--s-3, 12px);
+    border-radius: var(--r-sm, 4px);
+    overflow-x: auto;
+    white-space: pre-wrap;
+    margin: 0;
+  }
+  
+  .error-dismiss {
+    font-size: 12px;
+    color: var(--text-4, #505068);
+    background: transparent;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    border-radius: var(--r-sm, 4px);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  
+  .error-dismiss:hover {
+    color: var(--text-2, #a0a0b8);
+    border-color: var(--border-default, rgba(255, 255, 255, 0.09));
   }
   
   /* Loading State */

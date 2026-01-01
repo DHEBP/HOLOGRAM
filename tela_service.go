@@ -1159,12 +1159,13 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		// Deploy DOC
 		txid, err := a.deployDOC(wallet, prepared, ringsize, isSimulator)
 		if err != nil {
-			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{
-				"error": FriendlyError(err), "fileName": docInfo.Name, "index": i, "partial": deployedFiles,
-			})
-			return map[string]interface{}{
-				"success": false, "error": FriendlyError(err), "technicalError": err.Error(), "partial": deployedFiles,
-			}
+			// Check for TELA-specific errors and provide detailed help
+			errResp := GetTELAErrorResponse(err.Error(), docInfo.Name)
+			errResp["index"] = i
+			errResp["partial"] = deployedFiles
+			
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", errResp)
+			return errResp
 		}
 
 		docScids = append(docScids, txid)

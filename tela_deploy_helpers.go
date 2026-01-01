@@ -501,6 +501,15 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 		}
 		
 		if lastErr != nil {
+			// Check if this is a known TELA deployment error and provide detailed help
+			errMsg := lastErr.Error()
+			if telaErr := DetectTELAError(errMsg); telaErr != nil {
+				a.logToConsole(fmt.Sprintf("[HELP] %s", telaErr.Title))
+				a.logToConsole(fmt.Sprintf("[HELP] Fix: %s", telaErr.Fix))
+				if telaErr.Example != "" {
+					a.logToConsole(fmt.Sprintf("[HELP] Example: %s", telaErr.Example))
+				}
+			}
 			return "", fmt.Errorf("failed after %d attempts: %v", maxRetries, lastErr)
 		}
 		
