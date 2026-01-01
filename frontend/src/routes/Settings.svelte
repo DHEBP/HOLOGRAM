@@ -1647,7 +1647,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   {#if $appState.gnomonRunning}
                     <span class="c-cyan">{$appState.gnomonIndexedHeight.toLocaleString()}</span>
                     <span style="color: var(--text-4);"> / </span>
-                    <span>{$appState.chainHeight.toLocaleString()} blocks</span>
+                    <span>{$appState.gnomonChainHeight.toLocaleString()} blocks</span>
                   {:else}
                     <span style="color: var(--text-4);">Not running</span>
                   {/if}
@@ -1684,12 +1684,12 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               <div class="progress-section">
                 <div class="progress-header">
                   <span class="form-label">Progress</span>
-                  <span class="progress-value c-cyan">{$appState.gnomonProgress.toFixed(2)}%</span>
+                  <span class="progress-value c-cyan">{Math.min($appState.gnomonProgress, 100).toFixed(2)}%</span>
                 </div>
                 <div class="progress">
                   <div 
                     class="progress-bar"
-                    style="width: {$appState.gnomonProgress}%"
+                    style="width: {Math.min($appState.gnomonProgress, 100)}%"
                   ></div>
                 </div>
               </div>

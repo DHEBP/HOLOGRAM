@@ -197,6 +197,7 @@ export const appState = writable({
   gnomonRunning: false,
   gnomonProgress: 0,
   gnomonIndexedHeight: 0,
+  gnomonChainHeight: 0,
   chainHeight: 0,
   networkInfo: null,
   network: 'mainnet', // Single source of truth for current network
@@ -331,6 +332,7 @@ export async function updateStatus() {
       gnomonRunning: gnomonStatus?.status?.running || false,
       gnomonProgress: gnomonStatus?.status?.progress || 0,
       gnomonIndexedHeight: gnomonStatus?.status?.indexed_height || 0,
+      gnomonChainHeight: gnomonStatus?.status?.chain_height || 0,
     }));
   } catch (error) {
     console.error('Status update error:', error);

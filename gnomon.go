@@ -113,10 +113,20 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 	filter := []string{gnomonSearchFilter}
 
 	// Fastsync configuration
+	// For simulator mode, disable fastsync to ensure we index from block 0
+	// This is important because simulator chains are small and we need to find
+	// all deployed contracts, not just new ones
+	useFastsync := g.fastsync
+	forceFastsync := true
+	if network == "simulator" {
+		useFastsync = false
+		forceFastsync = false
+	}
+	
 	config := &structures.FastSyncConfig{
-		Enabled:           g.fastsync,
+		Enabled:           useFastsync,
 		SkipFSRecheck:     false,
-		ForceFastSync:     true,
+		ForceFastSync:     forceFastsync,
 		ForceFastSyncDiff: 100,
 		NoCode:            false,
 	}
