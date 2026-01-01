@@ -97,6 +97,24 @@ func (swm *SimulatorWalletManager) log(msg string) {
 	}
 }
 
+// disconnectWalletAPI properly closes the walletapi websocket connection
+// CRITICAL: The simulator daemon can only handle ONE websocket at a time.
+// Just setting walletapi.Connected = false doesn't close the actual websocket!
+// This causes "websocket: close 1006 (abnormal closure)" errors when tela library
+// tries to create its own connection.
+func disconnectWalletAPI() {
+	// Get the RPC client which holds the websocket connection
+	rpcClient := walletapi.GetRPCClient()
+	if rpcClient != nil && rpcClient.WS != nil {
+		// Close the actual websocket connection
+		rpcClient.WS.Close()
+	}
+	// Mark as disconnected
+	walletapi.Connected = false
+	// Give the daemon time to release the connection
+	time.Sleep(100 * time.Millisecond)
+}
+
 // ================== Directory Management ==================
 
 // GetWalletsDir returns the directory for test wallets
@@ -253,8 +271,8 @@ func (swm *SimulatorWalletManager) RegisterAllWallets(daemonEndpoint string) err
 	// Sync balances
 	swm.syncBalancesUnlocked()
 
-	// Disconnect walletapi
-	walletapi.Connected = false
+	// Disconnect walletapi - MUST close websocket properly!
+	disconnectWalletAPI()
 
 	swm.log(fmt.Sprintf("[OK] Registered %d/%d test wallets", registeredCount, len(swm.wallets)))
 	return nil
@@ -401,8 +419,8 @@ func (swm *SimulatorWalletManager) SyncSingleWallet(daemonEndpoint string, index
 
 	balance, err := swm.syncSingleWalletUnlocked(index)
 
-	// Disconnect
-	walletapi.Connected = false
+	// Disconnect - MUST close websocket properly!
+	disconnectWalletAPI()
 
 	return balance, err
 }
@@ -419,8 +437,8 @@ func (swm *SimulatorWalletManager) SyncBalances(daemonEndpoint string) error {
 
 	swm.syncBalancesUnlocked()
 
-	// Disconnect
-	walletapi.Connected = false
+	// Disconnect - MUST close websocket properly!
+	disconnectWalletAPI()
 
 	return nil
 }
@@ -686,7 +704,7 @@ func (a *App) RefreshTestWalletBalance(index int) map[string]interface{} {
 			"error":   fmt.Sprintf("Failed to connect to daemon: %v", err),
 		}
 	}
-	defer func() { walletapi.Connected = false }()
+	defer disconnectWalletAPI()
 
 	// Get direct balance from daemon
 	balance, err := a.simulatorManager.walletManager.UpdateBalanceFromDirect(index)
@@ -854,19 +872,19 @@ func (a *App) FundTestWallet(targetIndex int, amount uint64) map[string]interfac
 		}}, 2, false, rpc.Arguments{}, 0, false)
 
 		if err != nil {
-			walletapi.Connected = false
+			disconnectWalletAPI()
 			a.logToConsole(fmt.Sprintf("[WARN] Transfer build from wallet %d failed: %v", i, err))
 			continue
 		}
 
 		// Actually send the transaction to the network
 		if err := sourceWallet.SendTransaction(tx); err != nil {
-			walletapi.Connected = false
+			disconnectWalletAPI()
 			a.logToConsole(fmt.Sprintf("[WARN] Transfer send from wallet %d failed: %v", i, err))
 			continue
 		}
 
-		walletapi.Connected = false
+		disconnectWalletAPI()
 
 		a.logToConsole(fmt.Sprintf("[OK] Transferred %d from wallet #%d (tx: %s)", transferAmount, i, tx.GetHash().String()[:16]+"..."))
 
@@ -939,7 +957,7 @@ func (a *App) FundTestWallet(targetIndex int, amount uint64) map[string]interfac
 		}
 	}
 
-	walletapi.Connected = false
+	disconnectWalletAPI()
 
 	// Also update source wallet balances using direct query
 	a.logToConsole("[SYNC] Updating source wallet balances...")
@@ -951,7 +969,7 @@ func (a *App) FundTestWallet(targetIndex int, amount uint64) map[string]interfac
 				a.logToConsole(fmt.Sprintf("[OK] Source wallet #%d balance: %d", srcIdx, balance))
 			}
 		}
-		walletapi.Connected = false
+		disconnectWalletAPI()
 	}
 
 	a.logToConsole(fmt.Sprintf("[OK] Funded wallet #%d with %d atomic units from %d wallets", targetIndex, totalTransferred, transferCount))

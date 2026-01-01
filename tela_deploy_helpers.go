@@ -305,11 +305,26 @@ func (a *App) prepareDOCForDeployment(docInfo DOCInfo, wallet *walletapi.Wallet_
 }
 
 // disconnectWalletAPI properly disconnects the walletapi and ensures no lingering connections
-// Setting walletapi.Connected = false is not enough - we need to ensure the websocket is actually closed
+// CRITICAL: Setting walletapi.Connected = false is NOT enough - we must close the actual websocket!
+// The simulator daemon can only handle ONE websocket connection at a time.
+// If we don't close the websocket, the next connection attempt (e.g., from tela.GetGasEstimate())
+// will crash the daemon with "websocket: close 1006 (abnormal closure): unexpected EOF"
 func (a *App) disconnectWalletAPI() {
+	// First, get the RPC client which holds the websocket connection
+	rpcClient := walletapi.GetRPCClient()
+	if rpcClient != nil && rpcClient.WS != nil {
+		// Close the actual websocket connection
+		if err := rpcClient.WS.Close(); err != nil {
+			a.logToConsole(fmt.Sprintf("[DEBUG] Websocket close returned: %v (may already be closed)", err))
+		}
+	}
+	
+	// Mark as disconnected
 	walletapi.Connected = false
-	// Give a brief moment for any pending operations to complete
-	time.Sleep(10 * time.Millisecond)
+	
+	// Give the daemon time to fully release the connection
+	// This is critical for the simulator which is single-threaded
+	time.Sleep(100 * time.Millisecond)
 }
 
 // SimulatorGasFee is the gas fee per transaction in simulator mode
@@ -340,14 +355,14 @@ func (a *App) CheckBalanceForBatchDeployment(wallet *walletapi.Wallet_Disk, file
 
 	// Sync wallet to get current balance
 	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-		walletapi.Connected = false
+		a.disconnectWalletAPI()
 		return false, 0, requiredBalance, fmt.Errorf("failed to sync wallet: %v", err)
 	}
 
 	mature, _ := wallet.Get_Balance()
 
-	// Disconnect
-	walletapi.Connected = false
+	// Disconnect - MUST close websocket properly!
+	a.disconnectWalletAPI()
 
 	if mature < requiredBalance {
 		return false, mature, requiredBalance, nil
