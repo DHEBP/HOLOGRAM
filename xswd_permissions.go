@@ -13,14 +13,26 @@ import (
 type XSWDPermission string
 
 const (
-	PermissionViewAddress    XSWDPermission = "view_address"
-	PermissionViewBalance    XSWDPermission = "view_balance"
+	PermissionReadPublicData  XSWDPermission = "read_public_data"  // Read-only daemon data (GetInfo, GetBlock, etc.)
+	PermissionViewAddress     XSWDPermission = "view_address"
+	PermissionViewBalance     XSWDPermission = "view_balance"
 	PermissionSignTransaction XSWDPermission = "sign_transaction"
-	PermissionSCInvoke       XSWDPermission = "sc_invoke"
+	PermissionSCInvoke        XSWDPermission = "sc_invoke"
 )
 
 // AllPermissions returns all defined permission types
 func AllPermissions() []XSWDPermission {
+	return []XSWDPermission{
+		PermissionReadPublicData,
+		PermissionViewAddress,
+		PermissionViewBalance,
+		PermissionSignTransaction,
+		PermissionSCInvoke,
+	}
+}
+
+// WalletPermissions returns permissions that require wallet access
+func WalletPermissions() []XSWDPermission {
 	return []XSWDPermission{
 		PermissionViewAddress,
 		PermissionViewBalance,
@@ -40,6 +52,13 @@ type PermissionInfo struct {
 // GetPermissionInfo returns metadata about a permission
 func GetPermissionInfo(p XSWDPermission) PermissionInfo {
 	switch p {
+	case PermissionReadPublicData:
+		return PermissionInfo{
+			ID:          p,
+			Name:        "Read Public Blockchain Data",
+			Description: "Can read public blockchain info (blocks, transactions, network stats)",
+			AlwaysAsk:   false,
+		}
 	case PermissionViewAddress:
 		return PermissionInfo{
 			ID:          p,
@@ -347,7 +366,7 @@ func (pm *PermissionManager) GetActiveClients() []string {
 	return clients
 }
 
-// GetRequestedPermissionsForMethod returns the permission required for a given XSWD method
+// GetRequiredPermission returns the permission required for a given XSWD method
 func GetRequiredPermission(method string) XSWDPermission {
 	switch method {
 	case "GetAddress", "DERO.GetAddress":
@@ -358,18 +377,66 @@ func GetRequiredPermission(method string) XSWDPermission {
 		return PermissionSignTransaction
 	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
 		return PermissionSCInvoke
+	// Read-only daemon methods - no wallet needed
+	case "DERO.GetInfo", "GetInfo",
+		"DERO.GetBlock", "GetBlock",
+		"DERO.GetBlockHeaderByHash", "GetBlockHeaderByHash",
+		"DERO.GetBlockHeaderByTopoHeight", "GetBlockHeaderByTopoHeight",
+		"DERO.GetTxPool", "GetTxPool",
+		"DERO.GetTransaction", "GetTransaction",
+		"DERO.GetRandomAddress", "GetRandomAddress",
+		"DERO.GetSC", "GetSC",
+		"DERO.GetGasEstimate", "GetGasEstimate",
+		"DERO.NameToAddress", "NameToAddress":
+		return PermissionReadPublicData
 	default:
 		return ""
 	}
 }
 
+// IsReadOnlyMethod returns true if the method only reads public blockchain data (no wallet needed)
+func IsReadOnlyMethod(method string) bool {
+	perm := GetRequiredPermission(method)
+	return perm == PermissionReadPublicData || perm == ""
+}
+
+// RequiresWallet returns true if the permission requires wallet access
+func RequiresWallet(p XSWDPermission) bool {
+	switch p {
+	case PermissionViewAddress, PermissionViewBalance, PermissionSignTransaction, PermissionSCInvoke:
+		return true
+	default:
+		return false
+	}
+}
+
 // DefaultRequestedPermissions returns the default permissions a dApp requests if not specified
+// Now defaults to read-only only - apps must explicitly request wallet permissions
 func DefaultRequestedPermissions() []XSWDPermission {
 	return []XSWDPermission{
+		PermissionReadPublicData,
+	}
+}
+
+// FullAccessPermissions returns all permissions including wallet access
+// Used when an app explicitly requests full access
+func FullAccessPermissions() []XSWDPermission {
+	return []XSWDPermission{
+		PermissionReadPublicData,
 		PermissionViewAddress,
 		PermissionViewBalance,
 		PermissionSignTransaction,
 		PermissionSCInvoke,
 	}
+}
+
+// HasAnyWalletPermission returns true if the permission list includes any wallet-related permissions
+func HasAnyWalletPermission(perms []XSWDPermission) bool {
+	for _, p := range perms {
+		if RequiresWallet(p) {
+			return true
+		}
+	}
+	return false
 }
 

@@ -439,8 +439,11 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		}
 	}
 
-	// Emit toast warning if no wallet is open
-	if !walletManager.isOpen {
+	// Check if this is a read-only request (no wallet permissions needed)
+	isReadOnly := !HasAnyWalletPermission(requestedPerms)
+	
+	// Emit toast warning if no wallet is open AND app needs wallet access
+	if !walletManager.isOpen && !isReadOnly {
 		runtime.EventsEmit(s.app.ctx, "toast:show", map[string]interface{}{
 			"type":    "warning",
 			"message": "Connect a wallet to interact with " + appName,
@@ -448,13 +451,14 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 	}
 
 	runtime.EventsEmit(s.app.ctx, "xswd:request", map[string]interface{}{
-		"id":                  reqID,
-		"type":                "connect",
-		"appName":             appName,
-		"origin":              origin,
-		"description":         description,
+		"id":                   reqID,
+		"type":                 "connect",
+		"appName":              appName,
+		"origin":               origin,
+		"description":          description,
 		"requestedPermissions": permInfos,
 		"existingPermissions":  existingPerms,
+		"isReadOnly":           isReadOnly,
 	})
 
 	resp := <-resChan

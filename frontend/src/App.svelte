@@ -251,7 +251,8 @@
         origin: req.origin || 'XSWD',
         // Include permission info for connect requests
         requestedPermissions: req.requestedPermissions,
-        existingPermissions: req.existingPermissions
+        existingPermissions: req.existingPermissions,
+        isReadOnly: req.isReadOnly || false
       }, 
       // On Approve
       (result) => {

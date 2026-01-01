@@ -12,6 +12,29 @@ import VersionHistory from '../lib/components/VersionHistory.svelte';
 import { Star, History, GitBranch, Heart } from 'lucide-svelte';
 import deroIconFallback from '../assets/dero-icon-fallback.svg';
 
+// Permission helpers for XSWD connection requests
+function getPermissionName(permId) {
+  const names = {
+    'read_public_data': 'Read Public Blockchain Data',
+    'view_address': 'View Wallet Address',
+    'view_balance': 'View Balance',
+    'sign_transaction': 'Sign Transactions',
+    'sc_invoke': 'Smart Contract Calls'
+  };
+  return names[permId] || permId;
+}
+
+function getPermissionDescription(permId) {
+  const descriptions = {
+    'read_public_data': 'Can read public blockchain info (blocks, transactions, network stats)',
+    'view_address': 'Can see your public wallet address',
+    'view_balance': 'Can see your wallet balance',
+    'sign_transaction': 'Can request to send DERO (requires approval each time)',
+    'sc_invoke': 'Can request smart contract interactions (requires approval each time)'
+  };
+  return descriptions[permId] || 'Unknown permission';
+}
+
 let addressInput = '';
   let loading = false;
   let showWelcome = true;
@@ -443,11 +466,31 @@ let addressInput = '';
                   result = true;
                 } else {
                   addConsoleLog('[Browser] Requesting wallet approval via modal...');
+                  // Check if app requests specific permissions in handshake
+                  const requestedPerms = payload.appInfo?.permissions || [];
+                  const hasWalletPerms = requestedPerms.some(p => 
+                    ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
+                  );
+                  // Default to read-only unless app explicitly requests wallet permissions
+                  const isReadOnly = !hasWalletPerms;
+                  
                   const approval = await requestWalletApproval({
                     type: 'connect',
                     appName: payload.appInfo?.name || currentMeta.name || 'App',
                     origin: addressInput,
-                    description: payload.appInfo?.description || ''
+                    description: payload.appInfo?.description || '',
+                    isReadOnly: isReadOnly,
+                    requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
+                      id: p,
+                      name: getPermissionName(p),
+                      description: getPermissionDescription(p),
+                      alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(p)
+                    })) : [{ 
+                      id: 'read_public_data', 
+                      name: 'Read Public Blockchain Data',
+                      description: 'Can read public blockchain info (blocks, transactions, network stats)',
+                      alwaysAsk: false
+                    }]
                   });
                   addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
                   if (approval && approval.approved) {
@@ -1284,10 +1327,18 @@ let addressInput = '';
           const settings = get(settingsState);
           if (settings.integratedWallet) {
             try {
+              // Default to read-only for initial connect
               const approval = await requestWalletApproval({
                 type: 'connect',
                 appName: currentMeta.name || 'App',
-                origin: addressInput
+                origin: addressInput,
+                isReadOnly: true,
+                requestedPermissions: [{ 
+                  id: 'read_public_data', 
+                  name: 'Read Public Blockchain Data',
+                  description: 'Can read public blockchain info (blocks, transactions, network stats)',
+                  alwaysAsk: false
+                }]
               });
               if (approval.approved) {
                 await ApproveWalletConnection();

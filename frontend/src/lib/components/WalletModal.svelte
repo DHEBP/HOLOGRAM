@@ -142,8 +142,11 @@
   async function handleApprove() {
     if (!request) return;
     
-    // If wallet is not open, require password AND wallet path
-    if (!$walletState.isOpen) {
+    // Read-only requests don't need wallet access
+    const isReadOnlyRequest = request.type === 'connect' && request.isReadOnly;
+    
+    // If wallet is not open AND this is not a read-only request, require password AND wallet path
+    if (!$walletState.isOpen && !isReadOnlyRequest) {
       if (!walletPath) {
         error = 'Please select a wallet file';
         return;
@@ -305,55 +308,76 @@
       <div class="wallet-request-details">
         {#if request.type === 'connect'}
           <div>
-            <h3 class="modal-section-title">Permissions Requested</h3>
-            {#if request.requestedPermissions && request.requestedPermissions.length > 0}
-              <div class="modal-permissions-list">
-                {#each request.requestedPermissions as perm}
-                  <label 
-                    class="modal-permission-item {grantedPermissions[perm.id] ? 'modal-permission-item-active' : ''}"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={grantedPermissions[perm.id]}
-                      on:change={() => togglePermission(perm.id)}
-                      disabled={perm.alwaysAsk}
-                      class="modal-permission-checkbox"
-                    />
-                    <div class="modal-permission-content">
-                      <div class="modal-permission-header">
-                        <span class="modal-permission-name">{perm.name}</span>
-                        {#if perm.alwaysAsk}
-                          <span class="modal-permission-badge">Always asks</span>
-                        {/if}
-                      </div>
-                      <p class="modal-permission-desc">{perm.description}</p>
-                    </div>
-                  </label>
-                {/each}
+            {#if request.isReadOnly}
+              <!-- Read-only app - simplified UI -->
+              <div class="wallet-readonly-badge">
+                <span class="wallet-readonly-icon">◎</span>
+                <span>Read-Only Access</span>
               </div>
-              
-              {#if request.existingPermissions}
+              <p class="wallet-readonly-desc">
+                This app only reads public blockchain data. No wallet access is required.
+              </p>
+              <div class="wallet-readonly-permissions">
+                <div class="wallet-readonly-item">
+                  <span class="wallet-check-icon">✓</span>
+                  <span>Read public blockchain info (blocks, transactions, network stats)</span>
+                </div>
+                <div class="wallet-readonly-item wallet-readonly-item-denied">
+                  <span class="wallet-denied-icon">✗</span>
+                  <span>Cannot access wallet address or balance</span>
+                </div>
+                <div class="wallet-readonly-item wallet-readonly-item-denied">
+                  <span class="wallet-denied-icon">✗</span>
+                  <span>Cannot request transactions</span>
+                </div>
+              </div>
+            {:else}
+              <h3 class="modal-section-title">Permissions Requested</h3>
+              {#if request.requestedPermissions && request.requestedPermissions.length > 0}
+                <div class="modal-permissions-list">
+                  {#each request.requestedPermissions as perm}
+                    <label 
+                      class="modal-permission-item {grantedPermissions[perm.id] ? 'modal-permission-item-active' : ''}"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={grantedPermissions[perm.id]}
+                        on:change={() => togglePermission(perm.id)}
+                        disabled={perm.alwaysAsk}
+                        class="modal-permission-checkbox"
+                      />
+                      <div class="modal-permission-content">
+                        <div class="modal-permission-header">
+                          <span class="modal-permission-name">{perm.name}</span>
+                          {#if perm.alwaysAsk}
+                            <span class="modal-permission-badge">Always asks</span>
+                          {/if}
+                        </div>
+                        <p class="modal-permission-desc">{perm.description}</p>
+                      </div>
+                    </label>
+                  {/each}
+                </div>
+                
+                {#if request.existingPermissions}
+                  <p class="wallet-info-note">
+                    <span class="wallet-info-icon">i</span>
+                    This app has connected before. Your previous permissions are shown.
+                  </p>
+                {/if}
+              {:else}
+                <!-- Fallback for old-style requests without permission info -->
+                <ul class="wallet-fallback-permissions">
+                  <li class="wallet-fallback-item">
+                    <span class="wallet-check-icon">✓</span>
+                    <span>Read public blockchain data</span>
+                  </li>
+                </ul>
                 <p class="wallet-info-note">
                   <span class="wallet-info-icon">i</span>
-                  This app has connected before. Your previous permissions are shown.
+                  This app will request additional permissions as needed.
                 </p>
               {/if}
-            {:else}
-              <!-- Fallback for old-style requests without permission info -->
-              <ul class="wallet-fallback-permissions">
-                <li class="wallet-fallback-item">
-                  <span class="wallet-check-icon">✓</span>
-                  <span>View wallet address</span>
-                </li>
-                <li class="wallet-fallback-item">
-                  <span class="wallet-check-icon">✓</span>
-                  <span>View wallet balance</span>
-                </li>
-                <li class="wallet-fallback-item">
-                  <span class="wallet-check-icon">✓</span>
-                  <span>Request transaction signing</span>
-                </li>
-              </ul>
             {/if}
           </div>
         {:else if request.type === 'sign'}
@@ -397,8 +421,14 @@
         {/if}
       </div>
 
-      <!-- Wallet State Section -->
-      {#if $walletState.isOpen}
+      <!-- Wallet State Section - only show for non-read-only requests -->
+      {#if request.type === 'connect' && request.isReadOnly}
+        <!-- Read-only apps don't need wallet access -->
+        <div class="wallet-readonly-info">
+          <span class="wallet-readonly-info-icon">◎</span>
+          <span>No wallet needed for this connection</span>
+        </div>
+      {:else if $walletState.isOpen}
         <!-- Current wallet is open - show wallet switcher option -->
         <div class="modal-wallet-section">
           <div class="modal-wallet-current-row">
@@ -640,6 +670,74 @@
   
   .wallet-check-icon {
     color: var(--status-ok);
+  }
+  
+  .wallet-denied-icon {
+    color: var(--text-5);
+  }
+  
+  /* Read-Only Badge */
+  .wallet-readonly-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: rgba(34, 211, 238, 0.1);
+    border: 1px solid rgba(34, 211, 238, 0.3);
+    border-radius: var(--r-md);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--cyan-400);
+    margin-bottom: var(--s-3);
+  }
+  
+  .wallet-readonly-icon {
+    font-size: 14px;
+  }
+  
+  .wallet-readonly-desc {
+    font-size: 13px;
+    color: var(--text-3);
+    margin-bottom: var(--s-4);
+    line-height: 1.5;
+  }
+  
+  .wallet-readonly-permissions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  
+  .wallet-readonly-item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+    font-size: 13px;
+    color: var(--text-3);
+  }
+  
+  .wallet-readonly-item-denied {
+    color: var(--text-5);
+  }
+  
+  .wallet-readonly-info {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    background: rgba(34, 211, 238, 0.05);
+    border: 1px solid rgba(34, 211, 238, 0.2);
+    border-radius: var(--r-md);
+    font-size: 13px;
+    color: var(--cyan-400);
+    margin-top: var(--s-2);
+  }
+  
+  .wallet-readonly-info-icon {
+    font-size: 16px;
   }
   
   /* Smart Contract Section */
