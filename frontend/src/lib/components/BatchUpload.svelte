@@ -4,6 +4,7 @@
   import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
   import { BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
+  import { Copy, Eye } from 'lucide-svelte';
   
   export let folderPath = '';
   
@@ -397,9 +398,10 @@
     }
   }
   
-  // Copy SCID to clipboard
-  function copyScid(scid) {
+  // Copy SCID to clipboard with toast notification
+  function copyScid(scid, label = 'SCID') {
     ClipboardSetText(scid);
+    toast.success(`${label} copied to clipboard`);
   }
   
   // Preview deployed INDEX in browser
@@ -1022,14 +1024,11 @@
           <div class="result-label">INDEX SCID</div>
           <div class="result-scid-row">
             <code class="result-scid">{deploymentResult.indexScid}</code>
-            <button class="btn-copy" on:click={() => {
-              copyScid(deploymentResult.indexScid);
-              toast.success('INDEX SCID copied to clipboard');
-            }} title="Copy full SCID">
-              ◎
+            <button class="btn-icon-action" on:click={() => copyScid(deploymentResult.indexScid, 'INDEX SCID')} title="Copy full SCID">
+              <Copy size={14} />
             </button>
-            <button class="btn-preview" on:click={() => previewIndex(deploymentResult.indexScid)} title="Preview">
-              ▶
+            <button class="btn-icon-action" on:click={() => previewIndex(deploymentResult.indexScid)} title="Preview in Browser">
+              <Eye size={14} />
             </button>
           </div>
         </div>
@@ -1048,11 +1047,8 @@
               <div class="deployed-doc-row">
                 <span class="deployed-doc-name">{doc.name}</span>
                 <code class="deployed-doc-scid" title={doc.scid}>{doc.scid?.substring(0, 32)}...</code>
-                <button class="btn-copy-sm" on:click={() => {
-                  copyScid(doc.scid);
-                  toast.success(`Copied ${doc.name} SCID`);
-                }} title="Copy full SCID">
-                  ◎
+                <button class="btn-copy-sm" on:click={() => copyScid(doc.scid, doc.name)} title="Copy full SCID">
+                  <Copy size={12} />
                 </button>
               </div>
             {/each}
@@ -1063,11 +1059,13 @@
           <button class="btn-reset" on:click={resetDeployment}>
             Deploy Another Batch
           </button>
-          <button class="btn-copy-index" on:click={() => copyScid(deploymentResult.indexScid)} title="Copy INDEX SCID">
+          <button class="btn-copy-index" on:click={() => copyScid(deploymentResult.indexScid, 'INDEX SCID')} title="Copy INDEX SCID">
+            <Copy size={14} />
             Copy INDEX SCID
           </button>
           {#if deploymentResult.durl}
             <button class="btn-preview-index" on:click={() => previewIndex(deploymentResult.indexScid)} title="Preview in Browser">
+              <Eye size={14} />
               Preview in Browser
             </button>
           {/if}
@@ -2059,13 +2057,16 @@
   
   .result-scid-row {
     display: flex;
-    align-items: center;
+    align-items: stretch; /* Ensure all elements stretch to same height */
     gap: var(--s-2, 8px);
   }
   
   .result-scid {
     flex: 1;
-    padding: var(--s-2, 8px) var(--s-3, 12px);
+    display: flex;
+    align-items: center;
+    height: 36px; /* Match button height */
+    padding: 0 var(--s-3, 12px);
     background: var(--void-deep, #08080e);
     border-radius: var(--r-md, 8px);
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
@@ -2073,6 +2074,7 @@
     color: var(--cyan-400, #22d3ee);
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
   
   .result-durl {
@@ -2084,19 +2086,32 @@
     color: var(--text-2, #a8a8b8);
   }
   
-  .btn-copy, .btn-preview {
-    padding: var(--s-2, 8px);
+  /* Icon action buttons - matches SCID container height */
+  .btn-icon-action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* Match the .result-scid height (8px padding top/bottom + line-height) */
+    height: 36px;
+    width: 36px;
+    padding: 0;
     background: var(--void-up, #181824);
     border: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
     border-radius: var(--r-md, 8px);
     color: var(--text-3, #707088);
     cursor: pointer;
     transition: all 200ms ease-out;
+    flex-shrink: 0;
   }
   
-  .btn-copy:hover, .btn-preview:hover {
+  .btn-icon-action:hover {
     background: var(--void-surface, #1e1e2a);
+    border-color: var(--border-subtle, rgba(255, 255, 255, 0.06));
     color: var(--cyan-400, #22d3ee);
+  }
+  
+  .btn-icon-action:active {
+    background: var(--void-deep, #08080e);
   }
   
   .deployed-docs-list {
@@ -2135,17 +2150,21 @@
   }
   
   .btn-copy-sm {
-    padding: 2px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
     background: transparent;
     border: none;
     color: var(--text-5, #404058);
     cursor: pointer;
-    font-size: 12px;
-    transition: color 200ms ease-out;
+    transition: all 200ms ease-out;
+    border-radius: var(--r-xs, 3px);
   }
   
   .btn-copy-sm:hover {
     color: var(--cyan-400, #22d3ee);
+    background: rgba(34, 211, 238, 0.1);
   }
   
   .success-actions {
@@ -2176,6 +2195,9 @@
   
   .btn-copy-index,
   .btn-preview-index {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
     padding: var(--s-3, 12px) var(--s-4, 16px);
     background: var(--void-up, #181824);
     border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
