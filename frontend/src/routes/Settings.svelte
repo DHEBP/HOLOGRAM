@@ -213,12 +213,14 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   async function handleToggleEpoch() {
     epochError = '';
     try {
-      const newState = !epochEnabled;
-      const result = await SetDevSupportEnabled(newState);
+      // Note: epochEnabled is already updated by bind:checked before this handler runs
+      // So we use the current value, not !epochEnabled
+      const result = await SetDevSupportEnabled(epochEnabled);
       if (!result.success && result.error && !result.error.includes('No wallet')) {
         epochError = result.error;
+        // Revert the toggle on error
+        epochEnabled = !epochEnabled;
       }
-      epochEnabled = newState;
       await refreshEpochStats();
       await refreshDevSupportStats();
       
@@ -229,6 +231,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       }
     } catch (e) {
       epochError = e.message || 'Failed to toggle developer support';
+      // Revert the toggle on error
+      epochEnabled = !epochEnabled;
     }
   }
   
