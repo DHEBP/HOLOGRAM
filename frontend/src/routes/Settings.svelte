@@ -148,6 +148,24 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     EventsOn('network-mode-changed', async () => {
       await syncNetworkMode();
     });
+    
+    // Listen for simulator crash events
+    EventsOn('simulator:crashed', async (data) => {
+      console.error('[Settings] Simulator crashed!', data);
+      simulatorError = 'Simulator daemon crashed unexpectedly. Check console for details.';
+      simulatorStatus = { ...simulatorStatus, status: 'crashed', running: false };
+      await refreshSimulatorStatus();
+    });
+    
+    // Listen for node stopped events
+    EventsOn('node:stopped', async (data) => {
+      console.log('[Settings] Node stopped event:', data);
+      if (data.network === 'simulator' && data.unexpected) {
+        simulatorError = 'Simulator daemon stopped unexpectedly';
+        await refreshSimulatorStatus();
+      }
+    });
+    
     await loadPermissionTypes();
     await initEpochPanel();
     await loadAdvancedNodeConfig();
@@ -667,6 +685,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     if (epochStatsInterval) clearInterval(epochStatsInterval);
     if (consoleLogsInterval) clearInterval(consoleLogsInterval);
     EventsOff('network-mode-changed');
+    EventsOff('simulator:crashed');
+    EventsOff('node:stopped');
     if (window._settingsNavigateHandler) {
       window.removeEventListener('navigate-section', window._settingsNavigateHandler);
       window._settingsNavigateHandler = null;

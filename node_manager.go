@@ -902,10 +902,14 @@ func (a *App) monitorNode() {
 		return
 	}
 
+	// Capture network mode before waiting
+	networkMode := nodeManager.networkMode
+
 	// Wait for process to exit
 	err := nodeManager.process.Wait()
 
 	nodeManager.Lock()
+	wasRunning := nodeManager.isRunning
 	nodeManager.isRunning = false
 	nodeManager.process = nil
 	
@@ -940,8 +944,11 @@ func (a *App) monitorNode() {
 	}
 	nodeManager.Unlock()
 
+	// Determine if this was an unexpected crash
+	unexpectedExit := wasRunning && err != nil
+
 	if err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Node process exited with error: %v", err))
+		a.logToConsole(fmt.Sprintf("[ERR] Node process exited with error: %v", err))
 		if len(lastLines) > 0 {
 			a.logToConsole("[Node] Last output from derod:")
 			for _, line := range lastLines {
@@ -949,7 +956,26 @@ func (a *App) monitorNode() {
 			}
 		}
 	} else {
-		a.logToConsole("[INFO] Node process exited")
+		a.logToConsole("[INFO] Node process exited normally")
+	}
+
+	// Emit event to frontend about the crash
+	if a.ctx != nil {
+		wailsRuntime.EventsEmit(a.ctx, "node:stopped", map[string]interface{}{
+			"unexpected": unexpectedExit,
+			"error":      err != nil,
+			"network":    string(networkMode),
+			"lastLines":  lastLines,
+		})
+
+		// If this was a simulator crash, emit a specific event
+		if networkMode == NetworkSimulator && unexpectedExit {
+			a.logToConsole("[CRASH] Simulator daemon crashed unexpectedly!")
+			wailsRuntime.EventsEmit(a.ctx, "simulator:crashed", map[string]interface{}{
+				"error":     fmt.Sprintf("%v", err),
+				"lastLines": lastLines,
+			})
+		}
 	}
 }
 
