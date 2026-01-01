@@ -10,12 +10,56 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/civilware/tela"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
 	"github.com/deroproject/derohe/walletapi"
 )
+
+// DOC content validation constants (from tela-cli)
+const (
+	MAX_DOC_CODE_SIZE      = float64(18)    // DOC SC template file size is +1.2KB with headers
+	MAX_DOC_INSTALL_SIZE   = float64(19.2)  // DOC SC total file size (including docCode) should be below this
+	MAX_INDEX_INSTALL_SIZE = float64(11.64) // INDEX SC file size should be below this
+)
+
+// validateDocContent validates document content before deployment to prevent DVM crashes.
+// This mirrors the validation done in tela-cli to catch issues before they reach the daemon.
+func (a *App) validateDocContent(content string, fileName string) error {
+	// Check for non-ASCII characters - these can crash the DVM
+	for i, r := range content {
+		if r > unicode.MaxASCII {
+			// Find the position for helpful error message
+			line := 1
+			col := 1
+			for j := 0; j < i; j++ {
+				if content[j] == '\n' {
+					line++
+					col = 1
+				} else {
+					col++
+				}
+			}
+			return fmt.Errorf("non-ASCII character '%c' (U+%04X) found in %s at line %d, column %d - this will crash the DVM", r, r, fileName, line, col)
+		}
+	}
+	
+	// Check content size
+	contentSize := getCodeSizeInKB(content)
+	if contentSize > MAX_DOC_CODE_SIZE {
+		return fmt.Errorf("content size %.2fKB exceeds max %.2fKB for %s", contentSize, MAX_DOC_CODE_SIZE, fileName)
+	}
+	
+	return nil
+}
+
+// getCodeSizeInKB calculates the size of code in KB, counting newlines (from tela-cli)
+func getCodeSizeInKB(code string) float64 {
+	newLines := strings.Count(code, "\n")
+	return float64(len([]byte(code))+newLines) / 1024
+}
 
 // getSimulatorTransferDestination returns a safe destination address for simulator transfers
 // that is guaranteed to be different from the sender's address AND is registered on the blockchain.
@@ -180,6 +224,11 @@ func (a *App) prepareDOCForDeployment(docInfo DOCInfo, wallet *walletapi.Wallet_
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
+	// Validate docType is accepted
+	if !tela.IsAcceptedLanguage(docInfo.DocType) {
+		return nil, fmt.Errorf("invalid docType %q for %s - must be one of: TELA-HTML-1, TELA-JS-1, TELA-CSS-1, TELA-JSON-1, TELA-MD-1, TELA-GO-1, TELA-STATIC-1", docInfo.DocType, docInfo.Name)
+	}
+
 	// Handle compression if requested
 	docCode := string(data)
 	fileName := docInfo.Name
@@ -201,6 +250,12 @@ func (a *App) prepareDOCForDeployment(docInfo DOCInfo, wallet *walletapi.Wallet_
 			a.logToConsole(fmt.Sprintf("[COMPRESS] %s: %d → %d bytes (%.1f%% smaller)",
 				docInfo.Name, originalSize, compressedSize, savings))
 		}
+	}
+
+	// CRITICAL: Validate content BEFORE signing and deployment
+	// This prevents DVM crashes from non-ASCII characters or oversized content
+	if err := a.validateDocContent(docCode, docInfo.Name); err != nil {
+		return nil, fmt.Errorf("content validation failed: %w", err)
 	}
 
 	// Sign the (possibly compressed) file content

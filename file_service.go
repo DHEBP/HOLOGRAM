@@ -7,10 +7,40 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/civilware/tela"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+// validateFileContent checks file content for issues that would crash the DVM
+// Returns a warning string if issues found, empty string if OK
+func validateFileContent(data []byte, fileName string) string {
+	for i, r := range string(data) {
+		if r > unicode.MaxASCII {
+			// Find the position for helpful error message
+			line := 1
+			col := 1
+			for j := 0; j < i; j++ {
+				if data[j] == '\n' {
+					line++
+					col = 1
+				} else {
+					col++
+				}
+			}
+			return fmt.Sprintf("Non-ASCII character '%c' at line %d, col %d - will fail deployment", r, line, col)
+		}
+	}
+	
+	// Check size
+	contentSize := float64(len(data)+strings.Count(string(data), "\n")) / 1024
+	if contentSize > 18 { // MAX_DOC_CODE_SIZE
+		return fmt.Sprintf("File too large (%.2fKB > 18KB max)", contentSize)
+	}
+	
+	return ""
+}
 
 // FileService handles file operations
 
@@ -538,15 +568,16 @@ type FolderScanResult struct {
 
 // ScannedFile represents a file found during folder scanning
 type ScannedFile struct {
-	Name         string `json:"name"`
-	Path         string `json:"path"`
-	RelPath      string `json:"relPath"`
-	SubDir       string `json:"subDir"`
-	DocType      string `json:"docType"`
-	Size         int64  `json:"size"`
-	IsEntryPoint bool   `json:"isEntryPoint"` // e.g., index.html
-	CanCompress  bool   `json:"canCompress"`
-	GasEstimate  uint64 `json:"gasEstimate"`
+	Name           string `json:"name"`
+	Path           string `json:"path"`
+	RelPath        string `json:"relPath"`
+	SubDir         string `json:"subDir"`
+	DocType        string `json:"docType"`
+	Size           int64  `json:"size"`
+	IsEntryPoint   bool   `json:"isEntryPoint"` // e.g., index.html
+	CanCompress    bool   `json:"canCompress"`
+	GasEstimate    uint64 `json:"gasEstimate"`
+	ValidationWarn string `json:"validationWarn,omitempty"` // Warning about content issues
 }
 
 // ScanFolder recursively scans a folder for TELA deployment
@@ -607,16 +638,26 @@ func (a *App) ScanFolder(folderPath string) map[string]interface{} {
 		// Check if this is an entry point
 		isEntry := strings.ToLower(name) == "index.html" && (subDir == "/" || subDir == "")
 
+		// Validate content for DVM compatibility (read file to check)
+		var validationWarn string
+		if data, readErr := os.ReadFile(path); readErr == nil {
+			validationWarn = validateFileContent(data, name)
+			if validationWarn != "" {
+				result.Errors = append(result.Errors, fmt.Sprintf("%s: %s", name, validationWarn))
+			}
+		}
+
 		file := ScannedFile{
-			Name:         name,
-			Path:         path,
-			RelPath:      relPath,
-			SubDir:       subDir,
-			DocType:      docType,
-			Size:         info.Size(),
-			IsEntryPoint: isEntry,
-			CanCompress:  canCompress(docType),
-			GasEstimate:  estimateGasCost(int(info.Size())),
+			Name:           name,
+			Path:           path,
+			RelPath:        relPath,
+			SubDir:         subDir,
+			DocType:        docType,
+			Size:           info.Size(),
+			IsEntryPoint:   isEntry,
+			CanCompress:    canCompress(docType),
+			GasEstimate:    estimateGasCost(int(info.Size())),
+			ValidationWarn: validationWarn,
 		}
 
 		result.Files = append(result.Files, file)
