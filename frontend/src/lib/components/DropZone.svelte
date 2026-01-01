@@ -165,11 +165,11 @@
   
   <p class="dropzone-title">
     {#if isLoading}
-      Loading files...
+      Loading file...
     {:else if isDragging}
       Drop to upload
     {:else}
-      Drag & drop files or folders
+      Drag & drop a file
     {/if}
   </p>
   <p class="dropzone-hint">

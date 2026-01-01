@@ -1854,7 +1854,12 @@
     {#if activeTab === 'install-doc'}
       <div class="content-section">
         <h2 class="content-section-title">Install TELA DOC</h2>
-        <p class="content-section-desc">Upload files to create TELA DOC smart contracts on the blockchain.</p>
+        <p class="content-section-desc">
+          Deploy a single file as a standalone DOC smart contract.
+          <button class="batch-hint-link" on:click={() => activeTab = 'batch-upload'}>
+            For multi-file apps, use Batch Upload <ArrowRight size={12} />
+          </button>
+        </p>
         
         <!-- Drop Zone -->
         <DropZone on:filesStaged={handleFilesStaged} />
@@ -1863,6 +1868,19 @@
         {#if stagedFiles.length > 0}
           <div class="staged-section">
             <h3 class="content-section-title">Staged Files <span class="text-text-4">({stagedFiles.length})</span></h3>
+            
+            <!-- Multi-file info banner -->
+            {#if stagedFiles.length > 1}
+              <div class="multi-file-info">
+                <AlertTriangle size={14} />
+                <span>
+                  Multiple files will create <strong>{stagedFiles.length} separate DOCs</strong> (no INDEX linking them).
+                </span>
+                <button class="info-action-btn" on:click={() => activeTab = 'batch-upload'}>
+                  Use Batch Upload instead <ArrowRight size={12} />
+                </button>
+              </div>
+            {/if}
             
             <!-- Enhanced staged file list with editable fields -->
             <div class="staged-list">
@@ -4809,6 +4827,67 @@
   .search-clear:hover {
     color: var(--text-2);
     background: var(--void-up);
+  }
+  
+  /* Batch Upload hint link in description */
+  .batch-hint-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: var(--s-2, 8px);
+    padding: 2px 8px;
+    background: rgba(34, 211, 238, 0.08);
+    border: 1px solid rgba(34, 211, 238, 0.2);
+    border-radius: var(--r-sm, 5px);
+    color: var(--cyan-400, #22d3ee);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 150ms ease-out;
+  }
+  
+  .batch-hint-link:hover {
+    background: rgba(34, 211, 238, 0.15);
+    border-color: rgba(34, 211, 238, 0.4);
+  }
+  
+  /* Multi-file info banner */
+  .multi-file-info {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    padding: var(--s-3, 12px) var(--s-4, 16px);
+    margin-bottom: var(--s-4, 16px);
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.2);
+    border-radius: var(--r-md, 8px);
+    font-size: 12px;
+    color: var(--status-warn, #fbbf24);
+  }
+  
+  .multi-file-info strong {
+    color: var(--text-1, #f8f8fc);
+  }
+  
+  .info-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    padding: 4px 10px;
+    background: rgba(34, 211, 238, 0.12);
+    border: 1px solid rgba(34, 211, 238, 0.3);
+    border-radius: var(--r-sm, 5px);
+    color: var(--cyan-400, #22d3ee);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 150ms ease-out;
+    white-space: nowrap;
+  }
+  
+  .info-action-btn:hover {
+    background: rgba(34, 211, 238, 0.2);
+    border-color: rgba(34, 211, 238, 0.5);
   }
   
   /* v6.1 Staged Files */
