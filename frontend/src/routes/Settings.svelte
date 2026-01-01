@@ -374,15 +374,26 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   }
   
   async function resetSimulator() {
-    if (!confirm('This will delete all simulator data and start fresh. Continue?')) {
+    console.log('[Settings] Reset button clicked');
+    
+    // Use a simple confirm - if it doesn't work in Wails, just proceed
+    const confirmed = confirm('This will delete all simulator data and start fresh. Continue?');
+    console.log('[Settings] Confirm result:', confirmed);
+    
+    if (!confirmed) {
+      console.log('[Settings] Reset cancelled by user');
       return;
     }
     
     simulatorLoading = true;
     simulatorError = '';
+    simulatorSuccess = '';
     
     try {
+      console.log('[Settings] Calling ResetSimulator...');
       const result = await ResetSimulator();
+      console.log('[Settings] ResetSimulator result:', result);
+      
       if (result.success) {
         simulatorSuccess = 'Simulator reset complete';
         await refreshSimulatorStatus();
@@ -390,6 +401,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
         simulatorError = result.error || 'Reset failed';
       }
     } catch (e) {
+      console.error('[Settings] ResetSimulator error:', e);
       simulatorError = e.message || 'Reset failed';
     } finally {
       simulatorLoading = false;

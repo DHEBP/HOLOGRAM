@@ -481,29 +481,48 @@ func (sm *SimulatorManager) waitForDaemon(timeout time.Duration) error {
 
 // ResetSimulator clears all simulator data and starts fresh
 func (sm *SimulatorManager) ResetSimulator() map[string]interface{} {
-	sm.app.logToConsole("[SYNC] Resetting Simulator...")
+	sm.app.logToConsole("[RESET] ========== RESETTING SIMULATOR ==========")
 
 	// Stop simulator if running
 	if sm.isInitialized {
+		sm.app.logToConsole("[RESET] Stopping simulator...")
 		sm.StopSimulatorMode()
+	} else {
+		sm.app.logToConsole("[RESET] Simulator was not running")
 	}
 
 	// Wait for services to stop
+	sm.app.logToConsole("[RESET] Waiting for services to stop...")
 	time.Sleep(2 * time.Second)
 
-	// Delete simulator data directory
+	// Delete simulator data directory (wallets)
 	simulatorDir := filepath.Join(sm.baseDir, SimulatorWalletDir)
+	sm.app.logToConsole(fmt.Sprintf("[RESET] Deleting wallet data: %s", simulatorDir))
 	if err := os.RemoveAll(simulatorDir); err != nil {
-		sm.app.logToConsole(fmt.Sprintf("[WARN] Warning: Failed to delete simulator data: %v", err))
+		sm.app.logToConsole(fmt.Sprintf("[WARN] Failed to delete simulator wallet data: %v", err))
 	} else {
-		sm.app.logToConsole("[OK] Simulator data cleared")
+		sm.app.logToConsole("[OK] Simulator wallet data cleared")
+	}
+
+	// Delete the blockchain data directory
+	blockchainDir := filepath.Join(sm.baseDir, "testnet_simulator")
+	sm.app.logToConsole(fmt.Sprintf("[RESET] Deleting blockchain data: %s", blockchainDir))
+	if err := os.RemoveAll(blockchainDir); err != nil {
+		sm.app.logToConsole(fmt.Sprintf("[WARN] Failed to delete blockchain data: %v", err))
+	} else {
+		sm.app.logToConsole("[OK] Blockchain data cleared")
 	}
 
 	// Delete simulator gnomon data
 	gnomonSimDir := filepath.Join(sm.baseDir, "gnomon_simulator")
+	sm.app.logToConsole(fmt.Sprintf("[RESET] Deleting gnomon data: %s", gnomonSimDir))
 	if err := os.RemoveAll(gnomonSimDir); err != nil {
-		sm.app.logToConsole(fmt.Sprintf("[WARN] Warning: Failed to delete gnomon data: %v", err))
+		sm.app.logToConsole(fmt.Sprintf("[WARN] Failed to delete gnomon data: %v", err))
+	} else {
+		sm.app.logToConsole("[OK] Gnomon data cleared")
 	}
+
+	sm.app.logToConsole("[RESET] ========== STARTING FRESH SIMULATOR ==========")
 
 	// Restart simulator
 	return sm.StartSimulatorMode()
