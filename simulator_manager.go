@@ -36,7 +36,7 @@ type SimulatorStatus struct {
 // NewSimulatorManager creates a new simulator manager
 func NewSimulatorManager(app *App) *SimulatorManager {
 	homeDir, _ := os.UserHomeDir()
-	baseDir := filepath.Join(homeDir, ".dero", "tela-gui")
+	baseDir := filepath.Join(homeDir, ".dero", "hologram")
 
 	return &SimulatorManager{
 		app:           app,
@@ -129,7 +129,7 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 	if binaryPath == "" {
 		sm.app.logToConsole("[ERR] Simulator binary not found")
 		sm.app.logToConsole("[INFO] Simulator requires simulator-darwin binary from derod Release142+")
-		sm.app.logToConsole("[INFO] Location: ~/.dero/tela-gui/derod/{version}/simulator-darwin")
+		sm.app.logToConsole("[INFO] Location: ~/.dero/hologram/derod/{version}/simulator-darwin")
 		if sm.app.ctx != nil {
 			wailsRuntime.EventsEmit(sm.app.ctx, "simulator:error", map[string]interface{}{
 				"error": "Simulator binary (simulator-darwin) not found. Please ensure derod Release142+ is installed.",

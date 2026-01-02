@@ -236,7 +236,7 @@ func (a *App) DetectExistingBlockchain() map[string]interface{} {
 
 // GetBinaryPath returns the path to the derod binary for the current platform
 // Search order:
-// 1. Downloaded derod at ~/.dero/tela-gui/derod/{version}/derod
+// 1. Downloaded derod at ~/.dero/hologram/derod/{version}/derod
 // 2. Bundled binaries directory (for manual installs)
 // 3. System PATH
 // 4. Common locations (~/.dero/, /usr/local/bin/)
@@ -263,8 +263,8 @@ func GetBinaryPath() string {
 
 	homeDir, _ := os.UserHomeDir()
 
-	// 1. Check downloaded derod location (~/.dero/tela-gui/derod/)
-	downloadedBase := filepath.Join(homeDir, ".dero", "tela-gui", "derod")
+	// 1. Check downloaded derod location (~/.dero/hologram/derod/)
+	downloadedBase := filepath.Join(homeDir, ".dero", "hologram", "derod")
 	if entries, err := os.ReadDir(downloadedBase); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() {
@@ -316,7 +316,7 @@ func GetBinaryPath() string {
 
 // GetSimulatorBinaryPath returns the path to the simulator binary for the current platform
 // Search order:
-// 1. Downloaded derod at ~/.dero/tela-gui/derod/{version}/simulator-darwin (or platform-specific)
+// 1. Downloaded derod at ~/.dero/hologram/derod/{version}/simulator-darwin (or platform-specific)
 // 2. Bundled binaries directory
 // 3. System PATH
 // 4. Common locations
@@ -343,8 +343,8 @@ func GetSimulatorBinaryPath() string {
 
 	homeDir, _ := os.UserHomeDir()
 
-	// 1. Check downloaded derod location (~/.dero/tela-gui/derod/)
-	downloadedBase := filepath.Join(homeDir, ".dero", "tela-gui", "derod")
+	// 1. Check downloaded derod location (~/.dero/hologram/derod/)
+	downloadedBase := filepath.Join(homeDir, ".dero", "hologram", "derod")
 	if entries, err := os.ReadDir(downloadedBase); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() {

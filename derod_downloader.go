@@ -17,7 +17,7 @@ import (
 // DerodDownloader handles downloading and managing derod binaries
 type DerodDownloader struct {
 	app        *App
-	baseDir    string // ~/.dero/tela-gui/derod/
+	baseDir    string // ~/.dero/hologram/derod/
 	httpClient *http.Client
 }
 
@@ -45,7 +45,7 @@ func NewDerodDownloader(app *App) *DerodDownloader {
 	homeDir, _ := os.UserHomeDir()
 	return &DerodDownloader{
 		app:        app,
-		baseDir:    filepath.Join(homeDir, ".dero", "tela-gui", "derod"),
+		baseDir:    filepath.Join(homeDir, ".dero", "hologram", "derod"),
 		httpClient: &http.Client{},
 	}
 }
