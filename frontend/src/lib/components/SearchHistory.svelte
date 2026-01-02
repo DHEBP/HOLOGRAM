@@ -80,11 +80,12 @@
     dispatch('close');
   }
   
+  // Type icons - using approved Unicode symbols (NO EMOJIS per Design System v7.0)
   function getTypeIcon(type) {
     switch (type) {
       case 'block': return 'B';
-      case 'tx': return '💸';
-      case 'scid': return '📜';
+      case 'tx': return '◎';      // Transfer/transaction
+      case 'scid': return '⬢';    // Smart contract (hexagon)
       case 'hash': return '#';
       case 'durl': return '@';
       case 'address': return 'A';

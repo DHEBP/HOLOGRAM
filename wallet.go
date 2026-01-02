@@ -386,7 +386,7 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string) map[
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("💸 Initiating transfer: %d atomic units to %s", amount, destination[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[Transfer] Initiating transfer: %d atomic units to %s", amount, destination[:16]+"..."))
 
 	// Build and send the transaction
 	// Note: This is a simplified version. Full implementation would handle
@@ -1513,7 +1513,7 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 
 	wallet := walletManager.wallet
 
-	a.logToConsole(fmt.Sprintf("💸 Transferring %d units of token %s to %s", amount, scid[:16]+"...", destination[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[Transfer] Transferring %d units of token %s to %s", amount, scid[:16]+"...", destination[:16]+"..."))
 
 	// Build transfer with asset (token)
 	// For DERO tokens, transfers include the SCID as the asset

@@ -58,7 +58,7 @@ export function pushToHistory(url) {
   browserHistory.set(newHistory);
   browserHistoryIndex.set(newHistory.length - 1);
   
-  console.log('📜 Global History updated:', { length: newHistory.length, index: newHistory.length - 1 });
+  console.log('[History] Global History updated:', { length: newHistory.length, index: newHistory.length - 1 });
 }
 
 // ==================== Wallet Request History ====================

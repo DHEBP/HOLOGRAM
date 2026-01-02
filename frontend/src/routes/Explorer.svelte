@@ -2224,7 +2224,7 @@
             <div class="cmd-stats-panel">
               <div class="cmd-panel-header">
                 <div class="cmd-panel-title">
-                  <span class="cmd-panel-icon">🔑</span>
+                  <span class="cmd-panel-icon">◆</span>
                   KEY SEARCH
                 </div>
                 <span class="cmd-badge">{searchResult.data.count || 0} results</span>

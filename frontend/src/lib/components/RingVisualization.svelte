@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import AddressDisplay from './AddressDisplay.svelte';
-  import { Link, Lock, Copy } from 'lucide-svelte';
+  import { Link, Lock, Copy, Pickaxe, ArrowRightLeft, FileCode, Flame, Info } from 'lucide-svelte';
   
   export let ringMembers = [];
   export let ringSize = 0;
@@ -58,12 +58,12 @@
     };
   }
   
-  // TX Type display config
+  // TX Type display config - using Lucide icons (NO EMOJIS per Design System v7.0)
   const txTypeConfig = {
-    'COINBASE': { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)', icon: '⛏️', label: 'Coinbase' },
-    'NORMAL': { color: '#52c8db', bg: 'rgba(82,200,219,0.15)', icon: '💸', label: 'Normal' },
-    'SC': { color: '#a855f7', bg: 'rgba(168,85,247,0.15)', icon: '📜', label: 'Smart Contract' },
-    'BURN': { color: '#ef4444', bg: 'rgba(239,68,68,0.15)', icon: '🔥', label: 'Burn' },
+    'COINBASE': { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)', icon: 'pickaxe', label: 'Coinbase' },
+    'NORMAL': { color: '#52c8db', bg: 'rgba(82,200,219,0.15)', icon: 'transfer', label: 'Normal' },
+    'SC': { color: '#a855f7', bg: 'rgba(168,85,247,0.15)', icon: 'code', label: 'Smart Contract' },
+    'BURN': { color: '#ef4444', bg: 'rgba(239,68,68,0.15)', icon: 'flame', label: 'Burn' },
     'REGISTRATION': { color: '#4ade80', bg: 'rgba(74,222,128,0.15)', icon: 'R', label: 'Registration' },
     'PREMINE': { color: '#f97316', bg: 'rgba(249,115,22,0.15)', icon: 'P', label: 'Premine' },
   };
@@ -75,7 +75,19 @@
   <!-- Header with TX Type -->
   <div class="ring-header">
     <div class="tx-type-badge" style="--badge-color: {typeInfo.color}; --badge-bg: {typeInfo.bg}">
-      <span class="type-icon">{typeInfo.icon}</span>
+      <span class="type-icon">
+        {#if typeInfo.icon === 'pickaxe'}
+          <Pickaxe size={14} strokeWidth={1.5} />
+        {:else if typeInfo.icon === 'transfer'}
+          <ArrowRightLeft size={14} strokeWidth={1.5} />
+        {:else if typeInfo.icon === 'code'}
+          <FileCode size={14} strokeWidth={1.5} />
+        {:else if typeInfo.icon === 'flame'}
+          <Flame size={14} strokeWidth={1.5} />
+        {:else}
+          {typeInfo.icon}
+        {/if}
+      </span>
       <span class="type-label">{typeInfo.label}</span>
     </div>
     
@@ -91,7 +103,7 @@
   {#if isCoinbase && minerAddress}
     <div class="miner-section">
       <div class="miner-header">
-        <span class="miner-icon">⛏️</span>
+        <span class="miner-icon"><Pickaxe size={14} strokeWidth={1.5} /></span>
         <span class="miner-label">Block Miner</span>
       </div>
       <div class="miner-address">
@@ -222,7 +234,7 @@
   {:else if !isCoinbase}
     <!-- No ring members message -->
     <div class="no-ring-message">
-      <span class="no-ring-icon">ℹ️</span>
+      <span class="no-ring-icon"><Info size={16} strokeWidth={1.5} /></span>
       <span class="no-ring-text">No ring member data available for this transaction</span>
     </div>
   {/if}
