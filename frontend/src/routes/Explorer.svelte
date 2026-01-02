@@ -725,6 +725,44 @@
     }
   }
   
+  /**
+   * View a hash as a Transaction (bypasses SC-first lookup)
+   * Used when viewing an SC that is also a deployment TX
+   */
+  async function viewAsTransaction(txid) {
+    if (!txid?.trim()) return;
+    
+    loading = true;
+    searchResult = null;
+    
+    try {
+      const response = await GetTransactionExtended(txid.trim());
+      
+      if (!response || response.error) {
+        toast.error(response?.error || 'Transaction not found');
+        loading = false;
+        return;
+      }
+      
+      searchResult = {
+        type: 'tx',
+        data: response,
+        hex: response.hex || '',
+      };
+      
+      // Add to navigation history
+      navHistory = navHistory.slice(0, currentNavIndex + 1);
+      navHistory.push({ type: 'tx', query: txid.trim() });
+      currentNavIndex = navHistory.length - 1;
+      
+    } catch (error) {
+      console.error('TX search error:', error);
+      toast.error('Failed to load transaction');
+    } finally {
+      loading = false;
+    }
+  }
+  
   function formatHash(hash) {
     if (!hash) return '—';
     return hash.slice(0, 8) + '...' + hash.slice(-6);
@@ -1729,6 +1767,15 @@
                 </div>
                 <div class="cmd-panel-meta">
                   <span class="cmd-badge">{((searchResult.data.balance || 0) / 100000).toFixed(5)} DERO</span>
+                  {#if searchResult.data.hasDeploymentTx}
+                    <button 
+                      class="cmd-link-btn"
+                      on:click={() => viewAsTransaction(searchQuery)}
+                      title="This SCID is also a deployment transaction"
+                    >
+                      View as TX
+                    </button>
+                  {/if}
                 </div>
               </div>
               <div class="cmd-stats-unified" style="grid-template-columns: 1fr;">
@@ -4699,58 +4746,65 @@
     white-space: nowrap;
   }
   
-  /* Version Control Section */
+  /* Version Control Section - HOLOGRAM Design System */
   .version-control-actions {
     display: flex;
-    gap: var(--s-3);
-    padding: var(--s-4);
+    gap: var(--s-3, 12px);
+    padding: var(--s-4, 16px);
     flex-wrap: wrap;
   }
   
   .version-btn {
     display: flex;
     align-items: center;
-    gap: var(--s-2);
-    padding: var(--s-2) var(--s-4);
-    border-radius: var(--radius-md);
-    font-size: var(--text-sm);
+    gap: var(--s-2, 8px);
+    padding: 10px 16px;
+    border-radius: var(--radius-md, 8px);
+    font-size: 12px;
     font-weight: 500;
     cursor: pointer;
     transition: all 0.15s ease;
-    border: none;
+    border: 1px solid transparent;
   }
   
   .version-btn.primary {
-    background: var(--cyan-500);
-    color: var(--void-pure);
+    background: var(--cyan, #00d4aa);
+    color: var(--void-pure, #0a0a0f);
   }
   
   .version-btn.primary:hover {
-    background: var(--cyan-400);
+    background: var(--cyan-400, #00f5c4);
   }
   
   .version-btn.secondary {
-    background: var(--void-up);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-dim);
+    background: var(--void-up, #1a1a24);
+    color: var(--text-secondary, #a8a8b8);
+    border-color: var(--border-dim, rgba(255,255,255,0.06));
   }
   
   .version-btn.secondary:hover {
-    background: var(--void-surface);
-    border-color: var(--border-default);
-    color: var(--text-primary);
+    background: var(--void-surface, #1e1e2a);
+    border-color: var(--border-default, rgba(255,255,255,0.1));
+    color: var(--text-primary, #e8e8f0);
   }
   
   .version-hint {
-    padding: 0 var(--s-4) var(--s-4);
-    font-size: var(--text-xs);
-    color: var(--text-muted);
+    padding: 0 var(--s-4, 16px) var(--s-4, 16px);
+    font-size: 12px;
+    color: var(--text-muted, #505068);
     margin: 0;
+    line-height: 1.5;
   }
   
   .cmd-badge.tela {
-    background: rgba(167, 139, 250, 0.2);
-    color: var(--violet-400);
+    background: rgba(167, 139, 250, 0.15);
+    color: #a78bfa;
+    border: 1px solid rgba(167, 139, 250, 0.3);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    letter-spacing: 0.05em;
   }
   
   /* Interaction Section */

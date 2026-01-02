@@ -235,6 +235,7 @@ var hardcodedSCIDs = map[string]bool{
 
 // searchHashAmbiguous handles 64-char hex strings that could be TX, Block Hash, or SCID
 // For known hardcoded SCIDs, tries SCID first. Otherwise: TX -> Block -> SCID
+// IMPORTANT: In DERO, SC deployment TX hash = SCID, so we check for both!
 func (a *App) searchHashAmbiguous(query string) SearchResult {
 	normalizedQuery := strings.ToLower(strings.TrimSpace(query))
 	
@@ -251,12 +252,33 @@ func (a *App) searchHashAmbiguous(query string) SearchResult {
 		a.logToConsole("[WARN] Hardcoded SCID lookup failed, trying other types...")
 	}
 	
-	a.logToConsole("[...] Ambiguous 64-char hash - trying TX, Block, then SC...")
+	a.logToConsole("[...] Ambiguous 64-char hash - checking SC first (deployment TX = SCID)...")
 
-	// Try as transaction first
+	// NEW: Try as smart contract FIRST
+	// In DERO, when you deploy an SC, the TX hash becomes the SCID
+	// So if this hash is a valid SC, show it as SC (more useful view)
+	scResult := a.searchSmartContract(normalizedQuery)
+	if scResult.Success {
+		a.logToConsole("[OK] Found as smart contract (SCID)")
+		scResult.Type = "sc"
+		
+		// Also check if there's a corresponding TX (the deployment transaction)
+		txResult := a.searchTransaction(query)
+		if txResult.Success {
+			// Add deployment TX info to SC result for reference
+			scResult.Data["hasDeploymentTx"] = true
+			scResult.Data["deploymentTxHash"] = query
+			scResult.Message = "This is a Smart Contract. The same hash is also the deployment transaction."
+			a.logToConsole("[OK] SC also has deployment TX - added reference")
+		}
+		
+		return scResult
+	}
+
+	// Try as transaction (if not an SC)
 	txResult := a.searchTransaction(query)
 	if txResult.Success {
-		a.logToConsole("[OK] Found as transaction")
+		a.logToConsole("[OK] Found as transaction (not an SC)")
 		return txResult
 	}
 
@@ -267,15 +289,6 @@ func (a *App) searchHashAmbiguous(query string) SearchResult {
 		// Add helpful message for user
 		blockResult.Message = "This hash is a block hash. Showing block details."
 		return blockResult
-	}
-
-	// Try as smart contract (normalize to lowercase)
-	scResult := a.searchSmartContract(normalizedQuery)
-	if scResult.Success {
-		a.logToConsole("[OK] Found as smart contract")
-		// Change type to "sc" for consistency
-		scResult.Type = "sc"
-		return scResult
 	}
 
 	// None found

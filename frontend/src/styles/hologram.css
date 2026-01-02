@@ -3647,6 +3647,29 @@
       color: var(--text-2);
     }
     
+    .cmd-link-btn {
+      display: flex;
+      align-items: center;
+      gap: var(--s-1);
+      padding: var(--s-1) var(--s-2);
+      background: transparent;
+      border: 1px solid var(--cyan-500);
+      border-radius: var(--r-xs);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--cyan-400);
+      cursor: pointer;
+      transition: all var(--dur-fast);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .cmd-link-btn:hover {
+      background: rgba(34, 211, 238, 0.15);
+      border-color: var(--cyan-400);
+      color: var(--cyan-300);
+    }
+    
     /* ----------------------------------------
        CMD LIST (Transaction Lists, etc.)
        ---------------------------------------- */

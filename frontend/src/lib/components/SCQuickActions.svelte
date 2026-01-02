@@ -222,17 +222,22 @@
   }
 </script>
 
-<div class="sc-quick-actions">
-  <div class="actions-header">
-    <h4>Quick Actions</h4>
-    {#if supportsEpoch}
-      <span class="epoch-indicator" title="Supports EPOCH Developer Ecosystem">EPOCH</span>
-    {/if}
+<div class="cmd-stats-panel">
+  <div class="cmd-panel-header">
+    <div class="cmd-panel-title">
+      <span class="cmd-panel-icon">◎</span>
+      QUICK ACTIONS
+    </div>
+    <div class="cmd-panel-meta">
+      {#if supportsEpoch}
+        <span class="cmd-badge epoch">EPOCH</span>
+      {/if}
+    </div>
   </div>
   
   {#if !xswdConnected}
-    <div class="xswd-notice">
-      <p>Connect wallet via XSWD to interact</p>
+    <div class="cmd-panel-body">
+      <p class="cmd-empty-text">Connect wallet via XSWD to interact</p>
     </div>
   {:else}
     <!-- Rating Section -->
@@ -296,36 +301,36 @@
     </button>
     
     {#if showAdvanced}
-      <div class="advanced-section">
-        <div class="form-row">
+      <div class="cmd-advanced-section">
+        <div class="cmd-form-row">
           <input 
             type="text" 
             bind:value={customEntrypoint}
             placeholder="Function name (e.g. Transfer)"
-            class="form-input"
+            class="cmd-input"
           />
         </div>
         
-        <div class="form-row">
+        <div class="cmd-form-row">
           <textarea 
             bind:value={customArgs}
             placeholder={'Arguments as JSON array:\n[{"name": "arg", "datatype": "S", "value": "..."}]'}
             rows="3"
-            class="form-textarea"
+            class="cmd-textarea"
           ></textarea>
         </div>
         
-        <div class="form-row">
+        <div class="cmd-form-row">
           <input 
             type="number" 
             bind:value={customDeposit}
             placeholder="DERO deposit (atomic units, optional)"
-            class="form-input"
+            class="cmd-input"
           />
         </div>
         
-        <div class="action-row">
-          <button class="action-btn estimate" on:click={estimateGas} disabled={estimating || !customEntrypoint.trim()}>
+        <div class="cmd-action-row">
+          <button class="cmd-btn cmd-btn-ghost" on:click={estimateGas} disabled={estimating || !customEntrypoint.trim()}>
             {#if estimating}
               <Loader2 size={14} class="spin" />
             {:else}
@@ -334,7 +339,7 @@
             Estimate Gas
           </button>
           
-          <button class="action-btn invoke" on:click={handleCustomInvoke} disabled={loading || !customEntrypoint.trim()}>
+          <button class="cmd-btn cmd-btn-primary" on:click={handleCustomInvoke} disabled={loading || !customEntrypoint.trim()}>
             {#if loading}
               <Loader2 size={14} class="spin" />
             {:else}
@@ -345,7 +350,7 @@
         </div>
         
         {#if gasEstimate}
-          <div class="gas-estimate">
+          <div class="cmd-gas-estimate">
             <span>Compute: {gasEstimate.gascompute}</span>
             <span>Storage: {gasEstimate.gasstorage}</span>
             <span class="gas-total">Total: {gasEstimate.total} (~{gasEstimate.cost_dero})</span>
@@ -357,48 +362,76 @@
 </div>
 
 <style>
-  .sc-quick-actions {
+  /* HOLOGRAM Design System - cmd-stats-panel pattern */
+  .cmd-stats-panel {
     background: var(--void-mid, #12121a);
-    border: 1px solid var(--border-dim, rgba(255,255,255,0.03));
-    border-radius: 12px;
-    padding: var(--s-4, 16px);
+    border: 1px solid var(--border-dim, rgba(255,255,255,0.06));
+    border-radius: var(--radius-lg, 12px);
     margin-top: var(--s-4, 16px);
   }
   
-  .actions-header {
+  .cmd-panel-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: var(--s-4, 16px);
-    padding-bottom: var(--s-3, 12px);
-    border-bottom: 1px solid var(--border-dim);
+    padding: var(--s-3, 12px) var(--s-4, 16px);
+    border-bottom: 1px solid var(--border-dim, rgba(255,255,255,0.06));
   }
   
-  .actions-header h4 {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-1, #e8e8f0);
-    margin: 0;
-  }
-  
-  .epoch-indicator {
+  .cmd-panel-title {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
     font-size: 11px;
-    padding: 2px 8px;
-    background: rgba(0, 212, 170, 0.1);
-    border: 1px solid rgba(0, 212, 170, 0.3);
-    border-radius: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-secondary, #a8a8b8);
+  }
+  
+  .cmd-panel-icon {
     color: var(--cyan, #00d4aa);
   }
   
-  .xswd-notice {
-    text-align: center;
-    padding: var(--s-4, 16px);
-    color: var(--text-4, #505068);
-    font-size: 13px;
+  .cmd-panel-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
   }
   
+  .cmd-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    letter-spacing: 0.05em;
+  }
+  
+  .cmd-badge.epoch {
+    background: rgba(0, 212, 170, 0.15);
+    color: var(--cyan, #00d4aa);
+    border: 1px solid rgba(0, 212, 170, 0.3);
+  }
+  
+  .cmd-panel-body {
+    padding: var(--s-4, 16px);
+  }
+  
+  .cmd-empty-text {
+    text-align: center;
+    color: var(--text-muted, #505068);
+    font-size: 13px;
+    margin: 0;
+  }
+  
+  /* Action Sections */
   .action-section {
-    margin-bottom: var(--s-4, 16px);
+    padding: var(--s-4, 16px);
+    border-bottom: 1px solid var(--border-dim, rgba(255,255,255,0.06));
+  }
+  
+  .action-section:last-of-type {
+    border-bottom: none;
   }
   
   .action-label {
@@ -406,15 +439,15 @@
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--text-4, #505068);
-    margin-bottom: 8px;
+    color: var(--text-muted, #505068);
+    margin-bottom: 10px;
   }
   
   .rating-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
   
   .toggle-picker-btn {
@@ -423,9 +456,9 @@
     gap: 6px;
     padding: 4px 10px;
     background: var(--void-up, #1a1a24);
-    border: 1px solid var(--border-dim);
+    border: 1px solid var(--border-dim, rgba(255,255,255,0.06));
     border-radius: 6px;
-    color: var(--text-3, #707088);
+    color: var(--text-tertiary, #707088);
     font-size: 11px;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -437,7 +470,7 @@
   }
   
   .rating-picker-container {
-    margin-top: 8px;
+    margin-top: 10px;
   }
   
   .rating-submit-row {
@@ -451,16 +484,18 @@
     gap: var(--s-3, 12px);
   }
   
+  /* HOLOGRAM Button Styles */
   .action-btn {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 8px;
-    padding: 8px 16px;
-    border-radius: var(--r-md);
+    padding: 10px 16px;
+    border-radius: var(--radius-md, 8px);
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all var(--dur-med);
+    transition: all 0.15s ease;
     border: 1px solid transparent;
   }
   
@@ -471,129 +506,146 @@
   
   .action-btn.rate {
     background: var(--cyan, #00d4aa);
-    color: var(--void-dark, #0a0a0f);
+    color: var(--void-pure, #0a0a0f);
   }
   
   .action-btn.rate:hover:not(:disabled) {
-    background: var(--cyan-bright, #00f5c4);
+    background: var(--cyan-400, #00f5c4);
   }
   
   .action-btn.like {
     flex: 1;
-    justify-content: center;
     background: var(--void-up, #1a1a24);
-    border-color: var(--emerald-dim, rgba(16, 185, 129, 0.3));
+    border-color: rgba(16, 185, 129, 0.3);
     color: var(--emerald, #10b981);
   }
   
   .action-btn.like:hover:not(:disabled) {
     background: rgba(16, 185, 129, 0.1);
+    border-color: rgba(16, 185, 129, 0.5);
   }
   
   .action-btn.dislike {
     flex: 1;
-    justify-content: center;
     background: var(--void-up, #1a1a24);
-    border-color: var(--danger-dim, rgba(239, 68, 68, 0.3));
+    border-color: rgba(239, 68, 68, 0.3);
     color: var(--danger, #ef4444);
   }
   
   .action-btn.dislike:hover:not(:disabled) {
     background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.5);
   }
   
+  /* Advanced Toggle */
   .advanced-toggle {
     width: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    padding: 10px;
-    background: var(--void-up, #1a1a24);
-    border: 1px solid var(--border-dim);
-    border-radius: 8px;
-    color: var(--text-3, #707088);
+    padding: 12px;
+    background: transparent;
+    border: none;
+    border-top: 1px solid var(--border-dim, rgba(255,255,255,0.06));
+    color: var(--text-tertiary, #707088);
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all 0.15s ease;
   }
   
   .advanced-toggle:hover {
-    border-color: var(--cyan-dim);
-    color: var(--text-2);
+    background: var(--void-up, #1a1a24);
+    color: var(--text-secondary, #a8a8b8);
   }
   
-  .advanced-section {
-    margin-top: var(--s-4, 16px);
-    padding-top: var(--s-4, 16px);
-    border-top: 1px solid var(--border-dim);
+  /* Advanced Section */
+  .cmd-advanced-section {
+    padding: var(--s-4, 16px);
+    border-top: 1px solid var(--border-dim, rgba(255,255,255,0.06));
   }
   
-  .form-row {
+  .cmd-form-row {
     margin-bottom: var(--s-3, 12px);
   }
   
-  .form-input, .form-textarea {
+  .cmd-input, .cmd-textarea {
     width: 100%;
     padding: 10px 12px;
     background: var(--void-deep, #0a0a0f);
-    border: 1px solid var(--border-dim);
-    border-radius: 8px;
-    color: var(--text-1, #e8e8f0);
+    border: 1px solid var(--border-dim, rgba(255,255,255,0.06));
+    border-radius: var(--radius-md, 8px);
+    color: var(--text-primary, #e8e8f0);
     font-size: 12px;
-    font-family: var(--font-mono);
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
   }
   
-  .form-input:focus, .form-textarea:focus {
+  .cmd-input:focus, .cmd-textarea:focus {
     outline: none;
     border-color: var(--cyan-dim, rgba(0, 212, 170, 0.3));
   }
   
-  .form-textarea {
+  .cmd-textarea {
     resize: vertical;
     min-height: 60px;
   }
   
-  .action-row {
+  .cmd-action-row {
     display: flex;
     gap: var(--s-3, 12px);
   }
   
-  .action-btn.estimate {
-    flex: 1;
+  .cmd-btn {
+    display: flex;
+    align-items: center;
     justify-content: center;
+    gap: 8px;
+    flex: 1;
+    padding: 10px 16px;
+    border-radius: var(--radius-md, 8px);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border: 1px solid transparent;
+  }
+  
+  .cmd-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  .cmd-btn-ghost {
     background: var(--void-up, #1a1a24);
-    border-color: var(--border-dim);
-    color: var(--text-2, #a8a8b8);
+    border-color: var(--border-dim, rgba(255,255,255,0.06));
+    color: var(--text-secondary, #a8a8b8);
   }
   
-  .action-btn.estimate:hover:not(:disabled) {
-    border-color: var(--cyan-dim);
-    color: var(--cyan);
+  .cmd-btn-ghost:hover:not(:disabled) {
+    border-color: var(--cyan-dim, rgba(0, 212, 170, 0.3));
+    color: var(--cyan, #00d4aa);
   }
   
-  .action-btn.invoke {
-    flex: 1;
-    justify-content: center;
+  .cmd-btn-primary {
     background: var(--cyan, #00d4aa);
-    color: var(--void-dark, #0a0a0f);
+    color: var(--void-pure, #0a0a0f);
   }
   
-  .action-btn.invoke:hover:not(:disabled) {
-    background: var(--cyan-bright, #00f5c4);
+  .cmd-btn-primary:hover:not(:disabled) {
+    background: var(--cyan-400, #00f5c4);
   }
   
-  .gas-estimate {
+  .cmd-gas-estimate {
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-3, 12px);
     margin-top: var(--s-3, 12px);
     padding: var(--s-3, 12px);
     background: var(--void-deep, #0a0a0f);
-    border-radius: 8px;
+    border-radius: var(--radius-md, 8px);
     font-size: 11px;
-    font-family: var(--font-mono);
-    color: var(--text-3, #707088);
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    color: var(--text-tertiary, #707088);
   }
   
   .gas-total {
