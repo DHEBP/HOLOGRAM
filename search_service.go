@@ -174,7 +174,7 @@ func (a *App) searchSmartContract(query string) SearchResult {
 	// Normalize SCID to lowercase (DERO requires lowercase hex)
 	normalizedSCID := strings.ToLower(strings.TrimSpace(query))
 	
-	a.logToConsole(fmt.Sprintf("📜 Searching smart contract: %s", truncateQuery(normalizedSCID)))
+	a.logToConsole(fmt.Sprintf("[SC] Searching smart contract: %s", truncateQuery(normalizedSCID)))
 
 	result, err := a.daemonClient.GetSC(normalizedSCID, true, true)
 	if err != nil {
@@ -189,7 +189,7 @@ func (a *App) searchSmartContract(query string) SearchResult {
 	}
 
 	// Log what we got back from daemon
-	a.logToConsole(fmt.Sprintf("📜 SC result keys: %v", getMapKeys(result)))
+	a.logToConsole(fmt.Sprintf("[SC] Result keys: %v", getMapKeys(result)))
 
 	// The daemon returns:
 	// - "code": the smart contract code
@@ -206,7 +206,7 @@ func (a *App) searchSmartContract(query string) SearchResult {
 
 	// Log code length for debugging
 	if code, ok := result["code"].(string); ok {
-		a.logToConsole(fmt.Sprintf("📜 SC code length: %d chars", len(code)))
+		a.logToConsole(fmt.Sprintf("[SC] Code length: %d chars", len(code)))
 	} else {
 		a.logToConsole("[WARN] SC code not found or not a string")
 	}

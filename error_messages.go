@@ -279,7 +279,7 @@ func FormatTELAError(telaErr *TELADeploymentError, fileName string) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("❌ %s", telaErr.Title))
+	sb.WriteString(fmt.Sprintf("[Error] %s", telaErr.Title))
 	if fileName != "" {
 		sb.WriteString(fmt.Sprintf(" (file: %s)", fileName))
 	}

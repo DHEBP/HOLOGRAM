@@ -1282,7 +1282,7 @@ type Commit struct {
 
 // GetCommitHistory retrieves all commits (versions) for a TELA SCID
 func (a *App) GetCommitHistory(scid string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("📜 Getting commit history for: %s", scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[SC] Getting commit history for: %s", scid[:16]+"..."))
 
 	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
 		// Fallback: try to get from daemon directly

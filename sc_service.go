@@ -420,7 +420,7 @@ func (a *App) GetSCVariables(scid string) map[string]interface{} {
 
 // GetSCCode returns the smart contract code
 func (a *App) GetSCCode(scid string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("📜 Getting SC code: %s", scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[SC] Getting SC code: %s", scid[:16]+"..."))
 
 	// Call daemon to get SC code
 	params := map[string]interface{}{
