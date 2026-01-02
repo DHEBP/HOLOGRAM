@@ -1,25 +1,41 @@
-# Hologram
+<p align="center">
+  <img src="frontend/src/assets/hologram-wordmark.svg" alt="HOLOGRAM" height="40">
+</p>
 
-**A Native Desktop Browser for the DERO Decentralized Web**
+<p align="center">
+  <strong>The Complete DERO Experience</strong>
+</p>
 
 ---
 
 ## Overview
 
-**Hologram** is a native desktop application for browsing **TELA applications** stored entirely on the DERO blockchain. Built with Wails v2 (Go + Svelte), it provides direct blockchain access without web browser security restrictions.
+HOLOGRAM reimagines what a browser can be. Built for the DERO blockchain, it's a native desktop app where content is permanent, privacy is default, and you can deploy your own applications directly to the chain.
 
-> **Philosophy:** *"Browser-First, Not Wallet-First"* — Hologram is a TELA browser that happens to have wallet features.
+Browse TELA applications. Manage your DERO. Build and deploy dApps with an integrated development studio. Everything unified in one experience.
 
-### Key Features
+### Beyond Web 2.0
+
+| Traditional Web | HOLOGRAM |
+|-----------------|----------|
+| Content on centralized servers | Content on blockchain (immutable) |
+| Tracking, cookies, analytics | Zero tracking, complete privacy |
+| Requires internet connection | Offline-first with local caching |
+| Extensions required for Web3 | Native wallet and dApp integration |
+| Servers can censor or disappear | Permanent, censorship-resistant |
+
+---
+
+## Key Features
 
 | Category | Features |
 |----------|----------|
+| **Explorer** | Block/TX explorer with DeroProof validation, time-travel SC state |
 | **Browser** | TELA app rendering, dURL navigation, content caching, offline mode |
 | **Wallet** | Create, restore, manage DERO wallets with full transaction history |
+| **Studio** | Local dev server with hot reload, batch TELA deployment |
 | **Discovery** | Gnomon-powered search, ratings, and content filtering |
-| **Explorer** | Block/TX explorer with DeroProof validation |
 | **Simulator** | One-click dev environment with instant blocks |
-| **Studio** | Local dev server with hot reload for TELA development |
 | **Privacy** | No tracking, no ads, censorship-resistant |
 
 ---
@@ -45,8 +61,22 @@ wails dev
 ### Production Build
 
 ```bash
+# Build for current platform
 wails build
-# Output: build/bin/Hologram.app (macOS)
+
+# Output locations:
+# macOS:   build/bin/Hologram.app
+# Linux:   build/bin/Hologram
+# Windows: build/bin/Hologram.exe
+```
+
+### Cross-Platform Builds
+
+```bash
+wails build -platform darwin/amd64   # macOS Intel
+wails build -platform darwin/arm64   # macOS Apple Silicon
+wails build -platform linux/amd64    # Linux x64
+wails build -platform windows/amd64  # Windows x64
 ```
 
 ---
@@ -54,13 +84,13 @@ wails build
 ## Architecture
 
 ```
-Hologram (Wails v2)
+HOLOGRAM (Wails v2)
 ├── Direct HTTP → derod:10102 (blockchain reads)
 ├── XSWD Server → 127.0.0.1:44326 (integrated wallet + dApp bridge)
 ├── XSWD Client → Engram (optional external wallet)
 ├── Gnomon Indexer (content discovery)
 ├── Graviton Cache (persistent storage with versioning)
-└── Iframe → TELA content (sandboxed + telaHost injection)
+└── Iframe → TELA content (sandboxed + telaHost API)
 ```
 
 ### Network Modes
@@ -77,12 +107,25 @@ Hologram (Wails v2)
 
 ### telaHost Bridge API
 
-Hologram injects a `telaHost` JavaScript API into every TELA application, enabling blockchain and wallet interactions:
+HOLOGRAM provides a native JavaScript API (`telaHost`) to every TELA application, similar to how browsers provide `window.ethereum` for Web3 dApps. This is **not** browser extension injection—it's a native app feature that enables secure blockchain and wallet interactions.
+
+**Think of it like:**
+- `window.ethereum` in MetaMask/Web3 browsers
+- `window.webkit` in Safari
+- Native APIs provided by the browser runtime
+
+**Security Model:**
+- TELA apps run in **sandboxed iframes** (isolated from HOLOGRAM)
+- All wallet operations require **explicit user approval** via native modals
+- Read-only blockchain queries work instantly (no approval needed)
+- Apps cannot access your wallet without permission
+
+**Usage:**
 
 ```javascript
-// Check if running in Hologram
+// Check if running in HOLOGRAM
 if (window.telaHost) {
-    // Read-only operations (instant)
+    // Read-only operations (instant, no approval needed)
     const info = await telaHost.call('DERO.GetInfo');
     const sc = await telaHost.getSmartContract(scid, true, true);
     
@@ -111,9 +154,11 @@ if (window.telaHost) {
 | `transfer(params)` | Send DERO (requires approval) |
 | `scInvoke(params)` | Invoke SC function (requires approval) |
 
+**Learn more:** See the [full telaHost API documentation](https://hologram.derod.org/telahost-api) for complete reference and security details.
+
 ### Local Development
 
-1. Open **Studio → Serve** tab
+1. Open **Studio > Serve** tab
 2. Select your TELA app directory
 3. Server starts with hot reload
 4. Full `telaHost` API available during development
@@ -123,15 +168,15 @@ if (window.telaHost) {
 ## Project Structure
 
 ```
-Hologram/
+HOLOGRAM/
 ├── main.go                 # Wails entry point
-├── app.go                  # Core app logic (~2000+ lines)
+├── app.go                  # Core app logic
 ├── wallet.go               # Wallet operations
 ├── xswd_server.go          # Integrated XSWD proxy
 ├── xswd_client.go          # External wallet connection
 ├── gnomon.go               # Content discovery
 ├── epoch_handler.go        # Developer support
-├── simulator_*.go          # Simulator mode (4 files)
+├── simulator_*.go          # Simulator mode
 ├── local_dev_server.go     # Hot reload dev server
 ├── explorer_service.go     # Block explorer
 ├── time_travel_explorer.go # SC state history
@@ -140,31 +185,23 @@ Hologram/
 ├── frontend/
 │   ├── src/
 │   │   ├── routes/         # Page components
-│   │   │   ├── Search.svelte
-│   │   │   ├── Browser.svelte
-│   │   │   ├── Explorer.svelte
-│   │   │   ├── Network.svelte
-│   │   │   ├── Studio.svelte
-│   │   │   ├── Wallet.svelte
-│   │   │   └── Settings.svelte
 │   │   ├── lib/components/ # Reusable components
 │   │   └── styles/
-│   │       └── hologram.css # v6.1 Design System
 │   └── wailsjs/            # Auto-generated Go bindings
 │
-├── README.md               # This file
-├── wails.json              # Wails configuration
-└── go.mod                  # Go dependencies
+└── wails.json              # Wails configuration
 ```
 
 ---
 
-## License
+## Documentation
 
-See [LICENSE](LICENSE) file for details.
+- [Official Docs](https://hologram.derod.org) - Full documentation
+- [TELA Protocol](https://tela.derod.org) - TELA specification  
+- [DERO Docs](https://derod.org) - DERO blockchain reference
 
 ---
 
 **Version:** 1.0.0  
 **Status:** Production Ready  
-**Last Updated:** December 27, 2025
+**Last Updated:** January 1, 2026
