@@ -2022,11 +2022,6 @@ let addressInput = '';
                       {#if app.supports_epoch}
                         <span class="browser-epoch-badge" title="Supports EPOCH Developer Ecosystem">EPOCH</span>
                       {/if}
-                      {#if app.class}
-                        <span class="browser-app-tag-badge class-{app.class.toLowerCase().includes('tela') ? 'tela' : app.class.toLowerCase().includes('g45') ? 'g45' : app.class.toLowerCase().includes('nfa') ? 'nfa' : ''}" title="Classification: {app.class}">
-                          {app.class.replace('TELA-', '').replace('-1', '')}
-                        </span>
-                      {/if}
                       {#if app.rating && app.rating.count > 0}
                         <HoloBadge variant={getRatingBadge(app.rating.average)}>
                           ★ {app.rating.average.toFixed(1)}
@@ -2366,38 +2361,5 @@ let addressInput = '';
     background: var(--status-err);
     border-color: var(--status-err);
     color: white;
-  }
-  
-  /* Tag badge on app cards */
-  .browser-app-tag-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 6px;
-    background: var(--void-up);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    font-size: 10px;
-    font-weight: 500;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-  }
-  
-  .browser-app-tag-badge.class-tela {
-    background: rgba(6, 182, 212, 0.1);
-    border-color: var(--cyan-500);
-    color: var(--cyan-400);
-  }
-  
-  .browser-app-tag-badge.class-g45 {
-    background: rgba(139, 92, 246, 0.1);
-    border-color: var(--violet-500);
-    color: var(--violet-400);
-  }
-  
-  .browser-app-tag-badge.class-nfa {
-    background: rgba(236, 72, 153, 0.1);
-    border-color: var(--pink-500);
-    color: var(--pink-400);
   }
 </style>
