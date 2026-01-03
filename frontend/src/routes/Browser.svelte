@@ -207,17 +207,22 @@ let addressInput = '';
     
     appsLoading = true;
     try {
-      // Load apps with tag metadata (Simple-Gnomon feature)
-      const result = await GetTELAAppsWithTags();
+      // Load apps with ratings (original behavior)
+      const result = await GetDiscoveredApps();
       if (result.success && result.apps) {
         apps = result.apps;
         applyFilters();
       }
       
-      // Load available tags for filtering
-      const tagsResult = await GetAllTags();
-      if (tagsResult.success && tagsResult.tags) {
-        availableTags = tagsResult.tags.filter(t => t !== 'all'); // Exclude 'all' tag
+      // Load available tags for filtering (Simple-Gnomon feature)
+      try {
+        const tagsResult = await GetAllTags();
+        if (tagsResult && tagsResult.success && tagsResult.tags) {
+          availableTags = tagsResult.tags.filter(t => t && t !== 'all');
+        }
+      } catch (tagErr) {
+        console.log('Tags not available yet:', tagErr);
+        availableTags = [];
       }
       
       appsLoaded = true; // Mark as loaded even if 0 apps found
