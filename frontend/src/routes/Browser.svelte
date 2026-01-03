@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata } from '../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
@@ -207,7 +207,7 @@ let addressInput = '';
     
     appsLoading = true;
     try {
-      // Load apps with ratings (original behavior)
+      // Load apps with ratings and tag metadata (includes Simple-Gnomon features)
       const result = await GetDiscoveredApps();
       if (result.success && result.apps) {
         apps = result.apps;

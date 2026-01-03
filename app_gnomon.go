@@ -281,6 +281,7 @@ func (a *App) GetDiscoveredApps() map[string]interface{} {
 	}
 
 	apps := a.gnomonClient.GetTELAApps()
+	store := InitSCIDTagStore()
 
 	epochCount := 0
 
@@ -301,6 +302,12 @@ func (a *App) GetDiscoveredApps() map[string]interface{} {
 			if supportsEpoch {
 				apps[i]["epoch_badge"] = "EPOCH Enabled"
 				epochCount++
+			}
+
+			// Add tag/class metadata (Simple-Gnomon feature)
+			if meta := store.GetMetadata(scid); meta != nil {
+				apps[i]["class"] = meta.Class
+				apps[i]["tags"] = meta.Tags
 			}
 		}
 	}
