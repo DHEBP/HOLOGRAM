@@ -818,12 +818,20 @@ export function InstallINDEX(arg1) {
   return window['go']['main']['App']['InstallINDEX'](arg1);
 }
 
+export function InstallSmartContract(arg1, arg2) {
+  return window['go']['main']['App']['InstallSmartContract'](arg1, arg2);
+}
+
 export function InternalWalletCall(arg1, arg2, arg3) {
   return window['go']['main']['App']['InternalWalletCall'](arg1, arg2, arg3);
 }
 
 export function InvokeSCFromExplorer(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['InvokeSCFromExplorer'](arg1, arg2, arg3, arg4);
+}
+
+export function InvokeSCFunction(arg1) {
+  return window['go']['main']['App']['InvokeSCFunction'](arg1);
 }
 
 export function IsAppCachedOffline(arg1) {
@@ -916,6 +924,10 @@ export function ParseFolderForTELA(arg1) {
 
 export function ParseRatingForUI(arg1) {
   return window['go']['main']['App']['ParseRatingForUI'](arg1);
+}
+
+export function ParseSCFunctions(arg1) {
+  return window['go']['main']['App']['ParseSCFunctions'](arg1);
 }
 
 export function PrefetchApp(arg1) {

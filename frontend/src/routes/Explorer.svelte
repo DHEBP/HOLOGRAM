@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { appState } from '../lib/stores/appState.js';
-  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, GetSCIDTimeline, GetSCIDStateAtHeight } from '../../wailsjs/go/main/App.js';
+  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, GetSCIDTimeline, GetSCIDStateAtHeight, ParseSCFunctions, InvokeSCFunction } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -15,6 +15,7 @@
   import Wordmark from '../lib/components/Wordmark.svelte';
   import SearchHistory from '../lib/components/SearchHistory.svelte';
   import VersionHistory from '../lib/components/VersionHistory.svelte';
+  import SCFunctionInteractor from '../lib/components/SCFunctionInteractor.svelte';
   import { 
     Package, FileText, Coins, Clock, Copy, ArrowLeft, Home, X, ChevronLeft, ChevronRight,
     FileCode, User, Globe, Lock, Info, AlertTriangle, Check, Loader2, Shield, Pickaxe,
@@ -2191,6 +2192,14 @@
                   </div>
                 {/if}
               </div>
+              
+              <!-- SC Function Interactor (Simple-Wallet feature) -->
+              <SCFunctionInteractor 
+                scid={searchQuery}
+                on:invoked={(e) => {
+                  toast.success(`Function called! TX: ${e.detail.txid?.slice(0, 16)}...`);
+                }}
+              />
           
           {:else if searchResult.type === 'address'}
             <!-- v6.1 Address Details Module -->

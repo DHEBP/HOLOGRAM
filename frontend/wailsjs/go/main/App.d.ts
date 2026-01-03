@@ -411,9 +411,13 @@ export function InstallDOC(arg1:string):Promise<Record<string, any>>;
 
 export function InstallINDEX(arg1:string):Promise<Record<string, any>>;
 
+export function InstallSmartContract(arg1:string,arg2:boolean):Promise<Record<string, any>>;
+
 export function InternalWalletCall(arg1:string,arg2:Record<string, any>,arg3:string):Promise<Record<string, any>>;
 
 export function InvokeSCFromExplorer(arg1:string,arg2:string,arg3:Array<Record<string, any>>,arg4:number):Promise<Record<string, any>>;
+
+export function InvokeSCFunction(arg1:string):Promise<Record<string, any>>;
 
 export function IsAppCachedOffline(arg1:string):Promise<Record<string, any>>;
 
@@ -460,6 +464,8 @@ export function OpenWallet(arg1:string,arg2:string):Promise<Record<string, any>>
 export function ParseFolderForTELA(arg1:string):Promise<Record<string, any>>;
 
 export function ParseRatingForUI(arg1:number):Promise<Record<string, any>>;
+
+export function ParseSCFunctions(arg1:string):Promise<Record<string, any>>;
 
 export function PrefetchApp(arg1:string):Promise<Record<string, any>>;
 
