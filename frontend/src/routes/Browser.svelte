@@ -2022,6 +2022,11 @@ let addressInput = '';
                       {#if app.supports_epoch}
                         <span class="browser-epoch-badge" title="Supports EPOCH Developer Ecosystem">EPOCH</span>
                       {/if}
+                      {#if app.class}
+                        <span class="browser-app-tag-badge class-{app.class.toLowerCase().includes('tela') ? 'tela' : app.class.toLowerCase().includes('g45') ? 'g45' : app.class.toLowerCase().includes('nfa') ? 'nfa' : ''}" title="Classification: {app.class}">
+                          {app.class.replace('TELA-', '').replace('-1', '')}
+                        </span>
+                      {/if}
                       {#if app.rating && app.rating.count > 0}
                         <HoloBadge variant={getRatingBadge(app.rating.average)}>
                           ★ {app.rating.average.toFixed(1)}
