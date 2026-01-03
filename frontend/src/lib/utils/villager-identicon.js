@@ -93,7 +93,62 @@ const VillagerIdenticon = (function () {
 	};
 
     // ──────────────────────────────────────────────────────────────
-    // 2. Fast deterministic 32-bit hash
+    // 2. Validation constants
+    // ──────────────────────────────────────────────────────────────
+    const VALID_PALETTE_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+    const VALID_CHARS_SET = new Set(VALID_PALETTE_CHARS);
+
+    // ──────────────────────────────────────────────────────────────
+    // 3. Validation functions
+    // ──────────────────────────────────────────────────────────────
+    function isValidAvatarString(str) {
+        return validateAvatarString(str).valid;
+    }
+
+    function sanitizeAvatarString(str) {
+        if (!str || typeof str !== 'string') return 'z'.repeat(576);
+        
+        let result = '';
+        for (let i = 0; i < 576; i++) {
+            const c = str[i];
+            result += (c && VALID_CHARS_SET.has(c)) ? c : 'z';
+        }
+        return result;
+    }
+
+    function validateAvatarString(str) {
+        const result = {
+            valid: true,
+            length: str?.length || 0,
+            expectedLength: 576,
+            invalidChars: [],
+            invalidPositions: []
+        };
+        
+        if (!str || typeof str !== 'string') {
+            result.valid = false;
+            return result;
+        }
+        
+        if (str.length !== 576) {
+            result.valid = false;
+        }
+        
+        for (let i = 0; i < str.length; i++) {
+            if (!VALID_CHARS_SET.has(str[i])) {
+                result.valid = false;
+                if (!result.invalidChars.includes(str[i])) {
+                    result.invalidChars.push(str[i]);
+                }
+                result.invalidPositions.push(i);
+            }
+        }
+        
+        return result;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // 4. Fast deterministic 32-bit hash
     // ──────────────────────────────────────────────────────────────
     function simpleHash(str) {
         let h = 1779033703 ^ str.length;
@@ -105,7 +160,7 @@ const VillagerIdenticon = (function () {
     }
 
     // ──────────────────────────────────────────────────────────────
-    // 3. Hex → 576-char string
+    // 5. Hex → 576-char string
     // ──────────────────────────────────────────────────────────────
     function hexToString(hex) {
         if (hex.length !== 1152 || !/^[0-9a-fA-F]{1152}$/.test(hex)) {
@@ -119,7 +174,7 @@ const VillagerIdenticon = (function () {
     }
 
 	// ──────────────────────────────────────────────────────────────
-    // 4. Render Controller
+    // 6. Render Controller
     // ──────────────────────────────────────────────────────────────
     async function renderSmart(address, rawHexOrString, requestedSize = 180) {
         let avatarStr = rawHexOrString;
@@ -164,317 +219,254 @@ const VillagerIdenticon = (function () {
     }
 
     // ──────────────────────────────────────────────────────────────
-    // 4. Core renderer
+    // 7. Core renderer
     // ──────────────────────────────────────────────────────────────
 	async function generateAvatarWithFrame(address, avatarStr, size = 180) {
 		if (avatarStr.length !== 576) return Promise.reject("Invalid avatar string");
+		if (!isValidAvatarString(avatarStr)) return Promise.reject("Invalid avatar characters");
+
+		console.log(`generating Villager Identicon for address: ${address}`);
 
 		const uniquePart = address.startsWith('dero1') ? address.slice(5) : address;
 		const frameSeed = simpleHash(uniquePart + "FRAME");
 		const bgSeed   = simpleHash(uniquePart + "BACKGROUND");
 
+		const renderSize = 800;
 		const canvas = document.createElement('canvas');
 		const ctx = canvas.getContext('2d');
-		canvas.width = size;
-		canvas.height = size;
+		canvas.width = renderSize;
+		canvas.height = renderSize;
 
-		const border = Math.floor(size * 0.13);
-		const inner = size - 2 * border;
+		const border = Math.floor(renderSize * 0.13);
+		const inner = renderSize - 2 * border;
 
-		// Enhanced background system with 12 diverse patterns
-		const bgType = bgSeed % 12;
-		const cx = size / 2 + (simpleHash(uniquePart + "CX") % 50 - 25);
-		const cy = size / 2 + (simpleHash(uniquePart + "CY") % 50 - 25);
-		const hue1 = bgSeed % 360;
-		const hue2 = (bgSeed + 137) % 360; // Golden ratio for color harmony
-		const hue3 = (bgSeed + 271) % 360;
+		// Varied gradient background
+		const gradType = bgSeed % 4;
+		const cx = renderSize / 2 + (simpleHash(uniquePart + "CX") % 50 - 25);
+		const cy = renderSize / 2 + (simpleHash(uniquePart + "CY") % 50 - 25);
 
-		// Fill base background
-		ctx.fillStyle = `hsl(${hue1}, 20%, 8%)`;
-		ctx.fillRect(0, 0, size, size);
-
-		if (bgType === 0) { // Concentric circles
-			for (let i = 8; i >= 1; i--) {
-				const radius = (size * i) / 16;
-				ctx.strokeStyle = `hsla(${hue1 + i*23}, 70%, 40%, ${0.3 + i/20})`;
-				ctx.lineWidth = size/60 + i/3;
-				ctx.beginPath();
-				ctx.arc(cx, cy, radius, 0, Math.PI*2);
-				ctx.stroke();
-			}
-		} else if (bgType === 1) { // Diagonal stripes
-			ctx.strokeStyle = `hsl(${hue1}, 60%, 30%)`;
-			ctx.lineWidth = size/40;
-			for (let i = -size; i < size*2; i += size/8) {
-				ctx.beginPath();
-				ctx.moveTo(i, 0);
-				ctx.lineTo(i + size, size);
-				ctx.stroke();
-			}
-		} else if (bgType === 2) { // Hexagonal grid
-			const hexSize = size/12;
-			ctx.strokeStyle = `hsla(${hue2}, 50%, 35%, 0.6)`;
-			ctx.lineWidth = size/200;
-			for (let x = 0; x < size + hexSize; x += hexSize * 1.5) {
-				for (let y = 0; y < size + hexSize; y += hexSize * Math.sqrt(3)) {
-					const offsetX = (y / (hexSize * Math.sqrt(3))) % 2 * (hexSize * 0.75);
-					ctx.beginPath();
-					for (let i = 0; i < 6; i++) {
-						const angle = (i * Math.PI) / 3;
-						const hx = x + offsetX + hexSize * Math.cos(angle);
-						const hy = y + hexSize * Math.sin(angle);
-						i === 0 ? ctx.moveTo(hx, hy) : ctx.lineTo(hx, hy);
-					}
-					ctx.closePath();
-					ctx.stroke();
-				}
-			}
-		} else if (bgType === 3) { // Radial bursts
-			const rays = 12 + (bgSeed % 8);
-			ctx.strokeStyle = `hsl(${hue1}, 70%, 45%)`;
-			ctx.lineWidth = size/80;
-			for (let i = 0; i < rays; i++) {
-				const angle = (i / rays) * Math.PI * 2;
-				const length = size * (0.3 + (simpleHash(uniquePart + i) % 50)/100);
-				ctx.beginPath();
-				ctx.moveTo(cx, cy);
-				ctx.lineTo(cx + Math.cos(angle) * length, cy + Math.sin(angle) * length);
-				ctx.stroke();
-			}
-		} else if (bgType === 4) { // Checkerboard pattern
-			const squareSize = size/16;
-			for (let x = 0; x < size; x += squareSize) {
-				for (let y = 0; y < size; y += squareSize) {
-					if ((Math.floor(x/squareSize) + Math.floor(y/squareSize)) % 2) {
-						ctx.fillStyle = `hsla(${hue1}, 40%, 25%, 0.4)`;
-						ctx.fillRect(x, y, squareSize, squareSize);
-					}
-				}
-			}
-		} else if (bgType === 5) { // Spiral pattern
-			ctx.strokeStyle = `hsl(${hue2}, 60%, 40%)`;
-			ctx.lineWidth = size/120;
-			const turns = 3 + (bgSeed % 3);
-			ctx.beginPath();
-			for (let i = 0; i < turns * 50; i++) {
-				const angle = (i / 50) * Math.PI * 2;
-				const radius = (size/4) * (i / (turns * 50));
-				const x = cx + Math.cos(angle) * radius;
-				const y = cy + Math.sin(angle) * radius;
-				i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-			}
-			ctx.stroke();
-		} else if (bgType === 6) { // Triangular grid
-			const triSize = size/20;
-			ctx.strokeStyle = `hsla(${hue3}, 45%, 35%, 0.5)`;
-			ctx.lineWidth = size/300;
-			for (let x = 0; x < size + triSize; x += triSize) {
-				for (let y = 0; y < size + triSize; y += triSize * Math.sqrt(3)/2) {
-					const offset = (x / triSize) % 2 * (triSize/2);
-					ctx.beginPath();
-					ctx.moveTo(x + offset, y);
-					ctx.lineTo(x + offset + triSize/2, y + triSize * Math.sqrt(3)/2);
-					ctx.lineTo(x + offset - triSize/2, y + triSize * Math.sqrt(3)/2);
-					ctx.closePath();
-					ctx.stroke();
-				}
-			}
-		} else if (bgType === 7) { // Wave patterns
-			ctx.strokeStyle = `hsl(${hue1}, 50%, 40%)`;
-			ctx.lineWidth = size/100;
-			const waves = 4 + (bgSeed % 4);
-			for (let w = 0; w < waves; w++) {
-				ctx.beginPath();
-				for (let x = 0; x <= size; x += 2) {
-					const y = size/2 + Math.sin((x/size + w/2) * Math.PI * 4) * size/8;
-					x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-				}
-				ctx.stroke();
-			}
-		} else if (bgType === 8) { // Dot matrix
-			const dotSpacing = size/24;
-			for (let x = dotSpacing/2; x < size; x += dotSpacing) {
-				for (let y = dotSpacing/2; y < size; y += dotSpacing) {
-					const intensity = (simpleHash(uniquePart + Math.floor(x) + Math.floor(y)) % 100) / 100;
-					if (intensity > 0.3) {
-						ctx.fillStyle = `hsla(${hue2}, 60%, 45%, ${intensity * 0.6})`;
-						ctx.beginPath();
-						ctx.arc(x, y, dotSpacing/4, 0, Math.PI*2);
-						ctx.fill();
-					}
-				}
-			}
-		} else if (bgType === 9) { // Crosshatch
-			ctx.strokeStyle = `hsla(${hue3}, 40%, 35%, 0.4)`;
-			ctx.lineWidth = size/150;
-			// Horizontal lines
-			for (let y = 0; y < size; y += size/12) {
-				ctx.beginPath();
-				ctx.moveTo(0, y);
-				ctx.lineTo(size, y);
-				ctx.stroke();
-			}
-			// Vertical lines
-			for (let x = 0; x < size; x += size/12) {
-				ctx.beginPath();
-				ctx.moveTo(x, 0);
-				ctx.lineTo(x, size);
-				ctx.stroke();
-			}
-		} else if (bgType === 10) { // Polygon field
-			const polyCount = 8 + (bgSeed % 6);
-			for (let i = 0; i < polyCount; i++) {
-				const sides = 3 + (simpleHash(uniquePart + i) % 5);
-				const radius = size/16 + (simpleHash(uniquePart + i + 100) % size/8);
-				const px = simpleHash(uniquePart + i + 200) % size;
-				const py = simpleHash(uniquePart + i + 300) % size;
-				
-				ctx.fillStyle = `hsla(${hue1 + i*37}, 50%, 40%, 0.3)`;
-				ctx.beginPath();
-				for (let j = 0; j < sides; j++) {
-					const angle = (j / sides) * Math.PI * 2;
-					const x = px + Math.cos(angle) * radius;
-					const y = py + Math.sin(angle) * radius;
-					j === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-				}
-				ctx.closePath();
-				ctx.fill();
-			}
-		} else { // Flowing curves
-			ctx.strokeStyle = `hsl(${hue2}, 55%, 42%)`;
-			ctx.lineWidth = size/90;
-			const curves = 6 + (bgSeed % 4);
-			for (let c = 0; c < curves; c++) {
-				ctx.beginPath();
-				const startX = (c / curves) * size;
-				ctx.moveTo(startX, 0);
-				for (let y = 0; y <= size; y += size/20) {
-					const x = startX + Math.sin(y/size * Math.PI * 2 + c) * size/6;
-					ctx.lineTo(x, y);
-				}
-				ctx.stroke();
-			}
+		let grad;
+		if (gradType === 0) {
+			grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, renderSize * 1.2);
+			grad.addColorStop(0, `hsl(${bgSeed % 360}, 100%, 45%)`);
+			grad.addColorStop(0.2, `hsl(${((bgSeed + 45) % 360)}, 98%, 38%)`);
+			grad.addColorStop(0.4, `hsl(${(bgSeed + 90) % 360}, 95%, 30%)`);
+			grad.addColorStop(0.6, `hsl(${(bgSeed + 135) % 360}, 90%, 22%)`);
+			grad.addColorStop(0.8, `hsl(${(bgSeed + 170) % 360}, 87%, 16%)`);
+			grad.addColorStop(1, `hsl(${(bgSeed + 200) % 360}, 85%, 12%)`);
+		} else if (gradType === 1) {
+			grad = ctx.createLinearGradient(0, 0, renderSize, renderSize);
+			grad.addColorStop(0, `hsl(${bgSeed % 360}, 100%, 40%)`);
+			grad.addColorStop(0.5, `hsl(${((bgSeed + 75) % 360)}, 95%, 27%)`);
+			grad.addColorStop(1, `hsl(${((bgSeed + 150) % 360)}, 90%, 15%)`);
+		} else if (gradType === 2) {
+			grad = ctx.createRadialGradient(cx, cy, renderSize * 0.05, cx, cy, renderSize);
+			grad.addColorStop(0, `hsl(${((bgSeed + 130) % 360)}, 100%, 55%)`);
+			grad.addColorStop(0.25, `hsl(${(((bgSeed + 65) % 360))}, 100%, 42%)`);
+			grad.addColorStop(0.5, `hsl(${bgSeed % 360}, 100%, 28%)`);
+			grad.addColorStop(0.75, `hsl(${((bgSeed + 110) % 360)}, 90%, 18%)`);
+			grad.addColorStop(1, `hsl(${((bgSeed + 220) % 360)}, 80%, 12%)`);
+		} else {
+			grad = ctx.createConicGradient(bgSeed * 0.008, renderSize/2, renderSize/2);
+			grad.addColorStop(0, `hsl(${bgSeed % 360}, 95%, 55%)`);
+			grad.addColorStop(0.16, `hsl(${((bgSeed + 15) % 360)}, 90%, 50%)`);
+			grad.addColorStop(0.33, `hsl(${((bgSeed + 30) % 360)}, 85%, 42%)`);
+			grad.addColorStop(0.5, `hsl(${((bgSeed + 45) % 360)}, 75%, 35%)`);
+			grad.addColorStop(0.66, `hsl(${((bgSeed + 60) % 360)}, 65%, 30%)`);
+			grad.addColorStop(0.83, `hsl(${(bgSeed + 75) % 360}, 60%, 28%)`);
+			grad.addColorStop(1, `hsl(${bgSeed % 360}, 95%, 55%)`);
 		}
+		ctx.fillStyle = grad;
+		ctx.fillRect(0, 0, renderSize, renderSize);
 
 		// Tiny starfield
-		for (let i = 0; i < size/4; i++) {
-			const x = simpleHash(uniquePart + i) % size;
-			const y = simpleHash(uniquePart + i + 7777) % size;
-			const b = 60 + (simpleHash(uniquePart + i + 99999) % 40);
+		for (let i = 0; i < renderSize/2; i++) {
+			const x = simpleHash(uniquePart + i) % renderSize;
+			const y = simpleHash(uniquePart + i + 7777) % renderSize;
+			const b = 40 + (simpleHash(uniquePart + i + 99999) % 60);
+			const starSize = 1 + (simpleHash(uniquePart + i + 22222) % 2);
 			ctx.fillStyle = `hsl(70, 40%, ${b}%)`;
-			ctx.fillRect(x, y, 1, 1);
+			ctx.fillRect(x, y, starSize, starSize);
 		}
 
 		// Frame styles
 		const hueBase = frameSeed % 360;
-		const shapeType = frameSeed % 7;
+		const shapeType = frameSeed % 5;
 		const rotation = (frameSeed % 91) - 45;
 
 		ctx.save();
-		ctx.translate(size / 2, size / 2);
+		ctx.translate(renderSize / 2, renderSize / 2);
 		ctx.rotate(rotation * Math.PI / 180);
 
 		if (shapeType === 0) { // Polygon shards
-			const sides = 6 + (frameSeed >> 8) % 8;
+			const sides = 3 + (simpleHash(uniquePart + "SIDES") % 4);
+			const distortFactor = 3 + (simpleHash(uniquePart + "DISTORT") % 20);
+			const layerOffset = (simpleHash(uniquePart + "LAYER_OFFSET") % 360) * Math.PI / 180;
 			for (let l = 4; l >= 1; l--) {
-				ctx.strokeStyle = `hsla(${(hueBase + l*72)%360},90%,66%,0.82)`;
-				ctx.lineWidth = border * 0.25;
+				ctx.shadowColor = 'rgba(0,0,0,0.4)';
+				ctx.shadowBlur = border * 0.15;
+				ctx.shadowOffsetX = border * 0.05;
+				ctx.shadowOffsetY = border * 0.05;
+				ctx.fillStyle = `hsla(${(hueBase + l*72 + (simpleHash(uniquePart + l) % 60) - 30)%360},90%,66%,0.25)`;
 				ctx.beginPath();
+				const layerRot = layerOffset + l * 0.5;
 				for (let i = 0; i <= sides; i++) {
-					const a = i / sides * Math.PI * 2 + l*0.25;
-					const r = inner/2 + border*0.75*(l/4) + Math.sin(a*7 + l)*border*0.18;
+					const a = i / sides * Math.PI * 2 + layerRot;
+					const r = inner/2 + border*0.75*(l/4) + Math.cos(a*distortFactor + l)*border*0.25;
 					const x = Math.cos(a) * r;
 					const y = Math.sin(a) * r;
 					i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
 				}
 				ctx.closePath();
-				ctx.stroke();
-			}
-		} else if (shapeType === 1) { // Radial spikes (original starburst)
-			ctx.lineCap = 'round';
-			for (let i = 0; i < 30; i++) {
-				const a = i / 30 * Math.PI * 2;
-				const h = (hueBase + i*13) % 360;
-				const len = inner/2 + border * (0.4 + (simpleHash(uniquePart + i) % 70)/100);
-				ctx.strokeStyle = `hsla(${h},95%,72%,0.9)`;
-				ctx.lineWidth = 1.8 + (i % 7);
-				ctx.beginPath();
-				ctx.moveTo(0,0);
-				ctx.lineTo(Math.cos(a)*len, Math.sin(a)*len);
-				ctx.stroke();
-			}
-		} else if (shapeType === 2) { // Spiral arms
-			const arms = 3 + (frameSeed % 4);
-			ctx.lineCap = 'round';
-			for (let arm = 0; arm < arms; arm++) {
-				const armHue = (hueBase + arm * 120) % 360;
-				ctx.strokeStyle = `hsla(${armHue},90%,70%,0.85)`;
-				ctx.lineWidth = border * 0.15;
-				ctx.beginPath();
-				for (let i = 0; i < 50; i++) {
-					const t = i / 49;
-					const angle = (arm / arms + t * 2) * Math.PI * 2;
-					const radius = (inner/2 + border * 0.3) * t;
-					const x = Math.cos(angle) * radius;
-					const y = Math.sin(angle) * radius;
-					i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-				}
-				ctx.stroke();
-			}
-		} else if (shapeType === 3) { // Burst petals
-			const petals = 8 + (frameSeed % 6);
-			for (let i = 0; i < petals; i++) {
-				const angle = (i / petals) * Math.PI * 2;
-				const nextAngle = ((i + 1) / petals) * Math.PI * 2;
-				const h = (hueBase + i * 45) % 360;
-				
-				ctx.fillStyle = `hsla(${h},85%,65%,0.7)`;
-				ctx.beginPath();
-				ctx.moveTo(0, 0);
-				const radius = inner/2 + border * 0.5;
-				ctx.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
-				ctx.arc(0, 0, radius, angle, nextAngle);
-				ctx.closePath();
 				ctx.fill();
 			}
-		} else if (shapeType === 4) { // Glitch rings
-			for (let i = 9; i >= 1; i--) {
-				const r = inner/2 + border*0.9*(i/9);
-				const off = (frameSeed >> i) % 60 - 30;
-				ctx.strokeStyle = `hsla(${(hueBase + i*45)%360},95%,74%,0.7)`;
-				ctx.lineWidth = 3 + i%5;
-				ctx.setLineDash([12, 6 + i*4]);
-				ctx.lineDashOffset = off;
+			ctx.shadowColor = 'transparent';
+			ctx.shadowBlur = 0;
+			ctx.shadowOffsetX = 0;
+			ctx.shadowOffsetY = 0;
+		} else if (shapeType === 1) { // Crystal Shards
+			const shardCount = 4 + (simpleHash(uniquePart + "SHARD_COUNT") % 10);
+			const angleOffset = (simpleHash(uniquePart + "SHARD_OFFSET") % 360) * Math.PI / 180;
+			// Calculate outermost nebula ring radius for attachment
+			const nebulaRingCount = 5 + (simpleHash(uniquePart + "RING_COUNT") % 5);
+			const nebulaRadiusVar = 0.2 + (simpleHash(uniquePart + "RING_RADIUS") % 50) / 100;
+			const outermostNebulaR = inner/2 + border * (0.1 + nebulaRadiusVar);
+			for (let i = 0; i < shardCount; i++) {
+				const a = angleOffset + (i / shardCount) * Math.PI * 2;
+				const dist = (outermostNebulaR + border * ((simpleHash(uniquePart + i) % 40) / 100 - 0.2)) * 0.5;
+				const size = border * (1.0 + (simpleHash(uniquePart + i + 1000) % 100) / 100);
+				const x = Math.cos(a) * dist;
+				const y = Math.sin(a) * dist;
+				ctx.save();
+				ctx.translate(x, y);
+				ctx.rotate(a);
+				// Radial gradient from tip for spotlight effect
+				const grad = ctx.createRadialGradient(size, 0, 0, size, 0, size);
+				const hue = hueBase + (simpleHash(uniquePart + i + 2000) % 60) - 30;
+				grad.addColorStop(0, `hsla(${hue},90%,70%,0.8)`);
+				grad.addColorStop(1, `hsla(${hue},90%,70%,0)`);
+				ctx.fillStyle = grad;
+				// Add shadow for depth
+				ctx.shadowColor = `hsla(${hue},90%,70%,0.5)`;
+				ctx.shadowBlur = size * 0.3;
+				ctx.shadowOffsetX = size * 0.1;
+				ctx.shadowOffsetY = size * 0.1;
 				ctx.beginPath();
-				ctx.arc(0,0,r,0,Math.PI*2);
+				ctx.moveTo(size, 0);
+				ctx.lineTo(0, -size * 0.5);
+				ctx.lineTo(0, size * 0.5);
+				ctx.closePath();
+				ctx.fill();
+				// Add burst line from tip outward
+				ctx.strokeStyle = `hsla(${hue},90%,70%,0.6)`;
+				ctx.lineWidth = border * 0.03;
+				ctx.lineCap = 'round';
+				const extension = border * 0.6;
+				ctx.beginPath();
+				ctx.moveTo(size, 0);
+				ctx.lineTo(size + extension, 0);
+				ctx.stroke();
+				// Add small cube at the end
+				ctx.fillStyle = `hsla(${hue},90%,70%,1.0)`;
+				const cubeSize = border * 0.04;
+				ctx.fillRect(size + extension - cubeSize/2, -cubeSize/2, cubeSize, cubeSize);
+				ctx.restore();
+			}
+		} else if (shapeType === 2) { // Glitch rings
+			const ringCount = 4 + (simpleHash(uniquePart + "GLITCH_COUNT") % 7);
+			const colorStep = 30 + (simpleHash(uniquePart + "GLITCH_COLOR") % 60);
+			const dashBase = 12 + (simpleHash(uniquePart + "GLITCH_DASH") % 24);
+			const offsetVar = (simpleHash(uniquePart + "GLITCH_OFFSET") % 100) - 50;
+			for (let i = ringCount; i >= 1; i--) {
+				const r = inner/2 + border * (0.2 + (simpleHash(uniquePart + i) % 80) / 100) * (i / ringCount);
+				const hueShift = (hueBase + i * colorStep + (simpleHash(uniquePart + i + 1000) % 60) - 30) % 360;
+				ctx.shadowColor = 'rgba(0,0,0,0.4)';
+				ctx.shadowBlur = border * 0.1;
+				ctx.shadowOffsetX = border * 0.03;
+				ctx.shadowOffsetY = border * 0.03;
+				ctx.strokeStyle = `hsla(${hueShift},95%,74%,0.7)`;
+				ctx.lineWidth = 6 + (simpleHash(uniquePart + i + 2000) % 12);
+				const dashLen = dashBase + (simpleHash(uniquePart + i + 3000) % 30) - 15;
+				const gapLen = 6 + (simpleHash(uniquePart + i + 4000) % 18);
+				ctx.setLineDash([dashLen, gapLen]);
+				ctx.lineDashOffset = offsetVar + (simpleHash(uniquePart + i + 5000) % 100) - 50;
+				ctx.beginPath();
+				const startAngle = (simpleHash(uniquePart + i + 6000) % 360) * Math.PI / 180;
+				const arcLength = (0.5 + (simpleHash(uniquePart + i + 7000) % 50) / 100) * Math.PI * 2;
+				ctx.arc(0, 0, r, startAngle, startAngle + arcLength);
 				ctx.stroke();
 			}
 			ctx.setLineDash([]);
-		} else if (shapeType === 5) { // Crystal grid
-			const count = 5 + (frameSeed % 8);
+			ctx.shadowColor = 'transparent';
+			ctx.shadowBlur = 0;
+			ctx.shadowOffsetX = 0;
+			ctx.shadowOffsetY = 0;
+		} else if (shapeType === 3) { // Crystal grid
+			const count = 2 + (simpleHash(uniquePart + "CRYSTAL_COUNT") % 4);
 			for (let i = 0; i < count; i++) {
 				const a = i / count * Math.PI * 2;
-				const h = (hueBase + i*58) % 360;
-				ctx.fillStyle = `hsla(${h},92%,68%,0.48)`;
+				const h = (hueBase + i*30) % 360;
+				ctx.shadowColor = 'rgba(0,0,0,0.4)';
+				ctx.shadowBlur = border * 0.12;
+				ctx.shadowOffsetX = border * 0.04;
+				ctx.shadowOffsetY = border * 0.04;
+				ctx.fillStyle = `hsla(${h},92%,68%,0.3)`;
 				ctx.beginPath();
 				for (let j = 0; j < 6; j++) {
 					const r = inner/2 + border*0.7;
-					const a2 = a + j/6*Math.PI*2 + (i%2 ? Math.PI/6 : 0);
+					const rotVar = (simpleHash(uniquePart + i + j) % 60 - 30) * Math.PI / 180;
+					const a2 = a + j/6*Math.PI*2 + rotVar;
 					const x = Math.cos(a2) * r;
 					const y = Math.sin(a2) * r * 0.7;
 					j===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
 				}
 				ctx.closePath();
 				ctx.fill();
+				// Add burst lines from vertices outward
+				ctx.strokeStyle = `hsla(${h},92%,68%,0.6)`;
+				ctx.lineWidth = border * 0.03;
+				ctx.lineCap = 'round';
+				for (let j = 0; j < 6; j++) {
+					const r = inner/2 + border*0.7;
+					const rotVar = (simpleHash(uniquePart + i + j) % 60 - 30) * Math.PI / 180;
+					const a2 = a + j/6*Math.PI*2 + rotVar;
+					const x = Math.cos(a2) * r;
+					const y = Math.sin(a2) * r * 0.7;
+					const x2 = Math.cos(a2) * (r + border * 0.6);
+					const y2 = Math.sin(a2) * (r + border * 0.6) * 0.7;
+					ctx.beginPath();
+					ctx.moveTo(x, y);
+					ctx.lineTo(x2, y2);
+					ctx.stroke();
+					// Add small cube at the end
+					ctx.fillStyle = `hsla(${h},92%,68%,1.0)`;
+					const cubeSize = border * 0.04;
+					ctx.fillRect(x2 - cubeSize/2, y2 - cubeSize/2, cubeSize, cubeSize);
+				}
 			}
+			ctx.shadowColor = 'transparent';
+			ctx.shadowBlur = 0;
+			ctx.shadowOffsetX = 0;
+			ctx.shadowOffsetY = 0;
 		} else { // Nebula rings
-			for (let i = 7; i >= 1; i--) {
-				const r = inner/2 + border * i / 7;
-				ctx.strokeStyle = `hsla(${(hueBase + i*55)%360},88%,65%,0.5)`;
-				ctx.lineWidth = border * 0.22;
-				ctx.globalAlpha = i/11;
+			const ringCount = 8 + (simpleHash(uniquePart + "RING_COUNT") % 8);
+			const colorStep = 40 + (simpleHash(uniquePart + "RING_COLOR") % 40);
+			const radiusVar = 0.2 + (simpleHash(uniquePart + "RING_RADIUS") % 50) / 100;
+			const alphaBase = 0.3 + (simpleHash(uniquePart + "RING_ALPHA") % 40) / 100;
+			for (let i = ringCount; i >= 1; i--) {
+				const r = inner/2 + border * i / ringCount * (0.8 + radiusVar * 0.4);
+				const hueShift = (hueBase + i * colorStep) % 360;
+				ctx.strokeStyle = `hsla(${hueShift},88%,65%,${alphaBase * (i / ringCount)})`;
+				ctx.lineWidth = border * (0.15 + (simpleHash(uniquePart + i) % 30) / 100);
+				ctx.globalAlpha = 1;
+				// Add shadow for depth
+				ctx.shadowColor = `hsla(${hueShift},88%,65%,0.5)`;
+				ctx.shadowBlur = border * 0.2;
+				ctx.shadowOffsetX = border * 0.05;
+				ctx.shadowOffsetY = border * 0.05;
 				ctx.beginPath();
-				ctx.arc(0,0,r + Math.sin(i*2.2)*border*0.3,0,Math.PI*2);
+				const wave = Math.sin(i * 1.8 + (simpleHash(uniquePart + "RING_WAVE") % 360) * Math.PI / 180) * border * 0.2;
+				ctx.arc(0, 0, r + wave, 0, Math.PI * 2);
 				ctx.stroke();
 			}
 			ctx.globalAlpha = 1;
@@ -482,20 +474,75 @@ const VillagerIdenticon = (function () {
 
 		// Varied multi-layer glow ring
 		const glowCount = 1 + (frameSeed % 3);
-		const glowHue = (hueBase + 100 + (frameSeed >> 5) % 140) % 360;
+		const GLOW_HUE = simpleHash(uniquePart + "GLOW_HUE") % 360;
+		const GLOW_VAR = simpleHash(uniquePart + "GLOW_VAR") % 30;
+		const glowHue = (hueBase + 100 + (frameSeed >> 5) % 140 + GLOW_HUE) % 360;
 		for (let g = 0; g < glowCount; g++) {
 			const offset = g * border * 0.09;
 			const blur = border * (0.32 + g * 0.16 + (frameSeed % 50)/120);
 			const width = border * (0.08 + g * 0.06);
 			ctx.shadowBlur = blur;
-			ctx.shadowColor = `hsla(${glowHue + g*45},100%,78%,0.92)`;
-			ctx.strokeStyle = `hsla(${glowHue + g*55},100%,82%,1)`;
+			ctx.shadowColor = `hsla(${glowHue + g*45 + (simpleHash(uniquePart + g) % GLOW_VAR)},100%,78%,0.92)`;
+			ctx.strokeStyle = `hsla(${glowHue + g*55 + (simpleHash(uniquePart + g + 100) % GLOW_VAR)},100%,82%,1)`;
 			ctx.lineWidth = width;
 			ctx.beginPath();
 			ctx.arc(0, 0, inner/2 + border*0.26 + offset, 0, Math.PI*2);
 			ctx.stroke();
 		}
 
+		ctx.restore();
+
+		// Subtle texture overlay on top of frame
+		ctx.globalCompositeOperation = 'overlay';
+		for (let i = 0; i < renderSize / 4; i++) {
+			const x = simpleHash(uniquePart + "TEX" + i) % renderSize;
+			const y = simpleHash(uniquePart + "TEX" + i + 10000) % renderSize;
+			const gray = 100 + (simpleHash(uniquePart + "TEX" + i + 20000) % 55);
+			ctx.fillStyle = `hsl(0, 0%, ${gray}%)`;
+			ctx.fillRect(x, y, 1, 1);
+		}
+		ctx.globalCompositeOperation = 'source-over';
+
+		// Universal glitch overlay effect
+		ctx.save();
+		ctx.translate(renderSize / 2, renderSize / 2);
+		const glitchCount = 2 + (simpleHash(uniquePart + "GLITCH_OVERLAY") % 3);
+		for (let g = 0; g < glitchCount; g++) {
+			const r = inner/2 + border * (0.3 + (simpleHash(uniquePart + g) % 50) / 100);
+			const hueShift = (bgSeed % 360 + (simpleHash(uniquePart + g + 1000) % 60) - 30) % 360;
+			ctx.shadowColor = 'rgba(0,0,0,0.5)';
+			ctx.shadowBlur = border * 0.15;
+			ctx.shadowOffsetY = border * 0.05;
+			ctx.strokeStyle = `hsla(${hueShift},100%,65%,0.6)`;
+			ctx.lineWidth = 2 + (simpleHash(uniquePart + g + 2000) % 4);
+			const dashLen = 8 + (simpleHash(uniquePart + g + 3000) % 16);
+			const gapLen = 4 + (simpleHash(uniquePart + g + 4000) % 12);
+			ctx.setLineDash([dashLen, gapLen]);
+			ctx.lineDashOffset = (simpleHash(uniquePart + g + 5000) % 100) - 50;
+			ctx.beginPath();
+			const startAngle = (simpleHash(uniquePart + g + 6000) % 360) * Math.PI / 180;
+			const arcLength = (0.3 + (simpleHash(uniquePart + g + 7000) % 40) / 100) * Math.PI;
+			ctx.arc(0, 0, r, startAngle, startAngle + arcLength);
+			ctx.stroke();
+		}
+		// Additional data-inspired concentric patterns
+		for (let g = 0; g < glitchCount; g++) {
+			const r = inner/2 + border * (0.5 + (simpleHash(uniquePart + g + 8000) % 30) / 100);
+			const hueShift = (bgSeed % 360 + (simpleHash(uniquePart + g + 9000) % 60) - 30) % 360;
+			ctx.strokeStyle = `hsla(${hueShift},100%,65%,0.5)`;
+			ctx.lineWidth = 1;
+			const dashLen = 4 + (simpleHash(uniquePart + g + 10000) % 8);
+			const gapLen = 2 + (simpleHash(uniquePart + g + 11000) % 6);
+			ctx.setLineDash([dashLen, gapLen]);
+			ctx.lineDashOffset = (simpleHash(uniquePart + g + 12000) % 50) - 25;
+			ctx.beginPath();
+			ctx.arc(0, 0, r, 0, Math.PI * 2);
+			ctx.stroke();
+		}
+		ctx.setLineDash([]);
+		ctx.shadowColor = 'transparent';
+		ctx.shadowBlur = 0;
+		ctx.shadowOffsetY = 0;
 		ctx.restore();
 
 		// RENDER AVATAR
@@ -538,95 +585,49 @@ const VillagerIdenticon = (function () {
 
 		ctx.shadowColor = 'transparent';
 
+		// Subtle glassy overlay
+		const overlayGrad = ctx.createRadialGradient(renderSize/2, renderSize/2, 0, renderSize/2, renderSize/2, renderSize * 0.8);
+		overlayGrad.addColorStop(0, 'rgba(255,255,255,0.15)');
+		overlayGrad.addColorStop(0.7, 'rgba(255,255,255,0.05)');
+		overlayGrad.addColorStop(1, 'rgba(255,255,255,0)');
+		ctx.fillStyle = overlayGrad;
+		ctx.fillRect(0, 0, renderSize, renderSize);
+
+		// Scale to requested size if different
+		let finalCanvas = canvas;
+		if (size !== renderSize) {
+			const scaledCanvas = document.createElement('canvas');
+			scaledCanvas.width = size;
+			scaledCanvas.height = size;
+			const sctx = scaledCanvas.getContext('2d');
+			sctx.drawImage(canvas, 0, 0, size, size);
+			finalCanvas = scaledCanvas;
+		}
+
 		return new Promise(resolve => {
-			canvas.toBlob(blob => resolve(URL.createObjectURL(blob)), 'image/png');
+			finalCanvas.toBlob(blob => resolve(URL.createObjectURL(blob)), 'image/png');
 		});
 	}
     // ──────────────────────────────────────────────────────────────
-    // 5. Validation utilities (for defensive programming)
+    // 8. Validation utilities (for defensive programming)
     // ──────────────────────────────────────────────────────────────
     
-    // All valid palette characters
-    const VALID_PALETTE_CHARS = Object.keys(Char_To_Color);
-    const VALID_CHARS_SET = new Set(VALID_PALETTE_CHARS);
+    // All valid palette characters (re-export for external use)
+    const VALID_PALETTE_CHARS_EXPORT = Object.keys(Char_To_Color);
+    const VALID_CHARS_SET_EXPORT = new Set(VALID_PALETTE_CHARS_EXPORT);
     
-    /**
-     * Validate that an avatar string contains only valid palette characters
-     * @param {string} str - 576-character avatar string
-     * @returns {boolean} - true if valid, false otherwise
-     */
-    function isValidAvatarString(str) {
-        if (!str || typeof str !== 'string' || str.length !== 576) return false;
-        for (let i = 0; i < str.length; i++) {
-            if (!VALID_CHARS_SET.has(str[i])) return false;
-        }
-        return true;
-    }
-    
-    /**
-     * Sanitize avatar string by replacing invalid characters with transparent ('z')
-     * @param {string} str - avatar string (may contain invalid chars)
-     * @returns {string} - sanitized 576-char string, or empty avatar if input is invalid
-     */
-    function sanitizeAvatarString(str) {
-        if (!str || typeof str !== 'string') return 'z'.repeat(576);
-        
-        let result = '';
-        for (let i = 0; i < 576; i++) {
-            const c = str[i];
-            result += (c && VALID_CHARS_SET.has(c)) ? c : 'z';
-        }
-        return result;
-    }
-    
-    /**
-     * Get validation report for an avatar string
-     * @param {string} str - avatar string to validate
-     * @returns {object} - { valid: boolean, length: number, invalidChars: string[], invalidPositions: number[] }
-     */
-    function validateAvatarString(str) {
-        const result = {
-            valid: true,
-            length: str?.length || 0,
-            expectedLength: 576,
-            invalidChars: [],
-            invalidPositions: []
-        };
-        
-        if (!str || typeof str !== 'string') {
-            result.valid = false;
-            return result;
-        }
-        
-        if (str.length !== 576) {
-            result.valid = false;
-        }
-        
-        for (let i = 0; i < str.length; i++) {
-            if (!VALID_CHARS_SET.has(str[i])) {
-                result.valid = false;
-                if (!result.invalidChars.includes(str[i])) {
-                    result.invalidChars.push(str[i]);
-                }
-                result.invalidPositions.push(i);
-            }
-        }
-        
-        return result;
-    }
-
     return {
         render: renderSmart,
         clearCache: () => {
             avatarCache.forEach(url => URL.revokeObjectURL(url));
             avatarCache.clear();
         },
-        // Validation utilities (Fix #2)
+        // Validation utilities
         isValid: isValidAvatarString,
         sanitize: sanitizeAvatarString,
         validate: validateAvatarString,
         // Expose palette info for external tools
-        PALETTE_CHARS: VALID_PALETTE_CHARS,
+        PALETTE_CHARS: VALID_PALETTE_CHARS_EXPORT,
         PALETTE: Char_To_Color
     };
 })();
@@ -638,4 +639,3 @@ export default VillagerIdenticon;
 if (typeof window !== 'undefined') {
     window.VillagerIdenticon = VillagerIdenticon;
 }
-
