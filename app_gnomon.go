@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -640,6 +641,282 @@ func (a *App) GetNameSuggestions(prefix string) map[string]interface{} {
 		"success":     true,
 		"suggestions": out,
 		"count":       len(out),
+	}
+}
+
+// ================== Simple-Gnomon Feature: Tag System ==================
+
+// GetSCIDsByTag returns all SCIDs with a specific tag
+func (a *App) GetSCIDsByTag(tag string) map[string]interface{} {
+	store := InitSCIDTagStore()
+	scids := store.GetSCIDsByTag(tag)
+	return map[string]interface{}{
+		"success": true,
+		"tag":     tag,
+		"scids":   scids,
+		"count":   len(scids),
+	}
+}
+
+// GetAllTags returns all unique tags in use
+func (a *App) GetAllTags() map[string]interface{} {
+	store := InitSCIDTagStore()
+	tags := store.GetAllTags()
+	return map[string]interface{}{
+		"success": true,
+		"tags":    tags,
+		"count":   len(tags),
+	}
+}
+
+// GetSCIDsByClass returns all SCIDs with a specific class
+func (a *App) GetSCIDsByClass(class string) map[string]interface{} {
+	store := InitSCIDTagStore()
+	scids := store.GetSCIDsByClass(class)
+	return map[string]interface{}{
+		"success": true,
+		"class":   class,
+		"scids":   scids,
+		"count":   len(scids),
+	}
+}
+
+// GetAllClasses returns all unique classes in use
+func (a *App) GetAllClasses() map[string]interface{} {
+	store := InitSCIDTagStore()
+	classes := store.GetAllClasses()
+	return map[string]interface{}{
+		"success": true,
+		"classes": classes,
+		"count":   len(classes),
+	}
+}
+
+// GetSCIDMetadata returns tag/class metadata for a specific SCID
+func (a *App) GetSCIDMetadata(scid string) map[string]interface{} {
+	store := InitSCIDTagStore()
+	meta := store.GetMetadata(scid)
+	if meta == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "SCID not found in tag store",
+		}
+	}
+	return map[string]interface{}{
+		"success":  true,
+		"scid":     meta.SCID,
+		"owner":    meta.Owner,
+		"class":    meta.Class,
+		"tags":     meta.Tags,
+		"headers":  meta.Headers,
+		"deployed": meta.DeployHeight,
+	}
+}
+
+// GetTagStats returns statistics about the tag store
+func (a *App) GetTagStats() map[string]interface{} {
+	store := InitSCIDTagStore()
+	stats := store.GetStats()
+	stats["success"] = true
+	return stats
+}
+
+// GetTELAAppsWithTags returns TELA apps with full tag/class metadata
+func (a *App) GetTELAAppsWithTags() map[string]interface{} {
+	if !a.gnomonClient.IsRunning() {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Gnomon is not running",
+			"apps":    []map[string]interface{}{},
+		}
+	}
+
+	apps := a.gnomonClient.GetTELAApps()
+	store := InitSCIDTagStore()
+
+	for i, app := range apps {
+		if scid, ok := app["scid"].(string); ok {
+			meta := store.GetMetadata(scid)
+			if meta != nil {
+				apps[i]["class"] = meta.Class
+				apps[i]["tags"] = meta.Tags
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"success": true,
+		"apps":    apps,
+		"count":   len(apps),
+	}
+}
+
+// RebuildTagIndex rebuilds the tag store from Gnomon data
+func (a *App) RebuildTagIndex() map[string]interface{} {
+	if !a.gnomonClient.IsRunning() {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Gnomon must be running to rebuild tag index",
+		}
+	}
+
+	a.logToConsole("[TAGS] Rebuilding tag index...")
+	store := InitSCIDTagStore()
+	count := store.RebuildFromGnomon(a.gnomonClient, a.daemonClient)
+
+	a.logToConsole(fmt.Sprintf("[TAGS] Rebuild complete: classified %d SCIDs", count))
+
+	return map[string]interface{}{
+		"success": true,
+		"count":   count,
+		"message": fmt.Sprintf("Rebuilt tag index with %d SCIDs", count),
+	}
+}
+
+// ================== Simple-Gnomon Feature: Historical Queries ==================
+
+// GetSCIDStateAtHeight returns the complete state of a SCID at a specific height
+func (a *App) GetSCIDStateAtHeight(scid string, height int64) map[string]interface{} {
+	store := InitVariableHistoryStore()
+	vars := store.GetVariablesAtHeight(scid, height)
+
+	if vars == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No data available for this height",
+		}
+	}
+
+	return map[string]interface{}{
+		"success":   true,
+		"scid":      scid,
+		"height":    height,
+		"variables": vars,
+	}
+}
+
+// GetSCIDTimeline returns all recorded heights for a SCID
+func (a *App) GetSCIDTimeline(scid string) map[string]interface{} {
+	store := InitVariableHistoryStore()
+	heights := store.GetInteractionHeights(scid)
+
+	return map[string]interface{}{
+		"success": true,
+		"scid":    scid,
+		"heights": heights,
+		"count":   len(heights),
+	}
+}
+
+// CompareSCIDHeights compares SCID variables between two heights
+func (a *App) CompareSCIDHeights(scid string, height1, height2 int64) map[string]interface{} {
+	store := InitVariableHistoryStore()
+	diff := store.CompareHeights(scid, height1, height2)
+	diff["success"] = true
+	diff["scid"] = scid
+	return diff
+}
+
+// GetHistoryStats returns statistics about the variable history store
+func (a *App) GetHistoryStats() map[string]interface{} {
+	store := InitVariableHistoryStore()
+	stats := store.GetStats()
+	stats["success"] = true
+	return stats
+}
+
+// SetMaxSnapshots sets the maximum number of historical snapshots per SCID
+func (a *App) SetMaxSnapshots(max int) map[string]interface{} {
+	store := InitVariableHistoryStore()
+	store.SetMaxSnapshots(max)
+	return map[string]interface{}{
+		"success":      true,
+		"max_snapshots": store.GetMaxSnapshots(),
+	}
+}
+
+// ClearSCIDHistory clears all history for a specific SCID
+func (a *App) ClearSCIDHistory(scid string) map[string]interface{} {
+	store := InitVariableHistoryStore()
+	store.ClearSCID(scid)
+	return map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Cleared history for %s", scid),
+	}
+}
+
+// ClearAllHistory clears all variable history
+func (a *App) ClearAllHistory() map[string]interface{} {
+	store := InitVariableHistoryStore()
+	store.ClearAll()
+	return map[string]interface{}{
+		"success": true,
+		"message": "Cleared all variable history",
+	}
+}
+
+// ================== Simple-Gnomon Feature: WebSocket API ==================
+
+// StartGnomonWSServer starts the Gnomon WebSocket API
+func (a *App) StartGnomonWSServer(address string) map[string]interface{} {
+	if a.gnomonWSServer != nil && a.gnomonWSServer.IsRunning() {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "WebSocket server already running",
+			"address": a.gnomonWSServer.GetAddress(),
+		}
+	}
+
+	a.gnomonWSServer = NewGnomonWSServer(a, address)
+
+	go func() {
+		if err := a.gnomonWSServer.Start(context.Background()); err != nil {
+			a.logToConsole(fmt.Sprintf("[ERR] Gnomon WS server failed: %v", err))
+		}
+	}()
+
+	// Wait a moment for the server to start
+	time.Sleep(100 * time.Millisecond)
+
+	a.logToConsole(fmt.Sprintf("[GNOMON-WS] WebSocket API started on ws://%s/ws", a.gnomonWSServer.GetAddress()))
+
+	return map[string]interface{}{
+		"success": true,
+		"address": a.gnomonWSServer.GetAddress(),
+		"port":    a.gnomonWSServer.GetPort(),
+	}
+}
+
+// StopGnomonWSServer stops the Gnomon WebSocket API
+func (a *App) StopGnomonWSServer() map[string]interface{} {
+	if a.gnomonWSServer == nil || !a.gnomonWSServer.IsRunning() {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "WebSocket server not running",
+		}
+	}
+
+	a.gnomonWSServer.Stop()
+	a.logToConsole("[GNOMON-WS] WebSocket API stopped")
+
+	return map[string]interface{}{
+		"success": true,
+	}
+}
+
+// GetGnomonWSStatus returns the WebSocket server status
+func (a *App) GetGnomonWSStatus() map[string]interface{} {
+	if a.gnomonWSServer == nil {
+		return map[string]interface{}{
+			"running": false,
+		}
+	}
+
+	return map[string]interface{}{
+		"running":  a.gnomonWSServer.IsRunning(),
+		"address":  a.gnomonWSServer.GetAddress(),
+		"port":     a.gnomonWSServer.GetPort(),
+		"clients":  a.gnomonWSServer.GetClientCount(),
 	}
 }
 

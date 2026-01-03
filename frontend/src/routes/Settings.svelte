@@ -16,7 +16,10 @@
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus, ResetSimulator,
     GetConsoleLogs, SetNetworkMode, GetAppInfo,
     ClearConsoleLogs as ClearBackendLogs,
-    SetGnomonAutostart, GetGnomonAutostart
+    SetGnomonAutostart, GetGnomonAutostart,
+    // Simple-Gnomon features
+    StartGnomonWSServer, StopGnomonWSServer, GetGnomonWSStatus,
+    GetTagStats, RebuildTagIndex, GetHistoryStats
   } from '../../wailsjs/go/main/App.js';
   import OfflineCacheManager from '../lib/components/OfflineCacheManager.svelte';
   import SyncManager from '../lib/components/SyncManager.svelte';
@@ -84,6 +87,13 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   // Gnomon resync state
   let resyncingGnomon = false;
   let gnomonAutostart = false;
+  
+  // Simple-Gnomon WebSocket API state
+  let gnomonWSStatus = { running: false, address: '', port: 0, clients: 0 };
+  let gnomonWSLoading = false;
+  let tagStats = { total_scids: 0, class_counts: {}, tag_counts: {} };
+  let historyStats = { total_scids: 0, total_snapshots: 0, max_snapshots: 100 };
+  let rebuildingTags = false;
   
   // Search exclusions state
   let searchExclusions = [];
@@ -895,10 +905,107 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     }
   }
   
+  // === Simple-Gnomon Feature Handlers ===
+  
+  // Toggle WebSocket API server
+  async function handleGnomonWSToggle() {
+    gnomonWSLoading = true;
+    try {
+      if (gnomonWSStatus.running) {
+        const result = await StopGnomonWSServer();
+        if (result.success) {
+          gnomonWSStatus = { running: false, address: '', port: 0, clients: 0 };
+        }
+      } else {
+        const result = await StartGnomonWSServer('');
+        if (result.success) {
+          gnomonWSStatus = {
+            running: true,
+            address: result.address || '127.0.0.1:9190',
+            port: result.port || 9190,
+            clients: 0
+          };
+        }
+      }
+    } catch (e) {
+      console.error('[Gnomon-WS] Toggle failed:', e);
+    } finally {
+      gnomonWSLoading = false;
+    }
+  }
+  
+  // Load WebSocket API status
+  async function loadGnomonWSStatus() {
+    try {
+      const status = await GetGnomonWSStatus();
+      gnomonWSStatus = {
+        running: status.running || false,
+        address: status.address || '',
+        port: status.port || 0,
+        clients: status.clients || 0
+      };
+    } catch (e) {
+      console.error('[Gnomon-WS] Failed to load status:', e);
+    }
+  }
+  
+  // Load tag statistics
+  async function loadTagStats() {
+    try {
+      const stats = await GetTagStats();
+      if (stats.success) {
+        tagStats = {
+          total_scids: stats.total_scids || 0,
+          class_counts: stats.class_counts || {},
+          tag_counts: stats.tag_counts || {}
+        };
+      }
+    } catch (e) {
+      console.error('[Tags] Failed to load stats:', e);
+    }
+  }
+  
+  // Load history statistics
+  async function loadHistoryStats() {
+    try {
+      const stats = await GetHistoryStats();
+      if (stats.success) {
+        historyStats = {
+          total_scids: stats.total_scids || 0,
+          total_snapshots: stats.total_snapshots || 0,
+          max_snapshots: stats.max_snapshots || 100
+        };
+      }
+    } catch (e) {
+      console.error('[History] Failed to load stats:', e);
+    }
+  }
+  
+  // Rebuild tag index
+  async function handleRebuildTagIndex() {
+    rebuildingTags = true;
+    try {
+      const result = await RebuildTagIndex();
+      if (result.success) {
+        console.log('[Tags] Rebuild complete:', result.count, 'SCIDs classified');
+        await loadTagStats(); // Refresh stats
+      } else {
+        console.error('[Tags] Rebuild failed:', result.error);
+      }
+    } catch (e) {
+      console.error('[Tags] Rebuild error:', e);
+    } finally {
+      rebuildingTags = false;
+    }
+  }
+  
   // Load settings on gnomon section activation
   $: if (activeSection === 'gnomon') {
     loadSearchExclusions();
     loadGnomonAutostart();
+    loadGnomonWSStatus();
+    loadTagStats();
+    loadHistoryStats();
   }
   
 </script>
@@ -1862,6 +1969,98 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
           </div>
         {/if}
+        
+        <!-- Simple-Gnomon Features Card -->
+        <div class="card-wrapper" style="margin-top: var(--s-4);">
+          <div class="explorer-header">
+            <div class="explorer-header-left">
+              <span class="explorer-header-icon">◈</span>
+              <span class="explorer-header-title">ADVANCED FEATURES</span>
+            </div>
+            <HoloBadge variant="cyan">Simple-Gnomon</HoloBadge>
+          </div>
+          <div class="card-content">
+            <!-- WebSocket API Toggle -->
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">WebSocket Query API</div>
+                <div class="settings-row-desc">
+                  {#if gnomonWSStatus.running}
+                    <span class="c-cyan">Running on ws://{gnomonWSStatus.address}/ws</span>
+                    <span style="color: var(--text-4);"> • {gnomonWSStatus.clients} client{gnomonWSStatus.clients !== 1 ? 's' : ''}</span>
+                  {:else}
+                    Enable external apps to query Gnomon data via WebSocket
+                  {/if}
+                </div>
+              </div>
+              <button
+                on:click={handleGnomonWSToggle}
+                disabled={gnomonWSLoading || !$appState.gnomonRunning}
+                class="btn {gnomonWSStatus.running ? 'btn-danger' : 'btn-primary'}"
+                title={!$appState.gnomonRunning ? 'Start Gnomon first' : ''}
+              >
+                {#if gnomonWSLoading}
+                  <Icons name="loader" size={14} class="animate-spin" />
+                {:else}
+                  <Icons name={gnomonWSStatus.running ? 'x' : 'play'} size={14} />
+                {/if}
+                {gnomonWSStatus.running ? 'Stop API' : 'Start API'}
+              </button>
+            </div>
+            
+            <!-- Tag System Stats -->
+            <div class="settings-row" style="margin-top: var(--s-3);">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Tag Classification System</div>
+                <div class="settings-row-desc">
+                  {#if tagStats.total_scids > 0}
+                    <span class="c-cyan">{tagStats.total_scids}</span> SCIDs classified •
+                    {Object.keys(tagStats.class_counts || {}).length} classes •
+                    {Object.keys(tagStats.tag_counts || {}).length} tags
+                  {:else}
+                    Classify SCIDs by type (TELA, G45, NFA, etc.) for better discovery
+                  {/if}
+                </div>
+              </div>
+              <button
+                on:click={handleRebuildTagIndex}
+                disabled={rebuildingTags || !$appState.gnomonRunning}
+                class="btn btn-secondary"
+                title={!$appState.gnomonRunning ? 'Start Gnomon first' : 'Rebuild tag index from Gnomon data'}
+              >
+                {#if rebuildingTags}
+                  <Icons name="loader" size={14} class="animate-spin" />
+                  Rebuilding...
+                {:else}
+                  <Icons name="refresh" size={14} />
+                  Rebuild Index
+                {/if}
+              </button>
+            </div>
+            
+            <!-- Historical Snapshots Stats -->
+            <div class="settings-row" style="margin-top: var(--s-3);">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Historical Variable Snapshots</div>
+                <div class="settings-row-desc">
+                  {#if historyStats.total_snapshots > 0}
+                    <span class="c-cyan">{historyStats.total_snapshots}</span> snapshots across
+                    <span class="c-cyan">{historyStats.total_scids}</span> SCIDs
+                    (max {historyStats.max_snapshots} per SCID)
+                  {:else}
+                    Time-travel queries for smart contract state history
+                  {/if}
+                </div>
+              </div>
+              <div class="settings-row-actions">
+                <span class="stats-badge">
+                  <Icons name="history" size={12} />
+                  {historyStats.total_snapshots || 0}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
       
       {:else if activeSection === 'connected-apps'}
         <!-- Connected Apps -->
@@ -3992,5 +4191,28 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .toggle-switch.active .toggle-slider {
     background: var(--status-ok);
     transform: translateX(20px);
+  }
+  
+  /* Simple-Gnomon features styles */
+  .stats-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: var(--void-up);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+  }
+  
+  :global(.animate-spin) {
+    animation: spin 1s linear infinite;
+  }
+  
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
   }
 </style>

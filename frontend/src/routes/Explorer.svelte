@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { appState } from '../lib/stores/appState.js';
-  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended } from '../../wailsjs/go/main/App.js';
+  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, GetSCIDTimeline, GetSCIDStateAtHeight } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -97,6 +97,13 @@
   // Version History state (for TELA INDEXes)
   let showVersionHistory = false;
   let versionHistoryScid = '';
+  
+  // Historical Timeline state (Simple-Gnomon feature)
+  let scTimeline = [];
+  let scTimelineLoading = false;
+  let selectedHistoricalHeight = 0;
+  let historicalVars = null;
+  let showHistoricalView = false;
   
   // Landing view state (merged from Search.svelte)
   let recentSearches = [];
@@ -923,6 +930,51 @@
     } finally {
       scInteractionsLoading = false;
     }
+  }
+  
+  // === Historical Timeline Functions (Simple-Gnomon feature) ===
+  
+  // Load SCID timeline (all recorded heights)
+  async function loadSCTimeline(scid) {
+    scTimelineLoading = true;
+    scTimeline = [];
+    
+    try {
+      const result = await GetSCIDTimeline(scid);
+      if (result.success && result.heights) {
+        scTimeline = result.heights;
+      }
+    } catch (e) {
+      console.error('Failed to load SC timeline:', e);
+    } finally {
+      scTimelineLoading = false;
+    }
+  }
+  
+  // Load historical state at a specific height
+  async function loadHistoricalState(scid, height) {
+    selectedHistoricalHeight = height;
+    
+    try {
+      const result = await GetSCIDStateAtHeight(scid, height);
+      if (result.success && result.variables) {
+        historicalVars = result.variables;
+        showHistoricalView = true;
+      } else {
+        historicalVars = null;
+        toast.warn('No historical data available for this height');
+      }
+    } catch (e) {
+      console.error('Failed to load historical state:', e);
+      historicalVars = null;
+    }
+  }
+  
+  // Clear historical view and show current state
+  function clearHistoricalView() {
+    showHistoricalView = false;
+    selectedHistoricalHeight = 0;
+    historicalVars = null;
   }
   
   // Version History functions
@@ -1793,6 +1845,75 @@
                   </button>
                 </div>
               </div>
+            </div>
+            
+            <!-- Historical Timeline Panel (Simple-Gnomon feature) -->
+            <div class="cmd-stats-panel" style="margin-top: var(--s-4);">
+              <div class="cmd-panel-header">
+                <div class="cmd-panel-title">
+                  <span class="cmd-panel-icon">⏱</span>
+                  HISTORICAL TIMELINE
+                </div>
+                <div class="cmd-panel-meta">
+                  {#if scTimelineLoading}
+                    <span class="cmd-badge">Loading...</span>
+                  {:else if scTimeline.length > 0}
+                    <span class="cmd-badge">{scTimeline.length} snapshots</span>
+                  {:else}
+                    <button
+                      on:click={() => loadSCTimeline(searchQuery)}
+                      class="cmd-link-btn"
+                    >
+                      Load Timeline
+                    </button>
+                  {/if}
+                </div>
+              </div>
+              
+              {#if scTimeline.length > 0}
+                <div class="timeline-controls">
+                  <div class="timeline-slider-wrap">
+                    <input
+                      type="range"
+                      min="0"
+                      max={scTimeline.length - 1}
+                      bind:value={selectedHistoricalHeight}
+                      on:change={() => loadHistoricalState(searchQuery, scTimeline[selectedHistoricalHeight])}
+                      class="timeline-slider"
+                    />
+                    <div class="timeline-labels">
+                      <span>Oldest</span>
+                      <span class="timeline-current-height">
+                        {#if scTimeline[selectedHistoricalHeight]}
+                          Block #{scTimeline[selectedHistoricalHeight].toLocaleString()}
+                        {/if}
+                      </span>
+                      <span>Latest</span>
+                    </div>
+                  </div>
+                  
+                  {#if showHistoricalView}
+                    <button
+                      on:click={clearHistoricalView}
+                      class="btn btn-secondary btn-sm"
+                    >
+                      <X size={12} />
+                      Show Current
+                    </button>
+                  {/if}
+                </div>
+                
+                {#if showHistoricalView && historicalVars}
+                  <div class="historical-vars-notice">
+                    <Info size={14} />
+                    <span>Showing state at block #{scTimeline[selectedHistoricalHeight]?.toLocaleString()}</span>
+                  </div>
+                {/if}
+              {:else if !scTimelineLoading}
+                <div class="timeline-empty">
+                  <span>No historical snapshots recorded yet. Click "Load Timeline" to check.</span>
+                </div>
+              {/if}
             </div>
             
             <!-- SC Code Module - v6.1 Pattern -->
@@ -5152,5 +5273,85 @@
   .scid-value {
     font-family: var(--font-mono);
     font-size: 13px;
+  }
+  
+  /* Historical Timeline Styles (Simple-Gnomon feature) */
+  .timeline-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--s-4);
+    padding: var(--s-3) var(--s-4);
+    background: var(--void-mid);
+    border-radius: var(--r-md);
+    margin-top: var(--s-3);
+  }
+  
+  .timeline-slider-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  
+  .timeline-slider {
+    width: 100%;
+    height: 6px;
+    appearance: none;
+    background: var(--void-up);
+    border-radius: 3px;
+    outline: none;
+    cursor: pointer;
+  }
+  
+  .timeline-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: var(--cyan-500);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: transform 0.15s ease;
+  }
+  
+  .timeline-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+  }
+  
+  .timeline-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  
+  .timeline-current-height {
+    font-family: var(--font-mono);
+    color: var(--cyan-400);
+    font-weight: 500;
+  }
+  
+  .timeline-empty {
+    padding: var(--s-3) var(--s-4);
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
+  }
+  
+  .historical-vars-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    margin-top: var(--s-2);
+    background: rgba(6, 182, 212, 0.1);
+    border: 1px solid var(--cyan-500);
+    border-radius: var(--r-sm);
+    font-size: 12px;
+    color: var(--cyan-400);
+  }
+  
+  .btn-sm {
+    padding: var(--s-1) var(--s-2);
+    font-size: 11px;
   }
 </style>

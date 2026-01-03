@@ -229,6 +229,95 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 			"values_uint64": valsUint,
 		})
 
+	// === Simple-Gnomon Feature: Tag System ===
+	case "GetSCIDsByTag":
+		store := InitSCIDTagStore()
+		scids := store.GetSCIDsByTag(getStr("tag"))
+		return xswdSuccess(map[string]interface{}{
+			"scids": scids,
+			"count": len(scids),
+		})
+
+	case "GetSCIDsByClass":
+		store := InitSCIDTagStore()
+		scids := store.GetSCIDsByClass(getStr("class"))
+		return xswdSuccess(map[string]interface{}{
+			"scids": scids,
+			"count": len(scids),
+		})
+
+	case "GetAllTags":
+		store := InitSCIDTagStore()
+		return xswdSuccess(map[string]interface{}{
+			"tags": store.GetAllTags(),
+		})
+
+	case "GetAllClasses":
+		store := InitSCIDTagStore()
+		return xswdSuccess(map[string]interface{}{
+			"classes": store.GetAllClasses(),
+		})
+
+	case "GetSCIDMetadata":
+		store := InitSCIDTagStore()
+		meta := store.GetMetadata(getStr("scid"))
+		if meta == nil {
+			return xswdError("SCID not found in tag store")
+		}
+		return xswdSuccess(map[string]interface{}{
+			"scid":    meta.SCID,
+			"owner":   meta.Owner,
+			"class":   meta.Class,
+			"tags":    meta.Tags,
+			"headers": meta.Headers,
+		})
+
+	case "GetTagStats":
+		store := InitSCIDTagStore()
+		return xswdSuccess(store.GetStats())
+
+	// === Simple-Gnomon Feature: Historical Queries ===
+	case "GetSCIDAtHeight":
+		scid := getStr("scid")
+		height := int64(0)
+		if h, ok := params["height"].(float64); ok {
+			height = int64(h)
+		}
+		store := InitVariableHistoryStore()
+		vars := store.GetVariablesAtHeight(scid, height)
+		if vars == nil {
+			return xswdError("No data available for this height")
+		}
+		return xswdSuccess(map[string]interface{}{
+			"scid":      scid,
+			"height":    height,
+			"variables": vars,
+		})
+
+	case "GetSCIDTimeline":
+		store := InitVariableHistoryStore()
+		heights := store.GetInteractionHeights(getStr("scid"))
+		return xswdSuccess(map[string]interface{}{
+			"heights": heights,
+			"count":   len(heights),
+		})
+
+	case "CompareHeights":
+		scid := getStr("scid")
+		height1, height2 := int64(0), int64(0)
+		if h, ok := params["height1"].(float64); ok {
+			height1 = int64(h)
+		}
+		if h, ok := params["height2"].(float64); ok {
+			height2 = int64(h)
+		}
+		store := InitVariableHistoryStore()
+		return xswdSuccess(store.CompareHeights(scid, height1, height2))
+
+	case "GetHistoryStats":
+		store := InitVariableHistoryStore()
+		return xswdSuccess(store.GetStats())
+
 	default:
 		log.Printf("[GNOMON] Unknown method: %s", gnomonMethod)
 		return xswdError(fmt.Sprintf("Unknown Gnomon method: %s", gnomonMethod))

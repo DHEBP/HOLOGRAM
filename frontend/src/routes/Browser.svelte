@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags } from '../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
@@ -189,6 +189,10 @@ let addressInput = '';
     { id: 'all', label: 'All Apps', iconName: 'grid' },
   ];
   
+  // Tag-based categories (Simple-Gnomon feature)
+  let availableTags = [];
+  let selectedTag = '';
+  
   let minRating = 0;
   
   // Check if current address is favorited
@@ -203,11 +207,19 @@ let addressInput = '';
     
     appsLoading = true;
     try {
-      const result = await GetDiscoveredApps();
+      // Load apps with tag metadata (Simple-Gnomon feature)
+      const result = await GetTELAAppsWithTags();
       if (result.success && result.apps) {
         apps = result.apps;
         applyFilters();
       }
+      
+      // Load available tags for filtering
+      const tagsResult = await GetAllTags();
+      if (tagsResult.success && tagsResult.tags) {
+        availableTags = tagsResult.tags.filter(t => t !== 'all'); // Exclude 'all' tag
+      }
+      
       appsLoaded = true; // Mark as loaded even if 0 apps found
     } catch (error) {
       console.error('Failed to load apps:', error);
@@ -249,6 +261,7 @@ let addressInput = '';
   function applyFilters() {
     let result = [...apps];
     
+    // Apply rating category filter
     switch (selectedCategory) {
       case 'top':
         result = result.filter(app => app.rating && app.rating.average >= 7);
@@ -259,6 +272,15 @@ let addressInput = '';
       case 'unrated':
         result = result.filter(app => !app.rating || app.rating.count === 0);
         break;
+    }
+    
+    // Apply tag filter (Simple-Gnomon feature)
+    if (selectedTag) {
+      result = result.filter(app => {
+        const appTags = app.tags || [];
+        const appClass = app.class || '';
+        return appTags.includes(selectedTag) || appClass === selectedTag;
+      });
     }
     
     if (minRating > 0) {
@@ -279,6 +301,11 @@ let addressInput = '';
   
   function handleCategoryChange(categoryId) {
     selectedCategory = categoryId;
+    applyFilters();
+  }
+  
+  function handleTagChange(tag) {
+    selectedTag = tag === selectedTag ? '' : tag; // Toggle tag
     applyFilters();
   }
   
@@ -1858,6 +1885,32 @@ let addressInput = '';
             {/each}
           </div>
           
+          <!-- Tag Filters (Middle) - Simple-Gnomon Feature -->
+          {#if availableTags.length > 0}
+            <div class="browser-filter-tags">
+              <span class="browser-filter-tags-label">Tags:</span>
+              {#each availableTags.slice(0, 5) as tag}
+                <button
+                  on:click={() => handleTagChange(tag)}
+                  class="browser-filter-tag-btn"
+                  class:active={selectedTag === tag}
+                  title={`Filter by ${tag}`}
+                >
+                  {tag}
+                </button>
+              {/each}
+              {#if selectedTag}
+                <button
+                  on:click={() => handleTagChange('')}
+                  class="browser-filter-tag-clear"
+                  title="Clear tag filter"
+                >
+                  ×
+                </button>
+              {/if}
+            </div>
+          {/if}
+          
           <!-- Sort Dropdown (Right) -->
           <div class="browser-filter-sort">
             <label for="sort-select" class="browser-filter-sort-label">Sort by:</label>
@@ -2240,5 +2293,101 @@ let addressInput = '';
     font-size: 12px;
     color: var(--text-5);
     font-style: italic;
+  }
+  
+  /* Tag filter styles (Simple-Gnomon feature) */
+  .browser-filter-tags {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 16px;
+    padding-left: 16px;
+    border-left: 1px solid var(--border-subtle);
+  }
+  
+  .browser-filter-tags-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  
+  .browser-filter-tag-btn {
+    padding: 4px 10px;
+    background: var(--void-up);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  
+  .browser-filter-tag-btn:hover {
+    background: var(--void-surface);
+    border-color: var(--cyan-500);
+    color: var(--cyan-400);
+  }
+  
+  .browser-filter-tag-btn.active {
+    background: rgba(6, 182, 212, 0.15);
+    border-color: var(--cyan-500);
+    color: var(--cyan-400);
+  }
+  
+  .browser-filter-tag-clear {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--void-up);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    font-size: 14px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  
+  .browser-filter-tag-clear:hover {
+    background: var(--status-err);
+    border-color: var(--status-err);
+    color: white;
+  }
+  
+  /* Tag badge on app cards */
+  .browser-app-tag-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 6px;
+    background: var(--void-up);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  
+  .browser-app-tag-badge.class-tela {
+    background: rgba(6, 182, 212, 0.1);
+    border-color: var(--cyan-500);
+    color: var(--cyan-400);
+  }
+  
+  .browser-app-tag-badge.class-g45 {
+    background: rgba(139, 92, 246, 0.1);
+    border-color: var(--violet-500);
+    color: var(--violet-400);
+  }
+  
+  .browser-app-tag-badge.class-nfa {
+    background: rgba(236, 72, 153, 0.1);
+    border-color: var(--pink-500);
+    color: var(--pink-400);
   }
 </style>

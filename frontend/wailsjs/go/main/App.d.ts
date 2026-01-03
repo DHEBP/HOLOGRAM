@@ -41,6 +41,8 @@ export function CheckDerodStatus():Promise<Record<string, any>>;
 
 export function CleanGnomonDB(arg1:string):Promise<Record<string, any>>;
 
+export function ClearAllHistory():Promise<Record<string, any>>;
+
 export function ClearAppFilterOverride(arg1:string):Promise<Record<string, any>>;
 
 export function ClearConnectionLog():Promise<Record<string, any>>;
@@ -53,11 +55,15 @@ export function ClearOfflineCache():Promise<Record<string, any>>;
 
 export function ClearRecentWallets():Promise<Record<string, any>>;
 
+export function ClearSCIDHistory(arg1:string):Promise<Record<string, any>>;
+
 export function ClearSearchExclusions():Promise<Record<string, any>>;
 
 export function CloneTELA(arg1:string,arg2:boolean):Promise<Record<string, any>>;
 
 export function CloseWallet():Promise<Record<string, any>>;
+
+export function CompareSCIDHeights(arg1:string,arg2:number,arg3:number):Promise<Record<string, any>>;
 
 export function CompareSCStateAtHeights(arg1:string,arg2:number,arg3:number):Promise<Record<string, any>>;
 
@@ -149,9 +155,13 @@ export function GetAddressSCIDReferences(arg1:string):Promise<Record<string, any
 
 export function GetAllCachedNames():Promise<Record<string, any>>;
 
+export function GetAllClasses():Promise<Record<string, any>>;
+
 export function GetAllMODClasses():Promise<Record<string, any>>;
 
 export function GetAllSettings():Promise<Record<string, any>>;
+
+export function GetAllTags():Promise<Record<string, any>>;
 
 export function GetAppDetails(arg1:string):Promise<Record<string, any>>;
 
@@ -227,7 +237,11 @@ export function GetGnomonAutostart():Promise<boolean>;
 
 export function GetGnomonStatus():Promise<Record<string, any>>;
 
+export function GetGnomonWSStatus():Promise<Record<string, any>>;
+
 export function GetHistory():Promise<Array<string>>;
+
+export function GetHistoryStats():Promise<Record<string, any>>;
 
 export function GetINDEXInfo(arg1:string):Promise<Record<string, any>>;
 
@@ -309,6 +323,16 @@ export function GetSCChangeTimeline(arg1:string):Promise<Record<string, any>>;
 
 export function GetSCCode(arg1:string):Promise<Record<string, any>>;
 
+export function GetSCIDMetadata(arg1:string):Promise<Record<string, any>>;
+
+export function GetSCIDStateAtHeight(arg1:string,arg2:number):Promise<Record<string, any>>;
+
+export function GetSCIDTimeline(arg1:string):Promise<Record<string, any>>;
+
+export function GetSCIDsByClass(arg1:string):Promise<Record<string, any>>;
+
+export function GetSCIDsByTag(arg1:string):Promise<Record<string, any>>;
+
 export function GetSCInfo(arg1:string):Promise<Record<string, any>>;
 
 export function GetSCInteractionHistory(arg1:string):Promise<Record<string, any>>;
@@ -343,7 +367,11 @@ export function GetSimulatorWalletStatus():Promise<Record<string, any>>;
 
 export function GetSyncProgress():Promise<Record<string, any>>;
 
+export function GetTELAAppsWithTags():Promise<Record<string, any>>;
+
 export function GetTELALibraries():Promise<Record<string, any>>;
+
+export function GetTagStats():Promise<Record<string, any>>;
 
 export function GetTokenPortfolio():Promise<Record<string, any>>;
 
@@ -447,6 +475,8 @@ export function RateTELA(arg1:string,arg2:number):Promise<Record<string, any>>;
 
 export function RateTELAApp(arg1:string,arg2:number):Promise<Record<string, any>>;
 
+export function RebuildTagIndex():Promise<Record<string, any>>;
+
 export function RefreshLocalDevServer():Promise<Record<string, any>>;
 
 export function RefreshTestWalletBalance(arg1:number):Promise<Record<string, any>>;
@@ -537,6 +567,8 @@ export function SetGnomonAutostart(arg1:boolean):Promise<Record<string, any>>;
 
 export function SetMaxServers(arg1:number):Promise<Record<string, any>>;
 
+export function SetMaxSnapshots(arg1:number):Promise<Record<string, any>>;
+
 export function SetMiningAddress(arg1:string):Promise<Record<string, any>>;
 
 export function SetNetworkMode(arg1:string):Promise<Record<string, any>>;
@@ -577,6 +609,8 @@ export function StartBlockMonitoring():Promise<void>;
 
 export function StartGnomon():Promise<Record<string, any>>;
 
+export function StartGnomonWSServer(arg1:string):Promise<Record<string, any>>;
+
 export function StartLocalDevServer(arg1:string):Promise<Record<string, any>>;
 
 export function StartNode(arg1:string):Promise<Record<string, any>>;
@@ -592,6 +626,8 @@ export function StartStatusBroadcast():Promise<void>;
 export function StopBlockMonitoring():Promise<void>;
 
 export function StopGnomon():Promise<Record<string, any>>;
+
+export function StopGnomonWSServer():Promise<Record<string, any>>;
 
 export function StopLocalDevServer():Promise<Record<string, any>>;
 

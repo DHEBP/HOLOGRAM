@@ -56,6 +56,9 @@ type App struct {
 	// Simulator Mode (integrated testing environment)
 	simulatorManager *SimulatorManager
 
+	// Gnomon WebSocket API Server (simple-gnomon feature)
+	gnomonWSServer *GnomonWSServer
+
 	// Status broadcast
 	statusBroadcaster     *StatusBroadcaster
 	statusBroadcasterOnce sync.Once

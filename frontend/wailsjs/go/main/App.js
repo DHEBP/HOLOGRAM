@@ -78,6 +78,10 @@ export function CleanGnomonDB(arg1) {
   return window['go']['main']['App']['CleanGnomonDB'](arg1);
 }
 
+export function ClearAllHistory() {
+  return window['go']['main']['App']['ClearAllHistory']();
+}
+
 export function ClearAppFilterOverride(arg1) {
   return window['go']['main']['App']['ClearAppFilterOverride'](arg1);
 }
@@ -102,6 +106,10 @@ export function ClearRecentWallets() {
   return window['go']['main']['App']['ClearRecentWallets']();
 }
 
+export function ClearSCIDHistory(arg1) {
+  return window['go']['main']['App']['ClearSCIDHistory'](arg1);
+}
+
 export function ClearSearchExclusions() {
   return window['go']['main']['App']['ClearSearchExclusions']();
 }
@@ -112,6 +120,10 @@ export function CloneTELA(arg1, arg2) {
 
 export function CloseWallet() {
   return window['go']['main']['App']['CloseWallet']();
+}
+
+export function CompareSCIDHeights(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CompareSCIDHeights'](arg1, arg2, arg3);
 }
 
 export function CompareSCStateAtHeights(arg1, arg2, arg3) {
@@ -294,12 +306,20 @@ export function GetAllCachedNames() {
   return window['go']['main']['App']['GetAllCachedNames']();
 }
 
+export function GetAllClasses() {
+  return window['go']['main']['App']['GetAllClasses']();
+}
+
 export function GetAllMODClasses() {
   return window['go']['main']['App']['GetAllMODClasses']();
 }
 
 export function GetAllSettings() {
   return window['go']['main']['App']['GetAllSettings']();
+}
+
+export function GetAllTags() {
+  return window['go']['main']['App']['GetAllTags']();
 }
 
 export function GetAppDetails(arg1) {
@@ -450,8 +470,16 @@ export function GetGnomonStatus() {
   return window['go']['main']['App']['GetGnomonStatus']();
 }
 
+export function GetGnomonWSStatus() {
+  return window['go']['main']['App']['GetGnomonWSStatus']();
+}
+
 export function GetHistory() {
   return window['go']['main']['App']['GetHistory']();
+}
+
+export function GetHistoryStats() {
+  return window['go']['main']['App']['GetHistoryStats']();
 }
 
 export function GetINDEXInfo(arg1) {
@@ -614,6 +642,26 @@ export function GetSCCode(arg1) {
   return window['go']['main']['App']['GetSCCode'](arg1);
 }
 
+export function GetSCIDMetadata(arg1) {
+  return window['go']['main']['App']['GetSCIDMetadata'](arg1);
+}
+
+export function GetSCIDStateAtHeight(arg1, arg2) {
+  return window['go']['main']['App']['GetSCIDStateAtHeight'](arg1, arg2);
+}
+
+export function GetSCIDTimeline(arg1) {
+  return window['go']['main']['App']['GetSCIDTimeline'](arg1);
+}
+
+export function GetSCIDsByClass(arg1) {
+  return window['go']['main']['App']['GetSCIDsByClass'](arg1);
+}
+
+export function GetSCIDsByTag(arg1) {
+  return window['go']['main']['App']['GetSCIDsByTag'](arg1);
+}
+
 export function GetSCInfo(arg1) {
   return window['go']['main']['App']['GetSCInfo'](arg1);
 }
@@ -682,8 +730,16 @@ export function GetSyncProgress() {
   return window['go']['main']['App']['GetSyncProgress']();
 }
 
+export function GetTELAAppsWithTags() {
+  return window['go']['main']['App']['GetTELAAppsWithTags']();
+}
+
 export function GetTELALibraries() {
   return window['go']['main']['App']['GetTELALibraries']();
+}
+
+export function GetTagStats() {
+  return window['go']['main']['App']['GetTagStats']();
 }
 
 export function GetTokenPortfolio() {
@@ -890,6 +946,10 @@ export function RateTELAApp(arg1, arg2) {
   return window['go']['main']['App']['RateTELAApp'](arg1, arg2);
 }
 
+export function RebuildTagIndex() {
+  return window['go']['main']['App']['RebuildTagIndex']();
+}
+
 export function RefreshLocalDevServer() {
   return window['go']['main']['App']['RefreshLocalDevServer']();
 }
@@ -1070,6 +1130,10 @@ export function SetMaxServers(arg1) {
   return window['go']['main']['App']['SetMaxServers'](arg1);
 }
 
+export function SetMaxSnapshots(arg1) {
+  return window['go']['main']['App']['SetMaxSnapshots'](arg1);
+}
+
 export function SetMiningAddress(arg1) {
   return window['go']['main']['App']['SetMiningAddress'](arg1);
 }
@@ -1150,6 +1214,10 @@ export function StartGnomon() {
   return window['go']['main']['App']['StartGnomon']();
 }
 
+export function StartGnomonWSServer(arg1) {
+  return window['go']['main']['App']['StartGnomonWSServer'](arg1);
+}
+
 export function StartLocalDevServer(arg1) {
   return window['go']['main']['App']['StartLocalDevServer'](arg1);
 }
@@ -1180,6 +1248,10 @@ export function StopBlockMonitoring() {
 
 export function StopGnomon() {
   return window['go']['main']['App']['StopGnomon']();
+}
+
+export function StopGnomonWSServer() {
+  return window['go']['main']['App']['StopGnomonWSServer']();
 }
 
 export function StopLocalDevServer() {
