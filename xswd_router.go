@@ -52,11 +52,13 @@ func (a *App) routeDaemonCall(method string, params map[string]interface{}) XSWD
 // routeEpochCall handles EPOCH-related methods
 func (a *App) routeEpochCall(method string, params map[string]interface{}) XSWDResponse {
 	switch method {
-	case "AttemptEPOCH":
+	case "AttemptEPOCH", "AttemptEPOCHWithAddr":
 		hashes := 100 // default
 		if h, ok := params["hashes"].(float64); ok && h > 0 {
 			hashes = int(h)
 		}
+		// Note: AttemptEPOCHWithAddr has an "address" param for dev donations
+		// Currently we process it like regular AttemptEPOCH (reward goes to connected wallet)
 		epochResult := a.HandleEpochRequest(hashes, "")
 		if epochResult["success"] == true {
 			return xswdSuccess(map[string]interface{}{
@@ -135,11 +137,13 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 		varMaps := make([]map[string]interface{}, 0, len(vars))
 		for _, v := range vars {
 			varMaps = append(varMaps, map[string]interface{}{
-				"key":   v.Key,
-				"value": v.Value,
+				"Key":   v.Key,
+				"Value": v.Value,
 			})
 		}
-		return xswdSuccess(varMaps)
+		return xswdSuccess(map[string]interface{}{
+			"allVariables": varMaps,
+		})
 
 	case "GetAllOwnersAndSCIDs":
 		return xswdSuccess(a.gnomonClient.GetAllOwnersAndSCIDs())
@@ -233,7 +237,7 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 
 // isEpochMethod checks if a method is an EPOCH method
 func isEpochMethod(method string) bool {
-	return method == "AttemptEPOCH" || method == "GetMaxHashesEPOCH"
+	return method == "AttemptEPOCH" || method == "AttemptEPOCHWithAddr" || method == "GetMaxHashesEPOCH"
 }
 
 // isTELAMethod checks if a method is a TELA method
