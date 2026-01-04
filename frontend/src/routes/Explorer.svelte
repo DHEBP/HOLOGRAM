@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { appState } from '../lib/stores/appState.js';
-  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction } from '../../wailsjs/go/main/App.js';
+  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -98,6 +98,19 @@
   // Version History state (for TELA INDEXes)
   let showVersionHistory = false;
   let versionHistoryScid = '';
+  
+  // Time Machine state
+  let showTimeMachine = false;
+  let timeMachineSnapshots = [];
+  let timeMachineLoading = false;
+  let timeMachineCapturing = false;
+  let selectedSnapshotIndex = 0;
+  let selectedSnapshot = null;
+  let compareMode = false;
+  let compareFromIndex = 0;
+  let compareToIndex = 0;
+  let comparisonResult = null;
+  let comparingSnapshots = false;
   
   // Landing view state (merged from Search.svelte)
   let recentSearches = [];
@@ -948,6 +961,86 @@
     // Navigate to Studio Clone with the version
     window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'studio' }));
     showVersionHistory = false;
+  }
+  
+  // Time Machine functions
+  async function loadTimeMachineHistory(scid) {
+    timeMachineLoading = true;
+    timeMachineSnapshots = [];
+    selectedSnapshot = null;
+    selectedSnapshotIndex = 0;
+    comparisonResult = null;
+    
+    try {
+      const result = await GetSCStateHistory(scid);
+      if (result.success && result.history) {
+        timeMachineSnapshots = result.history;
+        if (timeMachineSnapshots.length > 0) {
+          selectedSnapshotIndex = timeMachineSnapshots.length - 1;
+          selectedSnapshot = timeMachineSnapshots[selectedSnapshotIndex];
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load Time Machine history:', e);
+    } finally {
+      timeMachineLoading = false;
+    }
+  }
+  
+  async function captureSnapshot(scid) {
+    timeMachineCapturing = true;
+    try {
+      const result = await CaptureSCState(scid);
+      if (result.success) {
+        toast.success(`Snapshot captured at height ${result.snapshot?.height || 'current'}`);
+        // Reload history to include new snapshot
+        await loadTimeMachineHistory(scid);
+      } else {
+        toast.error(result.error || 'Failed to capture snapshot');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Failed to capture snapshot');
+    } finally {
+      timeMachineCapturing = false;
+    }
+  }
+  
+  function handleSliderChange(index) {
+    selectedSnapshotIndex = index;
+    selectedSnapshot = timeMachineSnapshots[index];
+    comparisonResult = null;
+  }
+  
+  async function compareSnapshots() {
+    if (timeMachineSnapshots.length < 2) {
+      toast.warning('Need at least 2 snapshots to compare');
+      return;
+    }
+    
+    comparingSnapshots = true;
+    comparisonResult = null;
+    
+    try {
+      const fromHeight = timeMachineSnapshots[compareFromIndex].height;
+      const toHeight = timeMachineSnapshots[compareToIndex].height;
+      
+      const result = await CompareSCStateAtHeights(searchQuery, fromHeight, toHeight);
+      if (result.success) {
+        comparisonResult = result.diff;
+      } else {
+        toast.error(result.error || 'Failed to compare snapshots');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Failed to compare snapshots');
+    } finally {
+      comparingSnapshots = false;
+    }
+  }
+  
+  function formatSnapshotTime(snapshot) {
+    if (!snapshot?.captured_at) return 'Unknown';
+    const date = new Date(snapshot.captured_at);
+    return date.toLocaleString();
   }
   
   // Check if SC is a TELA INDEX (has DOC1 variable)
@@ -2079,6 +2172,216 @@
                   toast.success(`Function called! TX: ${e.detail.txid?.slice(0, 16)}...`);
                 }}
               />
+              
+              <!-- Time Machine Section -->
+              <div class="time-machine-section">
+                <button
+                  on:click={() => {
+                    showTimeMachine = !showTimeMachine;
+                    if (showTimeMachine && timeMachineSnapshots.length === 0) {
+                      loadTimeMachineHistory(searchQuery);
+                    }
+                  }}
+                  class="time-machine-toggle"
+                >
+                  <span class="toggle-icon">{showTimeMachine ? '▼' : '▶'}</span>
+                  <Clock size={14} strokeWidth={1.5} />
+                  <span>Time Machine</span>
+                  {#if timeMachineSnapshots.length > 0}
+                    <span class="snapshot-badge">{timeMachineSnapshots.length} snapshots</span>
+                  {/if}
+                </button>
+                
+                {#if showTimeMachine}
+                  <div class="cmd-stats-panel time-machine-panel">
+                    <div class="cmd-panel-header">
+                      <div class="cmd-panel-title">
+                        <span class="cmd-panel-icon">◎</span>
+                        TIME MACHINE
+                      </div>
+                      <button
+                        class="cmd-link-btn"
+                        on:click={() => captureSnapshot(searchQuery)}
+                        disabled={timeMachineCapturing}
+                      >
+                        {#if timeMachineCapturing}
+                          <Loader2 size={12} class="spin" />
+                        {:else}
+                          <span>+ Capture Snapshot</span>
+                        {/if}
+                      </button>
+                    </div>
+                    
+                    <div class="cmd-panel-body">
+                      {#if timeMachineLoading}
+                        <div class="time-machine-loading">
+                          <Loader2 size={16} class="spin" />
+                          <span>Loading snapshots...</span>
+                        </div>
+                      {:else if timeMachineSnapshots.length === 0}
+                        <div class="time-machine-empty">
+                          <Clock size={24} strokeWidth={1} />
+                          <p>No snapshots captured yet</p>
+                          <p class="hint">Capture a snapshot to start tracking SC state over time</p>
+                        </div>
+                      {:else}
+                        <!-- Snapshot Slider -->
+                        <div class="snapshot-slider-container">
+                          <div class="slider-labels">
+                            <span class="slider-label-left">Height {timeMachineSnapshots[0]?.height || 0}</span>
+                            <span class="slider-label-right">Height {timeMachineSnapshots[timeMachineSnapshots.length - 1]?.height || 0}</span>
+                          </div>
+                          <input
+                            type="range"
+                            class="snapshot-slider"
+                            min="0"
+                            max={timeMachineSnapshots.length - 1}
+                            bind:value={selectedSnapshotIndex}
+                            on:input={() => handleSliderChange(selectedSnapshotIndex)}
+                          />
+                          <div class="slider-ticks">
+                            {#each timeMachineSnapshots as _, i}
+                              <div 
+                                class="slider-tick"
+                                class:active={i === selectedSnapshotIndex}
+                                on:click={() => handleSliderChange(i)}
+                                title="Height {timeMachineSnapshots[i]?.height}"
+                              ></div>
+                            {/each}
+                          </div>
+                        </div>
+                        
+                        <!-- Selected Snapshot Info -->
+                        {#if selectedSnapshot}
+                          <div class="selected-snapshot-info">
+                            <div class="snapshot-header">
+                              <span class="snapshot-height">Block #{selectedSnapshot.height}</span>
+                              <span class="snapshot-time">{formatSnapshotTime(selectedSnapshot)}</span>
+                            </div>
+                            <div class="snapshot-stats">
+                              <div class="snapshot-stat">
+                                <span class="stat-label">Variables</span>
+                                <span class="stat-value">{Object.keys(selectedSnapshot.variables || {}).length}</span>
+                              </div>
+                              <div class="snapshot-stat">
+                                <span class="stat-label">Balance</span>
+                                <span class="stat-value">{(selectedSnapshot.balance / 100000).toFixed(5)} DERO</span>
+                              </div>
+                            </div>
+                            
+                            <!-- Variables at this height -->
+                            {#if selectedSnapshot.variables && Object.keys(selectedSnapshot.variables).length > 0}
+                              <div class="snapshot-variables">
+                                <div class="vars-header">Variables at Height {selectedSnapshot.height}</div>
+                                <div class="vars-list">
+                                  {#each Object.entries(selectedSnapshot.variables).slice(0, 10) as [key, value]}
+                                    <div class="var-row">
+                                      <span class="var-key">{key}</span>
+                                      <span class="var-value">{typeof value === 'object' ? JSON.stringify(value) : value}</span>
+                                    </div>
+                                  {/each}
+                                  {#if Object.keys(selectedSnapshot.variables).length > 10}
+                                    <div class="vars-more">
+                                      +{Object.keys(selectedSnapshot.variables).length - 10} more variables
+                                    </div>
+                                  {/if}
+                                </div>
+                              </div>
+                            {/if}
+                          </div>
+                        {/if}
+                        
+                        <!-- Compare Mode -->
+                        {#if timeMachineSnapshots.length >= 2}
+                          <div class="compare-section">
+                            <button
+                              class="compare-toggle"
+                              on:click={() => compareMode = !compareMode}
+                            >
+                              <span class="toggle-icon">{compareMode ? '▼' : '▶'}</span>
+                              Compare Snapshots
+                            </button>
+                            
+                            {#if compareMode}
+                              <div class="compare-controls">
+                                <div class="compare-select">
+                                  <label>From:</label>
+                                  <select bind:value={compareFromIndex}>
+                                    {#each timeMachineSnapshots as snap, i}
+                                      <option value={i}>Height {snap.height}</option>
+                                    {/each}
+                                  </select>
+                                </div>
+                                <div class="compare-select">
+                                  <label>To:</label>
+                                  <select bind:value={compareToIndex}>
+                                    {#each timeMachineSnapshots as snap, i}
+                                      <option value={i}>Height {snap.height}</option>
+                                    {/each}
+                                  </select>
+                                </div>
+                                <button
+                                  class="cmd-link-btn"
+                                  on:click={compareSnapshots}
+                                  disabled={comparingSnapshots || compareFromIndex === compareToIndex}
+                                >
+                                  {#if comparingSnapshots}
+                                    <Loader2 size={12} class="spin" />
+                                  {:else}
+                                    Compare
+                                  {/if}
+                                </button>
+                              </div>
+                              
+                              {#if comparisonResult}
+                                <div class="comparison-result">
+                                  <div class="comparison-header">
+                                    Changes from Height {comparisonResult.from_height} to {comparisonResult.to_height}
+                                  </div>
+                                  <div class="comparison-summary">
+                                    <span class="change-added">+{comparisonResult.total_added} added</span>
+                                    <span class="change-modified">~{comparisonResult.total_modified} modified</span>
+                                    <span class="change-removed">-{comparisonResult.total_removed} removed</span>
+                                    {#if comparisonResult.balance_diff !== 0}
+                                      <span class="balance-diff">
+                                        Balance: {comparisonResult.balance_diff > 0 ? '+' : ''}{(comparisonResult.balance_diff / 100000).toFixed(5)}
+                                      </span>
+                                    {/if}
+                                  </div>
+                                  {#if comparisonResult.changes?.length > 0}
+                                    <div class="changes-list">
+                                      {#each comparisonResult.changes.slice(0, 10) as change}
+                                        <div class="change-row change-{change.change_type}">
+                                          <span class="change-type">{change.change_type}</span>
+                                          <span class="change-key">{change.key}</span>
+                                          {#if change.change_type === 'modified'}
+                                            <span class="change-values">
+                                              {change.old_value} → {change.new_value}
+                                            </span>
+                                          {:else if change.change_type === 'added'}
+                                            <span class="change-values">{change.new_value}</span>
+                                          {:else}
+                                            <span class="change-values">{change.old_value}</span>
+                                          {/if}
+                                        </div>
+                                      {/each}
+                                      {#if comparisonResult.changes.length > 10}
+                                        <div class="changes-more">
+                                          +{comparisonResult.changes.length - 10} more changes
+                                        </div>
+                                      {/if}
+                                    </div>
+                                  {/if}
+                                </div>
+                              {/if}
+                            {/if}
+                          </div>
+                        {/if}
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+              </div>
           
           {:else if searchResult.type === 'address'}
             <!-- v6.1 Address Details Module -->
@@ -5167,5 +5470,417 @@
   .btn-sm {
     padding: var(--s-1) var(--s-2);
     font-size: 11px;
+  }
+  
+  /* Time Machine Section */
+  .time-machine-section {
+    margin-top: var(--s-4);
+    padding-top: var(--s-4);
+    border-top: 1px solid var(--border-dim);
+  }
+  
+  .time-machine-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--text-2);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    transition: color var(--dur-fast);
+  }
+  
+  .time-machine-toggle:hover {
+    color: var(--text-1);
+  }
+  
+  .snapshot-badge {
+    font-size: 11px;
+    color: var(--cyan-400);
+    background: rgba(34, 211, 238, 0.1);
+    padding: 2px 6px;
+    border-radius: var(--r-sm);
+    margin-left: var(--s-2);
+  }
+  
+  .time-machine-panel {
+    margin-top: var(--s-3);
+  }
+  
+  .time-machine-loading,
+  .time-machine-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    padding: var(--s-6);
+    color: var(--text-4);
+    font-size: 13px;
+  }
+  
+  .time-machine-empty .hint {
+    font-size: 12px;
+    color: var(--text-5);
+  }
+  
+  /* Snapshot Slider */
+  .snapshot-slider-container {
+    padding: var(--s-4) var(--s-2);
+  }
+  
+  .slider-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-5);
+    font-family: var(--font-mono);
+    margin-bottom: var(--s-2);
+  }
+  
+  .snapshot-slider {
+    width: 100%;
+    height: 4px;
+    background: var(--void-up);
+    border-radius: 2px;
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+  }
+  
+  .snapshot-slider::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    background: var(--cyan-400);
+    border-radius: 50%;
+    cursor: grab;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    transition: transform var(--dur-fast);
+  }
+  
+  .snapshot-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+  }
+  
+  .snapshot-slider::-webkit-slider-thumb:active {
+    cursor: grabbing;
+  }
+  
+  .slider-ticks {
+    display: flex;
+    justify-content: space-between;
+    margin-top: var(--s-2);
+    padding: 0 6px;
+  }
+  
+  .slider-tick {
+    width: 6px;
+    height: 6px;
+    background: var(--void-surface);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all var(--dur-fast);
+  }
+  
+  .slider-tick:hover {
+    background: var(--text-4);
+  }
+  
+  .slider-tick.active {
+    background: var(--cyan-400);
+    box-shadow: 0 0 6px var(--cyan-400);
+  }
+  
+  /* Selected Snapshot Info */
+  .selected-snapshot-info {
+    background: var(--void-up);
+    border-radius: var(--r-md);
+    padding: var(--s-3);
+    margin-top: var(--s-3);
+  }
+  
+  .snapshot-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--s-3);
+  }
+  
+  .snapshot-height {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-1);
+  }
+  
+  .snapshot-time {
+    font-size: 12px;
+    color: var(--text-4);
+  }
+  
+  .snapshot-stats {
+    display: flex;
+    gap: var(--s-4);
+    margin-bottom: var(--s-3);
+  }
+  
+  .snapshot-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  
+  .snapshot-stat .stat-label {
+    font-size: 11px;
+    color: var(--text-5);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  
+  .snapshot-stat .stat-value {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-2);
+  }
+  
+  .snapshot-variables {
+    border-top: 1px solid var(--border-dim);
+    padding-top: var(--s-3);
+  }
+  
+  .vars-header {
+    font-size: 11px;
+    color: var(--text-4);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: var(--s-2);
+  }
+  
+  .vars-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  
+  .var-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    padding: var(--s-1) 0;
+    border-bottom: 1px solid var(--border-dim);
+  }
+  
+  .var-row:last-child {
+    border-bottom: none;
+  }
+  
+  .var-key {
+    color: var(--text-3);
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  .var-value {
+    color: var(--cyan-400);
+    max-width: 55%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+  }
+  
+  .vars-more {
+    font-size: 11px;
+    color: var(--text-5);
+    text-align: center;
+    padding: var(--s-2);
+  }
+  
+  /* Compare Section */
+  .compare-section {
+    margin-top: var(--s-4);
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--border-dim);
+  }
+  
+  .compare-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-3);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  
+  .compare-toggle:hover {
+    color: var(--text-2);
+  }
+  
+  .compare-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    margin-top: var(--s-3);
+    flex-wrap: wrap;
+  }
+  
+  .compare-select {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+  
+  .compare-select label {
+    font-size: 12px;
+    color: var(--text-4);
+  }
+  
+  .compare-select select {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-2);
+    background: var(--void-up);
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-sm);
+    padding: var(--s-1) var(--s-2);
+    cursor: pointer;
+  }
+  
+  .compare-select select:focus {
+    outline: none;
+    border-color: var(--cyan-400);
+  }
+  
+  /* Comparison Result */
+  .comparison-result {
+    background: var(--void-up);
+    border-radius: var(--r-md);
+    padding: var(--s-3);
+    margin-top: var(--s-3);
+  }
+  
+  .comparison-header {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-2);
+    margin-bottom: var(--s-2);
+  }
+  
+  .comparison-summary {
+    display: flex;
+    gap: var(--s-3);
+    flex-wrap: wrap;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    margin-bottom: var(--s-3);
+  }
+  
+  .change-added {
+    color: var(--emerald-400);
+  }
+  
+  .change-modified {
+    color: var(--amber-400);
+  }
+  
+  .change-removed {
+    color: var(--rose-400);
+  }
+  
+  .balance-diff {
+    color: var(--cyan-400);
+  }
+  
+  .changes-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  
+  .change-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    padding: var(--s-1);
+    border-radius: var(--r-sm);
+  }
+  
+  .change-row.change-added {
+    background: rgba(52, 211, 153, 0.1);
+  }
+  
+  .change-row.change-modified {
+    background: rgba(251, 191, 36, 0.1);
+  }
+  
+  .change-row.change-removed {
+    background: rgba(251, 113, 133, 0.1);
+  }
+  
+  .change-type {
+    font-size: 10px;
+    text-transform: uppercase;
+    padding: 2px 4px;
+    border-radius: 2px;
+    min-width: 50px;
+    text-align: center;
+  }
+  
+  .change-added .change-type {
+    background: var(--emerald-400);
+    color: var(--void-pure);
+  }
+  
+  .change-modified .change-type {
+    background: var(--amber-400);
+    color: var(--void-pure);
+  }
+  
+  .change-removed .change-type {
+    background: var(--rose-400);
+    color: var(--void-pure);
+  }
+  
+  .change-key {
+    color: var(--text-2);
+    flex-shrink: 0;
+  }
+  
+  .change-values {
+    color: var(--text-4);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  .changes-more {
+    font-size: 11px;
+    color: var(--text-5);
+    text-align: center;
+    padding: var(--s-2);
+  }
+  
+  /* Spin animation for loaders */
+  :global(.spin) {
+    animation: spin 1s linear infinite;
+  }
+  
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
   }
 </style>
