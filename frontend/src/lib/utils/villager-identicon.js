@@ -148,7 +148,7 @@ const VillagerIdenticon = (function () {
     }
 
     // ──────────────────────────────────────────────────────────────
-    // 4. Fast deterministic 32-bit hash
+    // 2. Fast deterministic 32-bit hash
     // ──────────────────────────────────────────────────────────────
     function simpleHash(str) {
         let h = 1779033703 ^ str.length;
@@ -160,7 +160,7 @@ const VillagerIdenticon = (function () {
     }
 
     // ──────────────────────────────────────────────────────────────
-    // 5. Hex → 576-char string
+    // 3. Hex → 576-char string
     // ──────────────────────────────────────────────────────────────
     function hexToString(hex) {
         if (hex.length !== 1152 || !/^[0-9a-fA-F]{1152}$/.test(hex)) {
@@ -174,7 +174,7 @@ const VillagerIdenticon = (function () {
     }
 
 	// ──────────────────────────────────────────────────────────────
-    // 6. Render Controller
+    // 4. Render Controller
     // ──────────────────────────────────────────────────────────────
     async function renderSmart(address, rawHexOrString, requestedSize = 180) {
         let avatarStr = rawHexOrString;
@@ -219,7 +219,7 @@ const VillagerIdenticon = (function () {
     }
 
     // ──────────────────────────────────────────────────────────────
-    // 7. Core renderer
+    // 4. Core renderer
     // ──────────────────────────────────────────────────────────────
 	async function generateAvatarWithFrame(address, avatarStr, size = 180) {
 		if (avatarStr.length !== 576) return Promise.reject("Invalid avatar string");
@@ -609,12 +609,8 @@ const VillagerIdenticon = (function () {
 		});
 	}
     // ──────────────────────────────────────────────────────────────
-    // 8. Validation utilities (for defensive programming)
+    // 5. Validation utilities (for defensive programming)
     // ──────────────────────────────────────────────────────────────
-    
-    // All valid palette characters (re-export for external use)
-    const VALID_PALETTE_CHARS_EXPORT = Object.keys(Char_To_Color);
-    const VALID_CHARS_SET_EXPORT = new Set(VALID_PALETTE_CHARS_EXPORT);
     
     return {
         render: renderSmart,
@@ -622,12 +618,12 @@ const VillagerIdenticon = (function () {
             avatarCache.forEach(url => URL.revokeObjectURL(url));
             avatarCache.clear();
         },
-        // Validation utilities
+        // Validation utilities (Fix #2)
         isValid: isValidAvatarString,
         sanitize: sanitizeAvatarString,
         validate: validateAvatarString,
         // Expose palette info for external tools
-        PALETTE_CHARS: VALID_PALETTE_CHARS_EXPORT,
+        PALETTE_CHARS: VALID_PALETTE_CHARS,
         PALETTE: Char_To_Color
     };
 })();
