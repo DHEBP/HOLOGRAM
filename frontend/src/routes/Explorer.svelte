@@ -20,7 +20,7 @@
     Package, FileText, Coins, Clock, Copy, ArrowLeft, Home, X, ChevronLeft, ChevronRight,
     FileCode, User, Globe, Lock, Info, AlertTriangle, Check, Loader2, Shield, Pickaxe,
     ChevronDown, Search, Layers, Activity, CheckCircle, BarChart3, Palette, Wallet, Zap, Link,
-    GitBranch, History
+    GitBranch, History, Key, Database, Code
   } from 'lucide-svelte';
   
   // v6.2 Sidebar navigation state - Simplified (landing view + tools only)
@@ -649,6 +649,39 @@
           loading = false;
           goToHome();
           return; // Exit early - don't set searchResult
+          
+        case 'key':
+          // Search by key - returns SCIDs containing this key
+          searchResult = {
+            type: 'key',
+            data: result.data,
+            searchKey: result.data?.key || query.replace(/^key:/i, '').trim(),
+            results: result.data?.results || [],
+            count: result.data?.count || 0,
+          };
+          break;
+          
+        case 'value':
+          // Search by value - returns SCIDs containing this value
+          searchResult = {
+            type: 'value',
+            data: result.data,
+            searchValue: result.data?.value || query.replace(/^value:/i, '').trim(),
+            results: result.data?.results || [],
+            count: result.data?.count || 0,
+          };
+          break;
+          
+        case 'code':
+          // Search by code line - returns SCIDs with matching code
+          searchResult = {
+            type: 'code',
+            data: result.data,
+            searchLine: result.data?.line || query.replace(/^(code:|line:)/i, '').trim(),
+            results: result.data?.results || [],
+            count: result.data?.count || 0,
+          };
+          break;
           
         default:
           console.warn('Unknown search result type:', result.type);
@@ -1368,10 +1401,20 @@
             <span class="page-sidebar-item-icon">
               {#if searchResult.type === 'block'}<Package size={14} />
               {:else if searchResult.type === 'tx'}<FileText size={14} />
+              {:else if searchResult.type === 'address'}<User size={14} />
+              {:else if searchResult.type === 'key'}<Key size={14} />
+              {:else if searchResult.type === 'value'}<Database size={14} />
+              {:else if searchResult.type === 'code'}<Code size={14} />
               {:else}<FileCode size={14} />{/if}
             </span>
             <span class="page-sidebar-item-label">
-              {searchResult.type === 'block' ? 'Block' : searchResult.type === 'tx' ? 'Transaction' : 'Smart Contract'}
+              {#if searchResult.type === 'block'}Block
+              {:else if searchResult.type === 'tx'}Transaction
+              {:else if searchResult.type === 'address'}Address
+              {:else if searchResult.type === 'key'}Key Search
+              {:else if searchResult.type === 'value'}Value Search
+              {:else if searchResult.type === 'code'}Code Search
+              {:else}Smart Contract{/if}
             </span>
           </button>
         </nav>

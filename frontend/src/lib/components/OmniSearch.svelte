@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { GetNameSuggestions, ResolveDeroName } from '../../../wailsjs/go/main/App.js';
-  import { Blocks, Zap, FileText, Globe, User, Search, Link, Package } from 'lucide-svelte';
+  import { Blocks, Zap, FileText, Globe, User, Search, Link, Package, Key, Database, Code } from 'lucide-svelte';
   
   export let placeholder = 'Search blocks, transactions, addresses, smart contracts...';
   export let value = '';
@@ -183,6 +183,27 @@
       bg: 'bg-pink-500/20',
       border: 'border-pink-500/40'
     },
+    key: { 
+      label: 'Key Search', 
+      iconType: 'key',
+      color: 'text-violet-400',
+      bg: 'bg-violet-500/20',
+      border: 'border-violet-500/40'
+    },
+    value: { 
+      label: 'Value Search', 
+      iconType: 'value',
+      color: 'text-emerald-400',
+      bg: 'bg-emerald-500/20',
+      border: 'border-emerald-500/40'
+    },
+    code: { 
+      label: 'Code Search', 
+      iconType: 'code',
+      color: 'text-orange-400',
+      bg: 'bg-orange-500/20',
+      border: 'border-orange-500/40'
+    },
     unknown: { 
       label: 'Unknown', 
       iconType: 'search',
@@ -198,6 +219,19 @@
   function detectInputType(input) {
     const trimmed = (input || '').trim();
     if (!trimmed) return null;
+    
+    const lowerTrimmed = trimmed.toLowerCase();
+    
+    // Special search prefixes (key:, value:, code:)
+    if (lowerTrimmed.startsWith('key:')) {
+      return 'key';
+    }
+    if (lowerTrimmed.startsWith('value:')) {
+      return 'value';
+    }
+    if (lowerTrimmed.startsWith('code:') || lowerTrimmed.startsWith('line:')) {
+      return 'code';
+    }
     
     // IMPORTANT: Check 64-char hex FIRST - before block height!
     // This prevents SCIDs like "0000...0001" (all digits) from being misidentified as block heights
@@ -217,7 +251,7 @@
     }
     
     // dURL: starts with dero://
-    if (trimmed.toLowerCase().startsWith('dero://')) {
+    if (lowerTrimmed.startsWith('dero://')) {
       return 'durl';
     }
     
@@ -229,12 +263,12 @@
     
     // DERO Name Service: contains .dero or simple alphanumeric name (3-32 chars)
     // Common NRS patterns: name.dero, just "name" (short alphanumeric)
-    if (/\.dero$/i.test(trimmed) || (/^[a-zA-Z][a-zA-Z0-9_-]{2,31}$/i.test(trimmed) && !trimmed.toLowerCase().startsWith('dero'))) {
+    if (/\.dero$/i.test(trimmed) || (/^[a-zA-Z][a-zA-Z0-9_-]{2,31}$/i.test(trimmed) && !lowerTrimmed.startsWith('dero'))) {
       return 'name';
     }
     
     // Address: starts with dero1
-    if (trimmed.toLowerCase().startsWith('dero1')) {
+    if (lowerTrimmed.startsWith('dero1')) {
       return 'address';
     }
     
@@ -406,6 +440,9 @@
           {:else if currentTypeConfig.iconType === 'scid' || currentTypeConfig.iconType === 'hash'}<FileText size={12} strokeWidth={1.5} />
           {:else if currentTypeConfig.iconType === 'durl'}<Globe size={12} strokeWidth={1.5} />
           {:else if currentTypeConfig.iconType === 'address'}<User size={12} strokeWidth={1.5} />
+          {:else if currentTypeConfig.iconType === 'key'}<Key size={12} strokeWidth={1.5} />
+          {:else if currentTypeConfig.iconType === 'value'}<Database size={12} strokeWidth={1.5} />
+          {:else if currentTypeConfig.iconType === 'code'}<Code size={12} strokeWidth={1.5} />
           {:else}<Blocks size={12} strokeWidth={1.5} />{/if}
         </span>
         <span class="type-label {currentTypeConfig.color}">{currentTypeConfig.label}</span>
@@ -488,6 +525,10 @@
       <span>app.tela</span>
       <span class="helper-sep">•</span>
       <span>dero1qy...</span>
+      <span class="helper-sep">•</span>
+      <span>key:varname</span>
+      <span class="helper-sep">•</span>
+      <span>code:Function</span>
     </div>
   {/if}
 </div>
