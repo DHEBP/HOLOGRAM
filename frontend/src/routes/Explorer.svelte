@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { appState } from '../lib/stores/appState.js';
-  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights } from '../../wailsjs/go/main/App.js';
+  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -111,6 +111,17 @@
   let compareToIndex = 0;
   let comparisonResult = null;
   let comparingSnapshots = false;
+  
+  // Watch List state
+  let watchedSCs = [];
+  let watchedSCsLoading = false;
+  let isCurrentSCWatched = false;
+  let watchingInProgress = false;
+  
+  // Change Timeline state
+  let changeTimeline = [];
+  let changeTimelineLoading = false;
+  let showChangeTimeline = false;
   
   // Landing view state (merged from Search.svelte)
   let recentSearches = [];
@@ -1040,6 +1051,124 @@
   function formatSnapshotTime(snapshot) {
     if (!snapshot?.captured_at) return 'Unknown';
     const date = new Date(snapshot.captured_at);
+    return date.toLocaleString();
+  }
+  
+  // Watch List functions
+  async function loadWatchedSCs() {
+    watchedSCsLoading = true;
+    try {
+      const result = await GetWatchedSmartContracts();
+      if (result.success) {
+        watchedSCs = result.watched || [];
+        // Check if current SC is watched
+        if (searchQuery) {
+          isCurrentSCWatched = watchedSCs.some(w => w.scid === searchQuery);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load watched SCs:', e);
+    } finally {
+      watchedSCsLoading = false;
+    }
+  }
+  
+  async function watchCurrentSC() {
+    if (!searchQuery || watchingInProgress) return;
+    
+    watchingInProgress = true;
+    try {
+      const scName = searchResult?.data?.stringkeys?.nameHdr || 
+                     searchResult?.data?.stringkeys?.dURL || 
+                     searchQuery.substring(0, 16);
+      const result = await WatchSmartContract(searchQuery, scName);
+      if (result.success) {
+        toast.success('Now watching this smart contract');
+        isCurrentSCWatched = true;
+        await loadWatchedSCs();
+        // Reload history since watching captures initial state
+        await loadTimeMachineHistory(searchQuery);
+      } else {
+        toast.error(result.error || 'Failed to watch SC');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Failed to watch SC');
+    } finally {
+      watchingInProgress = false;
+    }
+  }
+  
+  async function unwatchCurrentSC() {
+    if (!searchQuery || watchingInProgress) return;
+    
+    watchingInProgress = true;
+    try {
+      const result = await UnwatchSmartContract(searchQuery);
+      if (result.success) {
+        toast.success('Stopped watching this smart contract');
+        isCurrentSCWatched = false;
+        await loadWatchedSCs();
+      } else {
+        toast.error(result.error || 'Failed to unwatch SC');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Failed to unwatch SC');
+    } finally {
+      watchingInProgress = false;
+    }
+  }
+  
+  async function unwatchSC(scid) {
+    try {
+      const result = await UnwatchSmartContract(scid);
+      if (result.success) {
+        toast.success('Stopped watching');
+        await loadWatchedSCs();
+      }
+    } catch (e) {
+      toast.error('Failed to unwatch');
+    }
+  }
+  
+  async function refreshWatched() {
+    try {
+      const result = await RefreshWatchedSCs();
+      if (result.success) {
+        if (result.changes_detected > 0) {
+          toast.success(`${result.changes_detected} SC(s) have changed`);
+        } else {
+          toast.info('No changes detected');
+        }
+        await loadWatchedSCs();
+        // Reload current SC history if it's being watched
+        if (isCurrentSCWatched && searchQuery) {
+          await loadTimeMachineHistory(searchQuery);
+        }
+      }
+    } catch (e) {
+      toast.error('Failed to refresh watched SCs');
+    }
+  }
+  
+  // Change Timeline functions
+  async function loadChangeTimeline(scid) {
+    changeTimelineLoading = true;
+    changeTimeline = [];
+    try {
+      const result = await GetSCChangeTimeline(scid);
+      if (result.success) {
+        changeTimeline = result.timeline || [];
+      }
+    } catch (e) {
+      console.error('Failed to load change timeline:', e);
+    } finally {
+      changeTimelineLoading = false;
+    }
+  }
+  
+  function formatChangeTime(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
     return date.toLocaleString();
   }
   
@@ -2176,10 +2305,14 @@
               <!-- Time Machine Section -->
               <div class="time-machine-section">
                 <button
-                  on:click={() => {
+                  on:click={async () => {
                     showTimeMachine = !showTimeMachine;
-                    if (showTimeMachine && timeMachineSnapshots.length === 0) {
-                      loadTimeMachineHistory(searchQuery);
+                    if (showTimeMachine) {
+                      if (timeMachineSnapshots.length === 0) {
+                        loadTimeMachineHistory(searchQuery);
+                      }
+                      // Check if current SC is watched
+                      await loadWatchedSCs();
                     }
                   }}
                   class="time-machine-toggle"
@@ -2199,17 +2332,33 @@
                         <span class="cmd-panel-icon">◎</span>
                         TIME MACHINE
                       </div>
-                      <button
-                        class="cmd-link-btn"
-                        on:click={() => captureSnapshot(searchQuery)}
-                        disabled={timeMachineCapturing}
-                      >
-                        {#if timeMachineCapturing}
-                          <Loader2 size={12} class="spin" />
-                        {:else}
-                          <span>+ Capture Snapshot</span>
-                        {/if}
-                      </button>
+                      <div class="cmd-panel-actions">
+                        <button
+                          class="cmd-link-btn"
+                          on:click={() => isCurrentSCWatched ? unwatchCurrentSC() : watchCurrentSC()}
+                          disabled={watchingInProgress}
+                          title={isCurrentSCWatched ? 'Stop watching this SC' : 'Watch this SC for changes'}
+                        >
+                          {#if watchingInProgress}
+                            <Loader2 size={12} class="spin" />
+                          {:else if isCurrentSCWatched}
+                            <span>Unwatch</span>
+                          {:else}
+                            <span>Watch</span>
+                          {/if}
+                        </button>
+                        <button
+                          class="cmd-link-btn"
+                          on:click={() => captureSnapshot(searchQuery)}
+                          disabled={timeMachineCapturing}
+                        >
+                          {#if timeMachineCapturing}
+                            <Loader2 size={12} class="spin" />
+                          {:else}
+                            <span>+ Capture</span>
+                          {/if}
+                        </button>
+                      </div>
                     </div>
                     
                     <div class="cmd-panel-body">
@@ -2377,6 +2526,71 @@
                             {/if}
                           </div>
                         {/if}
+                        
+                        <!-- Change Timeline Section -->
+                        <div class="change-timeline-section">
+                          <button
+                            class="compare-toggle"
+                            on:click={() => {
+                              showChangeTimeline = !showChangeTimeline;
+                              if (showChangeTimeline && changeTimeline.length === 0) {
+                                loadChangeTimeline(searchQuery);
+                              }
+                            }}
+                          >
+                            <span class="toggle-icon">{showChangeTimeline ? '▼' : '▶'}</span>
+                            Change Timeline
+                            {#if changeTimeline.length > 0}
+                              <span class="timeline-badge">{changeTimeline.length} events</span>
+                            {/if}
+                          </button>
+                          
+                          {#if showChangeTimeline}
+                            <div class="change-timeline-content">
+                              {#if changeTimelineLoading}
+                                <div class="timeline-loading">
+                                  <Loader2 size={14} class="spin" />
+                                  <span>Loading timeline...</span>
+                                </div>
+                              {:else if changeTimeline.length === 0}
+                                <div class="timeline-empty">
+                                  <p>No changes recorded between snapshots</p>
+                                  <p class="hint">Capture more snapshots to see changes over time</p>
+                                </div>
+                              {:else}
+                                <div class="timeline-list">
+                                  {#each changeTimeline as event, i}
+                                    <div class="timeline-event">
+                                      <div class="timeline-dot"></div>
+                                      <div class="timeline-line"></div>
+                                      <div class="timeline-content">
+                                        <div class="timeline-header">
+                                          <span class="timeline-heights">
+                                            Block {event.from_height} → {event.to_height}
+                                          </span>
+                                        </div>
+                                        <div class="timeline-changes">
+                                          {#if event.total_added > 0}
+                                            <span class="change-added">+{event.total_added}</span>
+                                          {/if}
+                                          {#if event.total_modified > 0}
+                                            <span class="change-modified">~{event.total_modified}</span>
+                                          {/if}
+                                          {#if event.total_removed > 0}
+                                            <span class="change-removed">-{event.total_removed}</span>
+                                          {/if}
+                                          {#if event.code_changed}
+                                            <span class="code-changed">Code changed</span>
+                                          {/if}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  {/each}
+                                </div>
+                              {/if}
+                            </div>
+                          {/if}
+                        </div>
                       {/if}
                     </div>
                   </div>
@@ -5872,6 +6086,113 @@
     color: var(--text-5);
     text-align: center;
     padding: var(--s-2);
+  }
+  
+  /* Panel Actions (multiple buttons in header) */
+  .cmd-panel-actions {
+    display: flex;
+    gap: var(--s-2);
+  }
+  
+  /* Change Timeline Section */
+  .change-timeline-section {
+    margin-top: var(--s-4);
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--border-dim);
+  }
+  
+  .timeline-badge {
+    font-size: 10px;
+    color: var(--cyan-400);
+    background: rgba(34, 211, 238, 0.1);
+    padding: 2px 6px;
+    border-radius: var(--r-sm);
+    margin-left: var(--s-2);
+  }
+  
+  .change-timeline-content {
+    margin-top: var(--s-3);
+  }
+  
+  .timeline-loading,
+  .timeline-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-4);
+    color: var(--text-4);
+    font-size: 12px;
+  }
+  
+  .timeline-empty .hint {
+    font-size: 11px;
+    color: var(--text-5);
+  }
+  
+  .timeline-list {
+    position: relative;
+    padding-left: var(--s-4);
+  }
+  
+  .timeline-event {
+    position: relative;
+    padding-bottom: var(--s-3);
+  }
+  
+  .timeline-event:last-child {
+    padding-bottom: 0;
+  }
+  
+  .timeline-event:last-child .timeline-line {
+    display: none;
+  }
+  
+  .timeline-dot {
+    position: absolute;
+    left: -16px;
+    top: 4px;
+    width: 8px;
+    height: 8px;
+    background: var(--cyan-400);
+    border-radius: 50%;
+    z-index: 1;
+  }
+  
+  .timeline-line {
+    position: absolute;
+    left: -13px;
+    top: 12px;
+    bottom: -4px;
+    width: 2px;
+    background: var(--border-dim);
+  }
+  
+  .timeline-content {
+    background: var(--void-up);
+    border-radius: var(--r-sm);
+    padding: var(--s-2) var(--s-3);
+  }
+  
+  .timeline-header {
+    margin-bottom: var(--s-1);
+  }
+  
+  .timeline-heights {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-2);
+  }
+  
+  .timeline-changes {
+    display: flex;
+    gap: var(--s-2);
+    font-size: 11px;
+    font-family: var(--font-mono);
+  }
+  
+  .code-changed {
+    color: var(--purple-400);
   }
   
   /* Spin animation for loaders */

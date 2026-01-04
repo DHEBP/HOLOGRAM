@@ -19,7 +19,9 @@
     SetGnomonAutostart, GetGnomonAutostart,
     // Simple-Gnomon features
     StartGnomonWSServer, StopGnomonWSServer, GetGnomonWSStatus,
-    GetTagStats, RebuildTagIndex
+    GetTagStats, RebuildTagIndex,
+    // Time Machine Watch List
+    GetWatchedSmartContracts, UnwatchSmartContract, RefreshWatchedSCs
   } from '../../wailsjs/go/main/App.js';
   import OfflineCacheManager from '../lib/components/OfflineCacheManager.svelte';
   import SyncManager from '../lib/components/SyncManager.svelte';
@@ -93,6 +95,11 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   let gnomonWSLoading = false;
   let tagStats = { total_scids: 0, class_counts: {}, tag_counts: {} };
   let rebuildingTags = false;
+  
+  // Time Machine Watch List state
+  let watchedSCs = [];
+  let watchedSCsLoading = false;
+  let refreshingWatched = false;
   
   // Search exclusions state
   let searchExclusions = [];
@@ -982,12 +989,64 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     }
   }
   
+  // Time Machine Watch List functions
+  async function loadWatchedSCs() {
+    watchedSCsLoading = true;
+    try {
+      const result = await GetWatchedSmartContracts();
+      if (result.success) {
+        watchedSCs = result.watched || [];
+      }
+    } catch (e) {
+      console.error('[Watch] Failed to load watched SCs:', e);
+    } finally {
+      watchedSCsLoading = false;
+    }
+  }
+  
+  async function unwatchSC(scid) {
+    try {
+      const result = await UnwatchSmartContract(scid);
+      if (result.success) {
+        watchedSCs = watchedSCs.filter(w => w.scid !== scid);
+      }
+    } catch (e) {
+      console.error('[Watch] Failed to unwatch:', e);
+    }
+  }
+  
+  async function refreshWatchedSCs() {
+    refreshingWatched = true;
+    try {
+      const result = await RefreshWatchedSCs();
+      if (result.success) {
+        console.log('[Watch] Refresh complete:', result.changes_detected, 'changes');
+        await loadWatchedSCs();
+      }
+    } catch (e) {
+      console.error('[Watch] Refresh failed:', e);
+    } finally {
+      refreshingWatched = false;
+    }
+  }
+  
+  function formatWatchTime(timestamp) {
+    if (!timestamp) return '';
+    try {
+      const date = new Date(timestamp);
+      return date.toLocaleDateString();
+    } catch (e) {
+      return '';
+    }
+  }
+  
   // Load settings on gnomon section activation
   $: if (activeSection === 'gnomon') {
     loadSearchExclusions();
     loadGnomonAutostart();
     loadGnomonWSStatus();
     loadTagStats();
+    loadWatchedSCs();
   }
   
 </script>
@@ -2020,6 +2079,74 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               </button>
             </div>
             
+          </div>
+        </div>
+        
+        <!-- Time Machine Watch List Card -->
+        <div class="card-wrapper" style="margin-top: var(--s-4);">
+          <div class="explorer-header">
+            <div class="explorer-header-left">
+              <span class="explorer-header-icon">◎</span>
+              <span class="explorer-header-title">WATCHED SMART CONTRACTS</span>
+            </div>
+            <div class="explorer-header-right">
+              <button
+                on:click={refreshWatchedSCs}
+                disabled={refreshingWatched || watchedSCs.length === 0}
+                class="btn btn-secondary btn-sm"
+                title="Check all watched SCs for changes"
+              >
+                {#if refreshingWatched}
+                  <Icons name="loader" size={12} class="animate-spin" />
+                {:else}
+                  <Icons name="refresh" size={12} />
+                {/if}
+                Refresh All
+              </button>
+            </div>
+          </div>
+          <div class="card-content">
+            {#if watchedSCsLoading}
+              <div class="watched-loading">
+                <Icons name="loader" size={16} class="animate-spin" />
+                <span>Loading watched SCs...</span>
+              </div>
+            {:else if watchedSCs.length === 0}
+              <div class="watched-empty">
+                <Icons name="eye" size={24} />
+                <p>No smart contracts being watched</p>
+                <p class="hint">Watch SCs from the Explorer to track their state changes over time</p>
+              </div>
+            {:else}
+              <div class="watched-list">
+                {#each watchedSCs as sc}
+                  <div class="watched-item">
+                    <div class="watched-info">
+                      <div class="watched-name">{sc.name || sc.scid?.substring(0, 16) + '...'}</div>
+                      <div class="watched-meta">
+                        <span class="watched-scid">{sc.scid?.substring(0, 24)}...</span>
+                        <span class="watched-since">Since {formatWatchTime(sc.watched_since)}</span>
+                        {#if sc.change_count > 0}
+                          <span class="watched-changes">{sc.change_count} changes</span>
+                        {/if}
+                      </div>
+                    </div>
+                    <div class="watched-actions">
+                      <button
+                        class="btn btn-secondary btn-sm"
+                        on:click={() => unwatchSC(sc.scid)}
+                        title="Stop watching"
+                      >
+                        <Icons name="eye-off" size={12} />
+                      </button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+              <div class="watched-footer">
+                <span class="watched-count">{watchedSCs.length} SC{watchedSCs.length !== 1 ? 's' : ''} being watched</span>
+              </div>
+            {/if}
           </div>
         </div>
       
@@ -4175,5 +4302,86 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+  }
+  
+  /* Watched SCs styles */
+  .watched-loading,
+  .watched-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    padding: var(--s-6);
+    color: var(--text-4);
+    font-size: 13px;
+  }
+  
+  .watched-empty .hint {
+    font-size: 12px;
+    color: var(--text-5);
+  }
+  
+  .watched-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  
+  .watched-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--s-3);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+  }
+  
+  .watched-info {
+    flex: 1;
+    min-width: 0;
+  }
+  
+  .watched-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-1);
+    margin-bottom: 4px;
+  }
+  
+  .watched-meta {
+    display: flex;
+    gap: var(--s-3);
+    font-size: 11px;
+    color: var(--text-4);
+    font-family: var(--font-mono);
+  }
+  
+  .watched-scid {
+    color: var(--text-5);
+  }
+  
+  .watched-changes {
+    color: var(--cyan-400);
+  }
+  
+  .watched-actions {
+    flex-shrink: 0;
+  }
+  
+  .watched-footer {
+    margin-top: var(--s-3);
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--border-dim);
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-5);
+  }
+  
+  .explorer-header-right {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
   }
 </style>
