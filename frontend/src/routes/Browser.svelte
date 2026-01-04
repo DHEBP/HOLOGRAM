@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride } from '../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
@@ -195,6 +195,13 @@ let addressInput = '';
   
   let minRating = 0;
   
+  // Content filtering state
+  let contentFilterConfig = null;
+  let contentFilterEnabled = false;
+  let blockedApps = new Set();
+  let warnedApps = new Map(); // scid -> reason
+  let showBlockedApps = false; // Toggle to show blocked apps
+  
   // Check if current address is favorited
   $: currentIsFavorited = addressInput && favorites.isFavorite(addressInput);
   
@@ -207,9 +214,27 @@ let addressInput = '';
     
     appsLoading = true;
     try {
+      // Load content filter config first
+      try {
+        const filterConfigRes = await GetContentFilterConfig();
+        if (filterConfigRes.success && filterConfigRes.config) {
+          contentFilterConfig = filterConfigRes.config;
+          contentFilterEnabled = contentFilterConfig.Enabled;
+        }
+      } catch (filterErr) {
+        console.log('Content filter config not available:', filterErr);
+      }
+      
       // Load apps with ratings and tag metadata (includes Simple-Gnomon features)
       const result = await GetDiscoveredApps();
       if (result.success && result.apps) {
+        // Apply content filtering to each app
+        if (contentFilterEnabled) {
+          await applyContentFiltering(result.apps);
+        } else {
+          blockedApps = new Set();
+          warnedApps = new Map();
+        }
         apps = result.apps;
         applyFilters();
       }
@@ -263,8 +288,85 @@ let addressInput = '';
     applyFilters();
   }
   
+  // Apply content filtering to apps (calls backend CheckAppFilter)
+  async function applyContentFiltering(appList) {
+    const newBlocked = new Set();
+    const newWarned = new Map();
+    
+    // Process apps in parallel batches for performance
+    const batchSize = 20;
+    for (let i = 0; i < appList.length; i += batchSize) {
+      const batch = appList.slice(i, i + batchSize);
+      await Promise.all(batch.map(async (app) => {
+        try {
+          const result = await CheckAppFilter(
+            app.scid,
+            app.display_name || app.name || 'Unknown',
+            app.author || '',
+            app.category || '',
+            Math.round((app.rating?.average || 0) * 10), // Convert to 0-99 scale
+            app.rating?.count || 0,
+            app.supports_epoch || false
+          );
+          
+          if (result.success) {
+            if (result.decision === 'block' && !result.user_override) {
+              newBlocked.add(app.scid);
+            } else if (result.decision === 'warn' && !result.user_override) {
+              newWarned.set(app.scid, result.reason);
+            }
+          }
+        } catch (e) {
+          // If filter check fails, allow the app
+          console.log('Filter check failed for', app.scid, e);
+        }
+      }));
+    }
+    
+    blockedApps = newBlocked;
+    warnedApps = newWarned;
+  }
+  
+  // Manually allow a blocked/warned app
+  async function allowApp(scid) {
+    try {
+      const result = await ManuallyAllowApp(scid);
+      if (result.success) {
+        blockedApps.delete(scid);
+        warnedApps.delete(scid);
+        blockedApps = blockedApps; // Trigger reactivity
+        warnedApps = warnedApps;
+        toast.success('App allowed');
+      }
+    } catch (e) {
+      toast.error('Failed to allow app');
+    }
+  }
+  
+  // Manually block an app
+  async function blockApp(scid) {
+    try {
+      const result = await ManuallyBlockApp(scid);
+      if (result.success) {
+        blockedApps.add(scid);
+        warnedApps.delete(scid);
+        blockedApps = blockedApps;
+        warnedApps = warnedApps;
+        applyFilters(); // Re-filter to hide the app
+        toast.success('App blocked');
+      }
+    } catch (e) {
+      toast.error('Failed to block app');
+    }
+  }
+  
   function applyFilters() {
     let result = [...apps];
+    
+    // Apply content filter (hide blocked apps unless showBlockedApps is true)
+    if (contentFilterEnabled && !showBlockedApps) {
+      result = result.filter(app => !blockedApps.has(app.scid));
+    }
     
     // Apply rating category filter
     switch (selectedCategory) {
@@ -1992,7 +2094,34 @@ let addressInput = '';
           {:else}
             <div class="browser-apps-grid">
               {#each filteredApps as app}
-                <button class="browser-app-card" on:click={() => navigateToApp(app)}>
+                <button 
+                  class="browser-app-card" 
+                  class:warned={warnedApps.has(app.scid)}
+                  class:blocked={blockedApps.has(app.scid)}
+                  on:click={() => navigateToApp(app)}
+                >
+                  <!-- Warning/Blocked overlay -->
+                  {#if warnedApps.has(app.scid)}
+                    <div class="browser-app-warning-overlay">
+                      <Icons name="alert-triangle" size={16} />
+                      <span class="warning-text">{warnedApps.get(app.scid)}</span>
+                      <button 
+                        class="warning-allow-btn"
+                        on:click|stopPropagation={() => allowApp(app.scid)}
+                      >Allow Anyway</button>
+                    </div>
+                  {/if}
+                  {#if blockedApps.has(app.scid)}
+                    <div class="browser-app-blocked-overlay">
+                      <Icons name="shield-off" size={16} />
+                      <span class="blocked-text">Blocked by content filter</span>
+                      <button 
+                        class="blocked-allow-btn"
+                        on:click|stopPropagation={() => allowApp(app.scid)}
+                      >Unblock</button>
+                    </div>
+                  {/if}
+                  
                   <!-- Icon on left -->
                       <div class="browser-app-icon">
                         {#if shouldShowIcon(app.icon)}
@@ -2058,6 +2187,22 @@ let addressInput = '';
             
             <div class="browser-apps-count">
               Showing {filteredApps.length} of {apps.length} apps
+              {#if contentFilterEnabled && blockedApps.size > 0}
+                <span class="filter-blocked-count">
+                  ({blockedApps.size} blocked by filter)
+                  <button 
+                    class="show-blocked-btn"
+                    on:click={() => { showBlockedApps = !showBlockedApps; applyFilters(); }}
+                  >
+                    {showBlockedApps ? 'Hide' : 'Show'}
+                  </button>
+                </span>
+              {/if}
+              {#if contentFilterEnabled && warnedApps.size > 0}
+                <span class="filter-warned-count">
+                  ({warnedApps.size} with warnings)
+                </span>
+              {/if}
             </div>
           {/if}
         </div>
@@ -2361,5 +2506,122 @@ let addressInput = '';
     background: var(--status-err);
     border-color: var(--status-err);
     color: white;
+  }
+  
+  /* Content Filter Styles */
+  .browser-app-card.warned {
+    position: relative;
+  }
+  
+  .browser-app-card.blocked {
+    position: relative;
+    opacity: 0.6;
+  }
+  
+  .browser-app-warning-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(135deg, rgba(251, 191, 36, 0.95), rgba(245, 158, 11, 0.9));
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 10;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    color: var(--void-pure);
+    font-size: 11px;
+  }
+  
+  .browser-app-warning-overlay .warning-text {
+    flex: 1;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  .warning-allow-btn {
+    background: rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  
+  .warning-allow-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+  
+  .browser-app-blocked-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(239, 68, 68, 0.9);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    z-index: 10;
+    border-radius: var(--r-lg);
+    color: white;
+    font-size: 12px;
+  }
+  
+  .browser-app-blocked-overlay .blocked-text {
+    font-weight: 500;
+  }
+  
+  .blocked-allow-btn {
+    background: rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  
+  .blocked-allow-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+  
+  /* Filter count styles */
+  .filter-blocked-count {
+    color: var(--rose-400);
+    font-size: 11px;
+    margin-left: 8px;
+  }
+  
+  .filter-warned-count {
+    color: var(--amber-400);
+    font-size: 11px;
+    margin-left: 8px;
+  }
+  
+  .show-blocked-btn {
+    background: none;
+    border: none;
+    color: var(--cyan-400);
+    font-size: 11px;
+    cursor: pointer;
+    text-decoration: underline;
+    padding: 0;
+    margin-left: 4px;
+  }
+  
+  .show-blocked-btn:hover {
+    color: var(--cyan-300);
   }
 </style>
