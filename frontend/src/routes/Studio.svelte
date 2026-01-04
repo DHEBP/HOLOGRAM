@@ -4194,9 +4194,9 @@
               </div>
               
               <div class="form-group" style="margin-top: var(--s-3);">
-                <label class="form-label shard-checkbox-label">
-                  <input type="checkbox" bind:checked={shardCompress} class="shard-checkbox" />
-                  Enable GZIP Compression
+                <label class="checkbox-wrap">
+                  <input type="checkbox" bind:checked={shardCompress} class="checkbox" />
+                  <span class="checkbox-label">Enable GZIP Compression</span>
                 </label>
                 <span class="form-hint">Reduces shard sizes but requires decompression on reconstruction</span>
               </div>
@@ -4348,13 +4348,13 @@ End Function"
               <span class="form-hint">Write or paste your DVM-BASIC smart contract code</span>
             </div>
             
-            <div class="form-group" style="margin-top: var(--s-3);">
-              <label class="form-label shard-checkbox-label">
-                <input type="checkbox" bind:checked={scAnonymous} class="shard-checkbox" />
-                Anonymous Deployment (Ring 16+)
-              </label>
-              <span class="form-hint">Use higher ring size for enhanced privacy. Standard deployment uses Ring 2.</span>
-            </div>
+              <div class="form-group" style="margin-top: var(--s-3);">
+                <label class="checkbox-wrap">
+                  <input type="checkbox" bind:checked={scAnonymous} class="checkbox" />
+                  <span class="checkbox-label">Anonymous Deployment (Ring 16+)</span>
+                </label>
+                <span class="form-hint">Use higher ring size for enhanced privacy. Standard deployment uses Ring 2.</span>
+              </div>
             
             <!-- Wallet Check -->
             {#if !$walletState.isOpen && !isSimulator}
@@ -4893,7 +4893,7 @@ End Function"
           <input 
             type="checkbox" 
             bind:checked={deployAcknowledged}
-            class="acknowledge-checkbox"
+            class="checkbox"
           />
           <span class="acknowledge-text">
             I understand this deployment is <strong>permanent</strong> and will consume <strong>real DERO</strong>
@@ -7335,33 +7335,27 @@ End Function"
     border-color: rgba(139, 92, 246, 0.3);
   }
   
-  .acknowledge-checkbox {
-    width: 18px;
-    height: 18px;
-    margin: 0;
-    margin-top: 1px;
-    accent-color: var(--violet-500, #8b5cf6);
-    cursor: pointer;
+  .deploy-acknowledge .checkbox {
     flex-shrink: 0;
   }
   
   .acknowledge-text {
     font-size: 12px;
-    color: var(--text-3, #707088);
+    color: var(--text-3);
     line-height: 1.4;
   }
   
   .acknowledge-text strong {
-    color: var(--text-1, #f8f8fc);
+    color: var(--text-1);
   }
   
-  .deploy-acknowledge:has(.acknowledge-checkbox:checked) {
-    border-color: var(--violet-500, #8b5cf6);
+  .deploy-acknowledge:has(.checkbox:checked) {
+    border-color: var(--violet-500);
     background: rgba(139, 92, 246, 0.15);
   }
   
-  .deploy-acknowledge:has(.acknowledge-checkbox:checked) .acknowledge-text {
-    color: var(--text-2, #a8a8b8);
+  .deploy-acknowledge:has(.checkbox:checked) .acknowledge-text {
+    color: var(--text-2);
   }
   
   /* =====================================================
@@ -7588,18 +7582,7 @@ End Function"
     flex: 1;
   }
   
-  .shard-checkbox-label {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    cursor: pointer;
-  }
-  
-  .shard-checkbox {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--cyan-400);
-  }
+  /* Removed .shard-checkbox-label and .shard-checkbox - now using global .checkbox-wrap and .checkbox classes */
   
   /* =====================================================
      Deploy SC Styles
