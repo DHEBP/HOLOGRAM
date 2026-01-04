@@ -78,10 +78,6 @@ export function CleanGnomonDB(arg1) {
   return window['go']['main']['App']['CleanGnomonDB'](arg1);
 }
 
-export function ClearAllHistory() {
-  return window['go']['main']['App']['ClearAllHistory']();
-}
-
 export function ClearAppFilterOverride(arg1) {
   return window['go']['main']['App']['ClearAppFilterOverride'](arg1);
 }
@@ -106,10 +102,6 @@ export function ClearRecentWallets() {
   return window['go']['main']['App']['ClearRecentWallets']();
 }
 
-export function ClearSCIDHistory(arg1) {
-  return window['go']['main']['App']['ClearSCIDHistory'](arg1);
-}
-
 export function ClearSearchExclusions() {
   return window['go']['main']['App']['ClearSearchExclusions']();
 }
@@ -120,10 +112,6 @@ export function CloneTELA(arg1, arg2) {
 
 export function CloseWallet() {
   return window['go']['main']['App']['CloseWallet']();
-}
-
-export function CompareSCIDHeights(arg1, arg2, arg3) {
-  return window['go']['main']['App']['CompareSCIDHeights'](arg1, arg2, arg3);
 }
 
 export function CompareSCStateAtHeights(arg1, arg2, arg3) {
@@ -478,10 +466,6 @@ export function GetHistory() {
   return window['go']['main']['App']['GetHistory']();
 }
 
-export function GetHistoryStats() {
-  return window['go']['main']['App']['GetHistoryStats']();
-}
-
 export function GetINDEXInfo(arg1) {
   return window['go']['main']['App']['GetINDEXInfo'](arg1);
 }
@@ -644,14 +628,6 @@ export function GetSCCode(arg1) {
 
 export function GetSCIDMetadata(arg1) {
   return window['go']['main']['App']['GetSCIDMetadata'](arg1);
-}
-
-export function GetSCIDStateAtHeight(arg1, arg2) {
-  return window['go']['main']['App']['GetSCIDStateAtHeight'](arg1, arg2);
-}
-
-export function GetSCIDTimeline(arg1) {
-  return window['go']['main']['App']['GetSCIDTimeline'](arg1);
 }
 
 export function GetSCIDsByClass(arg1) {
@@ -1140,10 +1116,6 @@ export function SetGnomonAutostart(arg1) {
 
 export function SetMaxServers(arg1) {
   return window['go']['main']['App']['SetMaxServers'](arg1);
-}
-
-export function SetMaxSnapshots(arg1) {
-  return window['go']['main']['App']['SetMaxSnapshots'](arg1);
 }
 
 export function SetMiningAddress(arg1) {

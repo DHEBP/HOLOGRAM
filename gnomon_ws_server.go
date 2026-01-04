@@ -367,47 +367,6 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 		store := InitSCIDTagStore()
 		result = store.GetStats()
 
-	// === Historical Queries ===
-	case "getscidatheight", "get_scid_at_height":
-		scid := getStringParam(req.Params, "scid")
-		height := getInt64Param(req.Params, "height")
-		store := InitVariableHistoryStore()
-		vars := store.GetVariablesAtHeight(scid, height)
-		if vars != nil {
-			result = map[string]interface{}{
-				"scid":      scid,
-				"height":    height,
-				"variables": vars,
-			}
-		} else {
-			result = map[string]interface{}{
-				"scid":   scid,
-				"height": height,
-				"error":  "No data for this height",
-			}
-		}
-
-	case "getscidtimeline", "get_scid_timeline":
-		scid := getStringParam(req.Params, "scid")
-		store := InitVariableHistoryStore()
-		heights := store.GetInteractionHeights(scid)
-		result = map[string]interface{}{
-			"scid":    scid,
-			"heights": heights,
-			"count":   len(heights),
-		}
-
-	case "compareheights", "compare_heights":
-		scid := getStringParam(req.Params, "scid")
-		height1 := getInt64Param(req.Params, "height1")
-		height2 := getInt64Param(req.Params, "height2")
-		store := InitVariableHistoryStore()
-		result = store.CompareHeights(scid, height1, height2)
-
-	case "gethistorystats", "get_history_stats":
-		store := InitVariableHistoryStore()
-		result = store.GetStats()
-
 	// === Status ===
 	case "getstatus", "get_status":
 		result = s.app.gnomonClient.GetStatus()

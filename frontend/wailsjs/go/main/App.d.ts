@@ -41,8 +41,6 @@ export function CheckDerodStatus():Promise<Record<string, any>>;
 
 export function CleanGnomonDB(arg1:string):Promise<Record<string, any>>;
 
-export function ClearAllHistory():Promise<Record<string, any>>;
-
 export function ClearAppFilterOverride(arg1:string):Promise<Record<string, any>>;
 
 export function ClearConnectionLog():Promise<Record<string, any>>;
@@ -55,15 +53,11 @@ export function ClearOfflineCache():Promise<Record<string, any>>;
 
 export function ClearRecentWallets():Promise<Record<string, any>>;
 
-export function ClearSCIDHistory(arg1:string):Promise<Record<string, any>>;
-
 export function ClearSearchExclusions():Promise<Record<string, any>>;
 
 export function CloneTELA(arg1:string,arg2:boolean):Promise<Record<string, any>>;
 
 export function CloseWallet():Promise<Record<string, any>>;
-
-export function CompareSCIDHeights(arg1:string,arg2:number,arg3:number):Promise<Record<string, any>>;
 
 export function CompareSCStateAtHeights(arg1:string,arg2:number,arg3:number):Promise<Record<string, any>>;
 
@@ -241,8 +235,6 @@ export function GetGnomonWSStatus():Promise<Record<string, any>>;
 
 export function GetHistory():Promise<Array<string>>;
 
-export function GetHistoryStats():Promise<Record<string, any>>;
-
 export function GetINDEXInfo(arg1:string):Promise<Record<string, any>>;
 
 export function GetIntegratedAddress(arg1:string):Promise<Record<string, any>>;
@@ -324,10 +316,6 @@ export function GetSCChangeTimeline(arg1:string):Promise<Record<string, any>>;
 export function GetSCCode(arg1:string):Promise<Record<string, any>>;
 
 export function GetSCIDMetadata(arg1:string):Promise<Record<string, any>>;
-
-export function GetSCIDStateAtHeight(arg1:string,arg2:number):Promise<Record<string, any>>;
-
-export function GetSCIDTimeline(arg1:string):Promise<Record<string, any>>;
 
 export function GetSCIDsByClass(arg1:string):Promise<Record<string, any>>;
 
@@ -572,8 +560,6 @@ export function SetEpochEnabled(arg1:boolean):Promise<Record<string, any>>;
 export function SetGnomonAutostart(arg1:boolean):Promise<Record<string, any>>;
 
 export function SetMaxServers(arg1:number):Promise<Record<string, any>>;
-
-export function SetMaxSnapshots(arg1:number):Promise<Record<string, any>>;
 
 export function SetMiningAddress(arg1:string):Promise<Record<string, any>>;
 

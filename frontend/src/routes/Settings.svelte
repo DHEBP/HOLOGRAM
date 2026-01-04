@@ -19,7 +19,7 @@
     SetGnomonAutostart, GetGnomonAutostart,
     // Simple-Gnomon features
     StartGnomonWSServer, StopGnomonWSServer, GetGnomonWSStatus,
-    GetTagStats, RebuildTagIndex, GetHistoryStats
+    GetTagStats, RebuildTagIndex
   } from '../../wailsjs/go/main/App.js';
   import OfflineCacheManager from '../lib/components/OfflineCacheManager.svelte';
   import SyncManager from '../lib/components/SyncManager.svelte';
@@ -92,7 +92,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   let gnomonWSStatus = { running: false, address: '', port: 0, clients: 0 };
   let gnomonWSLoading = false;
   let tagStats = { total_scids: 0, class_counts: {}, tag_counts: {} };
-  let historyStats = { total_scids: 0, total_snapshots: 0, max_snapshots: 100 };
   let rebuildingTags = false;
   
   // Search exclusions state
@@ -965,22 +964,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     }
   }
   
-  // Load history statistics
-  async function loadHistoryStats() {
-    try {
-      const stats = await GetHistoryStats();
-      if (stats.success) {
-        historyStats = {
-          total_scids: stats.total_scids || 0,
-          total_snapshots: stats.total_snapshots || 0,
-          max_snapshots: stats.max_snapshots || 100
-        };
-      }
-    } catch (e) {
-      console.error('[History] Failed to load stats:', e);
-    }
-  }
-  
   // Rebuild tag index
   async function handleRebuildTagIndex() {
     rebuildingTags = true;
@@ -1005,7 +988,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     loadGnomonAutostart();
     loadGnomonWSStatus();
     loadTagStats();
-    loadHistoryStats();
   }
   
 </script>
@@ -2038,27 +2020,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               </button>
             </div>
             
-            <!-- Historical Snapshots Stats -->
-            <div class="settings-row" style="margin-top: var(--s-3);">
-              <div class="settings-row-info">
-                <div class="settings-row-label">Historical Variable Snapshots</div>
-                <div class="settings-row-desc">
-                  {#if historyStats.total_snapshots > 0}
-                    <span class="c-cyan">{historyStats.total_snapshots}</span> snapshots across
-                    <span class="c-cyan">{historyStats.total_scids}</span> SCIDs
-                    (max {historyStats.max_snapshots} per SCID)
-                  {:else}
-                    Time-travel queries for smart contract state history
-                  {/if}
-                </div>
-              </div>
-              <div class="settings-row-actions">
-                <span class="stats-badge">
-                  <Icons name="history" size={12} />
-                  {historyStats.total_snapshots || 0}
-                </span>
-              </div>
-            </div>
           </div>
         </div>
       
