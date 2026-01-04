@@ -1852,7 +1852,7 @@
             <div class="cmd-stats-panel" style="margin-top: var(--s-4);">
               <div class="cmd-panel-header">
                 <div class="cmd-panel-title">
-                  <span class="cmd-panel-icon">⏱</span>
+                  <span class="cmd-panel-icon">◷</span>
                   HISTORICAL TIMELINE
                 </div>
                 <div class="cmd-panel-meta">
@@ -1871,50 +1871,52 @@
                 </div>
               </div>
               
-              {#if scTimeline.length > 0}
-                <div class="timeline-controls">
-                  <div class="timeline-slider-wrap">
-                    <input
-                      type="range"
-                      min="0"
-                      max={scTimeline.length - 1}
-                      bind:value={selectedHistoricalHeight}
-                      on:change={() => loadHistoricalState(searchQuery, scTimeline[selectedHistoricalHeight])}
-                      class="timeline-slider"
-                    />
-                    <div class="timeline-labels">
-                      <span>Oldest</span>
-                      <span class="timeline-current-height">
-                        {#if scTimeline[selectedHistoricalHeight]}
-                          Block #{scTimeline[selectedHistoricalHeight].toLocaleString()}
-                        {/if}
-                      </span>
-                      <span>Latest</span>
+              <div class="cmd-panel-body">
+                {#if scTimeline.length > 0}
+                  <div class="timeline-controls">
+                    <div class="timeline-slider-wrap">
+                      <input
+                        type="range"
+                        min="0"
+                        max={scTimeline.length - 1}
+                        bind:value={selectedHistoricalHeight}
+                        on:change={() => loadHistoricalState(searchQuery, scTimeline[selectedHistoricalHeight])}
+                        class="timeline-slider"
+                      />
+                      <div class="timeline-labels">
+                        <span>Oldest</span>
+                        <span class="timeline-current-height">
+                          {#if scTimeline[selectedHistoricalHeight]}
+                            Block #{scTimeline[selectedHistoricalHeight].toLocaleString()}
+                          {/if}
+                        </span>
+                        <span>Latest</span>
+                      </div>
                     </div>
+                    
+                    {#if showHistoricalView}
+                      <button
+                        on:click={clearHistoricalView}
+                        class="cmd-link-btn"
+                      >
+                        <X size={12} />
+                        Show Current
+                      </button>
+                    {/if}
                   </div>
                   
-                  {#if showHistoricalView}
-                    <button
-                      on:click={clearHistoricalView}
-                      class="btn btn-secondary btn-sm"
-                    >
-                      <X size={12} />
-                      Show Current
-                    </button>
+                  {#if showHistoricalView && historicalVars}
+                    <div class="timeline-notice">
+                      <Info size={14} />
+                      <span>Showing state at block #{scTimeline[selectedHistoricalHeight]?.toLocaleString()}</span>
+                    </div>
                   {/if}
-                </div>
-                
-                {#if showHistoricalView && historicalVars}
-                  <div class="historical-vars-notice">
-                    <Info size={14} />
-                    <span>Showing state at block #{scTimeline[selectedHistoricalHeight]?.toLocaleString()}</span>
+                {:else if !scTimelineLoading}
+                  <div class="timeline-empty">
+                    <span>No historical snapshots recorded yet. Click "Load Timeline" to check.</span>
                   </div>
                 {/if}
-              {:else if !scTimelineLoading}
-                <div class="timeline-empty">
-                  <span>No historical snapshots recorded yet. Click "Load Timeline" to check.</span>
-                </div>
-              {/if}
+              </div>
             </div>
             
             <!-- SC Code Module - v6.1 Pattern -->
@@ -5289,10 +5291,6 @@
     display: flex;
     align-items: center;
     gap: var(--s-4);
-    padding: var(--s-3) var(--s-4);
-    background: var(--void-mid);
-    border-radius: var(--r-md);
-    margin-top: var(--s-3);
   }
   
   .timeline-slider-wrap {
@@ -5306,7 +5304,7 @@
     width: 100%;
     height: 6px;
     appearance: none;
-    background: var(--void-up);
+    background: var(--void-deep);
     border-radius: 3px;
     outline: none;
     cursor: pointer;
@@ -5314,8 +5312,8 @@
   
   .timeline-slider::-webkit-slider-thumb {
     appearance: none;
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
     background: var(--cyan-500);
     border-radius: 50%;
     cursor: pointer;
@@ -5323,39 +5321,45 @@
   }
   
   .timeline-slider::-webkit-slider-thumb:hover {
-    transform: scale(1.2);
+    transform: scale(1.15);
   }
   
   .timeline-labels {
     display: flex;
     justify-content: space-between;
-    font-size: 11px;
-    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-5);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
   }
   
   .timeline-current-height {
     font-family: var(--font-mono);
     color: var(--cyan-400);
     font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
   }
   
   .timeline-empty {
-    padding: var(--s-3) var(--s-4);
-    font-size: 12px;
-    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-4);
     text-align: center;
   }
   
-  .historical-vars-notice {
+  .timeline-notice {
     display: flex;
     align-items: center;
     gap: var(--s-2);
     padding: var(--s-2) var(--s-3);
-    margin-top: var(--s-2);
-    background: rgba(6, 182, 212, 0.1);
-    border: 1px solid var(--cyan-500);
+    margin-top: var(--s-3);
+    background: rgba(34, 211, 238, 0.1);
+    border: 1px solid rgba(34, 211, 238, 0.3);
     border-radius: var(--r-sm);
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
     color: var(--cyan-400);
   }
   

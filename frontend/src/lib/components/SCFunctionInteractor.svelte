@@ -98,29 +98,31 @@
         }
       });
 
-      const invokeParams = {
-        scid: scid,
-        function: selectedFunction.name,
-        params: params,
-        deroAmount: deroAmount ? Math.floor(parseFloat(deroAmount) * 100000) : 0,
-        assetScid: assetScid,
-        assetAmount: assetAmount ? parseInt(assetAmount) : 0,
-        anonymous: anonymous
-      };
+      // Convert DERO amount to atomic units (multiply by 100000)
+      const deroValueAtomic = deroAmount ? Math.floor(parseFloat(deroAmount) * 100000) : 0;
+      const assetValueAtomic = assetAmount ? parseInt(assetAmount) : 0;
 
-      const res = await InvokeSCFunction(JSON.stringify(invokeParams));
-      
+      const res = await InvokeSCFunction(
+        scid,
+        selectedFunction.name,
+        JSON.stringify(params),
+        deroValueAtomic,
+        assetScid || '',
+        assetValueAtomic,
+        anonymous
+      );
+
       if (res.success) {
         result = res;
-        toast.success(`Function ${selectedFunction.name} called successfully!`);
-        dispatch('invoked', res);
+        toast.success(`Function ${selectedFunction.name} called successfully`);
+        dispatch('invoked', { txid: res.txid, function: selectedFunction.name });
       } else {
-        error = res.error || 'Invocation failed';
-        toast.error(error);
+        error = res.error || 'Transaction failed';
+        toast.error(res.error || 'Transaction failed');
       }
     } catch (e) {
       error = e.message || 'Failed to invoke function';
-      toast.error(error);
+      toast.error(e.message || 'Failed to invoke function');
     } finally {
       loading = false;
     }
@@ -140,568 +142,463 @@
   }
 </script>
 
-<div class="sc-interactor">
-  <div class="interactor-header">
-    <span class="interactor-icon"><Zap size={16} /></span>
-    <h3>Call Smart Contract Function</h3>
+<!-- Uses cmd-stats-panel pattern from hologram.css -->
+<div class="cmd-stats-panel" style="margin-top: var(--s-4);">
+  <div class="cmd-panel-header">
+    <div class="cmd-panel-title">
+      <span class="cmd-panel-icon"><Zap size={14} strokeWidth={1.5} /></span>
+      CALL SMART CONTRACT FUNCTION
+    </div>
+    <div class="cmd-panel-meta">
+      {#if functions.length > 0}
+        <span class="cmd-badge">{functions.length} functions</span>
+      {/if}
+    </div>
   </div>
 
-  {#if parsing}
-    <div class="parsing-state">
-      <Loader2 size={18} class="spin" />
-      <span>Parsing smart contract...</span>
-    </div>
-  {:else if error && functions.length === 0}
-    <div class="error-state">
-      <AlertTriangle size={18} />
-      <span>{error}</span>
-    </div>
-  {:else if functions.length === 0}
-    <div class="empty-state">
-      <span>No callable functions found in this contract</span>
-    </div>
-  {:else}
-    <!-- Function Selector -->
-    <div class="function-selector">
-      <label>Function</label>
-      <div class="select-wrapper">
-        <select bind:value={selectedFunctionName} on:change={handleFunctionChange}>
-          {#each functions as fn}
-            <option value={fn.name}>
-              {formatFunctionSignature(fn)}
-            </option>
-          {/each}
-        </select>
-        <ChevronDown size={16} class="select-icon" />
+  <div class="cmd-panel-body">
+    {#if parsing}
+      <div class="sc-interactor-state">
+        <Loader2 size={16} class="spin" />
+        <span>Parsing smart contract...</span>
       </div>
-    </div>
+    {:else if error && functions.length === 0}
+      <div class="sc-interactor-state sc-interactor-error">
+        <AlertTriangle size={16} />
+        <span>{error}</span>
+      </div>
+    {:else if functions.length === 0}
+      <div class="sc-interactor-state">
+        <span>No callable functions found in this contract</span>
+      </div>
+    {:else}
+      <!-- Function Selector -->
+      <div class="sc-interactor-row">
+        <div class="sc-interactor-label">FUNCTION</div>
+        <div class="sc-interactor-select-wrap">
+          <select bind:value={selectedFunctionName} on:change={handleFunctionChange}>
+            {#each functions as fn}
+              <option value={fn.name}>
+                {formatFunctionSignature(fn)}
+              </option>
+            {/each}
+          </select>
+          <ChevronDown size={14} class="sc-interactor-select-icon" />
+        </div>
+      </div>
 
-    {#if selectedFunction}
-      <!-- Parameters -->
-      {#if selectedFunction.params.length > 0}
-        <div class="params-section">
-          <label class="section-label">Parameters</label>
-          {#each selectedFunction.params as param}
-            <div class="param-row">
-              <div class="param-info">
-                <span class="param-name">{param.name}</span>
-                <span class="param-type">{param.type}</span>
+      {#if selectedFunction}
+        <!-- Parameters -->
+        {#if selectedFunction.params.length > 0}
+          <div class="sc-interactor-section">
+            <div class="sc-interactor-label">PARAMETERS</div>
+            {#each selectedFunction.params as param}
+              <div class="sc-interactor-param">
+                <div class="sc-interactor-param-header">
+                  <span class="sc-interactor-param-name">{param.name}</span>
+                  <span class="cmd-badge cmd-badge-dim">{param.type}</span>
+                </div>
+                {#if param.type === 'Uint64'}
+                  <input
+                    type="number"
+                    bind:value={paramValues[param.name]}
+                    placeholder="0"
+                    class="sc-interactor-input"
+                  />
+                {:else}
+                  <input
+                    type="text"
+                    bind:value={paramValues[param.name]}
+                    placeholder="Enter value..."
+                    class="sc-interactor-input"
+                  />
+                {/if}
               </div>
-              {#if param.type === 'Uint64'}
-                <input
-                  type="number"
-                  bind:value={paramValues[param.name]}
-                  placeholder="0"
-                  class="param-input"
-                />
-              {:else}
-                <input
-                  type="text"
-                  bind:value={paramValues[param.name]}
-                  placeholder="Enter value..."
-                  class="param-input"
-                />
-              {/if}
+            {/each}
+          </div>
+        {/if}
+
+        <!-- DERO Value (if detected) -->
+        {#if selectedFunction.usesDero}
+          <div class="sc-interactor-value-box">
+            <div class="sc-interactor-value-header">
+              <span class="cmd-badge cmd-badge-info">DEROVALUE</span>
+              <span>DERO Amount to Send</span>
             </div>
-          {/each}
-        </div>
-      {:else}
-        <div class="no-params">
-          <span>This function has no parameters</span>
-        </div>
-      {/if}
-
-      <!-- DERO Value (if detected) -->
-      {#if selectedFunction.usesDero}
-        <div class="value-section dero-value">
-          <label>
-            <span class="value-badge dero">DEROVALUE</span>
-            DERO Amount to Send
-          </label>
-          <div class="value-input-row">
-            <input
-              type="number"
-              step="0.00001"
-              min="0"
-              bind:value={deroAmount}
-              placeholder="0.00000"
-            />
-            <span class="unit">DERO</span>
+            <div class="sc-interactor-value-row">
+              <input
+                type="number"
+                step="0.00001"
+                min="0"
+                bind:value={deroAmount}
+                placeholder="0.00000"
+                class="sc-interactor-input"
+              />
+              <span class="sc-interactor-unit">DERO</span>
+            </div>
           </div>
-        </div>
-      {/if}
+        {/if}
 
-      <!-- Asset Value (if detected) -->
-      {#if selectedFunction.usesAsset}
-        <div class="value-section asset-value">
-          <label>
-            <span class="value-badge asset">ASSETVALUE</span>
-            Token Transfer
-          </label>
-          <input
-            type="text"
-            bind:value={assetScid}
-            placeholder="Token SCID (64 hex characters)"
-            class="asset-scid-input"
-          />
-          <div class="value-input-row">
+        <!-- Asset Value (if detected) -->
+        {#if selectedFunction.usesAsset}
+          <div class="sc-interactor-value-box">
+            <div class="sc-interactor-value-header">
+              <span class="cmd-badge" style="background: rgba(139, 92, 246, 0.2); border-color: rgba(139, 92, 246, 0.4); color: var(--violet-400);">ASSETVALUE</span>
+              <span>Token Transfer</span>
+            </div>
             <input
-              type="number"
-              min="0"
-              bind:value={assetAmount}
-              placeholder="Amount (atomic units)"
+              type="text"
+              bind:value={assetScid}
+              placeholder="Token SCID (64 hex characters)"
+              class="sc-interactor-input"
+              style="margin-bottom: var(--s-2);"
             />
-            <span class="unit">units</span>
+            <div class="sc-interactor-value-row">
+              <input
+                type="number"
+                min="0"
+                bind:value={assetAmount}
+                placeholder="Amount (atomic units)"
+                class="sc-interactor-input"
+              />
+              <span class="sc-interactor-unit">units</span>
+            </div>
           </div>
-        </div>
-      {/if}
+        {/if}
 
-      <!-- Anonymous Option -->
-      <div class="anonymous-section">
-        <label class="checkbox-label">
-          <input
-            type="checkbox"
-            bind:checked={anonymous}
-            disabled={selectedFunction.usesSigner}
-          />
-          <span>Anonymous transaction (ringsize 16)</span>
-        </label>
-        {#if selectedFunction.usesSigner}
-          <div class="signer-warning">
+        <!-- Anonymous Option -->
+        <div class="sc-interactor-checkbox-row">
+          <label class="sc-interactor-checkbox">
+            <input
+              type="checkbox"
+              bind:checked={anonymous}
+              disabled={selectedFunction.usesSigner}
+            />
+            <span>Anonymous transaction (ringsize 16)</span>
+          </label>
+          {#if selectedFunction.usesSigner}
+            <div class="sc-interactor-signer-warn">
+              <AlertTriangle size={12} />
+              <span>SIGNER() detected - anonymous mode disabled</span>
+            </div>
+          {/if}
+        </div>
+
+        <!-- Error Display -->
+        {#if error}
+          <div class="sc-interactor-error-box">
             <AlertTriangle size={14} />
-            <span>SIGNER() detected - anonymous mode disabled</span>
+            <span>{error}</span>
           </div>
         {/if}
-      </div>
 
-      <!-- Error Display -->
-      {#if error}
-        <div class="invoke-error">
-          <AlertTriangle size={16} />
-          <span>{error}</span>
-        </div>
-      {/if}
-
-      <!-- Result Display -->
-      {#if result}
-        <div class="invoke-result">
-          <div class="result-header">
-            <Check size={16} />
-            <span>Transaction Sent</span>
+        <!-- Result Display -->
+        {#if result}
+          <div class="sc-interactor-result-box">
+            <div class="sc-interactor-result-header">
+              <Check size={14} />
+              <span>Transaction Sent</span>
+            </div>
+            <div class="sc-interactor-result-txid">
+              <span class="sc-interactor-txid-label">TXID:</span>
+              <code class="sc-interactor-txid">{result.txid}</code>
+              <button class="cmd-copy-btn" on:click={copyTxid} title="Copy TXID">
+                {#if copied}
+                  <Check size={12} />
+                {:else}
+                  <Copy size={12} />
+                {/if}
+              </button>
+            </div>
           </div>
-          <div class="result-txid">
-            <span class="txid-label">TXID:</span>
-            <code class="txid">{result.txid}</code>
-            <button class="copy-btn" on:click={copyTxid} title="Copy TXID">
-              {#if copied}
-                <Check size={14} />
-              {:else}
-                <Copy size={14} />
-              {/if}
-            </button>
-          </div>
-        </div>
-      {/if}
-
-      <!-- Submit Button -->
-      <button
-        class="invoke-btn"
-        on:click={invokeFunction}
-        disabled={loading || (!$walletState.isOpen && !$walletState.xswdConnected)}
-      >
-        {#if loading}
-          <Loader2 size={16} class="spin" />
-          <span>Calling {selectedFunction.name}...</span>
-        {:else}
-          <Play size={16} />
-          <span>Call {selectedFunction.name}</span>
         {/if}
-      </button>
 
-      {#if !$walletState.isOpen && !$walletState.xswdConnected}
-        <p class="wallet-warning">Open a wallet or connect via XSWD to call functions</p>
+        <!-- Submit Button -->
+        <button
+          class="cmd-link-btn sc-interactor-submit"
+          on:click={invokeFunction}
+          disabled={loading || (!$walletState.isOpen && !$walletState.xswdConnected)}
+        >
+          {#if loading}
+            <Loader2 size={14} class="spin" />
+            <span>Calling {selectedFunction.name}...</span>
+          {:else}
+            <Play size={14} />
+            <span>Call {selectedFunction.name}</span>
+          {/if}
+        </button>
+
+        {#if !$walletState.isOpen && !$walletState.xswdConnected}
+          <p class="sc-interactor-wallet-warn">Open a wallet or connect via XSWD to call functions</p>
+        {/if}
       {/if}
     {/if}
-  {/if}
+  </div>
 </div>
 
 <style>
-  .sc-interactor {
-    background: var(--void-mid);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-lg);
-    padding: var(--s-4);
-    margin-top: var(--s-4);
-  }
-
-  .interactor-header {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    margin-bottom: var(--s-4);
-    padding-bottom: var(--s-3);
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .interactor-header h3 {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-1);
-    margin: 0;
-  }
-
-  .interactor-icon {
-    color: var(--accent);
-  }
-
-  .parsing-state,
-  .error-state,
-  .empty-state {
+  /* SC Interactor - follows cmd-stats-panel pattern */
+  
+  .sc-interactor-state {
     display: flex;
     align-items: center;
     gap: var(--s-2);
     padding: var(--s-3);
-    color: var(--text-muted);
-    font-size: 13px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-4);
   }
-
-  .error-state {
-    color: var(--status-error);
-    background: rgba(255, 100, 100, 0.1);
+  
+  .sc-interactor-state.sc-interactor-error {
+    color: var(--status-err);
+    background: rgba(239, 68, 68, 0.1);
     border-radius: var(--r-md);
   }
-
-  .function-selector {
-    margin-bottom: var(--s-4);
+  
+  .sc-interactor-row {
+    margin-bottom: var(--s-3);
   }
-
-  .function-selector label,
-  .section-label {
-    display: block;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-muted);
+  
+  .sc-interactor-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-4);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.1em;
     margin-bottom: var(--s-2);
   }
-
-  .select-wrapper {
+  
+  .sc-interactor-select-wrap {
     position: relative;
   }
-
-  .select-wrapper select {
+  
+  .sc-interactor-select-wrap select {
     width: 100%;
     padding: var(--s-2) var(--s-3);
     padding-right: var(--s-6);
-    background: var(--void-up);
+    background: var(--void-deep);
     border: 1px solid var(--border-subtle);
     border-radius: var(--r-md);
-    color: var(--text-1);
-    font-size: 13px;
+    color: var(--text-2);
     font-family: var(--font-mono);
+    font-size: 12px;
     appearance: none;
     cursor: pointer;
   }
-
-  .select-wrapper select:focus {
+  
+  .sc-interactor-select-wrap select:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: var(--cyan-500);
   }
-
-  .select-wrapper :global(.select-icon) {
+  
+  .sc-interactor-select-wrap :global(.sc-interactor-select-icon) {
     position: absolute;
     right: var(--s-3);
     top: 50%;
     transform: translateY(-50%);
-    color: var(--text-muted);
+    color: var(--text-4);
     pointer-events: none;
   }
-
-  .params-section {
-    margin-bottom: var(--s-4);
-  }
-
-  .no-params {
-    padding: var(--s-3);
-    background: var(--void-down);
-    border-radius: var(--r-md);
-    font-size: 12px;
-    color: var(--text-muted);
-    margin-bottom: var(--s-4);
-  }
-
-  .param-row {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-1);
+  
+  .sc-interactor-section {
     margin-bottom: var(--s-3);
   }
-
-  .param-info {
+  
+  .sc-interactor-param {
+    margin-bottom: var(--s-2);
+  }
+  
+  .sc-interactor-param-header {
     display: flex;
     align-items: center;
     gap: var(--s-2);
+    margin-bottom: var(--s-1);
   }
-
-  .param-name {
+  
+  .sc-interactor-param-name {
     font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--text-2);
+    font-size: 11px;
+    color: var(--text-3);
     font-weight: 500;
   }
-
-  .param-type {
-    font-size: 10px;
-    padding: 2px 6px;
-    background: var(--void-up);
-    border-radius: var(--r-sm);
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-  }
-
-  .param-input {
+  
+  .sc-interactor-input {
+    width: 100%;
     padding: var(--s-2) var(--s-3);
-    background: var(--void-up);
+    background: var(--void-deep);
     border: 1px solid var(--border-subtle);
     border-radius: var(--r-md);
-    color: var(--text-1);
-    font-size: 13px;
+    color: var(--text-2);
     font-family: var(--font-mono);
-    width: 100%;
+    font-size: 12px;
   }
-
-  .param-input:focus {
+  
+  .sc-interactor-input:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: var(--cyan-500);
   }
-
-  .value-section {
+  
+  .sc-interactor-input::placeholder {
+    color: var(--text-5);
+  }
+  
+  .sc-interactor-value-box {
     margin-bottom: var(--s-3);
     padding: var(--s-3);
-    background: var(--void-down);
+    background: var(--void-deep);
     border-radius: var(--r-md);
     border: 1px solid var(--border-subtle);
   }
-
-  .value-section label {
+  
+  .sc-interactor-value-header {
     display: flex;
     align-items: center;
     gap: var(--s-2);
-    font-size: 12px;
-    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-3);
     margin-bottom: var(--s-2);
   }
-
-  .value-badge {
-    display: inline-block;
-    padding: 2px 6px;
-    border-radius: var(--r-sm);
-    font-size: 9px;
-    font-weight: 700;
-    font-family: var(--font-mono);
-  }
-
-  .value-badge.dero {
-    background: var(--accent);
-    color: var(--void);
-  }
-
-  .value-badge.asset {
-    background: #9b59b6;
-    color: white;
-  }
-
-  .value-input-row {
+  
+  .sc-interactor-value-row {
     display: flex;
     align-items: center;
     gap: var(--s-2);
   }
-
-  .value-input-row input {
-    flex: 1;
-    padding: var(--s-2) var(--s-3);
-    background: var(--void-up);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-md);
-    color: var(--text-1);
-    font-size: 13px;
+  
+  .sc-interactor-unit {
     font-family: var(--font-mono);
-  }
-
-  .value-input-row input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-
-  .asset-scid-input {
-    width: 100%;
-    padding: var(--s-2) var(--s-3);
-    background: var(--void-up);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-md);
-    color: var(--text-1);
-    font-size: 12px;
-    font-family: var(--font-mono);
-    margin-bottom: var(--s-2);
-  }
-
-  .asset-scid-input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-
-  .unit {
-    font-size: 12px;
-    color: var(--text-muted);
+    font-size: 11px;
+    color: var(--text-4);
     font-weight: 500;
   }
-
-  .anonymous-section {
-    margin-bottom: var(--s-4);
+  
+  .sc-interactor-checkbox-row {
+    margin-bottom: var(--s-3);
     padding: var(--s-3);
-    background: var(--void-down);
+    background: var(--void-deep);
     border-radius: var(--r-md);
   }
-
-  .checkbox-label {
+  
+  .sc-interactor-checkbox {
     display: flex;
     align-items: center;
     gap: var(--s-2);
     cursor: pointer;
-    font-size: 13px;
-    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-3);
   }
-
-  .checkbox-label input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
+  
+  .sc-interactor-checkbox input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
     cursor: pointer;
-    accent-color: var(--accent);
+    accent-color: var(--cyan-500);
   }
-
-  .checkbox-label input[type="checkbox"]:disabled {
+  
+  .sc-interactor-checkbox input[type="checkbox"]:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
-
-  .signer-warning {
+  
+  .sc-interactor-signer-warn {
     display: flex;
     align-items: center;
     gap: var(--s-1);
     margin-top: var(--s-2);
-    font-size: 11px;
-    color: var(--status-warning);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--status-warn);
   }
-
-  .invoke-error {
+  
+  .sc-interactor-error-box {
     display: flex;
     align-items: flex-start;
     gap: var(--s-2);
     padding: var(--s-3);
-    background: rgba(255, 100, 100, 0.1);
-    border: 1px solid var(--status-error);
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid var(--status-err);
     border-radius: var(--r-md);
-    color: var(--status-error);
-    font-size: 12px;
+    color: var(--status-err);
+    font-family: var(--font-mono);
+    font-size: 11px;
     margin-bottom: var(--s-3);
   }
-
-  .invoke-result {
+  
+  .sc-interactor-result-box {
     padding: var(--s-3);
-    background: rgba(100, 255, 150, 0.1);
-    border: 1px solid var(--status-success);
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid var(--status-ok);
     border-radius: var(--r-md);
     margin-bottom: var(--s-3);
   }
-
-  .result-header {
+  
+  .sc-interactor-result-header {
     display: flex;
     align-items: center;
     gap: var(--s-2);
-    color: var(--status-success);
-    font-size: 13px;
-    font-weight: 600;
+    color: var(--status-ok);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
     margin-bottom: var(--s-2);
   }
-
-  .result-txid {
+  
+  .sc-interactor-result-txid {
     display: flex;
     align-items: center;
     gap: var(--s-2);
   }
-
-  .txid-label {
-    font-size: 11px;
-    color: var(--text-muted);
+  
+  .sc-interactor-txid-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-4);
+    text-transform: uppercase;
   }
-
-  .txid {
+  
+  .sc-interactor-txid {
+    flex: 1;
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-2);
-    word-break: break-all;
-    flex: 1;
+    background: var(--void-deep);
+    padding: var(--s-1) var(--s-2);
+    border-radius: var(--r-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-
-  .copy-btn {
-    padding: var(--s-1);
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    border-radius: var(--r-sm);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .copy-btn:hover {
-    color: var(--text-1);
-    background: var(--void-up);
-  }
-
-  .invoke-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--s-2);
+  
+  .sc-interactor-submit {
     width: 100%;
-    padding: var(--s-3);
-    background: var(--accent);
-    border: none;
-    border-radius: var(--r-md);
-    color: var(--void);
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
+    justify-content: center;
+    padding: var(--s-2) var(--s-3);
+    margin-top: var(--s-2);
   }
-
-  .invoke-btn:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-
-  .invoke-btn:disabled {
+  
+  .sc-interactor-submit:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
-
-  .wallet-warning {
-    text-align: center;
-    font-size: 12px;
-    color: var(--text-muted);
+  
+  .sc-interactor-wallet-warn {
     margin-top: var(--s-2);
-    margin-bottom: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-4);
+    text-align: center;
   }
-
+  
+  /* Spin animation for loader */
   :global(.spin) {
     animation: spin 1s linear infinite;
   }
-
+  
   @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
   }
 </style>
-
