@@ -325,8 +325,10 @@ func (w *DevSupportWorker) isOnBattery() bool {
 		}
 		return string(out) == "0\n" // 0 means not on AC
 	case "windows":
-		// Windows: would need syscall to GetSystemPowerStatus
-		// For now, assume not on battery
+		// Windows: battery detection requires syscall to GetSystemPowerStatus
+		// Full implementation would use: kernel32.GetSystemPowerStatus()
+		// For v1.0, assume not on battery (safer for background hashing)
+		// TODO: Implement proper Windows battery detection using syscall
 		return false
 	}
 	return false

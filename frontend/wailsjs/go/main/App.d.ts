@@ -215,6 +215,8 @@ export function GetDevSupportStatus():Promise<Record<string, any>>;
 
 export function GetDiscoveredApps():Promise<Record<string, any>>;
 
+export function GetEpochAddressInfo():Promise<Record<string, any>>;
+
 export function GetEpochDeveloperAddress():Promise<string>;
 
 export function GetEpochStats():Promise<Record<string, any>>;
@@ -598,6 +600,8 @@ export function ShutdownTELAServers():Promise<Record<string, any>>;
 export function SignMessage(arg1:string):Promise<Record<string, any>>;
 
 export function StartBlockMonitoring():Promise<void>;
+
+export function StartEpochAddressMonitor():Promise<void>;
 
 export function StartGnomon():Promise<Record<string, any>>;
 

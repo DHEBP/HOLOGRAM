@@ -426,6 +426,10 @@ export function GetDiscoveredApps() {
   return window['go']['main']['App']['GetDiscoveredApps']();
 }
 
+export function GetEpochAddressInfo() {
+  return window['go']['main']['App']['GetEpochAddressInfo']();
+}
+
 export function GetEpochDeveloperAddress() {
   return window['go']['main']['App']['GetEpochDeveloperAddress']();
 }
@@ -1192,6 +1196,10 @@ export function SignMessage(arg1) {
 
 export function StartBlockMonitoring() {
   return window['go']['main']['App']['StartBlockMonitoring']();
+}
+
+export function StartEpochAddressMonitor() {
+  return window['go']['main']['App']['StartEpochAddressMonitor']();
 }
 
 export function StartGnomon() {
