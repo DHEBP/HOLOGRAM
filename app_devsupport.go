@@ -1,11 +1,13 @@
 // Copyright 2025 HOLOGRAM Project. All rights reserved.
 // Developer Support Functions - EPOCH and passive hashing for developer support
 // Session 91: Simplified from app_mining.go (mining feature removed)
+// Session 109: Added fair EPOCH address switching for app developer support
 
 package main
 
 import (
 	"fmt"
+	"time"
 )
 
 // ================== EPOCH (Developer Support) Functions ==================
@@ -364,5 +366,89 @@ func formatDEROAmount(atomicUnits uint64) string {
 		return fmt.Sprintf("%.5f", dero)
 	}
 	return fmt.Sprintf("%.12f", dero)
+}
+
+// ================== EPOCH Address Switching (Fair Developer Support) ==================
+//
+// When a TELA app calls AttemptEPOCHWithAddr with their developer address, HOLOGRAM
+// temporarily switches the EPOCH connection to that address so the app developer
+// receives the mining rewards. After STICKY_TIMEOUT (30s) of inactivity, it switches
+// back to the default HOLOGRAM address.
+//
+// This ensures:
+// 1. App developers get rewarded when users actively use their apps
+// 2. HOLOGRAM gets background support when users are idle
+// 3. Fair distribution of developer support across the ecosystem
+
+// StartEpochAddressMonitor starts a goroutine that monitors EPOCH address state
+// and switches back to default after STICKY_TIMEOUT of inactivity.
+// Called during app startup.
+func (a *App) StartEpochAddressMonitor() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second) // Check every 5 seconds
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				a.checkEpochAddressTimeout()
+			}
+		}
+	}()
+
+	a.logToConsole("[EPOCH] Address monitor started - will switch back to default after 30s of app inactivity")
+}
+
+// checkEpochAddressTimeout checks if we should switch back to the default address
+func (a *App) checkEpochAddressTimeout() {
+	if a.epochHandler == nil {
+		return
+	}
+
+	// Check if we should switch back to default
+	if a.epochHandler.ShouldSwitchBackToDefault() {
+		// Switch back to default address
+		err := a.epochHandler.SwitchToDefault()
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[EPOCH] Failed to switch back to default: %v", err))
+			return
+		}
+
+		// Resume background worker
+		if a.devSupportWorker != nil {
+			a.devSupportWorker.Resume()
+		}
+	}
+}
+
+// GetEpochAddressInfo returns current EPOCH address switching state
+func (a *App) GetEpochAddressInfo() map[string]interface{} {
+	result := map[string]interface{}{
+		"current_address":       "",
+		"default_address":       DEFAULT_EPOCH_DEVELOPER_ADDRESS,
+		"is_on_app_address":     false,
+		"last_app_request":      time.Time{},
+		"seconds_until_switch":  0,
+	}
+
+	if a.epochHandler == nil {
+		return result
+	}
+
+	result["current_address"] = a.epochHandler.GetCurrentAddress()
+	result["default_address"] = a.epochHandler.GetDefaultAddress()
+	result["is_on_app_address"] = a.epochHandler.IsOnAppAddress()
+	result["last_app_request"] = a.epochHandler.GetLastAppRequestTime()
+
+	if a.epochHandler.IsOnAppAddress() {
+		lastRequest := a.epochHandler.GetLastAppRequestTime()
+		elapsed := time.Since(lastRequest)
+		remaining := STICKY_TIMEOUT - elapsed
+		if remaining > 0 {
+			result["seconds_until_switch"] = int(remaining.Seconds())
+		}
+	}
+
+	return result
 }
 

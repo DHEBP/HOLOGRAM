@@ -23,10 +23,12 @@ type DevSupportWorker struct {
 	cycleInterval time.Duration // Time between cycles (default: 5 seconds)
 
 	// Runtime state
-	running    bool
-	paused     bool
-	pauseReason string
-	stopChan   chan struct{}
+	running       bool
+	paused        bool
+	pauseReason   string
+	manualPaused  bool   // True when paused by Pause() call (for app support)
+	manualReason  string // Reason for manual pause
+	stopChan      chan struct{}
 
 	// Statistics (persisted)
 	stats DevSupportStats
@@ -65,6 +67,7 @@ const (
 	PauseReasonNoNode        = "Waiting for node connection - start or connect to a node"
 	PauseReasonNodeSyncing   = "Waiting for node to sync"
 	PauseReasonEpochNotReady = "Waiting for node connection"
+	PauseReasonAppActive     = "Supporting app developer" // EPOCH is switched to app dev address
 )
 
 // Default configuration
@@ -234,6 +237,15 @@ func (w *DevSupportWorker) doCycle() {
 
 // checkPauseConditions checks if we should pause
 func (w *DevSupportWorker) checkPauseConditions() string {
+	// Check if manually paused (e.g., for app developer support)
+	w.RLock()
+	if w.manualPaused {
+		reason := w.manualReason
+		w.RUnlock()
+		return reason
+	}
+	w.RUnlock()
+
 	// Check if EPOCH is ready (requires node connection)
 	if w.epochHandler == nil || !w.epochHandler.IsActive() {
 		// EPOCH not active means no node connection
@@ -363,6 +375,54 @@ func (w *DevSupportWorker) SetOnStatsUpdate(fn func(DevSupportStats)) {
 	w.Lock()
 	defer w.Unlock()
 	w.onStatsUpdate = fn
+}
+
+// ================== Manual Pause/Resume for App Developer Support ==================
+
+// Pause temporarily pauses the background worker with a given reason.
+// This is used when EPOCH is switched to an app developer's address.
+// The worker will not compute hashes while paused.
+func (w *DevSupportWorker) Pause(reason string) {
+	w.Lock()
+	defer w.Unlock()
+
+	if w.manualPaused {
+		return // Already paused
+	}
+
+	w.manualPaused = true
+	w.manualReason = reason
+	w.paused = true
+	w.pauseReason = reason
+	w.stats.IsPaused = true
+	w.stats.PauseReason = reason
+
+	w.log(fmt.Sprintf("[EPOCH] Background support paused: %s", reason))
+}
+
+// Resume resumes the background worker after a manual pause.
+// Called when EPOCH switches back to the default address.
+func (w *DevSupportWorker) Resume() {
+	w.Lock()
+	defer w.Unlock()
+
+	if !w.manualPaused {
+		return // Not manually paused
+	}
+
+	w.manualPaused = false
+	w.manualReason = ""
+	// Don't clear w.paused here - let checkPauseConditions handle it
+	// This way if there's another pause reason (battery, CPU), it will still pause
+
+	w.log("[EPOCH] Background support resumed")
+}
+
+// IsManuallyPaused returns true if the worker was paused via Pause()
+func (w *DevSupportWorker) IsManuallyPaused() bool {
+	w.RLock()
+	defer w.RUnlock()
+	return w.manualPaused
 }
 
 // formatHashCount formats hash count for display

@@ -11,13 +11,24 @@ import (
 // EpochHandler manages EPOCH (Event-Driven Propagation of Crowd Hashing) for HOLOGRAM.
 // EPOCH allows TELA apps to request hash computations as a non-intrusive form of developer support.
 // Default: ON (opt-out model)
+//
+// Address Switching: When a TELA app calls AttemptEPOCHWithAddr with a developer address,
+// HOLOGRAM temporarily switches the EPOCH connection to that address so the app developer
+// receives the mining rewards. After a period of inactivity (STICKY_TIMEOUT), it switches
+// back to the default HOLOGRAM address.
 type EpochHandler struct {
 	sync.RWMutex
 
 	enabled    bool   // User setting: is EPOCH enabled (default: true)
 	maxHashes  int    // Max hashes per request (user-configurable)
 	maxThreads int    // Max threads for EPOCH (user-configurable)
-	address    string // Reward address (defaults to app developer or configured)
+	address    string // Current reward address (may be app developer or default)
+
+	// Address switching state
+	defaultAddress    string    // The default HOLOGRAM developer address
+	currentAppAddress string    // The current app's developer address (if switched)
+	lastAppRequest    time.Time // When the last app-specific request was made
+	daemonEndpoint    string    // Cached daemon endpoint for reconnection
 
 	// Rate limiting per app
 	rateLimits    map[string]*rateLimitEntry
@@ -66,21 +77,25 @@ const (
 	RATE_LIMIT_WINDOW        = 10 * time.Second // Window for rate limiting
 	RATE_LIMIT_MAX_HASHES    = 500              // Max hashes per app per window
 	
+	// Address switching
+	STICKY_TIMEOUT = 30 * time.Second // How long to stay on app developer's address after last request
+	
 	// EPOCH Developer Support Address
-	// This is the default address where EPOCH mining rewards are sent.
-	// EPOCH is for developer/ecosystem support - NOT user earnings (that's what the background miner is for).
-	// This can be overridden per-app if the app specifies their own developer address.
+	// This is the default address where EPOCH mining rewards are sent when idle.
+	// When a TELA app requests EPOCH with their developer address, we temporarily switch to that address.
+	// After STICKY_TIMEOUT of inactivity, we switch back to this default address.
 	DEFAULT_EPOCH_DEVELOPER_ADDRESS = "dero1qyqu6kdla44msn0ky5skpv4fahj2ay80ycjpz27kgc4wf7jk4ys0kqq6s36fh"
 )
 
 // NewEpochHandler creates a new EPOCH handler with sensible defaults
 func NewEpochHandler(logFn func(string)) *EpochHandler {
 	return &EpochHandler{
-		enabled:    true, // DEFAULT ON (opt-out model)
-		maxHashes:  DEFAULT_EPOCH_MAX_HASHES,
-		maxThreads: DEFAULT_EPOCH_MAX_THREADS,
-		rateLimits: make(map[string]*rateLimitEntry),
-		logFn:      logFn,
+		enabled:        true, // DEFAULT ON (opt-out model)
+		maxHashes:      DEFAULT_EPOCH_MAX_HASHES,
+		maxThreads:     DEFAULT_EPOCH_MAX_THREADS,
+		defaultAddress: DEFAULT_EPOCH_DEVELOPER_ADDRESS,
+		rateLimits:     make(map[string]*rateLimitEntry),
+		logFn:          logFn,
 	}
 }
 
@@ -116,6 +131,8 @@ func (e *EpochHandler) Initialize(address, daemonEndpoint string) error {
 		e.log("[EPOCH] Using default developer support address")
 	}
 	e.address = address
+	e.defaultAddress = address
+	e.daemonEndpoint = daemonEndpoint
 
 	// Configure EPOCH
 	epoch.SetMaxThreads(e.maxThreads)
@@ -398,5 +415,150 @@ func (e *EpochHandler) SetConfig(enabled bool, maxHashes, maxThreads int) {
 	if !enabled && epoch.IsActive() {
 		epoch.StopGetWork()
 	}
+}
+
+// ================== Address Switching for Fair Developer Support ==================
+
+// SwitchToAddress temporarily switches EPOCH to a different developer's address.
+// This is called when a TELA app requests AttemptEPOCHWithAddr with their developer address.
+// The connection is switched so that app's developer receives the mining rewards.
+// Returns error if switch fails (invalid address, connection issues).
+func (e *EpochHandler) SwitchToAddress(newAddress string) error {
+	e.Lock()
+	defer e.Unlock()
+
+	if !e.enabled {
+		return fmt.Errorf("EPOCH is disabled")
+	}
+
+	// If same address, just update the timestamp
+	if newAddress == e.address {
+		e.lastAppRequest = time.Now()
+		return nil
+	}
+
+	// Validate the new address
+	if newAddress == "" {
+		return fmt.Errorf("empty address")
+	}
+
+	// Stop current connection
+	if epoch.IsActive() {
+		epoch.StopGetWork()
+		// Brief pause to allow clean disconnect
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Start new connection with the app developer's address
+	err := epoch.StartGetWork(newAddress, e.daemonEndpoint)
+	if err != nil {
+		// Try to restore default connection
+		e.log(fmt.Sprintf("[EPOCH] Failed to switch to %s...%s: %v", 
+			newAddress[:12], newAddress[len(newAddress)-8:], err))
+		epoch.StartGetWork(e.defaultAddress, e.daemonEndpoint)
+		e.address = e.defaultAddress
+		e.currentAppAddress = ""
+		return err
+	}
+
+	// Wait briefly for connection
+	epoch.JobIsReady(3 * time.Second)
+
+	// Update state
+	e.address = newAddress
+	e.currentAppAddress = newAddress
+	e.lastAppRequest = time.Now()
+
+	e.log(fmt.Sprintf("[EPOCH] Switched to app developer: %s...%s", 
+		newAddress[:12], newAddress[len(newAddress)-8:]))
+
+	return nil
+}
+
+// SwitchToDefault switches EPOCH back to the default HOLOGRAM developer address.
+// Called after STICKY_TIMEOUT of inactivity from app requests.
+func (e *EpochHandler) SwitchToDefault() error {
+	e.Lock()
+	defer e.Unlock()
+
+	// Already on default
+	if e.address == e.defaultAddress {
+		e.currentAppAddress = ""
+		return nil
+	}
+
+	if !e.enabled {
+		return fmt.Errorf("EPOCH is disabled")
+	}
+
+	// Stop current connection
+	if epoch.IsActive() {
+		epoch.StopGetWork()
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Reconnect with default address
+	err := epoch.StartGetWork(e.defaultAddress, e.daemonEndpoint)
+	if err != nil {
+		e.log(fmt.Sprintf("[ERR] EPOCH: Failed to switch back to default: %v", err))
+		return err
+	}
+
+	epoch.JobIsReady(3 * time.Second)
+
+	e.address = e.defaultAddress
+	e.currentAppAddress = ""
+
+	e.log("[EPOCH] Switched back to default developer support address")
+
+	return nil
+}
+
+// GetCurrentAddress returns the current reward address
+func (e *EpochHandler) GetCurrentAddress() string {
+	e.RLock()
+	defer e.RUnlock()
+	return e.address
+}
+
+// GetDefaultAddress returns the default HOLOGRAM developer address
+func (e *EpochHandler) GetDefaultAddress() string {
+	e.RLock()
+	defer e.RUnlock()
+	return e.defaultAddress
+}
+
+// IsOnAppAddress returns true if currently switched to an app developer's address
+func (e *EpochHandler) IsOnAppAddress() bool {
+	e.RLock()
+	defer e.RUnlock()
+	return e.currentAppAddress != "" && e.address != e.defaultAddress
+}
+
+// GetLastAppRequestTime returns when the last app-specific EPOCH request was made
+func (e *EpochHandler) GetLastAppRequestTime() time.Time {
+	e.RLock()
+	defer e.RUnlock()
+	return e.lastAppRequest
+}
+
+// ShouldSwitchBackToDefault returns true if we've been on an app address for too long
+// without any new requests (exceeded STICKY_TIMEOUT)
+func (e *EpochHandler) ShouldSwitchBackToDefault() bool {
+	e.RLock()
+	defer e.RUnlock()
+
+	if e.currentAppAddress == "" || e.address == e.defaultAddress {
+		return false
+	}
+
+	return time.Since(e.lastAppRequest) > STICKY_TIMEOUT
+}
+
+// SetDaemonEndpoint updates the daemon endpoint (for reconnection)
+func (e *EpochHandler) SetDaemonEndpoint(endpoint string) {
+	e.Lock()
+	defer e.Unlock()
+	e.daemonEndpoint = endpoint
 }
 

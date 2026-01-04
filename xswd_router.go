@@ -57,8 +57,27 @@ func (a *App) routeEpochCall(method string, params map[string]interface{}) XSWDR
 		if h, ok := params["hashes"].(float64); ok && h > 0 {
 			hashes = int(h)
 		}
-		// Note: AttemptEPOCHWithAddr has an "address" param for dev donations
-		// Currently we process it like regular AttemptEPOCH (reward goes to connected wallet)
+
+		// Handle developer address switching for AttemptEPOCHWithAddr
+		// This allows app developers to receive EPOCH rewards when users interact with their apps
+		if method == "AttemptEPOCHWithAddr" {
+			if devAddress, ok := params["address"].(string); ok && devAddress != "" && len(devAddress) >= 60 {
+				// Pause background worker (it hashes for default address)
+				if a.devSupportWorker != nil {
+					a.devSupportWorker.Pause(PauseReasonAppActive)
+				}
+
+				// Switch EPOCH to the app developer's address
+				if a.epochHandler != nil {
+					if err := a.epochHandler.SwitchToAddress(devAddress); err != nil {
+						log.Printf("[EPOCH] Failed to switch to developer address: %v", err)
+						// Continue anyway - hashes will go to current address
+					}
+				}
+			}
+		}
+
+		// Compute hashes (rewards go to current EPOCH address - either app dev or default)
 		epochResult := a.HandleEpochRequest(hashes, "")
 		if epochResult["success"] == true {
 			return xswdSuccess(map[string]interface{}{

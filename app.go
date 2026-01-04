@@ -187,6 +187,9 @@ func (a *App) startup(ctx context.Context) {
 				a.devSupportWorker.SetEnabled(true)
 				a.devSupportWorker.Start()
 			}
+
+			// Start the address monitor for fair developer support switching
+			a.StartEpochAddressMonitor()
 		} else {
 			a.logToConsole("[EPOCH] Developer Support: Disabled by user preference")
 		}
