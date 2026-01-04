@@ -48,12 +48,13 @@ func setupTestPermissionManager(t *testing.T) (*PermissionManager, func()) {
 func TestAllPermissions(t *testing.T) {
 	perms := AllPermissions()
 
-	if len(perms) != 4 {
-		t.Errorf("Expected 4 permissions, got %d", len(perms))
+	if len(perms) != 5 {
+		t.Errorf("Expected 5 permissions, got %d", len(perms))
 	}
 
 	// Verify all expected permissions are present
 	expected := map[XSWDPermission]bool{
+		PermissionReadPublicData:  false,
 		PermissionViewAddress:     false,
 		PermissionViewBalance:     false,
 		PermissionSignTransaction: false,
@@ -201,27 +202,33 @@ func TestGetRequiredPermission_Unknown(t *testing.T) {
 func TestDefaultRequestedPermissions(t *testing.T) {
 	defaults := DefaultRequestedPermissions()
 
-	if len(defaults) != 4 {
-		t.Errorf("Expected 4 default permissions, got %d", len(defaults))
+	// Default is now read-only only - apps must explicitly request wallet permissions
+	if len(defaults) != 1 {
+		t.Errorf("Expected 1 default permission (read-only), got %d", len(defaults))
 	}
 
-	// Should include all permissions
+	// Should only include read_public_data by default
 	permSet := make(map[XSWDPermission]bool)
 	for _, p := range defaults {
 		permSet[p] = true
 	}
 
-	expected := []XSWDPermission{
-		PermissionViewAddress,
-		PermissionViewBalance,
-		PermissionSignTransaction,
-		PermissionSCInvoke,
+	if !permSet[PermissionReadPublicData] {
+		t.Error("Default permissions should include read_public_data")
 	}
 
-	for _, p := range expected {
-		if !permSet[p] {
-			t.Errorf("Default permissions missing: %s", p)
-		}
+	// Wallet permissions should NOT be included by default
+	if permSet[PermissionViewAddress] {
+		t.Error("view_address should NOT be a default permission")
+	}
+	if permSet[PermissionViewBalance] {
+		t.Error("view_balance should NOT be a default permission")
+	}
+	if permSet[PermissionSignTransaction] {
+		t.Error("sign_transaction should NOT be a default permission")
+	}
+	if permSet[PermissionSCInvoke] {
+		t.Error("sc_invoke should NOT be a default permission")
 	}
 }
 
