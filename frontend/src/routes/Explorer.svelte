@@ -6105,7 +6105,7 @@
     font-size: 10px;
     color: var(--cyan-400);
     background: rgba(34, 211, 238, 0.1);
-    padding: 2px 6px;
+    padding: 2px var(--s-2);
     border-radius: var(--r-sm);
     margin-left: var(--s-2);
   }
@@ -6151,7 +6151,7 @@
   .timeline-dot {
     position: absolute;
     left: -16px;
-    top: 4px;
+    top: var(--s-1);
     width: 8px;
     height: 8px;
     background: var(--cyan-400);

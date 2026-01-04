@@ -4347,7 +4347,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     font-size: 13px;
     font-weight: 500;
     color: var(--text-1);
-    margin-bottom: 4px;
+    margin-bottom: var(--s-1);
   }
   
   .watched-meta {
