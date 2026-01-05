@@ -869,6 +869,62 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     handleResyncFromHeight();
   }
   
+  async function handleFastsync() {
+    if ($appState.gnomonRunning) {
+      console.warn('[Gnomon] Cannot resync while running');
+      return;
+    }
+    
+    resyncingGnomon = true;
+    try {
+      // Fastsync uses the default ResyncGnomon which enables fastsync
+      const result = await ResyncGnomon();
+      if (result.success) {
+        console.log('[Gnomon] Fastsync started:', result.message);
+      } else {
+        console.error('[Gnomon] Fastsync failed:', result.error);
+      }
+    } catch (e) {
+      console.error('[Gnomon] Fastsync error:', e);
+    } finally {
+      resyncingGnomon = false;
+    }
+  }
+  
+  async function handleFullResync() {
+    if ($appState.gnomonRunning) {
+      console.warn('[Gnomon] Cannot resync while running');
+      return;
+    }
+    
+    // Confirm with user - this takes a LONG time
+    const confirmed = confirm(
+      '⚠️ Full Resync Warning\n\n' +
+      'This will re-index the ENTIRE blockchain from block 0.\n' +
+      'On mainnet, this means 6+ million blocks.\n\n' +
+      'This can take HOURS or even DAYS depending on your system.\n\n' +
+      'Are you sure you want to continue?\n\n' +
+      'Tip: Use "Fastsync" or "Time Machine" for faster results.'
+    );
+    
+    if (!confirmed) return;
+    
+    resyncingGnomon = true;
+    try {
+      // Full resync from block 0
+      const result = await ResyncGnomonFromHeight(0);
+      if (result.success) {
+        console.log('[Gnomon] Full resync started:', result.message);
+      } else {
+        console.error('[Gnomon] Full resync failed:', result.error);
+      }
+    } catch (e) {
+      console.error('[Gnomon] Full resync error:', e);
+    } finally {
+      resyncingGnomon = false;
+    }
+  }
+  
   // Search exclusions functions
   async function loadSearchExclusions() {
     try {
@@ -1886,40 +1942,48 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               <div class="settings-row-info">
                 <div class="settings-row-label">Database Management</div>
                 <div class="settings-row-desc">
-                  Reset the Gnomon database to re-sync from scratch.
-                  <span style="color: var(--status-warn);">This will delete all indexed data.</span>
-                </div>
-              </div>
-              <button
-                on:click={handleResyncGnomon}
-                disabled={$appState.gnomonRunning || resyncingGnomon}
-                class="btn btn-secondary"
-                title={$appState.gnomonRunning ? 'Stop Gnomon first' : 'Resync Gnomon database'}
-              >
-                <Icons name={resyncingGnomon ? 'loader' : 'refresh'} size={14} />
-                {resyncingGnomon ? 'Resyncing...' : 'Resync Database'}
-              </button>
-            </div>
-            
-            <!-- Resync from Height (Time Machine) -->
-            <div class="settings-row" style="margin-top: var(--s-3);">
-              <div class="settings-row-info">
-                <div class="settings-row-label">
-                  <Icons name="clock" size={14} style="display: inline; vertical-align: middle; margin-right: 4px;" />
-                  Time Machine
-                </div>
-                <div class="settings-row-desc">
-                  Resync from a specific block height. Useful for finding recently deployed contracts.
-                  <span style="color: var(--text-muted);">Current: {$appState.gnomonHeight?.toLocaleString() || '0'}</span>
+                  Reset and re-index the blockchain. Choose your sync method:
                 </div>
               </div>
               <div class="settings-row-actions" style="display: flex; gap: var(--s-2); align-items: center;">
+                <button
+                  on:click={handleFastsync}
+                  disabled={$appState.gnomonRunning || resyncingGnomon}
+                  class="btn btn-primary"
+                  title="Quick sync from near current block height (recommended)"
+                >
+                  <Icons name={resyncingGnomon ? 'loader' : 'zap'} size={14} />
+                  Fastsync
+                </button>
+                <button
+                  on:click={handleFullResync}
+                  disabled={$appState.gnomonRunning || resyncingGnomon}
+                  class="btn btn-danger-outline"
+                  title="Full resync from block 0 - takes hours/days!"
+                >
+                  <Icons name="refresh" size={14} />
+                  Full Resync
+                </button>
+              </div>
+            </div>
+            
+            <!-- Time Machine -->
+            <div class="time-machine-card" style="margin-top: var(--s-3);">
+              <div class="time-machine-header">
+                <Icons name="clock" size={16} />
+                <span>Time Machine</span>
+                <span class="time-machine-current">Block {$appState.gnomonHeight?.toLocaleString() || '0'}</span>
+              </div>
+              <div class="time-machine-desc">
+                Resync from a specific block height. Useful for finding recently deployed contracts.
+              </div>
+              <div class="time-machine-controls">
                 <input
                   type="number"
                   bind:value={resyncFromHeight}
-                  placeholder="Block height"
+                  placeholder="Enter block height..."
                   class="form-input"
-                  style="width: 140px; font-family: var(--font-mono);"
+                  style="flex: 1; font-family: var(--font-mono);"
                   min="0"
                   disabled={$appState.gnomonRunning || resyncingFromHeight}
                 />
@@ -1929,7 +1993,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   class="btn btn-secondary"
                   title="Resync from specified block height"
                 >
-                  <Icons name={resyncingFromHeight ? 'loader' : 'clock'} size={14} />
+                  <Icons name={resyncingFromHeight ? 'loader' : 'play'} size={14} />
                   Go
                 </button>
                 <button
@@ -2665,6 +2729,56 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   /* === HOLOGRAM v7.0 Settings Page Styles === */
   /* Strict compliance with HOLOGRAM-DESIGN-SYSTEM.md */
   /* Utilitarian Card Headers (Explorer Style) */
+  
+  /* === Time Machine Card === */
+  .time-machine-card {
+    padding: var(--s-4, 16px);
+    background: var(--void-deep, #08080e);
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+    border-radius: var(--r-md, 8px);
+  }
+  
+  .time-machine-header {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    margin-bottom: var(--s-2, 8px);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-1);
+  }
+  
+  .time-machine-header :global(svg) {
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .time-machine-current {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-4);
+    background: var(--void-mid);
+    padding: 2px 8px;
+    border-radius: var(--r-sm);
+  }
+  
+  .time-machine-desc {
+    font-size: 12px;
+    color: var(--text-3);
+    margin-bottom: var(--s-3, 12px);
+    line-height: 1.5;
+  }
+  
+  .time-machine-controls {
+    display: flex;
+    gap: var(--s-2, 8px);
+    align-items: center;
+  }
+  
+  .time-machine-controls .form-input {
+    min-width: 0;
+  }
   
   /* === Card Wrapper === */
   .card-wrapper {
