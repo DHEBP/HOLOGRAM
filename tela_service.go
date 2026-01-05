@@ -639,6 +639,15 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		}
 	}
 
+	// Debug: Log what we received from frontend
+	a.logToConsole(fmt.Sprintf("[DEBUG] Received INDEX update request:"))
+	a.logToConsole(fmt.Sprintf("[DEBUG]   Name: %s", idx.Name))
+	a.logToConsole(fmt.Sprintf("[DEBUG]   DURL: %s", idx.DURL))
+	a.logToConsole(fmt.Sprintf("[DEBUG]   DOCSCIDs count: %d", len(idx.DOCSCIDs)))
+	for i, doc := range idx.DOCSCIDs {
+		a.logToConsole(fmt.Sprintf("[DEBUG]   DOCSCIDs[%d]: %s", i, doc))
+	}
+
 	// Get daemon endpoint
 	// CRITICAL: In simulator mode, do NOT call walletapi.Connect() - see InstallDOC for explanation
 	endpoint := "127.0.0.1:10102"
@@ -719,6 +728,12 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		if existingIndex.SCVersion.LessThan(latestVersion) {
 			a.logToConsole(fmt.Sprintf("[INFO] INDEX version %s will be updated to %s", existingIndex.SCVersion.String(), latestVersion.String()))
 		}
+	}
+
+	// Debug: Log the DOCs being sent in the update
+	a.logToConsole(fmt.Sprintf("[DEBUG] INDEX update - DOCs to set: %d", len(index.DOCs)))
+	for i, doc := range index.DOCs {
+		a.logToConsole(fmt.Sprintf("[DEBUG]   DOC%d: %s", i+1, doc))
 	}
 
 	// Update INDEX using tela library
