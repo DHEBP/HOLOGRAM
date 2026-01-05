@@ -1,7 +1,7 @@
 <script>
   import { walletState, appState, settingsState, walletRequestHistory, clearRequestHistory, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { 
     Copy, ArrowUp, ArrowDown, ArrowLeftRight, Eye, EyeOff,
@@ -764,7 +764,7 @@
   // ============================================
   // HISTORY FUNCTIONS
   // ============================================
-  function exportHistory() {
+  async function exportHistory() {
     const csv = [
       ['TXID', 'Type', 'Amount (DERO)', 'Time'],
       ...filteredHistory.map(tx => [
@@ -775,14 +775,16 @@
       ])
     ].map(row => row.join(',')).join('\n');
     
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `wallet-history-${Date.now()}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success('History exported to CSV');
+    // Use native save dialog
+    const defaultFilename = `wallet-history-${new Date().toISOString().slice(0, 10)}.csv`;
+    const result = await SaveFileWithDialog(defaultFilename, csv, 'CSV Files', '*.csv');
+    
+    if (result.success) {
+      toast.success(`History exported to ${result.path}`);
+    } else if (!result.cancelled) {
+      toast.error(result.error || 'Failed to export history');
+    }
+    // If cancelled, do nothing (no toast)
   }
   
   // ============================================

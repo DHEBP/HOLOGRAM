@@ -845,3 +845,51 @@ func computeLineDiff(lines1, lines2 []string) []DiffLine {
 	return diffs
 }
 
+// SaveFileWithDialog opens a native save dialog and writes content to the selected file
+// Returns the path where the file was saved, or an error
+func (a *App) SaveFileWithDialog(defaultFilename string, content string, filterName string, filterPattern string) map[string]interface{} {
+	// Open native save dialog
+	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: defaultFilename,
+		Title:           "Save File",
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: filterName,
+				Pattern:     filterPattern,
+			},
+		},
+	})
+
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Save dialog error: %v", err),
+		}
+	}
+
+	// User cancelled
+	if savePath == "" {
+		return map[string]interface{}{
+			"success":   false,
+			"cancelled": true,
+			"error":     "Save cancelled by user",
+		}
+	}
+
+	// Write the file
+	err = os.WriteFile(savePath, []byte(content), 0644)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to write file: %v", err),
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[FILE] Saved file to: %s", savePath))
+
+	return map[string]interface{}{
+		"success": true,
+		"path":    savePath,
+	}
+}
+
