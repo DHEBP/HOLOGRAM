@@ -1346,6 +1346,59 @@
     return icons[docType] || 'file';
   }
   
+  // Convert browser MIME type or file extension to TELA doc type
+  // TELA requires specific types like TELA-JS-1, TELA-CSS-1, etc.
+  function getTelaDocType(fileName, mimeType) {
+    const ext = fileName.split('.').pop()?.toLowerCase() || '';
+    
+    // Map by extension (most reliable)
+    const extMap = {
+      'html': 'TELA-HTML-1',
+      'htm': 'TELA-HTML-1',
+      'css': 'TELA-CSS-1',
+      'js': 'TELA-JS-1',
+      'mjs': 'TELA-JS-1',
+      'json': 'TELA-JSON-1',
+      'md': 'TELA-MD-1',
+      'markdown': 'TELA-MD-1',
+      'go': 'TELA-GO-1',
+      // Static files (images, fonts, etc.)
+      'svg': 'TELA-STATIC-1',
+      'png': 'TELA-STATIC-1',
+      'jpg': 'TELA-STATIC-1',
+      'jpeg': 'TELA-STATIC-1',
+      'gif': 'TELA-STATIC-1',
+      'webp': 'TELA-STATIC-1',
+      'ico': 'TELA-STATIC-1',
+      'woff': 'TELA-STATIC-1',
+      'woff2': 'TELA-STATIC-1',
+      'ttf': 'TELA-STATIC-1',
+      'eot': 'TELA-STATIC-1',
+    };
+    
+    if (extMap[ext]) {
+      return extMap[ext];
+    }
+    
+    // Fallback: map by MIME type
+    const mimeMap = {
+      'text/html': 'TELA-HTML-1',
+      'text/css': 'TELA-CSS-1',
+      'application/javascript': 'TELA-JS-1',
+      'application/x-javascript': 'TELA-JS-1',
+      'text/javascript': 'TELA-JS-1',
+      'application/json': 'TELA-JSON-1',
+      'text/markdown': 'TELA-MD-1',
+      'image/svg+xml': 'TELA-STATIC-1',
+      'image/png': 'TELA-STATIC-1',
+      'image/jpeg': 'TELA-STATIC-1',
+      'image/gif': 'TELA-STATIC-1',
+      'image/webp': 'TELA-STATIC-1',
+    };
+    
+    return mimeMap[mimeType] || 'TELA-STATIC-1'; // Default to static for unknown types
+  }
+  
   async function deployBatch() {
     // Allow deployment if wallet is open OR if in simulator mode (uses simulator wallet)
     if (!$walletState.isOpen && !isSimulator) {
@@ -1377,7 +1430,7 @@
           name: stagedFile.name,
           path: '', // Don't use path - we're sending data directly
           subDir: stagedFile.subDir || '/',
-          docType: stagedFile.type || 'text/html',
+          docType: getTelaDocType(stagedFile.name, stagedFile.type), // Convert to TELA type
           size: stagedFile.size,
           description: docDescription || '',  // From metadata fields
           iconUrl: docIconURL || '',          // From metadata fields
