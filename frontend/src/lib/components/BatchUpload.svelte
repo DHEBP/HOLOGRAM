@@ -76,9 +76,14 @@
         total: data.total,
         status: data.status === 'deploying' ? `Deploying ${data.fileName}...` :
                 data.status === 'completed' ? `Deployed ${data.fileName}` :
+                data.status === 'waiting_confirmation' ? `Waiting for block confirmation...` :
+                data.status === 'waiting_for_docs' ? 'Waiting for DOC confirmations...' :
+                data.status === 'verifying' ? `Verifying ${data.fileName}...` :
+                data.status === 'verify_warning' ? `⚠️ ${data.fileName} may need re-deploy` :
                 data.status === 'creating_index' ? 'Creating INDEX...' : data.status,
         fileName: data.fileName,
-        phase: data.status
+        phase: data.status,
+        warning: data.warning
       };
       
       // Update file status
@@ -86,6 +91,12 @@
         fileStatuses[data.fileName] = 'deploying';
       } else if (data.status === 'completed') {
         fileStatuses[data.fileName] = 'completed';
+      } else if (data.status === 'waiting_confirmation') {
+        fileStatuses[data.fileName] = 'waiting';
+      } else if (data.status === 'verifying') {
+        fileStatuses[data.fileName] = 'verifying';
+      } else if (data.status === 'verify_warning') {
+        fileStatuses[data.fileName] = 'warning';
       }
       fileStatuses = fileStatuses; // Trigger reactivity
     });
@@ -432,6 +443,9 @@
       case 'deploying': return '◎';
       case 'completed': return '✓';
       case 'failed': return '✗';
+      case 'waiting': return '⏳';
+      case 'verifying': return '🔍';
+      case 'warning': return '⚠️';
       default: return '○';
     }
   }
@@ -442,6 +456,9 @@
       case 'deploying': return 'status-deploying';
       case 'completed': return 'status-completed';
       case 'failed': return 'status-failed';
+      case 'waiting': return 'status-waiting';
+      case 'verifying': return 'status-verifying';
+      case 'warning': return 'status-warning';
       default: return 'status-pending';
     }
   }
@@ -1383,6 +1400,18 @@
   
   .file-icon.status-failed {
     color: var(--status-err, #f87171);
+  }
+  
+  .file-icon.status-waiting {
+    color: var(--status-info, #60a5fa);
+  }
+  
+  .file-icon.status-verifying {
+    color: var(--accent-cyan, #22d3ee);
+  }
+  
+  .file-icon.status-warning {
+    color: var(--status-warn, #fbbf24);
   }
   
   .file-info {

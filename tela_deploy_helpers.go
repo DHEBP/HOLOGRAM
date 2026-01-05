@@ -529,18 +529,156 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 		}
 		
 	} else {
-		// NON-SIMULATOR: Use standard tela.Installer()
-		var err error
-		txid, err = tela.Installer(wallet, ringsize, prepared.DOC)
+		// NON-SIMULATOR (MAINNET/TESTNET): Use manual transaction building for reliable nonce handling
+		// The tela.Installer() library doesn't properly sync wallet nonces between transactions,
+		// so we use the same manual approach that works for simulator mode.
+		
+		endpoint := walletapi.Daemon_Endpoint_Active
+		if endpoint == "" {
+			return "", fmt.Errorf("daemon endpoint is not set")
+		}
+		
+		// Build install arguments
+		args, err := tela.NewInstallArgs(prepared.DOC)
 		if err != nil {
-			a.logToConsole(fmt.Sprintf("[ERR] tela.Installer failed for %s: %v", prepared.Original.Name, err))
-			a.logToConsole(fmt.Sprintf("[DEBUG] Current Daemon_Endpoint_Active: '%s'", walletapi.Daemon_Endpoint_Active))
+			a.logToConsole(fmt.Sprintf("[ERR] Failed to create install args for %s: %v", prepared.Original.Name, err))
 			return "", err
+		}
+		
+		// Create transfer - use TELA's default network address (NOT self!)
+		// DERO doesn't allow sending to yourself, even with 0 amount
+		_, destAddr := tela.GetDefaultNetworkAddress()
+		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
+		
+		// RETRY LOOP for mainnet
+		const maxRetries = 3
+		var lastErr error
+		
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			if attempt > 1 {
+				a.logToConsole(fmt.Sprintf("[RETRY] Attempt %d/%d for %s...", attempt, maxRetries, prepared.Original.Name))
+				// Wait before retrying
+				time.Sleep(2 * time.Second)
+			}
+			
+			// STEP 1: Disconnect any existing connection
+			a.disconnectWalletAPI()
+			time.Sleep(100 * time.Millisecond)
+			
+			// STEP 2: Get gas estimate (creates its own connection)
+			a.logToConsole(fmt.Sprintf("[GAS] Getting gas estimate for %s (attempt %d)...", prepared.Original.Name, attempt))
+			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
+			if gasErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] GetGasEstimate failed (attempt %d): %v", attempt, gasErr))
+				lastErr = fmt.Errorf("gas estimate error: %v", gasErr)
+				continue
+			}
+			a.logToConsole(fmt.Sprintf("[OK] Gas estimate: %d", gasFees))
+			
+			// Brief pause to let GetGasEstimate's connection close
+			time.Sleep(100 * time.Millisecond)
+			
+			// STEP 3: Connect walletapi fresh
+			a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi for %s (attempt %d)...", prepared.Original.Name, attempt))
+			if err := walletapi.Connect(endpoint); err != nil {
+				lastErr = fmt.Errorf("failed to connect to daemon: %v", err)
+				a.disconnectWalletAPI()
+				continue
+			}
+			
+			// Sync wallet to get correct nonce - do it multiple times to be sure
+			for syncTry := 0; syncTry < 3; syncTry++ {
+				if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Sync attempt %d failed: %v", syncTry+1, err))
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			
+			// STEP 4: Build transaction
+			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
+			if buildErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] TransferPayload0 failed (attempt %d): %v", attempt, buildErr))
+				a.disconnectWalletAPI()
+				lastErr = fmt.Errorf("transfer build error: %v", buildErr)
+				continue
+			}
+			
+			if tx == nil {
+				a.disconnectWalletAPI()
+				lastErr = fmt.Errorf("transaction is nil after build")
+				continue
+			}
+			
+			// STEP 5: Send transaction
+			if err := wallet.SendTransaction(tx); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] SendTransaction failed (attempt %d): %v", attempt, err))
+				a.disconnectWalletAPI()
+				lastErr = fmt.Errorf("transaction dispatch error: %v", err)
+				continue
+			}
+			
+			txid = tx.GetHash().String()
+			a.logToConsole(fmt.Sprintf("[OK] Transaction sent: %s", txid))
+			
+			// Disconnect after send
+			a.disconnectWalletAPI()
+			
+			// SUCCESS!
+			lastErr = nil
+			break
+		}
+		
+		if lastErr != nil {
+			return "", fmt.Errorf("failed after %d attempts: %v", maxRetries, lastErr)
 		}
 	}
 
 	a.logToConsole(fmt.Sprintf("[OK] tela.Installer succeeded for %s: SCID=%s", prepared.Original.Name, txid))
 	return txid, nil
+}
+
+// verifyDeployedDOC checks that a deployed DOC contract has stringkeys (init() succeeded)
+// Returns nil if valid, error if stringkeys are missing
+func (a *App) verifyDeployedDOC(scid string, fileName string, maxRetries int) error {
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+	
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if attempt > 1 {
+			a.logToConsole(fmt.Sprintf("[VERIFY] Retry %d/%d for %s...", attempt, maxRetries, fileName))
+			time.Sleep(2 * time.Second) // Wait for blockchain propagation
+		}
+		
+		// Fetch the SC data
+		scData, err := a.fetchSmartContract(scid, true, true)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[VERIFY] Fetch failed (attempt %d): %v", attempt, err))
+			continue
+		}
+		
+		// Check for stringkeys - this indicates init() ran successfully
+		if stringKeys, hasStringKeys := scData["stringkeys"].(map[string]interface{}); hasStringKeys && len(stringKeys) > 0 {
+			// Check for essential TELA DOC fields
+			if _, hasFileURL := stringKeys["fileURL"]; hasFileURL {
+				a.logToConsole(fmt.Sprintf("[OK] DOC %s verified: stringkeys present with fileURL", fileName))
+				return nil
+			}
+			// Has stringkeys but no fileURL - might be partial init
+			a.logToConsole(fmt.Sprintf("[WARN] DOC %s has stringkeys but missing fileURL", fileName))
+		}
+		
+		// Log what we got for debugging
+		if scData != nil {
+			keys := make([]string, 0)
+			for k := range scData {
+				keys = append(keys, k)
+			}
+			a.logToConsole(fmt.Sprintf("[DEBUG] DOC %s available keys: %v", fileName, keys))
+		}
+	}
+	
+	return fmt.Errorf("DOC %s deployed but init() may have failed - no stringkeys after %d retries", fileName, maxRetries)
 }
 
 // createINDEX creates a TELA INDEX from deployed DOC SCIDs
@@ -706,11 +844,101 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 		}
 		
 	} else {
-		// NON-SIMULATOR: Use standard tela.Installer()
-		var err error
-		txid, err = tela.Installer(wallet, ringsize, &index)
+		// NON-SIMULATOR (MAINNET/TESTNET): Use manual transaction building for reliable nonce handling
+		endpoint := walletapi.Daemon_Endpoint_Active
+		if endpoint == "" {
+			return "", fmt.Errorf("daemon endpoint is not set")
+		}
+		
+		// Build INDEX install arguments
+		args, err := tela.NewInstallArgs(&index)
 		if err != nil {
-			return "", fmt.Errorf("INDEX creation failed: %w", err)
+			a.logToConsole(fmt.Sprintf("[ERR] Failed to create INDEX install args: %v", err))
+			return "", err
+		}
+		
+		// Create transfer - use TELA's default network address (NOT self!)
+		_, destAddr := tela.GetDefaultNetworkAddress()
+		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
+		
+		// RETRY LOOP for mainnet INDEX
+		const maxRetries = 3
+		var lastErr error
+		
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			if attempt > 1 {
+				a.logToConsole(fmt.Sprintf("[RETRY] INDEX attempt %d/%d...", attempt, maxRetries))
+				time.Sleep(2 * time.Second)
+			}
+			
+			// STEP 1: Disconnect any existing connection
+			a.disconnectWalletAPI()
+			time.Sleep(100 * time.Millisecond)
+			
+			// STEP 2: Get gas estimate
+			a.logToConsole(fmt.Sprintf("[GAS] Getting gas estimate for INDEX (attempt %d)...", attempt))
+			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
+			if gasErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] INDEX GetGasEstimate failed (attempt %d): %v", attempt, gasErr))
+				lastErr = fmt.Errorf("INDEX gas estimate error: %v", gasErr)
+				continue
+			}
+			a.logToConsole(fmt.Sprintf("[OK] INDEX gas estimate: %d", gasFees))
+			
+			time.Sleep(100 * time.Millisecond)
+			
+			// STEP 3: Connect walletapi fresh
+			a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi for INDEX (attempt %d)...", attempt))
+			if err := walletapi.Connect(endpoint); err != nil {
+				lastErr = fmt.Errorf("failed to connect to daemon for INDEX: %v", err)
+				a.disconnectWalletAPI()
+				continue
+			}
+			
+			// Sync wallet multiple times
+			for syncTry := 0; syncTry < 3; syncTry++ {
+				if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] INDEX sync attempt %d failed: %v", syncTry+1, err))
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			
+			// STEP 4: Build transaction
+			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
+			if buildErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] INDEX TransferPayload0 failed (attempt %d): %v", attempt, buildErr))
+				a.disconnectWalletAPI()
+				lastErr = fmt.Errorf("INDEX transfer build error: %v", buildErr)
+				continue
+			}
+			
+			if tx == nil {
+				a.disconnectWalletAPI()
+				lastErr = fmt.Errorf("INDEX transaction is nil after build")
+				continue
+			}
+			
+			// STEP 5: Send transaction
+			if err := wallet.SendTransaction(tx); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] INDEX SendTransaction failed (attempt %d): %v", attempt, err))
+				a.disconnectWalletAPI()
+				lastErr = fmt.Errorf("INDEX transaction dispatch error: %v", err)
+				continue
+			}
+			
+			txid = tx.GetHash().String()
+			a.logToConsole(fmt.Sprintf("[OK] INDEX transaction sent: %s", txid))
+			
+			// Disconnect after send
+			a.disconnectWalletAPI()
+			
+			// SUCCESS!
+			lastErr = nil
+			break
+		}
+		
+		if lastErr != nil {
+			return "", fmt.Errorf("INDEX creation failed after %d attempts: %v", maxRetries, lastErr)
 		}
 	}
 

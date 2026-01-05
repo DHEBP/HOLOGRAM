@@ -507,6 +507,8 @@ export function RestoreWallet(arg1:string,arg2:string,arg3:string):Promise<Recor
 
 export function ResyncGnomon():Promise<Record<string, any>>;
 
+export function ResyncGnomonFromHeight(arg1:number):Promise<Record<string, any>>;
+
 export function RevokeAppPermission(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function RevokeAppPermissions(arg1:string):Promise<Record<string, any>>;

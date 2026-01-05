@@ -1175,13 +1175,78 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 			"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name, "status": "completed", "scid": txid,
 		})
 
-		// CRITICAL: Sync wallet after each deployment to update nonce for next transaction
-		// Without this, rapid successive transactions will have stale nonces
-		// NOTE: Skip this in simulator mode - tela library manages its own websocket connections
-		// and the simulator can only handle one websocket at a time
-		if !isSimulator && i < len(batch.Files)-1 { // Don't sync after last DOC (INDEX will sync if needed)
+		// POST-DEPLOYMENT VERIFICATION: Check that the DOC's init() succeeded
+		// This catches cases where the SC was deployed but stringkeys weren't stored
+		if !isSimulator {
+			a.logToConsole(fmt.Sprintf("[VERIFY] Checking DOC %s (%s...) has valid stringkeys...", docInfo.Name, txid[:16]))
+			runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
+				"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name, 
+				"status": "verifying", "scid": txid,
+			})
+			
+			// Wait a moment for the transaction to propagate before verifying
+			time.Sleep(1 * time.Second)
+			
+			if err := a.verifyDeployedDOC(txid, docInfo.Name, 3); err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] DOC verification failed: %v", err))
+				// Emit warning but continue - the DOC might still work after more time
+				runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
+					"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name, 
+					"status": "verify_warning", "scid": txid, "warning": err.Error(),
+				})
+			} else {
+				a.logToConsole(fmt.Sprintf("[OK] DOC %s verified successfully", docInfo.Name))
+			}
+		}
+
+		// CRITICAL: Wait for block confirmation between deployments
+		// On mainnet/testnet, each transaction must be confirmed in a block before the next can be sent
+		// Otherwise the daemon will reject the transaction with "rejected by pool by mempool"
+		if !isSimulator && i < len(batch.Files)-1 { // Don't wait after last DOC (INDEX will handle its own wait)
+			a.logToConsole("[WAIT] Waiting for block confirmation before next DOC...")
+			runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
+				"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name, 
+				"status": "waiting_confirmation", "scid": txid,
+			})
+			
+			// CRITICAL: Must wait for block confirmation - retry up to 3 times with increasing timeout
+			// If we don't wait, the next transaction will be rejected with "rejected by pool by mempool"
+			blockConfirmed := false
+			for blockWaitAttempt := 0; blockWaitAttempt < 3; blockWaitAttempt++ {
+				timeout := time.Duration(60+blockWaitAttempt*30) * time.Second // 60s, 90s, 120s
+				a.logToConsole(fmt.Sprintf("[DEBUG] Block wait attempt %d (timeout: %v)...", blockWaitAttempt+1, timeout))
+				
+				if err := a.waitForNewBlockWithHealthCheck(timeout); err != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Block wait attempt %d failed: %v", blockWaitAttempt+1, err))
+					// Wait a bit before retrying
+					time.Sleep(5 * time.Second)
+				} else {
+					a.logToConsole("[OK] Block confirmed, proceeding with next DOC")
+					blockConfirmed = true
+					break
+				}
+			}
+			
+			if !blockConfirmed {
+				// Last resort: wait a fixed amount of time for the block to be mined
+				a.logToConsole("[WARN] Block confirmation retries exhausted. Waiting 30s as fallback...")
+				time.Sleep(30 * time.Second)
+			}
+			
+			// CRITICAL: Sync wallet MULTIPLE times after block confirmation to ensure nonce is updated
+			// The first sync may return before the daemon has fully processed the new block
+			// Adding a brief delay and double-sync ensures the wallet has the correct nonce
+			time.Sleep(500 * time.Millisecond) // Let daemon fully process the new block
+			
+			for syncAttempt := 0; syncAttempt < 3; syncAttempt++ {
 			if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-				a.logToConsole(fmt.Sprintf("[WARN] Post-deploy wallet sync failed: %v", err))
+					a.logToConsole(fmt.Sprintf("[WARN] Post-deploy wallet sync attempt %d failed: %v", syncAttempt+1, err))
+				} else {
+					a.logToConsole(fmt.Sprintf("[OK] Wallet synced (attempt %d)", syncAttempt+1))
+				}
+				if syncAttempt < 2 {
+					time.Sleep(200 * time.Millisecond)
+				}
 			}
 		}
 		
@@ -1203,6 +1268,50 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 	if isSimulator {
 		a.logToConsole("[WAIT] Waiting for DOC transactions to settle before INDEX creation...")
 		time.Sleep(1 * time.Second)
+	}
+
+	// MAINNET/TESTNET: Wait for last DOC's block confirmation before creating INDEX
+	// This ensures all DOC transactions are confirmed before the INDEX references them
+	if !isSimulator && len(batch.Files) > 0 {
+		a.logToConsole("[WAIT] Waiting for last DOC block confirmation before INDEX creation...")
+		runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
+			"current": len(batch.Files), "total": len(batch.Files), 
+			"fileName": "INDEX", "status": "waiting_for_docs",
+		})
+		
+		// CRITICAL: Must wait for block confirmation - retry up to 3 times
+		blockConfirmed := false
+		for blockWaitAttempt := 0; blockWaitAttempt < 3; blockWaitAttempt++ {
+			timeout := time.Duration(60+blockWaitAttempt*30) * time.Second
+			a.logToConsole(fmt.Sprintf("[DEBUG] INDEX block wait attempt %d (timeout: %v)...", blockWaitAttempt+1, timeout))
+			
+			if err := a.waitForNewBlockWithHealthCheck(timeout); err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] INDEX block wait attempt %d failed: %v", blockWaitAttempt+1, err))
+				time.Sleep(5 * time.Second)
+			} else {
+				a.logToConsole("[OK] DOC transactions confirmed, creating INDEX")
+				blockConfirmed = true
+				break
+			}
+		}
+		
+		if !blockConfirmed {
+			a.logToConsole("[WARN] INDEX block confirmation retries exhausted. Waiting 30s as fallback...")
+			time.Sleep(30 * time.Second)
+		}
+		
+		// CRITICAL: Sync wallet multiple times after block confirmation
+		time.Sleep(500 * time.Millisecond)
+		for syncAttempt := 0; syncAttempt < 3; syncAttempt++ {
+			if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Pre-INDEX wallet sync attempt %d failed: %v", syncAttempt+1, err))
+			} else {
+				a.logToConsole(fmt.Sprintf("[OK] Wallet synced for INDEX (attempt %d)", syncAttempt+1))
+			}
+			if syncAttempt < 2 {
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
 	}
 
 	// Sync wallet before INDEX creation to ensure nonce is correct

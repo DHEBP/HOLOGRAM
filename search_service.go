@@ -1030,7 +1030,16 @@ func (a *App) SearchMyContent() map[string]interface{} {
 	count := 0
 	for scid, owner := range allScids {
 		if count < 5 {
-			a.logToConsole(fmt.Sprintf("[DEBUG] SCID: %s... Owner: %s...", scid[:16], owner[:20]))
+			// Safely truncate strings to avoid panic
+			scidTrunc := scid
+			if len(scid) > 16 {
+				scidTrunc = scid[:16]
+			}
+			ownerTrunc := owner
+			if len(owner) > 20 {
+				ownerTrunc = owner[:20]
+			}
+			a.logToConsole(fmt.Sprintf("[DEBUG] SCID: %s... Owner: %s...", scidTrunc, ownerTrunc))
 			count++
 		}
 	}

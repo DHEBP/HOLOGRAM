@@ -140,14 +140,41 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 		a.logToConsole(fmt.Sprintf("  ✓ Fetched DOC %d/%d: %s...", r.index+1, len(docSCIDs), r.scid[:16]))
 	}
 
-	// Process DOCs in order
+	// Process DOCs in order, with retry for failed ones
+	failedDOCs := make([]int, 0)
 	for i, docData := range docDataList {
 		if docData == nil {
 			continue // Skip failed fetches
 		}
 		if err := a.processDOC(docData, content); err != nil {
 			a.logToConsole(fmt.Sprintf("  [WARN]  Failed to process DOC %d: %v", i+1, err))
+			failedDOCs = append(failedDOCs, i)
 			continue
+		}
+	}
+
+	// Retry failed DOCs with a delay (blockchain propagation issue)
+	if len(failedDOCs) > 0 {
+		a.logToConsole(fmt.Sprintf("[RETRY] %d DOCs failed, retrying after 2s delay (blockchain propagation)...", len(failedDOCs)))
+		time.Sleep(2 * time.Second)
+		
+		for _, i := range failedDOCs {
+			scid := docSCIDs[i]
+			a.logToConsole(fmt.Sprintf("  [RETRY] Re-fetching DOC %d: %s...", i+1, scid[:16]))
+			
+			// Re-fetch the DOC
+			data, err := a.fetchSmartContract(scid, true, true)
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("  [ERR] Retry fetch failed for DOC %d: %v", i+1, err))
+				continue
+			}
+			
+			// Try to process again
+			if err := a.processDOC(data, content); err != nil {
+				a.logToConsole(fmt.Sprintf("  [ERR] Retry process failed for DOC %d: %v", i+1, err))
+			} else {
+				a.logToConsole(fmt.Sprintf("  [OK] DOC %d processed successfully on retry", i+1))
+			}
 		}
 	}
 
@@ -529,6 +556,18 @@ func decodeHexString(hexStr string) string {
 func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) error {
 	stringKeys, ok := docData["stringkeys"].(map[string]interface{})
 	if !ok {
+		// Debug: log what we actually received
+		if raw, exists := docData["stringkeys"]; exists {
+			a.logToConsole(fmt.Sprintf("  [DEBUG] stringkeys exists but wrong type: %T", raw))
+		} else {
+			a.logToConsole("  [DEBUG] stringkeys field does not exist in response")
+			// Log available keys for debugging
+			keys := make([]string, 0, len(docData))
+			for k := range docData {
+				keys = append(keys, k)
+			}
+			a.logToConsole(fmt.Sprintf("  [DEBUG] Available keys: %v", keys))
+		}
 		return fmt.Errorf("no stringkeys in DOC contract")
 	}
 

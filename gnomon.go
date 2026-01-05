@@ -15,12 +15,14 @@ import (
 
 // GnomonClient manages the Gnomon indexer for TELA content discovery
 type GnomonClient struct {
-	Indexer        *indexer.Indexer
-	fastsync       bool
-	parallelBlocks int
-	dbPath         string
-	dbType         string
-	running        bool
+	Indexer          *indexer.Indexer
+	fastsync         bool
+	parallelBlocks   int
+	dbPath           string
+	dbType           string
+	running          bool
+	disableFastsync  bool  // Temporary flag to disable fastsync for next start (used after resync)
+	startFromHeight  int64 // If > 0, start indexing from this height instead of 0 or current
 }
 
 const maxParallelBlocks = 10
@@ -123,6 +125,20 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 		forceFastsync = false
 	}
 	
+	// If disableFastsync flag is set (e.g., after a resync), disable fastsync
+	// This ensures we index from the stored height (or 0 if DB was cleaned)
+	if g.disableFastsync {
+		useFastsync = false
+		forceFastsync = false
+		g.disableFastsync = false // Reset the flag after use
+	}
+	
+	// If a specific start height is set, use it instead of the stored height
+	if g.startFromHeight > 0 {
+		height = g.startFromHeight
+		g.startFromHeight = 0 // Reset after use
+	}
+	
 	config := &structures.FastSyncConfig{
 		Enabled:           useFastsync,
 		SkipFSRecheck:     false,
@@ -164,6 +180,18 @@ func (g *GnomonClient) Stop() {
 		g.Indexer = nil
 		g.running = false
 	}
+}
+
+// SetDisableFastsync sets a flag to disable fastsync on the next start
+// This is used after a resync to ensure we index from block 0
+func (g *GnomonClient) SetDisableFastsync(disable bool) {
+	g.disableFastsync = disable
+}
+
+// SetStartFromHeight sets a specific height to start indexing from
+// This is useful for resyncing recent contracts without indexing the entire chain
+func (g *GnomonClient) SetStartFromHeight(height int64) {
+	g.startFromHeight = height
 }
 
 // IsRunning returns whether Gnomon is running

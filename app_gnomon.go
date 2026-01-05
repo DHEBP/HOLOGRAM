@@ -221,6 +221,8 @@ func (a *App) CleanGnomonDB(network string) map[string]interface{} {
 }
 
 // ResyncGnomon stops Gnomon, cleans the DB, and restarts it
+// By default, uses fastsync to start from near the current height (fast)
+// Use ResyncGnomonFromHeight for a specific starting block
 func (a *App) ResyncGnomon() map[string]interface{} {
 	network := a.getNetworkName()
 	a.logToConsole(fmt.Sprintf("[Gnomon] Resyncing for %s...", network))
@@ -234,12 +236,49 @@ func (a *App) ResyncGnomon() map[string]interface{} {
 		a.logToConsole(fmt.Sprintf("[WARN] Could not clean DB: %v", err))
 	}
 
+	// Use fastsync by default for quick resync
+	// This starts from near the current chain height
+	a.logToConsole("[Gnomon] Using fastsync for quick resync")
+
 	result := a.StartGnomon()
 	if success, ok := result["success"].(bool); ok && success {
 		return map[string]interface{}{
 			"success": true,
 			"network": network,
-			"message": fmt.Sprintf("Gnomon resync started for %s", network),
+			"message": fmt.Sprintf("Gnomon resync started for %s (fastsync)", network),
+		}
+	}
+
+	return result
+}
+
+// ResyncGnomonFromHeight stops Gnomon, cleans the DB, and restarts from a specific block height
+// This is useful for finding recently deployed contracts without indexing the entire chain
+func (a *App) ResyncGnomonFromHeight(height int64) map[string]interface{} {
+	network := a.getNetworkName()
+	a.logToConsole(fmt.Sprintf("[Gnomon] Resyncing for %s from height %d...", network, height))
+
+	if a.gnomonClient.IsRunning() {
+		a.StopGnomon()
+	}
+
+	err := a.gnomonClient.CleanDB(network)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Could not clean DB: %v", err))
+	}
+
+	// Disable fastsync and set the specific start height
+	a.gnomonClient.SetDisableFastsync(true)
+	a.gnomonClient.SetStartFromHeight(height)
+	a.logToConsole(fmt.Sprintf("[Gnomon] Will start indexing from block %d", height))
+
+	result := a.StartGnomon()
+	if success, ok := result["success"].(bool); ok && success {
+		return map[string]interface{}{
+			"success":     true,
+			"network":     network,
+			"startHeight": height,
+			"message":     fmt.Sprintf("Gnomon resync started for %s from block %d", network, height),
 		}
 	}
 

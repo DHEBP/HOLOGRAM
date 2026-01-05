@@ -3,7 +3,7 @@
   import { settingsState, appState, consoleLogs, clearConsoleLogs, syncNetworkMode, saveSetting, loadSettings } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
   import { 
-    SetSetting, StartGnomon, StopGnomon, ResyncGnomon,
+    SetSetting, StartGnomon, StopGnomon, ResyncGnomon, ResyncGnomonFromHeight,
     GetSearchExclusions, AddSearchExclusion, RemoveSearchExclusion, ClearSearchExclusions, SetSearchMinLikes,
     DetectRunningNode, CheckDerodStatus, GetLatestDerodRelease,
     DownloadDerodFromGitHub, StartNode, StopNode, GetNodeStatus, GetSyncProgress,
@@ -89,6 +89,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   // Gnomon resync state
   let resyncingGnomon = false;
   let gnomonAutostart = false;
+  let resyncFromHeight = '';
+  let resyncingFromHeight = false;
   
   // Simple-Gnomon WebSocket API state
   let gnomonWSStatus = { running: false, address: '', port: 0, clients: 0 };
@@ -829,6 +831,42 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     } finally {
       resyncingGnomon = false;
     }
+  }
+  
+  async function handleResyncFromHeight() {
+    const height = parseInt(resyncFromHeight, 10);
+    if (isNaN(height) || height < 0) {
+      console.error('[Gnomon] Invalid height:', resyncFromHeight);
+      return;
+    }
+    
+    if ($appState.gnomonRunning) {
+      console.warn('[Gnomon] Cannot resync while running');
+      return;
+    }
+    
+    resyncingFromHeight = true;
+    try {
+      const result = await ResyncGnomonFromHeight(height);
+      if (result.success) {
+        console.log('[Gnomon] Resync from height started:', result.message);
+        resyncFromHeight = ''; // Clear input on success
+      } else {
+        console.error('[Gnomon] Resync from height failed:', result.error);
+      }
+    } catch (e) {
+      console.error('[Gnomon] Resync from height error:', e);
+    } finally {
+      resyncingFromHeight = false;
+    }
+  }
+  
+  function handleResyncRecent() {
+    // Get current block height and go back 1000 blocks
+    const currentHeight = $appState.gnomonHeight || 0;
+    const targetHeight = Math.max(0, currentHeight - 1000);
+    resyncFromHeight = targetHeight.toString();
+    handleResyncFromHeight();
   }
   
   // Search exclusions functions
@@ -1861,6 +1899,49 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 <Icons name={resyncingGnomon ? 'loader' : 'refresh'} size={14} />
                 {resyncingGnomon ? 'Resyncing...' : 'Resync Database'}
               </button>
+            </div>
+            
+            <!-- Resync from Height (Time Machine) -->
+            <div class="settings-row" style="margin-top: var(--s-3);">
+              <div class="settings-row-info">
+                <div class="settings-row-label">
+                  <Icons name="clock" size={14} style="display: inline; vertical-align: middle; margin-right: 4px;" />
+                  Time Machine
+                </div>
+                <div class="settings-row-desc">
+                  Resync from a specific block height. Useful for finding recently deployed contracts.
+                  <span style="color: var(--text-muted);">Current: {$appState.gnomonHeight?.toLocaleString() || '0'}</span>
+                </div>
+              </div>
+              <div class="settings-row-actions" style="display: flex; gap: var(--s-2); align-items: center;">
+                <input
+                  type="number"
+                  bind:value={resyncFromHeight}
+                  placeholder="Block height"
+                  class="form-input"
+                  style="width: 140px; font-family: var(--font-mono);"
+                  min="0"
+                  disabled={$appState.gnomonRunning || resyncingFromHeight}
+                />
+                <button
+                  on:click={handleResyncFromHeight}
+                  disabled={$appState.gnomonRunning || resyncingFromHeight || !resyncFromHeight}
+                  class="btn btn-secondary"
+                  title="Resync from specified block height"
+                >
+                  <Icons name={resyncingFromHeight ? 'loader' : 'clock'} size={14} />
+                  Go
+                </button>
+                <button
+                  on:click={handleResyncRecent}
+                  disabled={$appState.gnomonRunning || resyncingFromHeight}
+                  class="btn btn-outline"
+                  title="Resync last 1000 blocks"
+                >
+                  <Icons name="rewind" size={14} />
+                  Last 1K
+                </button>
+              </div>
             </div>
             
             <!-- Search Tips -->

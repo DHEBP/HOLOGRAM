@@ -1010,6 +1010,10 @@ export function ResyncGnomon() {
   return window['go']['main']['App']['ResyncGnomon']();
 }
 
+export function ResyncGnomonFromHeight(arg1) {
+  return window['go']['main']['App']['ResyncGnomonFromHeight'](arg1);
+}
+
 export function RevokeAppPermission(arg1, arg2) {
   return window['go']['main']['App']['RevokeAppPermission'](arg1, arg2);
 }
