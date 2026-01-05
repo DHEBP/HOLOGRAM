@@ -194,6 +194,12 @@
   // Seed words display
   $: seedWords = createdSeed ? createdSeed.split(' ') : [];
   
+  // Scroll to top when section changes
+  let pageContentEl;
+  $: if (activeSection && pageContentEl) {
+    pageContentEl.scrollTop = 0;
+  }
+  
   // ============================================
   // POLLING
   // ============================================
@@ -1113,7 +1119,7 @@
       </div>
 
       <!-- Content Area -->
-      <div class="page-content">
+      <div class="page-content" bind:this={pageContentEl}>
         
         <!-- ============================================
              DASHBOARD SECTION
@@ -3436,7 +3442,12 @@
   }
   
   /* Full Transaction List */
-  .tx-list-full { display: flex; flex-direction: column; }
+  .tx-list-full { 
+    display: flex; 
+    flex-direction: column; 
+    max-height: 60vh;
+    overflow-y: auto;
+  }
   
   .tx-row-detailed {
     display: flex;
