@@ -56,6 +56,24 @@ func (a *App) OmniSearch(query string) SearchResult {
 	case "code":
 		return a.searchCodeLineWrapper(query)
 	default:
+		// Before giving up, check if this might be a TELA app name in Gnomon
+		// This handles cases like "explorer" (without .tela suffix)
+		if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
+			lowerQuery := strings.ToLower(query)
+			apps := a.gnomonClient.GetTELAApps()
+			for _, app := range apps {
+				durl, _ := app["durl"].(string)
+				name, _ := app["name"].(string)
+				displayName, _ := app["display_name"].(string)
+				// Check if query matches durl, name, or display_name (case-insensitive)
+				if strings.EqualFold(durl, lowerQuery) ||
+					strings.EqualFold(name, lowerQuery) ||
+					strings.EqualFold(displayName, lowerQuery) {
+					a.logToConsole(fmt.Sprintf("[...] OmniSearch: Found TELA app match for '%s' -> treating as durl", query))
+					return a.searchDURL("dero://" + durl)
+				}
+			}
+		}
 		return SearchResult{
 			Success: false,
 			Type:    "unknown",
