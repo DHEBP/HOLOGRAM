@@ -1030,6 +1030,10 @@ export function RewindChain(arg1) {
   return window['go']['main']['App']['RewindChain'](arg1);
 }
 
+export function SaveFileWithDialog(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveFileWithDialog'](arg1, arg2, arg3, arg4);
+}
+
 export function ScanFolder(arg1) {
   return window['go']['main']['App']['ScanFolder'](arg1);
 }

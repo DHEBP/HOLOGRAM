@@ -511,19 +511,66 @@ func (a *App) fetchSmartContract(scid string, code, variables bool) (map[string]
 	return result, nil
 }
 
-// extractDOCsSCIDs extracts DOC SCIDs from INDEX contract variables
-// Based on TELA source code: result.VariableStringKeys contains hex-encoded SCIDs
+// extractDOCsSCIDs extracts DOC SCIDs from INDEX contract CODE (not variables).
+// IMPORTANT: When an INDEX is updated via UpdateCode(), the CODE contains the new DOC SCIDs,
+// but the stored variables (stringkeys) retain the OLD values from initial deployment.
+// The TELA library's Clone function parses the CODE, so we must do the same.
 func extractDOCsSCIDs(indexData map[string]interface{}) []string {
 	scids := make([]string, 0)
 
-	// DERO daemon returns variables in "stringkeys" field
+	// First, try to extract from CODE (this is what tela.Clone does)
+	code, hasCode := indexData["code"].(string)
+	if hasCode && code != "" {
+		log.Println("  [TELA] Extracting DOC SCIDs from smart contract CODE...")
+		
+		// Parse STORE("DOCx", "scid") patterns from the code
+		// Pattern: STORE("DOC1", "64-char-hex-scid")
+		docPattern := regexp.MustCompile(`STORE\("(DOC\d+)",\s*"([a-f0-9]{64})"\)`)
+		matches := docPattern.FindAllStringSubmatch(code, -1)
+		
+		// Build a map to handle DOC ordering (DOC1, DOC2, etc.)
+		docMap := make(map[int]string)
+		maxDoc := 0
+		
+		for _, match := range matches {
+			if len(match) == 3 {
+				key := match[1]   // e.g., "DOC1"
+				scid := match[2]  // 64-char hex SCID
+				
+				// Extract the number from DOCx
+				var docNum int
+				fmt.Sscanf(key, "DOC%d", &docNum)
+				if docNum > 0 {
+					docMap[docNum] = scid
+					if docNum > maxDoc {
+						maxDoc = docNum
+					}
+					log.Printf("  ✓ Found %s (from code): %s...", key, scid[:16])
+				}
+			}
+		}
+		
+		// Build ordered slice from DOC1 to DOCn
+		for i := 1; i <= maxDoc; i++ {
+			if scid, ok := docMap[i]; ok {
+				scids = append(scids, scid)
+			}
+		}
+		
+		if len(scids) > 0 {
+			return scids
+		}
+		log.Println("  [WARN] No DOC SCIDs found in code, falling back to stringkeys...")
+	}
+
+	// Fallback: try stringkeys (for older contracts or if code parsing fails)
 	stringKeys, ok := indexData["stringkeys"].(map[string]interface{})
 	if !ok {
 		log.Println("  [WARN]  No stringkeys field in INDEX response")
 		return scids
 	}
 
-	log.Println("  [TELA] Found stringkeys, extracting DOC SCIDs...")
+	log.Println("  [TELA] Extracting DOC SCIDs from stringkeys (fallback)...")
 
 	// Look for DOC1, DOC2, DOC3, etc.
 	for i := 1; i <= 100; i++ { // Max 100 DOCs
@@ -533,7 +580,7 @@ func extractDOCsSCIDs(indexData map[string]interface{}) []string {
 			scid := decodeHexString(hexSCID)
 			if len(scid) == 64 { // Valid SCID length
 				scids = append(scids, scid)
-				log.Printf("  ✓ Found %s: %s", key, scid[:16]+"...")
+				log.Printf("  ✓ Found %s (from stringkeys): %s...", key, scid[:16])
 			}
 		} else {
 			break // No more DOCs

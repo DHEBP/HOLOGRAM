@@ -1946,9 +1946,9 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 </div>
               </div>
               <div class="settings-row-actions" style="display: flex; gap: var(--s-2); align-items: center;">
-                <button
+              <button
                   on:click={handleFastsync}
-                  disabled={$appState.gnomonRunning || resyncingGnomon}
+                disabled={$appState.gnomonRunning || resyncingGnomon}
                   class="btn btn-primary"
                   title="Quick sync from near current block height (recommended)"
                 >
@@ -1990,9 +1990,9 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 <button
                   on:click={handleResyncFromHeight}
                   disabled={$appState.gnomonRunning || resyncingFromHeight || !resyncFromHeight}
-                  class="btn btn-secondary"
+                class="btn btn-secondary"
                   title="Resync from specified block height"
-                >
+              >
                   <Icons name={resyncingFromHeight ? 'loader' : 'play'} size={14} />
                   Go
                 </button>
@@ -2004,7 +2004,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 >
                   <Icons name="rewind" size={14} />
                   Last 1K
-                </button>
+              </button>
               </div>
             </div>
             

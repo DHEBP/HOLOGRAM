@@ -517,6 +517,8 @@ export function RevokeXSWDConnection(arg1:string):Promise<Record<string, any>>;
 
 export function RewindChain(arg1:number):Promise<Record<string, any>>;
 
+export function SaveFileWithDialog(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
+
 export function ScanFolder(arg1:string):Promise<Record<string, any>>;
 
 export function SearchAddress(arg1:string):Promise<Record<string, any>>;

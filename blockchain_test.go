@@ -223,70 +223,124 @@ func TestExtractFileContentFromCode_MultipleComments(t *testing.T) {
 
 // ============== DOC SCID Extraction Tests ==============
 
-func TestExtractDOCsSCIDs_ValidIndex(t *testing.T) {
-	// Create mock INDEX data with hex-encoded SCIDs
-	// A valid SCID is 64 hex chars. When hex-encoded for storage, that becomes 128 hex chars.
-	// We need the hex encoding of a 64-char string
-	// "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" (64 chars)
-	// becomes hex: 30313233...
+func TestExtractDOCsSCIDs_FromCode(t *testing.T) {
+	// Test extraction from CODE (primary method - matches tela.Clone behavior)
 	scid1 := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	scid2 := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-	
-	// Hex encode them (as the daemon stores them)
-	scid1Hex := ""
-	for _, c := range scid1 {
-		scid1Hex += fmt.Sprintf("%02x", c)
-	}
-	scid2Hex := ""
-	for _, c := range scid2 {
-		scid2Hex += fmt.Sprintf("%02x", c)
-	}
+
+	// Create INDEX code with STORE statements
+	code := fmt.Sprintf(`Function InitializePrivate() Uint64
+30 STORE("DOC1", "%s")
+40 STORE("DOC2", "%s")
+1000 RETURN 0
+End Function`, scid1, scid2)
 
 	indexData := map[string]interface{}{
-		"stringkeys": map[string]interface{}{
-			"DOC1": scid1Hex,
-			"DOC2": scid2Hex,
-		},
+		"code": code,
 	}
 
 	scids := extractDOCsSCIDs(indexData)
 
 	if len(scids) != 2 {
-		t.Errorf("Expected 2 SCIDs, got %d", len(scids))
+		t.Errorf("Expected 2 SCIDs from code, got %d", len(scids))
 	}
-	
+
+	if len(scids) > 0 && scids[0] != scid1 {
+		t.Errorf("First SCID = %s, expected %s", scids[0], scid1)
+	}
+	if len(scids) > 1 && scids[1] != scid2 {
+		t.Errorf("Second SCID = %s, expected %s", scids[1], scid2)
+	}
+}
+
+func TestExtractDOCsSCIDs_CodePreferredOverStringkeys(t *testing.T) {
+	// When INDEX is updated, CODE has new SCIDs but stringkeys has old ones
+	// We should prefer CODE (this is what tela.Clone does)
+	newSCID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	oldSCID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	// Hex encode the old SCID (as daemon stores in stringkeys)
+	oldSCIDHex := ""
+	for _, c := range oldSCID {
+		oldSCIDHex += fmt.Sprintf("%02x", c)
+	}
+
+	code := fmt.Sprintf(`STORE("DOC1", "%s")`, newSCID)
+
+	indexData := map[string]interface{}{
+		"code": code,
+		"stringkeys": map[string]interface{}{
+			"DOC1": oldSCIDHex, // Old SCID in stringkeys
+		},
+	}
+
+	scids := extractDOCsSCIDs(indexData)
+
+	if len(scids) != 1 {
+		t.Errorf("Expected 1 SCID, got %d", len(scids))
+	}
+
+	// Should get the NEW SCID from code, not old one from stringkeys
+	if len(scids) > 0 && scids[0] != newSCID {
+		t.Errorf("SCID = %s, expected %s (from code, not stringkeys)", scids[0], newSCID)
+	}
+}
+
+func TestExtractDOCsSCIDs_FallbackToStringkeys(t *testing.T) {
+	// If code has no STORE("DOCx") patterns, fall back to stringkeys
+	scid1 := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	// Hex encode the SCID (as daemon stores it)
+	scid1Hex := ""
+	for _, c := range scid1 {
+		scid1Hex += fmt.Sprintf("%02x", c)
+	}
+
+	indexData := map[string]interface{}{
+		"code": "Function SomeOtherFunction() Uint64\n10 RETURN 0\nEnd Function", // No DOC stores
+		"stringkeys": map[string]interface{}{
+			"DOC1": scid1Hex,
+		},
+	}
+
+	scids := extractDOCsSCIDs(indexData)
+
+	if len(scids) != 1 {
+		t.Errorf("Expected 1 SCID from stringkeys fallback, got %d", len(scids))
+	}
+
 	if len(scids) > 0 && scids[0] != scid1 {
 		t.Errorf("First SCID = %s, expected %s", scids[0], scid1)
 	}
 }
 
-func TestExtractDOCsSCIDs_NoStringkeys(t *testing.T) {
+func TestExtractDOCsSCIDs_NoCodeNoStringkeys(t *testing.T) {
 	indexData := map[string]interface{}{
-		"code": "some code",
+		"balance": 0,
 	}
 
 	scids := extractDOCsSCIDs(indexData)
 
 	if len(scids) != 0 {
-		t.Errorf("Expected 0 SCIDs without stringkeys, got %d", len(scids))
+		t.Errorf("Expected 0 SCIDs without code or stringkeys, got %d", len(scids))
 	}
 }
 
-func TestExtractDOCsSCIDs_EmptyStringkeys(t *testing.T) {
+func TestExtractDOCsSCIDs_EmptyCode(t *testing.T) {
 	indexData := map[string]interface{}{
+		"code":       "",
 		"stringkeys": map[string]interface{}{},
 	}
 
 	scids := extractDOCsSCIDs(indexData)
 
 	if len(scids) != 0 {
-		t.Errorf("Expected 0 SCIDs with empty stringkeys, got %d", len(scids))
+		t.Errorf("Expected 0 SCIDs with empty code and stringkeys, got %d", len(scids))
 	}
 }
 
-func TestExtractDOCsSCIDs_StopsAtGap(t *testing.T) {
-	// Should stop when DOC<n> is missing
-	// Create a valid 64-char SCID and hex-encode it
+func TestExtractDOCsSCIDs_StringkeysFallbackStopsAtGap(t *testing.T) {
+	// When falling back to stringkeys, should stop when DOC<n> is missing
 	scid := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	scidHex := ""
 	for _, c := range scid {
@@ -294,6 +348,7 @@ func TestExtractDOCsSCIDs_StopsAtGap(t *testing.T) {
 	}
 
 	indexData := map[string]interface{}{
+		"code": "", // Empty code forces fallback
 		"stringkeys": map[string]interface{}{
 			"DOC1": scidHex,
 			// DOC2 missing
