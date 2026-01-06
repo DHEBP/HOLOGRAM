@@ -44,6 +44,36 @@ type INDEXInfo struct {
 	Mods        string   `json:"mods"`     // Comma-separated MOD tags (e.g., "vsoo,txdwd")
 }
 
+// sortFilesForDeployment sorts files to ensure the entry point (index.html) is deployed first.
+// In TELA, the first DOC deployed becomes DOC1, which is the application's entry point.
+// Without proper sorting, alphabetical order could make blocks.js the entrypoint instead of index.html.
+func sortFilesForDeployment(files []DOCInfo) {
+	if len(files) <= 1 {
+		return
+	}
+
+	// Find the entry point file (index.html or index.htm in root directory)
+	entryIndex := -1
+	for i, f := range files {
+		name := strings.ToLower(f.Name)
+		subDir := strings.TrimSpace(f.SubDir)
+		isRoot := subDir == "" || subDir == "/"
+
+		if isRoot && (name == "index.html" || name == "index.htm") {
+			entryIndex = i
+			break
+		}
+	}
+
+	// If entry point found and not already first, move it to the front
+	if entryIndex > 0 {
+		entryFile := files[entryIndex]
+		// Shift all files before the entry point one position to the right
+		copy(files[1:entryIndex+1], files[0:entryIndex])
+		files[0] = entryFile
+	}
+}
+
 // InstallDOC installs a single TELA DOC smart contract
 func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 	isSimulator := a.IsInSimulatorMode()
@@ -1122,6 +1152,12 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{"error": "Invalid batch format"})
 		return map[string]interface{}{"success": false, "error": "Invalid batch format", "technicalError": err.Error()}
 	}
+
+	// CRITICAL: Sort files to ensure entry point (index.html) is deployed FIRST
+	// The first DOC deployed becomes DOC1 in the INDEX, which is the application entrypoint.
+	// Without this sort, alphabetical ordering could make blocks.js the entrypoint instead of index.html.
+	sortFilesForDeployment(batch.Files)
+	a.logToConsole(fmt.Sprintf("[SORT] Files ordered for deployment (entry point first): %s", batch.Files[0].Name))
 
 	// Set up network
 	if _, err := a.setupNetworkForDeployment(wallet, isSimulator); err != nil {
