@@ -318,16 +318,16 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 		for _, v := range vars {
 			key := fmt.Sprintf("%v", v.Key)
 			
-		switch key {
+			switch key {
 		// V2 headers (TELA standard) - check first
 		case "var_header_name":
-			if v.Value != nil {
-				app["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
+				if v.Value != nil {
+					app["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 		case "var_header_description":
-			if v.Value != nil {
-				app["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
+				if v.Value != nil {
+					app["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 		case "var_header_icon":
 			if v.Value != nil {
 				app["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
@@ -345,17 +345,17 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 			if v.Value != nil && app["icon"] == nil {
 				app["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
 			}
-		case "dURL":
-			if v.Value != nil {
-				du := decodeHexString(fmt.Sprintf("%v", v.Value))
-				app["url"] = du
-				app["durl"] = du
+			case "dURL":
+				if v.Value != nil {
+					du := decodeHexString(fmt.Sprintf("%v", v.Value))
+					app["url"] = du
+					app["durl"] = du
+				}
+			case "DOC1", "DOC2", "DOC3", "DOC4", "DOC5", "DOC6", "DOC7", "DOC8", "DOC9", "DOC10":
+				// Mark as TELA INDEX if it has DOC references
+				hasDocRefs = true
+				app["is_index"] = true
 			}
-		case "DOC1", "DOC2", "DOC3", "DOC4", "DOC5", "DOC6", "DOC7", "DOC8", "DOC9", "DOC10":
-			// Mark as TELA INDEX if it has DOC references
-			hasDocRefs = true
-			app["is_index"] = true
-		}
 		}
 
 		// Only include INDEX contracts (apps with DOC references)
@@ -477,16 +477,16 @@ func (g *GnomonClient) GetTELALibraries() []map[string]interface{} {
 		for _, v := range vars {
 			key := fmt.Sprintf("%v", v.Key)
 
-		switch key {
+			switch key {
 		// V2 headers (TELA standard) - check first
 		case "var_header_name":
-			if v.Value != nil {
-				lib["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
+				if v.Value != nil {
+					lib["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 		case "var_header_description":
-			if v.Value != nil {
-				lib["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
+				if v.Value != nil {
+					lib["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 		case "var_header_icon":
 			if v.Value != nil {
 				lib["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
@@ -504,25 +504,25 @@ func (g *GnomonClient) GetTELALibraries() []map[string]interface{} {
 			if v.Value != nil && lib["icon"] == nil {
 				lib["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
 			}
-		case "dURL":
-			if v.Value != nil {
-				du := decodeHexString(fmt.Sprintf("%v", v.Value))
-				lib["durl"] = du
-				// Check for .lib suffix
-				if strings.HasSuffix(du, ".lib") {
-					hasLibTag = true
+			case "dURL":
+				if v.Value != nil {
+					du := decodeHexString(fmt.Sprintf("%v", v.Value))
+					lib["durl"] = du
+					// Check for .lib suffix
+					if strings.HasSuffix(du, ".lib") {
+						hasLibTag = true
+					}
 				}
+			case "docType":
+				// This is a DOC (single file library)
+				lib["type"] = "DOC"
+			case "DOC1", "DOC2", "DOC3", "DOC4", "DOC5", "DOC6", "DOC7", "DOC8", "DOC9", "DOC10",
+				"DOC11", "DOC12", "DOC13", "DOC14", "DOC15", "DOC16", "DOC17", "DOC18", "DOC19", "DOC20":
+				// Count DOC references in INDEX
+				lib["is_index"] = true
+				lib["type"] = "INDEX"
+				docCount++
 			}
-		case "docType":
-			// This is a DOC (single file library)
-			lib["type"] = "DOC"
-		case "DOC1", "DOC2", "DOC3", "DOC4", "DOC5", "DOC6", "DOC7", "DOC8", "DOC9", "DOC10",
-			"DOC11", "DOC12", "DOC13", "DOC14", "DOC15", "DOC16", "DOC17", "DOC18", "DOC19", "DOC20":
-			// Count DOC references in INDEX
-			lib["is_index"] = true
-			lib["type"] = "INDEX"
-			docCount++
-		}
 		}
 
 		lib["doc_count"] = docCount
@@ -1118,22 +1118,22 @@ func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[str
 		for _, v := range vars {
 			key := fmt.Sprintf("%v", v.Key)
 
-		switch key {
-		case "docType":
-			isDOC = true
-			if v.Value != nil {
-				scidDocType = fmt.Sprintf("%v", v.Value)
-				doc["docType"] = scidDocType
-			}
+			switch key {
+			case "docType":
+				isDOC = true
+				if v.Value != nil {
+					scidDocType = fmt.Sprintf("%v", v.Value)
+					doc["docType"] = scidDocType
+				}
 		// V2 headers (TELA standard) - check first
 		case "var_header_name":
-			if v.Value != nil {
-				doc["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
+				if v.Value != nil {
+					doc["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 		case "var_header_description":
-			if v.Value != nil {
-				doc["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
+				if v.Value != nil {
+					doc["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 		case "var_header_icon":
 			if v.Value != nil {
 				doc["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
@@ -1151,15 +1151,15 @@ func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[str
 			if v.Value != nil && doc["icon"] == nil {
 				doc["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
 			}
-		case "dURL":
-			if v.Value != nil {
-				doc["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+			case "dURL":
+				if v.Value != nil {
+					doc["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
+			case "subDir":
+				if v.Value != nil {
+					doc["subDir"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 			}
-		case "subDir":
-			if v.Value != nil {
-				doc["subDir"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		}
 		}
 
 		// Skip if not a DOC
@@ -1221,18 +1221,18 @@ func (g *GnomonClient) GetMyINDEXes(walletAddress string) []map[string]interface
 		for _, v := range vars {
 			key := fmt.Sprintf("%v", v.Key)
 
-		switch key {
+			switch key {
 		// V2 headers (TELA standard) - check first
 		case "var_header_name":
-			if v.Value != nil {
-				index["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
+				if v.Value != nil {
+					index["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 		case "var_header_description":
-			if v.Value != nil {
-				index["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
+				if v.Value != nil {
+					index["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 		case "var_header_icon":
-			if v.Value != nil {
+				if v.Value != nil {
 				index["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
 			}
 		// V1 headers (ART-NFA standard) - fallback if V2 not set
@@ -1243,25 +1243,25 @@ func (g *GnomonClient) GetMyINDEXes(walletAddress string) []map[string]interface
 		case "descrHdr":
 			if v.Value != nil && index["description"] == nil {
 				index["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "iconURLHdr":
+				}
+			case "iconURLHdr":
 			if v.Value != nil && index["icon"] == nil {
-				index["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
+					index["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+				}
 		case "dURL":
 			if v.Value != nil {
 				index["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
 			}
-		default:
-			// Check for DOC references (DOC1, DOC2, ... DOC20)
-			if strings.HasPrefix(key, "DOC") && len(key) <= 5 {
-				isINDEX = true
-				docCount++
-				if v.Value != nil {
-					docSCIDs = append(docSCIDs, fmt.Sprintf("%v", v.Value))
+			default:
+				// Check for DOC references (DOC1, DOC2, ... DOC20)
+				if strings.HasPrefix(key, "DOC") && len(key) <= 5 {
+					isINDEX = true
+					docCount++
+					if v.Value != nil {
+						docSCIDs = append(docSCIDs, fmt.Sprintf("%v", v.Value))
+					}
 				}
 			}
-		}
 		}
 
 		// Skip if not an INDEX

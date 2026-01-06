@@ -739,11 +739,11 @@ func (a *App) GetAppDetails(scid string) map[string]interface{} {
 		// V1 headers (ART-NFA standard) - fallback if V2 not set
 		case "nameHdr":
 			if details["name"] == nil {
-				details["name"] = decodeHexString(value)
+			details["name"] = decodeHexString(value)
 			}
 		case "descrHdr":
 			if details["description"] == nil {
-				details["description"] = decodeHexString(value)
+			details["description"] = decodeHexString(value)
 			}
 		case "iconURLHdr":
 			if details["icon"] == nil {
