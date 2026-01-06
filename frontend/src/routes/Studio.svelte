@@ -1120,7 +1120,11 @@
   }
   
   async function handleFilesStaged(event) {
-    stagedFiles = event.detail.files;
+    // Initialize telaDocType for each file based on extension/MIME type
+    stagedFiles = event.detail.files.map(file => ({
+      ...file,
+      telaDocType: file.telaDocType || getTelaDocType(file.name, file.type)
+    }));
     await calculateTotalGas();
   }
   
@@ -1430,7 +1434,7 @@
           name: stagedFile.name,
           path: '', // Don't use path - we're sending data directly
           subDir: stagedFile.subDir || '/',
-          docType: getTelaDocType(stagedFile.name, stagedFile.type), // Convert to TELA type
+          docType: stagedFile.telaDocType || getTelaDocType(stagedFile.name, stagedFile.type), // Use user-selected type or auto-detect
           size: stagedFile.size,
           description: docDescription || '',  // From metadata fields
           iconUrl: docIconURL || '',          // From metadata fields
@@ -2002,22 +2006,42 @@
                     <FileText size={16} class="staged-icon" />
                     <div class="staged-info">
                       <div class="staged-name">{file.name}</div>
-                      <div class="staged-meta">{file.type || 'text/html'} • {(file.size / 1024).toFixed(1)} KB</div>
+                      <div class="staged-meta">{(file.size / 1024).toFixed(1)} KB</div>
                     </div>
                     <button on:click={() => removeFile(index)} class="staged-remove" title="Remove file">
                       <X size={14} />
                     </button>
                   </div>
                   
-                  <!-- Editable SubDir -->
-                  <div class="staged-item-field">
-                    <label class="staged-field-label">SubDir</label>
-                    <input
-                      type="text"
-                      bind:value={file.subDir}
-                      placeholder="/"
-                      class="input input-sm"
-                    />
+                  <div class="staged-item-fields">
+                    <!-- Editable SubDir -->
+                    <div class="staged-item-field">
+                      <label class="staged-field-label">SubDir</label>
+                      <input
+                        type="text"
+                        bind:value={file.subDir}
+                        placeholder="/"
+                        class="input input-sm"
+                      />
+                    </div>
+                    
+                    <!-- DocType Selector (matching Batch Upload) -->
+                    <div class="staged-item-field">
+                      <label class="staged-field-label">Doc Type</label>
+                      <select
+                        bind:value={file.telaDocType}
+                        class="input input-sm doctype-select"
+                        title="Select TELA document type"
+                      >
+                        <option value="TELA-HTML-1">HTML</option>
+                        <option value="TELA-CSS-1">CSS</option>
+                        <option value="TELA-JS-1">JavaScript</option>
+                        <option value="TELA-JSON-1">JSON</option>
+                        <option value="TELA-MD-1">Markdown</option>
+                        <option value="TELA-GO-1">Go</option>
+                        <option value="TELA-STATIC-1">Static/Binary</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
               {/each}
@@ -5200,19 +5224,25 @@ End Function"
     gap: var(--s-3, 12px);
   }
   
-  .staged-item-field {
+  .staged-item-fields {
     display: flex;
-    align-items: center;
-    gap: var(--s-2, 8px);
+    gap: var(--s-3, 12px);
     margin-top: var(--s-2, 8px);
     padding-top: var(--s-2, 8px);
     border-top: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
   }
   
+  .staged-item-field {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    flex: 1;
+  }
+  
   .staged-field-label {
     font-size: 10px;
     color: var(--text-4, #505068);
-    width: 50px;
+    width: 55px;
     flex-shrink: 0;
   }
   
@@ -5221,6 +5251,37 @@ End Function"
     font-size: 11px;
     padding: var(--s-1, 4px) var(--s-2, 8px);
     background: var(--void-mid, #12121c);
+  }
+  
+  /* DocType Select - matching Batch Upload style */
+  .doctype-select {
+    flex: 1;
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: 11px;
+    color: var(--text-2, #a0a0b8);
+    background: var(--void-mid, #12121c);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23707088' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 28px !important;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    cursor: pointer;
+  }
+  
+  .doctype-select:hover {
+    border-color: var(--border-subtle, rgba(255, 255, 255, 0.08));
+  }
+  
+  .doctype-select:focus {
+    border-color: var(--cyan-500, #06b6d4);
+    box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.15);
+  }
+  
+  .doctype-select option {
+    background: var(--void-deep, #08080e);
+    color: var(--text-1, #f8f8fc);
   }
   
   /* DOC Metadata Section */
