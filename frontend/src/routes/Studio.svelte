@@ -3152,12 +3152,14 @@
         <div class="modal-overlay" on:click={cancelUpdateConfirm}>
           <div class="modal-content" on:click|stopPropagation>
             <div class="modal-header">
-              <RefreshCw size={24} class="modal-icon" />
-              <h3 class="modal-title">Confirm INDEX Update</h3>
+              <div class="modal-header-left">
+                <div class="modal-icon"><RefreshCw size={20} /></div>
+                <h3 class="modal-title">Confirm INDEX Update</h3>
+              </div>
             </div>
             
             <div class="modal-body">
-              <p>You are about to update:</p>
+              <p style="color: var(--text-2); margin-bottom: var(--s-3);">You are about to update:</p>
               <div class="confirm-details">
                 <div class="confirm-row">
                   <span class="confirm-label">Name</span>
@@ -3178,9 +3180,9 @@
               </p>
             </div>
             
-            <div class="modal-actions">
-              <button class="btn btn-ghost" on:click={cancelUpdateConfirm}>Cancel</button>
-              <button class="btn btn-primary" on:click={submitIndexUpdate}>
+            <div class="modal-footer">
+              <button class="modal-btn modal-btn-secondary" on:click={cancelUpdateConfirm}>Cancel</button>
+              <button class="modal-btn modal-btn-primary" on:click={submitIndexUpdate}>
                 Confirm Update
               </button>
             </div>
