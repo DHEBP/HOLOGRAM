@@ -588,12 +588,22 @@ func (a *App) getOwnedSCIDs(address string) []map[string]interface{} {
 			for _, v := range vars {
 				key := fmt.Sprintf("%v", v.Key)
 				switch key {
-				case "nameHdr":
+				// V2 headers (TELA standard) - check first
+				case "var_header_name":
 					if v.Value != nil {
 						scidInfo["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
 					}
-				case "descrHdr":
+				case "var_header_description":
 					if v.Value != nil {
+						scidInfo["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+					}
+				// V1 headers (ART-NFA standard) - fallback if V2 not set
+				case "nameHdr":
+					if v.Value != nil && scidInfo["name"] == nil {
+						scidInfo["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
+					}
+				case "descrHdr":
+					if v.Value != nil && scidInfo["description"] == nil {
 						scidInfo["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
 					}
 				case "dURL":

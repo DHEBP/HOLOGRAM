@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -14,6 +16,212 @@ import (
 )
 
 // Gnomon Functions
+
+// isValidSCID checks if a string looks like a valid SCID (64 hex characters)
+func isValidSCID(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) != 64 {
+		return false
+	}
+	// Check if it's all hex characters
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// isURL checks if a string looks like a URL (with or without protocol)
+func isURL(s string) bool {
+	s = strings.TrimSpace(s)
+	// Check for explicit protocols
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "ipfs://") {
+		return true
+	}
+	// Check for URLs without protocol (www. or contains common TLDs with path)
+	if strings.HasPrefix(s, "www.") {
+		return true
+	}
+	// Check for domain patterns like example.com/path
+	if strings.Contains(s, ".") && strings.Contains(s, "/") && !strings.Contains(s, " ") {
+		parts := strings.Split(s, ".")
+		if len(parts) >= 2 {
+			// Likely a domain
+			return true
+		}
+	}
+	return false
+}
+
+// tryConvertRawBytesToSCID attempts to convert 32 raw bytes to a 64-char hex SCID
+func tryConvertRawBytesToSCID(s string) string {
+	// If the string is exactly 32 bytes and contains non-printable characters,
+	// it might be raw SCID bytes that need to be converted to hex
+	if len(s) == 32 {
+		hasNonPrintable := false
+		for _, c := range s {
+			if c < 32 || c > 126 {
+				hasNonPrintable = true
+				break
+			}
+		}
+		if hasNonPrintable {
+			// Convert raw bytes to hex string
+			return hex.EncodeToString([]byte(s))
+		}
+	}
+	return s
+}
+
+// resolveIconSCID fetches an SVG icon from a DOC SCID and returns a data URL
+// If the icon is already a URL, returns it as-is
+// If the icon is a SCID but can't be resolved, returns empty string to trigger fallback
+func (a *App) resolveIconSCID(iconValue string) string {
+	iconValue = strings.TrimSpace(iconValue)
+	if iconValue == "" {
+		return ""
+	}
+
+	// Try to convert raw bytes to SCID if needed
+	iconValue = tryConvertRawBytesToSCID(iconValue)
+
+	// If it's a URL with protocol, return as-is
+	if strings.HasPrefix(iconValue, "http://") || strings.HasPrefix(iconValue, "https://") || strings.HasPrefix(iconValue, "ipfs://") {
+		return iconValue
+	}
+
+	// If it's a URL without protocol (www. or domain/path), add https://
+	if isURL(iconValue) {
+		return "https://" + iconValue
+	}
+
+	// If it doesn't look like a SCID (64 hex chars), return empty to use fallback
+	if !isValidSCID(iconValue) {
+		// Only log if it's not empty and not too short (avoid logging noise)
+		if len(iconValue) > 3 {
+			// Truncate for logging to avoid binary spam
+			logVal := iconValue
+			if len(logVal) > 20 {
+				logVal = logVal[:20] + "..."
+			}
+			// Check if it's printable
+			isPrintable := true
+			for _, c := range logVal {
+				if c < 32 || c > 126 {
+					isPrintable = false
+					break
+				}
+			}
+			if isPrintable {
+				a.logToConsole(fmt.Sprintf("[ICON] Value is not a valid SCID or URL: %s", logVal))
+			} else {
+				a.logToConsole(fmt.Sprintf("[ICON] Value is binary data (len=%d), cannot use as icon", len(iconValue)))
+			}
+		}
+		return "" // Return empty to trigger fallback
+	}
+
+	a.logToConsole(fmt.Sprintf("[ICON] Resolving icon SCID: %s...", iconValue[:16]))
+
+	// Try to fetch the DOC content
+	scData, err := a.fetchSmartContract(iconValue, true, true)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ICON] Failed to fetch icon SCID %s: %v", iconValue[:16], err))
+		return "" // Return empty to trigger fallback icon
+	}
+
+	stringKeys, ok := scData["stringkeys"].(map[string]interface{})
+	if !ok {
+		a.logToConsole(fmt.Sprintf("[ICON] No stringkeys in SCID %s", iconValue[:16]))
+		return ""
+	}
+
+	// Verify it's an image DOC type
+	docTypeHex, _ := stringKeys["docType"].(string)
+	docType := ""
+	if docTypeHex != "" {
+		if decoded, err := hex.DecodeString(docTypeHex); err == nil {
+			docType = string(decoded)
+		} else {
+			docType = docTypeHex // Maybe it's not hex-encoded
+		}
+	}
+	
+	a.logToConsole(fmt.Sprintf("[ICON] SCID %s docType: %s", iconValue[:16], docType))
+
+	// Only process SVG/STATIC types (be more lenient)
+	isImageType := strings.Contains(strings.ToUpper(docType), "STATIC") ||
+		strings.Contains(strings.ToLower(docType), "svg") ||
+		strings.Contains(strings.ToLower(docType), "image")
+	
+	if docType != "" && !isImageType {
+		a.logToConsole(fmt.Sprintf("[ICON] SCID %s is not an image type: %s", iconValue[:16], docType))
+		return ""
+	}
+
+	// Get the code (actual file content)
+	code, ok := scData["code"].(string)
+	if !ok {
+		a.logToConsole(fmt.Sprintf("[ICON] No code in SCID %s", iconValue[:16]))
+		return ""
+	}
+
+	// Extract file content from smart contract comment block
+	fileContent := extractFileContentFromCode(code)
+	if fileContent == "" {
+		a.logToConsole(fmt.Sprintf("[ICON] Could not extract file content from SCID %s", iconValue[:16]))
+		return ""
+	}
+
+	a.logToConsole(fmt.Sprintf("[ICON] Extracted %d bytes from SCID %s", len(fileContent), iconValue[:16]))
+
+	// Check for gzip compression by looking at filename
+	fileNameHex, _ := stringKeys["var_header_name"].(string)
+	if fileNameHex == "" {
+		fileNameHex, _ = stringKeys["nameHdr"].(string)
+	}
+	fileName := ""
+	if fileNameHex != "" {
+		if decoded, err := hex.DecodeString(fileNameHex); err == nil {
+			fileName = string(decoded)
+		} else {
+			fileName = fileNameHex
+		}
+	}
+
+	// Decompress if needed
+	if strings.HasSuffix(fileName, ".gz") {
+		a.logToConsole(fmt.Sprintf("[ICON] Decompressing gzipped content from %s", iconValue[:16]))
+		decompressed, err := decompressGzip(fileContent)
+		if err == nil {
+			fileContent = decompressed
+		} else {
+			a.logToConsole(fmt.Sprintf("[ICON] Decompression failed for %s: %v", iconValue[:16], err))
+		}
+	}
+
+	// Validate it looks like SVG
+	trimmed := strings.TrimSpace(fileContent)
+	if !strings.HasPrefix(trimmed, "<?xml") && !strings.HasPrefix(trimmed, "<svg") {
+		a.logToConsole(fmt.Sprintf("[ICON] SCID %s content is not valid SVG (starts with: %.50s...)", iconValue[:16], trimmed))
+		return ""
+	}
+
+	// Validate SVG has required attributes
+	if !strings.Contains(trimmed, "xmlns") {
+		a.logToConsole(fmt.Sprintf("[ICON] SCID %s SVG missing xmlns attribute", iconValue[:16]))
+		return ""
+	}
+
+	// Success! Return as data URL
+	// Use URL-safe base64 and properly encode SVG
+	svgContent := strings.TrimSpace(fileContent)
+	encoded := base64.StdEncoding.EncodeToString([]byte(svgContent))
+	dataURL := fmt.Sprintf("data:image/svg+xml;base64,%s", encoded)
+	a.logToConsole(fmt.Sprintf("[ICON] Successfully resolved SCID %s to data URL (%d bytes encoded)", iconValue[:16], len(encoded)))
+	return dataURL
+}
 
 func (a *App) StartGnomon() map[string]interface{} {
 	a.logToConsole("[START] Starting Gnomon indexer...")
@@ -341,6 +549,12 @@ func (a *App) GetDiscoveredApps() map[string]interface{} {
 				apps[i]["epoch_badge"] = "EPOCH Enabled"
 				epochCount++
 			}
+
+			// Resolve SCID icons to data URLs
+			if icon, ok := app["icon"].(string); ok && icon != "" {
+				resolved := a.resolveIconSCID(icon)
+				apps[i]["icon"] = resolved
+			}
 		}
 	}
 
@@ -375,6 +589,12 @@ func (a *App) GetTELALibraries() map[string]interface{} {
 					"likes":    rating.Likes,
 					"dislikes": rating.Dislikes,
 				}
+			}
+
+			// Resolve SCID icons to data URLs
+			if icon, ok := lib["icon"].(string); ok && icon != "" {
+				resolved := a.resolveIconSCID(icon)
+				libs[i]["icon"] = resolved
 			}
 		}
 	}
@@ -509,16 +729,30 @@ func (a *App) GetAppDetails(scid string) map[string]interface{} {
 		value := fmt.Sprintf("%v", v.Value)
 
 		switch key {
-		case "nameHdr":
+		// V2 headers (TELA standard) - check first
+		case "var_header_name":
 			details["name"] = decodeHexString(value)
-		case "descrHdr":
+		case "var_header_description":
 			details["description"] = decodeHexString(value)
+		case "var_header_icon":
+			details["icon"] = decodeHexString(value)
+		// V1 headers (ART-NFA standard) - fallback if V2 not set
+		case "nameHdr":
+			if details["name"] == nil {
+				details["name"] = decodeHexString(value)
+			}
+		case "descrHdr":
+			if details["description"] == nil {
+				details["description"] = decodeHexString(value)
+			}
+		case "iconURLHdr":
+			if details["icon"] == nil {
+				details["icon"] = decodeHexString(value)
+			}
 		case "dURL":
 			du := decodeHexString(value)
 			details["url"] = du
 			details["durl"] = du
-		case "iconURLHdr":
-			details["icon"] = decodeHexString(value)
 		case "owner":
 			details["owner"] = value
 		}
