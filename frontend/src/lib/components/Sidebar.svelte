@@ -565,7 +565,7 @@
   <!-- v6.2 Wordmark - Clean, no version (moved to Settings/About) -->
   <div class="sidebar-head">
     {#if collapsed}
-      <img src="src/assets/hex_hologram_logo_icon.svg" alt="" class="sidebar-logo-sm" />
+      <img src="src/assets/hex_hologram_logo.svg" alt="" class="sidebar-logo-sm" />
     {:else}
       <Wordmark size="sm" glow={true} />
     {/if}
