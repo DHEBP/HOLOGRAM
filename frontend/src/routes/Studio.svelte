@@ -2912,7 +2912,10 @@
             </div>
             
             <div class="update-actions">
-              <button class="btn btn-secondary" on:click={() => navigateTo(`tela://${updateIndexInfo?.durl}`)}>
+              <button class="btn btn-secondary" on:click={() => {
+                navigateTo(`tela://${updateIndexInfo?.durl}`);
+                window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'browser' }));
+              }}>
                 <Eye size={16} />
                 Preview
               </button>
