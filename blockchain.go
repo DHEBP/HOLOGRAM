@@ -190,6 +190,19 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
                 content.HTML = assembled
             }
         }
+        
+        // Fallback: if we have static text files but no HTML, render them as a document
+        if content.HTML == "" && len(content.StaticByName) > 0 {
+            for fileName, fileContent := range content.StaticByName {
+                if isTextBasedFile(fileName) {
+                    scid := content.SCIDs[fileName]
+                    a.logToConsole(fmt.Sprintf("[FALLBACK] Rendering static text file %s as document", fileName))
+                    content.HTML = renderTextViewer(fileName, fileContent, scid)
+                    break // Use the first text file found
+                }
+            }
+        }
+        
         if content.HTML == "" {
             a.logToConsole("[ERR] No HTML content found in any DOC")
             return nil, fmt.Errorf("no HTML content found")
@@ -426,12 +439,108 @@ code { color: #e8e8f0; }
 </style>
 </head><body>
 <div class="header">
-<h1>📄 %s</h1>
+<h1>%s</h1>
 <div class="meta">Type: %s</div>
 <div class="meta">SCID: <span class="scid">%s</span></div>
 </div>
 <pre><code>%s</code></pre>
 </body></html>`, htmlEscape(fileName), htmlEscape(docType), htmlEscape(scid), htmlEscape(content))
+}
+
+// renderTextViewer creates an HTML page displaying plain text content (like .txt files)
+// This provides a clean reading experience for text documents stored on the blockchain
+func renderTextViewer(fileName, content, scid string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+* { box-sizing: border-box; }
+body { 
+  font-family: 'Georgia', 'Times New Roman', serif; 
+  background: #0a0a12; 
+  color: #e8e8f0; 
+  padding: 32px; 
+  margin: 0; 
+  line-height: 1.8;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.header { 
+  margin-bottom: 32px; 
+  padding-bottom: 20px; 
+  border-bottom: 1px solid rgba(255,255,255,0.1); 
+}
+h1 { 
+  font-size: 1.5rem; 
+  margin: 0 0 12px 0; 
+  color: #22d3ee; 
+  font-family: system-ui, -apple-system, sans-serif;
+}
+.meta { 
+  font-size: 11px; 
+  color: #707088; 
+  font-family: monospace; 
+}
+.scid { color: #a78bfa; }
+.content { 
+  white-space: pre-wrap; 
+  word-wrap: break-word;
+  font-size: 15px;
+  color: #d8d8e8;
+  background: transparent;
+}
+</style>
+</head><body>
+<div class="header">
+<h1>%s</h1>
+<div class="meta">SCID: <span class="scid">%s</span></div>
+</div>
+<div class="content">%s</div>
+</body></html>`, htmlEscape(fileName), htmlEscape(scid), htmlEscape(content))
+}
+
+// isTextBasedFile returns true if the filename suggests a text-based (non-binary) file
+// This is used to determine if TELA-STATIC files should be rendered as readable text
+func isTextBasedFile(fileName string) bool {
+	ext := strings.ToLower(filepath.Ext(fileName))
+	textExtensions := map[string]bool{
+		".txt":  true,
+		".text": true,
+		".log":  true,
+		".csv":  true,
+		".xml":  true,
+		".yaml": true,
+		".yml":  true,
+		".toml": true,
+		".ini":  true,
+		".cfg":  true,
+		".conf": true,
+		".sh":   true,
+		".bash": true,
+		".zsh":  true,
+		".bat":  true,
+		".ps1":  true,
+		".sql":  true,
+		".env":  true,
+		".gitignore": true,
+		".editorconfig": true,
+	}
+	// Also check for files without extensions that are commonly text
+	if ext == "" {
+		baseName := strings.ToLower(filepath.Base(fileName))
+		textFiles := map[string]bool{
+			"readme":    true,
+			"license":   true,
+			"changelog": true,
+			"authors":   true,
+			"contributing": true,
+			"makefile":  true,
+			"dockerfile": true,
+		}
+		return textFiles[baseName]
+	}
+	return textExtensions[ext]
 }
 
 // assembleShardFiles concatenates shard file contents in DOC order into a simple HTML wrapper
@@ -703,7 +812,7 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 		}
 
 	case strings.HasPrefix(docType, "TELA-STATIC"):
-		// Static files like images, SVGs, etc.
+		// Static files - could be images, SVGs, or text files like .txt
 		// Track by filename for embedding/replacement in HTML
 		if content.StaticByName == nil {
 			content.StaticByName = make(map[string]string)
@@ -712,7 +821,15 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 		if scid != "" {
 			content.SCIDs[fileName] = scid
 		}
-		a.logToConsole(fmt.Sprintf("  [STATIC] Stored %s for inline embedding", fileName))
+		
+		// If this is a text-based file and we don't have HTML yet, render it as readable text
+		// This allows standalone text documents (like .txt files) to be displayed properly
+		if content.HTML == "" && isTextBasedFile(fileName) {
+			a.logToConsole(fmt.Sprintf("  [STATIC] Rendering text file %s as readable document", fileName))
+			content.HTML = renderTextViewer(fileName, fileContent, scid)
+		} else {
+			a.logToConsole(fmt.Sprintf("  [STATIC] Stored %s for inline embedding", fileName))
+		}
 
 	default:
 		a.logToConsole(fmt.Sprintf("  [INFO]  Unknown docType: %s (treating as HTML)", docType))
