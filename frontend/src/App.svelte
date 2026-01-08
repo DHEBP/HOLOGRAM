@@ -50,6 +50,34 @@
   onMount(async () => {
     console.log('Hologram initializing...');
     
+    // Fix for Wails/WebView scroll focus issue on macOS
+    // When the app loses and regains focus, scroll events may not work until
+    // the webview is explicitly focused. This handler restores scroll functionality.
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Small delay to ensure window is fully focused
+        setTimeout(() => {
+          // Focus the document body to restore scroll event handling
+          document.body.focus();
+          // Also trigger a reflow to ensure scroll containers are responsive
+          document.body.style.pointerEvents = 'none';
+          requestAnimationFrame(() => {
+            document.body.style.pointerEvents = '';
+          });
+        }, 50);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // Also handle window focus events directly
+    const handleWindowFocus = () => {
+      // Ensure scroll containers are responsive after window regains focus
+      setTimeout(() => {
+        document.body.focus();
+      }, 50);
+    };
+    window.addEventListener('focus', handleWindowFocus);
+    
     // Minimum splash duration (allows animation to complete)
     const splashMinTime = new Promise(resolve => setTimeout(resolve, 3500));
     
@@ -278,6 +306,8 @@
         clearInterval(statusPollingInterval);
         statusPollingInterval = null;
       }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('switch-tab', handleTabSwitch);
       window.removeEventListener('search-navigate', handleSearchNavigate);
       window.removeEventListener('keydown', handleGlobalKeydown);

@@ -1565,7 +1565,8 @@
               </div>
             </div>
             
-            <div class="tx-list-full">
+            <!-- tabindex="-1" makes container focusable for scroll events without tab navigation -->
+            <div class="tx-list-full" tabindex="-1">
               {#each filteredHistory as tx}
                 <div class="tx-row-detailed">
                   <div class="tx-icon-wrap">
@@ -3305,9 +3306,10 @@
     background: var(--void-deep);
     border-radius: var(--r-md);
     padding: var(--s-3);
-    margin-bottom: var(--s-4);
+    margin: 0 auto var(--s-4) auto;
     overflow: hidden;
     text-align: center;
+    max-width: fit-content;
   }
   
   .address-full {
@@ -3328,6 +3330,7 @@
   .receive-warning {
     display: flex;
     align-items: flex-start;
+    justify-content: center;
     gap: var(--s-2);
     padding: var(--s-3);
     background: rgba(251, 191, 36, 0.08);
@@ -3335,6 +3338,7 @@
     border-radius: var(--r-md);
     font-size: 11px;
     color: var(--status-warn);
+    text-align: center;
   }
   
   /* Request Content */
@@ -3447,6 +3451,8 @@
     flex-direction: column; 
     max-height: 60vh;
     overflow-y: auto;
+    /* Prevent focus ring when container is focused for scroll */
+    outline: none;
   }
   
   .tx-row-detailed {

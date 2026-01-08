@@ -3211,14 +3211,12 @@
           </div>
         {:else if myContentGnomonRequired}
           <!-- Gnomon Required State - Special handling to prevent infinite loop -->
-          <div class="content-card">
-            <div class="content-card-header">
-              <Database size={32} class="content-card-icon" style="color: var(--cyan-400);" />
-              <p class="content-card-title">Gnomon Indexer Required</p>
-              <p class="content-card-text">The Gnomon indexer needs to be running to discover your deployed content. Start Gnomon in Settings, or use the SCID directly in the Browser.</p>
-            </div>
+          <div class="content-card centered">
+            <Database size={32} class="content-card-icon" style="color: var(--cyan-400);" />
+            <p class="content-card-title">Gnomon Indexer Required</p>
+            <p class="content-card-text">The Gnomon indexer needs to be running to discover your deployed content. Start Gnomon in Settings, or use the SCID directly in the Browser.</p>
             
-            <div style="display: flex; gap: var(--s-3); margin-top: var(--s-5);">
+            <div style="display: flex; gap: var(--s-3); margin-top: var(--s-5); justify-content: center;">
               <button class="btn btn-primary" on:click={() => window.dispatchEvent(new CustomEvent('status-click', { detail: { tab: 'settings', section: 'gnomon' } }))}>
                 <Database size={16} />
                 Open Settings
