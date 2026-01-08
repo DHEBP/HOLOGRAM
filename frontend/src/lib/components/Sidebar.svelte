@@ -1282,7 +1282,7 @@
   
   /* Collapsed state: maintain same height for alignment */
   .sidebar.collapsed .sidebar-head {
-    height: 64px;
+    height: 68px;
     padding: 0;
   }
   
