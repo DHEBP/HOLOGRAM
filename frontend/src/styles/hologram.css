@@ -1618,6 +1618,10 @@
     .wizard-content {
       padding: var(--s-6) var(--s-8) var(--s-8);
       position: relative;
+      /* Fixed min-height prevents layout shift between wizard steps */
+      min-height: 280px;
+      display: flex;
+      flex-direction: column;
     }
     
     .wizard-center {
@@ -2049,7 +2053,8 @@
       display: flex;
       flex-direction: column;
       gap: var(--s-3);
-      margin-top: var(--s-2);
+      margin-top: auto; /* Push buttons to bottom of flex container */
+      padding-top: var(--s-2);
     }
     
     .wizard-btn {
@@ -2126,6 +2131,8 @@
       margin-top: var(--s-5);
       position: relative;
       z-index: 2;
+      /* Fixed height prevents layout shift when footer content changes */
+      min-height: 24px;
     }
     
     .wizard-skip {
