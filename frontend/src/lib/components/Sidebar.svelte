@@ -1280,9 +1280,10 @@
     justify-content: center;
   }
   
-  /* Smaller logo in collapsed state */
+  /* Collapsed state: maintain same height for alignment */
   .sidebar.collapsed .sidebar-head {
-    padding: 12px 0;
+    height: 64px;
+    padding: 0;
   }
   
   .sidebar.collapsed .sidebar-logo-sm {
