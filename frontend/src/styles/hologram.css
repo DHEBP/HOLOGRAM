@@ -1582,6 +1582,8 @@
       border-radius: var(--r-lg);
       width: 100%;
       max-width: 480px;
+      /* Fixed height prevents layout shift between wizard steps */
+      height: 405px;
       position: relative;
       z-index: 2;
       overflow: visible;
@@ -1618,10 +1620,11 @@
     .wizard-content {
       padding: var(--s-6) var(--s-8) var(--s-8);
       position: relative;
-      /* Fixed min-height prevents layout shift between wizard steps */
-      min-height: 280px;
+      /* Fill the fixed-height card and use flex for content distribution */
+      height: 100%;
       display: flex;
       flex-direction: column;
+      box-sizing: border-box;
     }
     
     .wizard-center {
@@ -2132,7 +2135,7 @@
       position: relative;
       z-index: 2;
       /* Fixed height prevents layout shift when footer content changes */
-      min-height: 24px;
+      height: 24px;
     }
     
     .wizard-skip {
