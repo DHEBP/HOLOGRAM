@@ -371,6 +371,48 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		}
 		s.sendResponse(conn, req.ID, result, nil)
 
+	// GetDaemon - Returns daemon WebSocket endpoint for direct node communication
+	// dApps use this to connect directly to the node for read operations (GetSC, tx tracking, etc.)
+	case "GetDaemon", "DERO.GetDaemon":
+		// Check if permission granted (requires view_address like other read methods)
+		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: view_address not granted"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+		
+		// Get daemon endpoint from app settings
+		endpoint := "127.0.0.1:10102"
+		if s.app != nil {
+			if ep, ok := s.app.settings["daemon_endpoint"].(string); ok && ep != "" {
+				endpoint = ep
+			}
+		}
+		
+		// Strip http:// or https:// prefix if present
+		if len(endpoint) > 7 && endpoint[:7] == "http://" {
+			endpoint = endpoint[7:]
+		} else if len(endpoint) > 8 && endpoint[:8] == "https://" {
+			endpoint = endpoint[8:]
+		}
+		
+		// Format as WebSocket URL for dApp to connect
+		// Use wss:// if original was https://, otherwise ws://
+		var wsEndpoint string
+		if s.app != nil {
+			if ep, ok := s.app.settings["daemon_endpoint"].(string); ok && len(ep) > 8 && ep[:8] == "https://" {
+				wsEndpoint = fmt.Sprintf("wss://%s/ws", endpoint)
+			} else {
+				wsEndpoint = fmt.Sprintf("ws://%s/ws", endpoint)
+			}
+		} else {
+			wsEndpoint = fmt.Sprintf("ws://%s/ws", endpoint)
+		}
+		
+		log.Printf("[XSWD] GetDaemon: returning endpoint %s", wsEndpoint)
+		result = map[string]interface{}{"endpoint": wsEndpoint}
+		s.sendResponse(conn, req.ID, result, nil)
+
 	default:
 		log.Printf("[ERR] XSWD Method not found: %s", req.Method)
 		errRes = &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Method not found: %s", req.Method)}
