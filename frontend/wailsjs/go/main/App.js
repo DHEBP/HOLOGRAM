@@ -502,6 +502,10 @@ export function GetMODsList() {
   return window['go']['main']['App']['GetMODsList']();
 }
 
+export function GetManualDerodInstructions() {
+  return window['go']['main']['App']['GetManualDerodInstructions']();
+}
+
 export function GetMempoolExtended(arg1) {
   return window['go']['main']['App']['GetMempoolExtended'](arg1);
 }
@@ -762,6 +766,10 @@ export function GetWalletStatus() {
   return window['go']['main']['App']['GetWalletStatus']();
 }
 
+export function GetWalletSyncStatus() {
+  return window['go']['main']['App']['GetWalletSyncStatus']();
+}
+
 export function GetWatchedSmartContracts() {
   return window['go']['main']['App']['GetWatchedSmartContracts']();
 }
@@ -828,6 +836,10 @@ export function IsEpochActive() {
 
 export function IsEpochEnabled() {
   return window['go']['main']['App']['IsEpochEnabled']();
+}
+
+export function IsGitHubCheckAllowed() {
+  return window['go']['main']['App']['IsGitHubCheckAllowed']();
 }
 
 export function IsInSimulatorMode() {
@@ -1284,6 +1296,14 @@ export function SwitchWallet(arg1, arg2) {
 
 export function SyncSimulatorTestWallets() {
   return window['go']['main']['App']['SyncSimulatorTestWallets']();
+}
+
+export function SyncWallet() {
+  return window['go']['main']['App']['SyncWallet']();
+}
+
+export function TestAndConnectEndpoint(arg1) {
+  return window['go']['main']['App']['TestAndConnectEndpoint'](arg1);
 }
 
 export function Transfer(arg1, arg2, arg3) {

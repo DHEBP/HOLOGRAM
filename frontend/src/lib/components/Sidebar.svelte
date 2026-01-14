@@ -597,52 +597,40 @@
   <!-- v6.4 Status Panel - Redesigned: Services Grid + Info Rows -->
   <div class="sidebar-status">
     {#if !collapsed}
-      <!-- SERVICES GRID: Compact 2x2 for binary status indicators -->
-      <div class="services-grid">
+      <!-- SERVICES CHIPS: Compact row for binary status indicators (E3 Design) -->
+      <div class="services-chips">
         <button
-          class="service-dot"
-          class:dot-ok={$appState.nodeConnected}
-          class:dot-err={!$appState.nodeConnected}
+          class="service-chip"
+          class:chip-ok={$appState.nodeConnected}
+          class:chip-err={!$appState.nodeConnected}
           on:click|stopPropagation={(e) => handleStatusClick('node', e)}
           title={$appState.nodeConnected ? 'Node Online' : 'Node Offline'}
         >
-          <span class="service-led"></span>
-          <span class="service-label">NODE</span>
+          <span class="chip-dot"></span>
+          <span class="chip-label">NODE</span>
         </button>
         
         <button
-          class="service-dot"
-          class:dot-ok={$appState.xswdServerRunning}
-          class:dot-err={!$appState.xswdServerRunning}
+          class="service-chip"
+          class:chip-ok={$appState.xswdServerRunning}
+          class:chip-err={!$appState.xswdServerRunning}
           on:click|stopPropagation={(e) => handleStatusClick('xswd', e)}
           title={$appState.xswdServerRunning ? 'XSWD Server Active' : 'XSWD Server Offline'}
         >
-          <span class="service-led"></span>
-          <span class="service-label">XSWD</span>
+          <span class="chip-dot"></span>
+          <span class="chip-label">XSWD</span>
         </button>
         
         <button
-          class="service-dot"
-          class:dot-ok={$appState.gnomonRunning && $appState.gnomonProgress >= 100}
-          class:dot-warn={$appState.gnomonRunning && $appState.gnomonProgress < 100}
-          class:dot-err={!$appState.gnomonRunning}
-          on:click|stopPropagation={(e) => handleStatusClick('gnomon', e)}
-          title={$appState.gnomonRunning ? ($appState.gnomonProgress >= 100 ? 'Gnomon Synced' : `Gnomon ${$appState.gnomonProgress.toFixed(0)}%`) : 'Gnomon Offline'}
-        >
-          <span class="service-led"></span>
-          <span class="service-label">GNOMON</span>
-        </button>
-        
-        <button
-          class="service-dot"
-          class:dot-ok={epochStats.enabled && epochStats.active && !epochStats.paused && epochStats.worker_running}
-          class:dot-warn={epochStats.enabled && (epochStats.paused || !epochStats.active || !epochStats.worker_running)}
-          class:dot-err={!epochStats.enabled}
+          class="service-chip"
+          class:chip-ok={epochStats.enabled && epochStats.active && !epochStats.paused && epochStats.worker_running}
+          class:chip-warn={epochStats.enabled && (epochStats.paused || !epochStats.active || !epochStats.worker_running)}
+          class:chip-err={!epochStats.enabled}
           on:click|stopPropagation={(e) => handleStatusClick('epoch', e)}
           title={!epochStats.enabled ? 'EPOCH Disabled' : epochStats.paused ? 'EPOCH Paused' : epochStats.active && epochStats.worker_running ? 'EPOCH Active' : epochStats.active ? 'EPOCH Ready' : 'EPOCH Connecting'}
         >
-          <span class="service-led"></span>
-          <span class="service-label">EPOCH</span>
+          <span class="chip-dot"></span>
+          <span class="chip-label">EPOCH</span>
         </button>
       </div>
       
@@ -707,10 +695,45 @@
             </span>
           </button>
         {/if}
+        
+        <!-- GNOMON Progress Row (Option B: Label + Bar + Percentage) -->
+        <button
+          class="gnomon-row"
+          class:gnomon-synced={$appState.gnomonRunning && $appState.gnomonProgress >= 100}
+          class:gnomon-syncing={$appState.gnomonRunning && $appState.gnomonProgress < 100}
+          class:gnomon-offline={!$appState.gnomonRunning}
+          on:click|stopPropagation={(e) => handleStatusClick('gnomon', e)}
+          title={$appState.gnomonRunning ? ($appState.gnomonProgress >= 100 ? 'Gnomon Synced - Click for details' : `Gnomon syncing ${$appState.gnomonProgress.toFixed(0)}% - Click for details`) : 'Gnomon Offline - Click for details'}
+        >
+          <span class="gnomon-label">GNOMON</span>
+          <div class="gnomon-progress-container">
+            <div class="gnomon-progress-bar">
+              <div 
+                class="gnomon-progress-fill"
+                class:syncing={$appState.gnomonRunning && $appState.gnomonProgress < 100}
+                class:synced={$appState.gnomonRunning && $appState.gnomonProgress >= 100}
+                class:offline={!$appState.gnomonRunning}
+                style="width: {$appState.gnomonRunning ? Math.min($appState.gnomonProgress, 100) : 100}%"
+              ></div>
+            </div>
+            <span class="gnomon-percent" 
+              class:synced={$appState.gnomonRunning && $appState.gnomonProgress >= 100}
+              class:offline={!$appState.gnomonRunning}>
+              {#if !$appState.gnomonRunning}
+                OFF
+              {:else if $appState.gnomonProgress >= 100}
+                100%
+              {:else}
+                {$appState.gnomonProgress.toFixed(0)}%
+              {/if}
+            </span>
+          </div>
+        </button>
       </div>
     {:else}
-      <!-- COLLAPSED: Vertical LED strip -->
+      <!-- COLLAPSED: Vertical LED strip (order matches expanded sidebar) -->
       <div class="status-list">
+        <!-- Services: NODE, XSWD, EPOCH -->
         <button
           class="unified-indicator collapsed"
           on:click|stopPropagation={(e) => handleStatusClick('node', e)}
@@ -724,6 +747,49 @@
           </div>
         </button>
         
+        <button
+          class="unified-indicator collapsed"
+          on:click|stopPropagation={(e) => handleStatusClick('xswd', e)}
+        >
+          <span class="unified-dot" class:dot-ok={$appState.xswdServerRunning} class:dot-err={!$appState.xswdServerRunning}></span>
+          <div class="rail-tooltip">
+            <span class="rail-tooltip-label">XSWD</span>
+            <span class="rail-tooltip-value" class:tt-ok={$appState.xswdServerRunning} class:tt-err={!$appState.xswdServerRunning}>
+              {$appState.xswdServerRunning ? 'Active' : 'Offline'}
+            </span>
+          </div>
+        </button>
+        
+        <button
+          class="unified-indicator collapsed"
+          on:click|stopPropagation={(e) => handleStatusClick('epoch', e)}
+        >
+          <span class="unified-dot" 
+            class:dot-ok={epochStats.enabled && epochStats.active && !epochStats.paused && epochStats.worker_running}
+            class:dot-warn={epochStats.enabled && (epochStats.paused || !epochStats.active || !epochStats.worker_running)}
+            class:dot-err={!epochStats.enabled}></span>
+          <div class="rail-tooltip">
+            <span class="rail-tooltip-label">EPOCH</span>
+            <span class="rail-tooltip-value"
+              class:tt-ok={epochStats.enabled && epochStats.active && !epochStats.paused && epochStats.worker_running}
+              class:tt-warn={epochStats.enabled && (epochStats.paused || !epochStats.active || !epochStats.worker_running)}
+              class:tt-err={!epochStats.enabled}>
+              {#if !epochStats.enabled}
+                Disabled
+              {:else if epochStats.paused}
+                Paused
+              {:else if epochStats.active && epochStats.worker_running}
+                Active
+              {:else if epochStats.active}
+                Ready
+              {:else}
+                Connecting
+              {/if}
+            </span>
+          </div>
+        </button>
+        
+        <!-- Info: NETWORK, BLOCK, GNOMON -->
         <div class="network-indicator-wrapper">
           <button
             class="unified-indicator collapsed"
@@ -776,19 +842,22 @@
           {/if}
         </div>
         
-        <button
-          class="unified-indicator collapsed"
-          on:click|stopPropagation={(e) => handleStatusClick('xswd', e)}
-        >
-          <span class="unified-dot" class:dot-ok={$appState.xswdServerRunning} class:dot-err={!$appState.xswdServerRunning}></span>
-          <div class="rail-tooltip">
-            <span class="rail-tooltip-label">XSWD</span>
-            <span class="rail-tooltip-value" class:tt-ok={$appState.xswdServerRunning} class:tt-err={!$appState.xswdServerRunning}>
-              {$appState.xswdServerRunning ? 'Active' : 'Offline'}
-            </span>
-          </div>
-        </button>
+        {#if $appState.chainHeight}
+          <button
+            class="unified-indicator collapsed"
+            on:click|stopPropagation={(e) => handleStatusClick('block', e)}
+          >
+            <span class="unified-dot dot-cyan"></span>
+            <div class="rail-tooltip">
+              <span class="rail-tooltip-label">Block</span>
+              <span class="rail-tooltip-value tt-cyan">
+                {formatBlockHeight($appState.chainHeight)}
+              </span>
+            </div>
+          </button>
+        {/if}
         
+        <!-- GNOMON at bottom (matches expanded sidebar) -->
         <button
           class="unified-indicator collapsed"
           on:click|stopPropagation={(e) => handleStatusClick('gnomon', e)}
@@ -807,50 +876,6 @@
             </span>
           </div>
         </button>
-        
-        <button
-          class="unified-indicator collapsed"
-          on:click|stopPropagation={(e) => handleStatusClick('epoch', e)}
-        >
-          <span class="unified-dot" 
-            class:dot-ok={epochStats.enabled && epochStats.active && !epochStats.paused && epochStats.worker_running}
-            class:dot-warn={epochStats.enabled && (epochStats.paused || !epochStats.active || !epochStats.worker_running)}
-            class:dot-err={!epochStats.enabled}></span>
-          <div class="rail-tooltip">
-            <span class="rail-tooltip-label">EPOCH</span>
-            <span class="rail-tooltip-value"
-              class:tt-ok={epochStats.enabled && epochStats.active && !epochStats.paused && epochStats.worker_running}
-              class:tt-warn={epochStats.enabled && (epochStats.paused || !epochStats.active || !epochStats.worker_running)}
-              class:tt-err={!epochStats.enabled}>
-              {#if !epochStats.enabled}
-                Disabled
-              {:else if epochStats.paused}
-                Paused
-              {:else if epochStats.active && epochStats.worker_running}
-                Active
-              {:else if epochStats.active}
-                Ready
-              {:else}
-                Connecting
-              {/if}
-            </span>
-          </div>
-        </button>
-        
-        {#if $appState.chainHeight}
-          <button
-            class="unified-indicator collapsed"
-            on:click|stopPropagation={(e) => handleStatusClick('block', e)}
-          >
-            <span class="unified-dot dot-cyan"></span>
-            <div class="rail-tooltip">
-              <span class="rail-tooltip-label">Block</span>
-              <span class="rail-tooltip-value tt-cyan">
-                {formatBlockHeight($appState.chainHeight)}
-              </span>
-            </div>
-          </button>
-        {/if}
       </div>
     {/if}
   </div>
@@ -1432,79 +1457,189 @@
   }
   
   /* ============================================
-     v6.4 SERVICES GRID - Compact 2x2 Status LEDs
+     v6.5 SERVICES CHIPS - E3 Compact Chip Layout
      ============================================ */
   
-  .services-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2px;
-    margin-bottom: 0;
+  .services-chips {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
   }
   
-  .service-dot {
+  .service-chip {
+    flex: 1;
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 4px;
-    padding: 8px 4px;
-    background: transparent;
-    border: none;
-    border-radius: var(--r-sm);
+    gap: 6px;
+    padding: 8px 6px;
+    background: var(--void-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
     cursor: pointer;
-    transition: background 150ms ease;
-    box-shadow: none;
+    transition: all 150ms ease;
     outline: none;
   }
   
-  .service-dot:hover {
-    background: var(--void-hover);
+  .service-chip:hover {
+    border-color: var(--cyan-500);
+    background: var(--void-mid);
   }
   
-  .service-dot:focus {
+  .service-chip:focus {
     outline: none;
-    box-shadow: none;
   }
   
-  .service-led {
+  .chip-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     background: var(--text-4);
     transition: all 150ms ease;
+    flex-shrink: 0;
   }
   
-  .service-dot.dot-ok .service-led {
+  .service-chip.chip-ok .chip-dot {
     background: var(--status-ok);
     box-shadow: 0 0 4px var(--status-ok);
   }
   
-  .service-dot.dot-warn .service-led {
+  .service-chip.chip-warn .chip-dot {
     background: var(--status-warn);
     box-shadow: 0 0 4px var(--status-warn);
   }
   
-  .service-dot.dot-err .service-led {
+  .service-chip.chip-err .chip-dot {
     background: var(--status-err);
-    box-shadow: 0 0 4px var(--status-err);
+    opacity: 0.6;
   }
   
-  .service-label {
+  .chip-label {
     font-size: 9px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-4);
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
     transition: color 150ms ease;
   }
   
-  .service-dot:hover .service-label {
+  .service-chip:hover .chip-label {
+    color: var(--text-1);
+  }
+  
+  .service-chip.chip-ok .chip-label {
     color: var(--text-2);
   }
   
-  .service-dot.dot-ok .service-label {
-    color: var(--text-3);
+  /* ============================================
+     v6.5 GNOMON PROGRESS ROW - Option B Style
+     ============================================ */
+  
+  .gnomon-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--void-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 150ms ease;
+    gap: 12px;
+    width: 100%;
+    text-align: left;
+  }
+  
+  .gnomon-row:hover {
+    border-color: var(--cyan-500);
+    background: var(--void-mid);
+  }
+  
+  .gnomon-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-4);
+    flex-shrink: 0;
+  }
+  
+  .gnomon-progress-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  
+  .gnomon-progress-bar {
+    flex: 1;
+    height: 4px;
+    background: var(--void-hover);
+    border-radius: 2px;
+    overflow: hidden;
+    position: relative;
+  }
+  
+  .gnomon-progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s ease-out;
+  }
+  
+  /* Syncing state - cyan animated shimmer */
+  .gnomon-progress-fill.syncing {
+    background: linear-gradient(90deg, var(--cyan-600), var(--cyan-400), var(--cyan-600));
+    background-size: 200% 100%;
+    animation: gnomon-shimmer 2s ease-in-out infinite;
+  }
+  
+  /* Synced state - green static */
+  .gnomon-progress-fill.synced {
+    background: var(--status-ok);
+  }
+  
+  /* Offline state - red dim */
+  .gnomon-progress-fill.offline {
+    background: var(--status-err);
+    opacity: 0.4;
+  }
+  
+  @keyframes gnomon-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  
+  .gnomon-percent {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--cyan-400);
+    min-width: 32px;
+    text-align: right;
+  }
+  
+  .gnomon-percent.synced {
+    color: var(--status-ok);
+  }
+  
+  .gnomon-percent.offline {
+    color: var(--status-err);
+    opacity: 0.6;
+  }
+  
+  /* Row state styling */
+  .gnomon-row.gnomon-synced {
+    border-color: rgba(52, 211, 153, 0.2);
+  }
+  
+  .gnomon-row.gnomon-synced:hover {
+    border-color: var(--status-ok);
+  }
+  
+  .gnomon-row.gnomon-offline {
+    border-color: rgba(248, 113, 113, 0.15);
+  }
+  
+  .gnomon-row.gnomon-offline:hover {
+    border-color: rgba(248, 113, 113, 0.3);
   }
   
   /* ============================================

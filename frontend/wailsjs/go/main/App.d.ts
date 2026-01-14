@@ -253,6 +253,8 @@ export function GetMODsByClass(arg1:string):Promise<Record<string, any>>;
 
 export function GetMODsList():Promise<Record<string, any>>;
 
+export function GetManualDerodInstructions():Promise<Record<string, any>>;
+
 export function GetMempoolExtended(arg1:number):Promise<Record<string, any>>;
 
 export function GetMempoolStats():Promise<Record<string, any>>;
@@ -383,6 +385,8 @@ export function GetWalletMiningEarnings(arg1:number):Promise<Record<string, any>
 
 export function GetWalletStatus():Promise<Record<string, any>>;
 
+export function GetWalletSyncStatus():Promise<Record<string, any>>;
+
 export function GetWatchedSmartContracts():Promise<Record<string, any>>;
 
 export function GetXSWDStatus():Promise<Record<string, any>>;
@@ -416,6 +420,8 @@ export function IsDevSupportEnabled():Promise<boolean>;
 export function IsEpochActive():Promise<boolean>;
 
 export function IsEpochEnabled():Promise<boolean>;
+
+export function IsGitHubCheckAllowed():Promise<boolean>;
 
 export function IsInSimulatorMode():Promise<boolean>;
 
@@ -644,6 +650,10 @@ export function SubscribeToWalletEvents():Promise<Record<string, any>>;
 export function SwitchWallet(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function SyncSimulatorTestWallets():Promise<Record<string, any>>;
+
+export function SyncWallet():Promise<Record<string, any>>;
+
+export function TestAndConnectEndpoint(arg1:string):Promise<Record<string, any>>;
 
 export function Transfer(arg1:string,arg2:number,arg3:string):Promise<Record<string, any>>;
 
