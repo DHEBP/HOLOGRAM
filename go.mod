@@ -4,9 +4,9 @@ go 1.23
 
 require (
 	github.com/civilware/Gnomon v0.0.0-20240403103529-8b2fdb2b3106
-	github.com/civilware/epoch v0.0.0-20240805000000-000000000000
+	github.com/civilware/epoch v0.0.0-20241002060739-1ed2fc6f74cb
 	github.com/civilware/tela v0.0.0-20250806221602-aa892d2ff8d4
-	github.com/deroproject/derohe v0.0.0-20241025000000-000000000000
+	github.com/deroproject/derohe v0.0.0-20250813215012-9b6a8b82c839
 	github.com/deroproject/graviton v0.0.0-20220130070622-2c248a53b2e1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gorilla/websocket v1.5.3
@@ -19,6 +19,7 @@ require (
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
+	github.com/coder/websocket v1.8.12 // indirect
 	github.com/creachadair/jrpc2 v0.35.4 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dchest/siphash v1.2.3 // indirect
@@ -30,7 +31,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.1 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
-	github.com/klauspost/compress v1.15.13 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
 	github.com/klauspost/reedsolomon v1.11.5 // indirect
 	github.com/labstack/echo/v4 v4.13.3 // indirect
@@ -80,10 +80,4 @@ require (
 	golang.org/x/time v0.8.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	nhooyr.io/websocket v1.8.7 // indirect
 )
-
-// Local development paths (remove these if using published modules)
-replace github.com/deroproject/derohe => /Users/home/projects/__Dero/derohe-block-explorer
-
-replace github.com/civilware/epoch => /Users/home/projects/__Dero/epoch-main
