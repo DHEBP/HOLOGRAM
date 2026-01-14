@@ -107,6 +107,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   let searchExclusions = [];
   let searchMinLikes = 0;
   let showExclusionModal = false;
+  let showFullResyncModal = false;
   let newExclusionFilter = '';
   
   // Developer Support (EPOCH + Passive Hashing) state
@@ -897,18 +898,12 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       return;
     }
     
-    // Confirm with user - this takes a LONG time
-    const confirmed = confirm(
-      '⚠️ Full Resync Warning\n\n' +
-      'This will re-index the ENTIRE blockchain from block 0.\n' +
-      'On mainnet, this means 6+ million blocks.\n\n' +
-      'This can take HOURS or even DAYS depending on your system.\n\n' +
-      'Are you sure you want to continue?\n\n' +
-      'Tip: Use "Fastsync" or "Time Machine" for faster results.'
-    );
-    
-    if (!confirmed) return;
-    
+    // Show modal instead of confirm() (confirm doesn't work reliably in Wails)
+    showFullResyncModal = true;
+  }
+  
+  async function confirmFullResync() {
+    showFullResyncModal = false;
     resyncingGnomon = true;
     try {
       // Full resync from block 0
@@ -923,6 +918,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     } finally {
       resyncingGnomon = false;
     }
+  }
+  
+  function cancelFullResync() {
+    showFullResyncModal = false;
   }
   
   // Search exclusions functions
@@ -2150,6 +2149,50 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               <div class="modal-footer">
                 <button class="btn btn-secondary" on:click={() => showExclusionModal = false}>
                   Close
+                </button>
+              </div>
+            </div>
+          </div>
+        {/if}
+        
+        <!-- Full Resync Confirmation Modal -->
+        {#if showFullResyncModal}
+          <div class="modal-overlay" on:click={cancelFullResync}>
+            <div class="modal-content" on:click|stopPropagation>
+              <div class="modal-header">
+                <h3 class="modal-title">⚠️ Full Resync Warning</h3>
+                <button class="modal-close" on:click={cancelFullResync}>
+                  <Icons name="x" size={20} />
+                </button>
+              </div>
+              <div class="modal-body">
+                <p class="modal-desc" style="color: var(--status-warn); font-weight: 600;">
+                  This will re-index the ENTIRE blockchain from block 0.
+                </p>
+                <p class="modal-desc">
+                  On mainnet, this means <strong>6+ million blocks</strong>.
+                </p>
+                <p class="modal-desc" style="color: var(--status-warn);">
+                  <strong>This can take HOURS or even DAYS depending on your system.</strong>
+                </p>
+                <p class="modal-desc">
+                  Are you sure you want to continue?
+                </p>
+                <p class="modal-desc" style="font-size: 0.9em; color: var(--text-muted); font-style: italic; margin-top: var(--s-3);">
+                  💡 Tip: Use "Fastsync" or "Time Machine" for faster results.
+                </p>
+              </div>
+              <div class="modal-footer">
+                <button class="btn btn-danger" on:click={confirmFullResync} disabled={resyncingGnomon}>
+                  {#if resyncingGnomon}
+                    <Icons name="loader" size={14} />
+                    Starting...
+                  {:else}
+                    Yes, Start Full Resync
+                  {/if}
+                </button>
+                <button class="btn btn-secondary" on:click={cancelFullResync} disabled={resyncingGnomon}>
+                  Cancel
                 </button>
               </div>
             </div>
