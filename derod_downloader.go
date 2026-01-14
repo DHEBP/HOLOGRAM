@@ -4,6 +4,9 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +41,12 @@ type DownloadProgress struct {
 	DownloadedBytes int64  `json:"downloadedBytes"`
 	Percentage      int    `json:"percentage"`
 	Status          string `json:"status"`
+}
+
+// ChecksumInfo represents parsed checksum data
+type ChecksumInfo struct {
+	Filename string `json:"filename"`
+	SHA256   string `json:"sha256"`
 }
 
 // NewDerodDownloader creates a new downloader instance
@@ -124,6 +133,139 @@ func (d *DerodDownloader) GetPlatformAssetName() string {
 	return fmt.Sprintf("dero_%s_%s%s", osName, archName, ext)
 }
 
+// GetChecksumFile downloads and parses the checksum.txt.signed file from a release
+func (d *DerodDownloader) GetChecksumFile(release *GitHubRelease) (map[string]string, error) {
+	checksums := make(map[string]string)
+
+	// Find checksum.txt.signed asset
+	var checksumURL string
+	for _, asset := range release.Assets {
+		if asset.Name == "checksum.txt.signed" {
+			checksumURL = asset.BrowserDownloadURL
+			break
+		}
+	}
+
+	if checksumURL == "" {
+		return nil, fmt.Errorf("checksum.txt.signed not found in release assets")
+	}
+
+	d.app.logToConsole("[VERIFY] Downloading checksum file...")
+
+	resp, err := d.httpClient.Get(checksumURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download checksum file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read checksum file: %w", err)
+	}
+
+	// Parse DERO signed message format
+	// The checksums are base64 encoded between the header and signature
+	content := string(body)
+
+	// Find the base64 encoded section (after S: line, before END marker)
+	lines := strings.Split(content, "\n")
+	var base64Content string
+	inPayload := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Skip header lines
+		if strings.HasPrefix(line, "-----BEGIN") || strings.HasPrefix(line, "-----END") {
+			continue
+		}
+		if strings.HasPrefix(line, "Address:") || strings.HasPrefix(line, "C:") || strings.HasPrefix(line, "S:") {
+			if strings.HasPrefix(line, "S:") {
+				inPayload = true
+			}
+			continue
+		}
+		// After S: line, collect base64 content
+		if inPayload {
+			base64Content += line
+		}
+	}
+
+	if base64Content == "" {
+		return nil, fmt.Errorf("no checksum data found in signed message")
+	}
+
+	// Decode base64
+	decoded, err := base64.StdEncoding.DecodeString(base64Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode checksum data: %w", err)
+	}
+
+	// Parse checksum lines: "SHA256 (filename) = hash"
+	checksumLines := strings.Split(string(decoded), "\n")
+	for _, line := range checksumLines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Parse format: "SHA256 (filename) = hash"
+		if strings.HasPrefix(line, "SHA256 (") {
+			// Extract filename
+			start := strings.Index(line, "(")
+			end := strings.Index(line, ")")
+			if start == -1 || end == -1 || end <= start {
+				continue
+			}
+			filename := line[start+1 : end]
+
+			// Extract hash (after " = ")
+			hashStart := strings.Index(line, " = ")
+			if hashStart == -1 {
+				continue
+			}
+			hash := strings.TrimSpace(line[hashStart+3:])
+
+			checksums[filename] = strings.ToLower(hash)
+			d.app.logToConsole(fmt.Sprintf("[VERIFY] Found checksum for %s", filename))
+		}
+	}
+
+	if len(checksums) == 0 {
+		return nil, fmt.Errorf("no valid checksums parsed from checksum file")
+	}
+
+	return checksums, nil
+}
+
+// VerifyFileChecksum calculates SHA256 of a file and compares with expected hash
+func (d *DerodDownloader) VerifyFileChecksum(filePath string, expectedHash string) error {
+	d.app.logToConsole("[VERIFY] Calculating SHA256 checksum...")
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file for verification: %w", err)
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return fmt.Errorf("failed to calculate checksum: %w", err)
+	}
+
+	calculatedHash := hex.EncodeToString(hasher.Sum(nil))
+	expectedHash = strings.ToLower(strings.TrimSpace(expectedHash))
+
+	if calculatedHash != expectedHash {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedHash, calculatedHash)
+	}
+
+	d.app.logToConsole("[OK] Checksum verified successfully")
+	return nil
+}
+
 // FindAssetForPlatform finds the download URL for the current platform
 func (d *DerodDownloader) FindAssetForPlatform(release *GitHubRelease) (string, int64, error) {
 	expectedName := d.GetPlatformAssetName()
@@ -148,8 +290,8 @@ func (d *DerodDownloader) FindAssetForPlatform(release *GitHubRelease) (string, 
 	return "", 0, fmt.Errorf("no matching asset found for %s/%s. Available: %v", runtime.GOOS, runtime.GOARCH, available)
 }
 
-// DownloadDerod downloads derod from the given URL with progress updates
-func (d *DerodDownloader) DownloadDerod(url string, version string) error {
+// DownloadDerod downloads derod from the given URL with progress updates and checksum verification
+func (d *DerodDownloader) DownloadDerod(url string, version string, expectedChecksum string) error {
 	d.app.logToConsole(fmt.Sprintf("⬇️ Downloading derod %s...", version))
 
 	// Create version directory
@@ -217,7 +359,20 @@ func (d *DerodDownloader) DownloadDerod(url string, version string) error {
 	}
 	out.Close()
 
-	d.app.logToConsole("[OK] Download complete, extracting...")
+	d.app.logToConsole("[OK] Download complete")
+
+	// Verify checksum (mandatory for auto-download)
+	if expectedChecksum != "" {
+		if err := d.VerifyFileChecksum(archivePath, expectedChecksum); err != nil {
+			// Clean up the potentially compromised file
+			os.Remove(archivePath)
+			return fmt.Errorf("SECURITY: %w - download aborted", err)
+		}
+	} else {
+		d.app.logToConsole("[WARN] No checksum provided - skipping verification")
+	}
+
+	d.app.logToConsole("[...] Extracting archive...")
 
 	// Extract archive
 	if isZip {
@@ -444,7 +599,7 @@ func (d *DerodDownloader) IsDerodInstalled() bool {
 	return d.GetInstalledDerodPath() != ""
 }
 
-// DownloadLatestDerod downloads the latest derod from GitHub
+// DownloadLatestDerod downloads the latest derod from GitHub with checksum verification
 func (d *DerodDownloader) DownloadLatestDerod() (string, error) {
 	// Get latest release info
 	release, err := d.GetLatestDeroRelease()
@@ -459,14 +614,29 @@ func (d *DerodDownloader) DownloadLatestDerod() (string, error) {
 		return d.GetInstalledDerodPath(), nil
 	}
 
+	// Fetch checksums first (mandatory for security)
+	checksums, err := d.GetChecksumFile(release)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch checksums: %w - cannot verify download integrity", err)
+	}
+
 	// Find download URL for this platform
 	url, _, err := d.FindAssetForPlatform(release)
 	if err != nil {
 		return "", err
 	}
 
-	// Download and extract
-	if err := d.DownloadDerod(url, release.TagName); err != nil {
+	// Get expected checksum for our platform's asset
+	assetName := d.GetPlatformAssetName()
+	expectedChecksum, hasChecksum := checksums[assetName]
+	if !hasChecksum {
+		return "", fmt.Errorf("no checksum found for %s - cannot verify download integrity", assetName)
+	}
+
+	d.app.logToConsole(fmt.Sprintf("[VERIFY] Expected SHA256: %s", expectedChecksum))
+
+	// Download with checksum verification
+	if err := d.DownloadDerod(url, release.TagName, expectedChecksum); err != nil {
 		return "", err
 	}
 
@@ -492,7 +662,17 @@ func (a *App) CheckDerodStatus() map[string]interface{} {
 }
 
 // GetLatestDerodRelease fetches info about the latest DERO release
+// Respects the allow_github_check setting
 func (a *App) GetLatestDerodRelease() map[string]interface{} {
+	// Check if GitHub checks are allowed
+	if allowed, ok := a.settings["allow_github_check"].(bool); ok && !allowed {
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "GitHub checks are disabled in settings",
+			"github_blocked": true,
+		}
+	}
+
 	downloader := NewDerodDownloader(a)
 
 	release, err := downloader.GetLatestDeroRelease()
@@ -525,7 +705,18 @@ func (a *App) GetLatestDerodRelease() map[string]interface{} {
 }
 
 // DownloadDerodFromGitHub downloads the latest derod from GitHub
+// Respects the allow_github_check setting
 func (a *App) DownloadDerodFromGitHub() map[string]interface{} {
+	// Check if GitHub checks are allowed
+	if allowed, ok := a.settings["allow_github_check"].(bool); ok && !allowed {
+		a.logToConsole("[BLOCKED] GitHub checks disabled in settings")
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "GitHub checks are disabled. Please enable 'Allow GitHub Checks' in settings or install derod manually.",
+			"github_blocked": true,
+		}
+	}
+
 	a.logToConsole("[START] Starting derod download from GitHub...")
 
 	downloader := NewDerodDownloader(a)
@@ -538,9 +729,58 @@ func (a *App) DownloadDerodFromGitHub() map[string]interface{} {
 		}
 	}
 
+	a.logToConsole("[OK] derod downloaded and verified successfully")
 	return map[string]interface{}{
-		"success": true,
-		"path":    path,
-		"version": downloader.GetInstalledDerodVersion(),
+		"success":  true,
+		"path":     path,
+		"version":  downloader.GetInstalledDerodVersion(),
+		"verified": true,
 	}
+}
+
+// GetManualDerodInstructions returns instructions for manual derod installation
+func (a *App) GetManualDerodInstructions() map[string]interface{} {
+	downloader := NewDerodDownloader(a)
+	assetName := downloader.GetPlatformAssetName()
+
+	instructions := fmt.Sprintf(`Manual derod Installation Instructions:
+
+1. Download the latest DERO release from:
+   https://github.com/deroproject/derohe/releases/latest
+
+2. Download the file: %s
+
+3. IMPORTANT: Also download 'checksum.txt.signed' and verify the SHA256 hash
+
+4. Extract the archive and locate the derod binary
+
+5. Place the binary in:
+   %s/<version>/
+
+6. Restart HOLOGRAM and it should detect the installed binary
+
+Platform: %s/%s
+Expected binary names: derod-darwin, derod-linux-amd64, derod-windows-amd64.exe`, 
+		assetName,
+		downloader.GetBaseDir(),
+		runtime.GOOS,
+		runtime.GOARCH,
+	)
+
+	return map[string]interface{}{
+		"success":      true,
+		"instructions": instructions,
+		"downloadUrl":  "https://github.com/deroproject/derohe/releases/latest",
+		"assetName":    assetName,
+		"baseDir":      downloader.GetBaseDir(),
+		"platform":     fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
+	}
+}
+
+// IsGitHubCheckAllowed returns whether GitHub checks are enabled
+func (a *App) IsGitHubCheckAllowed() bool {
+	if allowed, ok := a.settings["allow_github_check"].(bool); ok {
+		return allowed
+	}
+	return true // Default to allowed
 }

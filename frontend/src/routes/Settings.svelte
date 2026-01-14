@@ -6,7 +6,8 @@
     SetSetting, StartGnomon, StopGnomon, ResyncGnomon, ResyncGnomonFromHeight,
     GetSearchExclusions, AddSearchExclusion, RemoveSearchExclusion, ClearSearchExclusions, SetSearchMinLikes,
     DetectRunningNode, CheckDerodStatus, GetLatestDerodRelease,
-    DownloadDerodFromGitHub, StartNode, StopNode, GetNodeStatus, GetSyncProgress,
+    DownloadDerodFromGitHub, GetManualDerodInstructions, IsGitHubCheckAllowed,
+    StartNode, StopNode, GetNodeStatus, GetSyncProgress,
     GetConnectedApps, RevokeAppPermissions, RevokeAppPermission, GetPermissionTypes,
     SetCypherpunkMode, GetNetworkFilterStatus, AddAllowedHost, RemoveAllowedHost,
     GetConnectionLog, ClearConnectionLog, GetActiveConnections,
@@ -743,20 +744,40 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     latestRelease = await GetLatestDerodRelease();
   }
   
+  let downloadError = '';
+  let downloadVerified = false;
+  let showManualInstructions = false;
+  let manualInstructions = null;
+  
   async function downloadDerod() {
     isDownloading = true;
+    downloadError = '';
+    downloadVerified = false;
     try {
       const result = await DownloadDerodFromGitHub();
       if (result.success) {
         derodStatus = await CheckDerodStatus();
+        downloadVerified = result.verified || false;
+      } else if (result.github_blocked) {
+        // GitHub checks disabled - show manual instructions
+        downloadError = result.error;
+        showManualInstructions = true;
+        manualInstructions = await GetManualDerodInstructions();
       } else {
+        downloadError = result.error || 'Download failed';
         console.error('Download failed:', result.error);
       }
     } catch (error) {
+      downloadError = error.message || 'Download error';
       console.error('Download error:', error);
     } finally {
       isDownloading = false;
     }
+  }
+  
+  async function loadManualInstructions() {
+    manualInstructions = await GetManualDerodInstructions();
+    showManualInstructions = true;
   }
   
   // Node start/stop controls moved to Network page
@@ -1358,13 +1379,60 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   <div class="settings-row-label">DERO Node Binary</div>
                   <div class="settings-row-desc">The DERO node binary (derod) is required to run a local node.</div>
                 </div>
-                <button on:click={downloadDerod} disabled={isDownloading} class="btn btn-primary">
-              {isDownloading ? 'Downloading...' : 'Download DERO Node'}
-            </button>
-            {#if isDownloading}
-                  <p class="form-hint mt-3">This may take a few minutes (~50MB download)</p>
-            {/if}
+                
+                {#if !$settingsState.allow_github_check}
+                  <div class="alert alert-warn mb-3">
+                    <p><strong>GitHub checks disabled</strong></p>
+                    <p class="form-hint">Auto-download is unavailable. You can enable it in Privacy settings or install manually.</p>
+                  </div>
+                  <button on:click={loadManualInstructions} class="btn btn-secondary">
+                    Show Manual Install Instructions
+                  </button>
+                {:else}
+                  <button on:click={downloadDerod} disabled={isDownloading} class="btn btn-primary">
+                    {isDownloading ? 'Downloading & Verifying...' : 'Download DERO Node'}
+                  </button>
+                {/if}
+                
+                {#if isDownloading}
+                  <p class="form-hint mt-3">Downloading and verifying SHA256 checksum... (~50MB)</p>
+                {/if}
+                
+                {#if downloadError}
+                  <div class="alert alert-error mt-3">
+                    <p>{downloadError}</p>
+                  </div>
+                {/if}
+                
+                {#if downloadVerified}
+                  <div class="alert alert-success mt-3">
+                    <p><Icons name="check" size={14} /> Download verified successfully</p>
+                  </div>
+                {/if}
               </div>
+              
+              {#if showManualInstructions && manualInstructions}
+                <div class="manual-instructions mt-4">
+                  <div class="explorer-header">
+                    <div class="explorer-header-left">
+                      <span class="explorer-header-icon">◆</span>
+                      <span class="explorer-header-title">MANUAL INSTALLATION</span>
+                    </div>
+                    <button class="btn btn-ghost btn-sm" on:click={() => showManualInstructions = false}>
+                      <Icons name="x" size={14} />
+                    </button>
+                  </div>
+                  <div class="card-content">
+                    <pre class="manual-instructions-text">{manualInstructions.instructions}</pre>
+                    <div class="manual-links mt-3">
+                      <a href={manualInstructions.downloadUrl} target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm">
+                        <Icons name="external-link" size={14} />
+                        Open GitHub Releases
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              {/if}
           {/if}
           </div>
         </div>
@@ -2536,6 +2604,27 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               <div class="alert alert-success">Only DERO network and whitelisted hosts are allowed</div>
           {:else}
               <div class="alert alert-info">All network connections are allowed</div>
+          {/if}
+          
+          <!-- GitHub Checks Toggle -->
+          <div class="settings-row" style="margin-top: var(--s-4);">
+            <div class="settings-row-info">
+              <div class="settings-row-label">Allow GitHub Checks</div>
+              <div class="settings-row-desc">Enable auto-download of derod from GitHub. Disable for full privacy (manual install required).</div>
+            </div>
+            <input
+              type="checkbox"
+              class="toggle"
+              checked={$settingsState.allow_github_check !== false}
+              on:change={(e) => saveSetting('allow_github_check', e.target.checked)}
+            />
+          </div>
+          
+          {#if $settingsState.allow_github_check === false}
+            <div class="alert alert-warn" style="margin-top: var(--s-2);">
+              <p><strong>GitHub checks disabled</strong></p>
+              <p class="form-hint">Auto-download of derod is unavailable. Go to Node settings for manual installation instructions.</p>
+            </div>
           {/if}
           </div>
         </div>
@@ -4621,5 +4710,49 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     display: flex;
     align-items: center;
     gap: var(--s-2);
+  }
+  
+  /* Manual Installation Instructions */
+  .manual-instructions {
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--s-2);
+  }
+  
+  .manual-instructions-text {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    background: var(--bg-card-hover);
+    padding: var(--s-3);
+    border-radius: var(--s-1);
+    color: var(--text-2);
+    margin: 0;
+  }
+  
+  .manual-links {
+    display: flex;
+    gap: var(--s-2);
+  }
+  
+  .alert-success {
+    background: color-mix(in srgb, var(--status-ok) 15%, transparent);
+    border: 1px solid var(--status-ok);
+    color: var(--status-ok);
+    padding: var(--s-3);
+    border-radius: var(--s-2);
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+  
+  .alert-error {
+    background: color-mix(in srgb, var(--status-error) 15%, transparent);
+    border: 1px solid var(--status-error);
+    color: var(--status-error);
+    padding: var(--s-3);
+    border-radius: var(--s-2);
   }
 </style>
