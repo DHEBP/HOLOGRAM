@@ -238,6 +238,128 @@ func (a *App) GetBalance() map[string]interface{} {
 	}
 }
 
+// SyncWallet syncs the wallet with the daemon and waits for new blocks to be scanned
+func (a *App) SyncWallet() map[string]interface{} {
+	walletManager.RLock()
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		walletManager.RUnlock()
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+	wallet := walletManager.wallet
+	walletManager.RUnlock()
+
+	// Get current heights
+	walletHeight := wallet.Get_Height()
+	daemonHeight := wallet.Get_Daemon_Height()
+
+	a.logToConsole(fmt.Sprintf("[SYNC] Wallet height: %d, Daemon height: %d", walletHeight, daemonHeight))
+
+	// If wallet is already synced, return immediately
+	if daemonHeight == 0 {
+		return map[string]interface{}{
+			"success":      true,
+			"synced":       false,
+			"walletHeight": walletHeight,
+			"daemonHeight": daemonHeight,
+			"message":      "Daemon not connected",
+		}
+	}
+
+	if walletHeight >= daemonHeight {
+		return map[string]interface{}{
+			"success":      true,
+			"synced":       true,
+			"walletHeight": walletHeight,
+			"daemonHeight": daemonHeight,
+			"message":      "Wallet is up to date",
+		}
+	}
+
+	// Wallet is behind - wait for it to sync (up to 10 seconds)
+	a.logToConsole("[SYNC] Wallet is behind daemon, waiting for sync...")
+	
+	maxWait := 10 * time.Second
+	pollInterval := 500 * time.Millisecond
+	startTime := time.Now()
+	
+	for time.Since(startTime) < maxWait {
+		time.Sleep(pollInterval)
+		
+		walletManager.RLock()
+		if walletManager.wallet == nil {
+			walletManager.RUnlock()
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet closed during sync",
+			}
+		}
+		newHeight := walletManager.wallet.Get_Height()
+		walletManager.RUnlock()
+		
+		if newHeight >= daemonHeight {
+			a.logToConsole(fmt.Sprintf("[SYNC] Wallet synced to height %d", newHeight))
+			return map[string]interface{}{
+				"success":      true,
+				"synced":       true,
+				"walletHeight": newHeight,
+				"daemonHeight": daemonHeight,
+				"message":      "Wallet synced successfully",
+			}
+		}
+		
+		// Log progress
+		if newHeight > walletHeight {
+			a.logToConsole(fmt.Sprintf("[SYNC] Progress: %d / %d", newHeight, daemonHeight))
+			walletHeight = newHeight
+		}
+	}
+	
+	// Timeout - still syncing
+	walletManager.RLock()
+	finalHeight := wallet.Get_Height()
+	walletManager.RUnlock()
+	
+	a.logToConsole(fmt.Sprintf("[SYNC] Sync timeout, wallet at %d / %d", finalHeight, daemonHeight))
+	
+	return map[string]interface{}{
+		"success":      true,
+		"synced":       false,
+		"walletHeight": finalHeight,
+		"daemonHeight": daemonHeight,
+		"message":      fmt.Sprintf("Still syncing: %d / %d blocks", finalHeight, daemonHeight),
+	}
+}
+
+// GetWalletSyncStatus returns the current sync status without waiting
+func (a *App) GetWalletSyncStatus() map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	wallet := walletManager.wallet
+	walletHeight := wallet.Get_Height()
+	daemonHeight := wallet.Get_Daemon_Height()
+	
+	synced := daemonHeight > 0 && walletHeight >= daemonHeight
+
+	return map[string]interface{}{
+		"success":      true,
+		"synced":       synced,
+		"walletHeight": walletHeight,
+		"daemonHeight": daemonHeight,
+		"behindBlocks": int64(daemonHeight) - int64(walletHeight),
+	}
+}
+
 // GetAddress returns the wallet address
 func (a *App) GetAddress() map[string]interface{} {
 	walletManager.RLock()
@@ -902,8 +1024,11 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			return map[string]interface{}{"success": false, "error": "Missing scid"}
 		}
 		
-		// Parse SC arguments
+		// Parse SC arguments and track if entrypoint is in sc_rpc
 		scArgs := rpc.Arguments{}
+		hasEntrypointInScRpc := false
+		entrypointFromScRpc := ""
+		
 		if args, ok := params["sc_rpc"].([]interface{}); ok {
 			for _, arg := range args {
 				if a, ok := arg.(map[string]interface{}); ok {
@@ -912,6 +1037,14 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 					val := a["value"]
 					
 					if name != "" {
+						// Track if entrypoint is in sc_rpc (feed.tela sends it this way)
+						if name == "entrypoint" {
+							hasEntrypointInScRpc = true
+							if ep, ok := val.(string); ok {
+								entrypointFromScRpc = ep
+							}
+						}
+						
 						switch type_ {
 						case "U":
 							if v, ok := val.(float64); ok {
@@ -921,23 +1054,56 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 							if v, ok := val.(string); ok {
 								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
 							}
+						case "H":
+							// Handle hash type (SCID)
+							if v, ok := val.(string); ok {
+								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
+							}
 						}
 					}
 				}
 			}
 		}
 		
-		// Parse entrypoint
-		entrypoint := ""
-		if ep, ok := params["entrypoint"].(string); ok {
-			entrypoint = ep
+		// Determine entrypoint: check sc_rpc first, then separate param
+		entrypoint := entrypointFromScRpc
+		if entrypoint == "" {
+			if ep, ok := params["entrypoint"].(string); ok {
+				entrypoint = ep
+			}
 		}
 		
-		// Add entrypoint to args if provided
-		if entrypoint != "" {
-			scArgs = append(scArgs, rpc.Argument{Name: rpc.SCACTION, DataType: "U", Value: uint64(1)}) // Call SC
-			scArgs = append(scArgs, rpc.Argument{Name: rpc.SCID, DataType: "H", Value: scid})
-			scArgs = append(scArgs, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
+		// For SC invocation, SCACTION and SCID must be prepended if entrypoint exists
+		// This is required regardless of where entrypoint was specified
+		if entrypoint != "" || hasEntrypointInScRpc {
+			// Check if SCACTION and SCID are already in scArgs (avoid duplicates)
+			hasSCACTION := false
+			hasSCID := false
+			for _, arg := range scArgs {
+				if arg.Name == rpc.SCACTION {
+					hasSCACTION = true
+				}
+				if arg.Name == rpc.SCID {
+					hasSCID = true
+				}
+			}
+			
+			// Prepend SCACTION and SCID if not already present
+			newArgs := rpc.Arguments{}
+			if !hasSCACTION {
+				newArgs = append(newArgs, rpc.Argument{Name: rpc.SCACTION, DataType: "U", Value: uint64(rpc.SC_CALL)})
+			}
+			if !hasSCID {
+				newArgs = append(newArgs, rpc.Argument{Name: rpc.SCID, DataType: "H", Value: crypto.HashHexToHash(scid)})
+			}
+			
+			// Add entrypoint if it was specified as a separate param (not in sc_rpc)
+			if entrypoint != "" && !hasEntrypointInScRpc {
+				newArgs = append(newArgs, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
+			}
+			
+			// Prepend new args to existing scArgs
+			scArgs = append(newArgs, scArgs...)
 		}
 		
 		// Check for transfers attached to SC call (including burns for dev donations)

@@ -1,7 +1,7 @@
 <script>
   import { walletState, appState, settingsState, walletRequestHistory, clearRequestHistory, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { 
     Copy, ArrowUp, ArrowDown, ArrowLeftRight, Eye, EyeOff,
@@ -119,6 +119,12 @@
   // ============================================
   let historyFilter = 'all'; // 'all' | 'in' | 'out' | 'mining'
   let historySearch = '';
+  
+  // ============================================
+  // SYNC STATUS
+  // ============================================
+  let syncStatus = null; // { synced, walletHeight, daemonHeight, behindBlocks }
+  let isSyncing = false;
   
   // ============================================
   // ADDRESS BOOK STATE
@@ -462,8 +468,36 @@
   // ============================================
   // DATA LOADING FUNCTIONS
   // ============================================
-  async function refreshBalance() {
+  async function refreshBalance(forceSync = false) {
     try {
+      // If force sync or manual refresh, sync with daemon first
+      if (forceSync) {
+        isSyncing = true;
+        const syncResult = await SyncWallet();
+        isSyncing = false;
+        
+        if (syncResult.success) {
+          syncStatus = {
+            synced: syncResult.synced,
+            walletHeight: syncResult.walletHeight,
+            daemonHeight: syncResult.daemonHeight,
+            message: syncResult.message
+          };
+        }
+      } else {
+        // Just get current sync status without waiting
+        const statusResult = await GetWalletSyncStatus();
+        if (statusResult.success) {
+          syncStatus = {
+            synced: statusResult.synced,
+            walletHeight: statusResult.walletHeight,
+            daemonHeight: statusResult.daemonHeight,
+            behindBlocks: statusResult.behindBlocks
+          };
+        }
+      }
+      
+      // Get balance
       const balance = await GetBalance();
       if (balance.success) {
         walletState.update(state => ({
@@ -474,6 +508,7 @@
       }
     } catch (err) {
       console.error('Error fetching balance:', err);
+      isSyncing = false;
     }
   }
   
@@ -490,11 +525,15 @@
   
   
   async function refreshAll() {
-    await Promise.all([
-      refreshBalance(),
-      loadTransactionHistory()
-    ]);
-    toast.success('Wallet refreshed');
+    // Force sync when user manually refreshes
+    await refreshBalance(true);
+    await loadTransactionHistory();
+    
+    if (syncStatus && !syncStatus.synced && syncStatus.behindBlocks > 0) {
+      toast.info(`Syncing: ${syncStatus.behindBlocks} blocks behind`);
+    } else {
+      toast.success('Wallet refreshed');
+    }
   }
   
   // ============================================
@@ -1136,7 +1175,17 @@
                 BALANCE
               </div>
               <div class="cmd-panel-meta">
-                <span class="badge badge-live">LIVE</span>
+                {#if isSyncing}
+                  <span class="badge badge-syncing">
+                    <Loader2 size={10} class="spin" /> SYNCING
+                  </span>
+                {:else if syncStatus && !syncStatus.synced && syncStatus.behindBlocks > 0}
+                  <span class="badge badge-warning" title="Wallet is {syncStatus.behindBlocks} blocks behind daemon">
+                    {syncStatus.behindBlocks} BEHIND
+                  </span>
+                {:else}
+                  <span class="badge badge-live">SYNCED</span>
+                {/if}
               </div>
             </div>
             <div class="wallet-balance-display">
@@ -1147,6 +1196,14 @@
               {#if $walletState.lockedBalance > 0}
                 <div class="balance-locked">
                   + {formatBalance($walletState.lockedBalance)} locked
+                </div>
+              {/if}
+              {#if syncStatus && syncStatus.walletHeight}
+                <div class="sync-height-info">
+                  Block: {syncStatus.walletHeight.toLocaleString()}
+                  {#if syncStatus.daemonHeight && syncStatus.daemonHeight > syncStatus.walletHeight}
+                    / {syncStatus.daemonHeight.toLocaleString()}
+                  {/if}
                 </div>
               {/if}
               <div class="wallet-address-row">
