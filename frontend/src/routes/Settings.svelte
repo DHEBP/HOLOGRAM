@@ -7,7 +7,7 @@
     GetSearchExclusions, AddSearchExclusion, RemoveSearchExclusion, ClearSearchExclusions, SetSearchMinLikes,
     DetectRunningNode, CheckDerodStatus, GetLatestDerodRelease,
     DownloadDerodFromGitHub, GetManualDerodInstructions, IsGitHubCheckAllowed,
-    StartNode, StopNode, GetNodeStatus, GetSyncProgress,
+    StartNode, StopNode, GetNodeStatus, GetSyncProgress, TestAndConnectEndpoint,
     GetConnectedApps, RevokeAppPermissions, RevokeAppPermission, GetPermissionTypes,
     SetCypherpunkMode, GetNetworkFilterStatus, AddAllowedHost, RemoveAllowedHost,
     GetConnectionLog, ClearConnectionLog, GetActiveConnections,
@@ -800,6 +800,44 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       detecting = false;
       // Clear message after 5 seconds
       setTimeout(() => detectionMessage = '', 5000);
+    }
+  }
+  
+  // Test & Connect to custom endpoint (for LAN/power users)
+  let testingEndpoint = false;
+  let endpointTestResult = null;
+  let customEndpoint = '';
+  
+  async function testAndConnect() {
+    const endpoint = customEndpoint || $settingsState.daemonEndpoint;
+    if (!endpoint) {
+      endpointTestResult = { success: false, error: 'Please enter an endpoint' };
+      return;
+    }
+    
+    testingEndpoint = true;
+    endpointTestResult = null;
+    
+    try {
+      const result = await TestAndConnectEndpoint(endpoint);
+      endpointTestResult = result;
+      
+      if (result.success) {
+        // Update the settings state with the new endpoint
+        await updateSetting('daemonEndpoint', result.endpoint);
+        customEndpoint = result.endpoint;
+      }
+    } catch (error) {
+      endpointTestResult = { 
+        success: false, 
+        error: error.message || 'Connection test failed' 
+      };
+    } finally {
+      testingEndpoint = false;
+      // Clear success message after 10 seconds
+      if (endpointTestResult?.success) {
+        setTimeout(() => endpointTestResult = null, 10000);
+      }
     }
   }
   
@@ -1919,13 +1957,56 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 <span class="settings-row-desc">Default ports: Mainnet (10102), Testnet (40402), Simulator (20000)</span>
               </div>
             </div>
+            
+            <!-- Endpoint input with Test & Connect button -->
+            <div class="endpoint-input-row">
               <input
                 type="text"
-                bind:value={$settingsState.daemonEndpoint}
-                on:blur={(e) => updateSetting('daemonEndpoint', e.target.value)}
-                class="input"
-              style="margin-top: 8px;"
-            />
+                bind:value={customEndpoint}
+                placeholder={$settingsState.daemonEndpoint || 'http://127.0.0.1:10102'}
+                class="input endpoint-input"
+                on:keydown={(e) => e.key === 'Enter' && testAndConnect()}
+              />
+              <button 
+                on:click={testAndConnect} 
+                disabled={testingEndpoint}
+                class="btn btn-primary"
+              >
+                {#if testingEndpoint}
+                  <Icons name="loader" size={14} />
+                  Testing...
+                {:else}
+                  <Icons name="zap" size={14} />
+                  Test & Connect
+                {/if}
+              </button>
+            </div>
+            
+            <p class="form-hint" style="margin-top: 8px;">
+              Power users: Enter your LAN node address (e.g., http://192.168.1.100:10102)
+            </p>
+            
+            <!-- Connection test result -->
+            {#if endpointTestResult}
+              {#if endpointTestResult.success}
+                <div class="alert alert-success" style="margin-top: 12px;">
+                  <div class="endpoint-success">
+                    <Icons name="check" size={16} />
+                    <div class="endpoint-success-info">
+                      <strong>Connected to {endpointTestResult.network} node</strong>
+                      <span class="endpoint-details">
+                        Version {endpointTestResult.version} • Height {endpointTestResult.height?.toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              {:else}
+                <div class="alert alert-error" style="margin-top: 12px;">
+                  <Icons name="x" size={14} />
+                  {endpointTestResult.error}
+                </div>
+              {/if}
+            {/if}
             
             <div class="settings-row" style="margin-top: 16px;">
               <div class="settings-row-info">
@@ -4754,5 +4835,40 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     color: var(--status-error);
     padding: var(--s-3);
     border-radius: var(--s-2);
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+  
+  /* Endpoint Input Row */
+  .endpoint-input-row {
+    display: flex;
+    gap: var(--s-2);
+    margin-top: 8px;
+  }
+  
+  .endpoint-input {
+    flex: 1;
+  }
+  
+  .endpoint-success {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+  }
+  
+  .endpoint-success-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  
+  .endpoint-success-info strong {
+    color: var(--status-ok);
+  }
+  
+  .endpoint-details {
+    font-size: 12px;
+    color: var(--text-3);
   }
 </style>

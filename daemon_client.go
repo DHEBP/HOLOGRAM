@@ -19,6 +19,7 @@ type BlockchainClient interface {
 	GetSCVariables(scid string, code, variables bool) (map[string]interface{}, error)
 	TestConnection() error
 	GetEndpoint() string
+	SetEndpoint(endpoint string)
 }
 
 // DaemonClient handles direct RPC connection to DERO daemon
@@ -53,6 +54,11 @@ func NewDaemonClientWithTimeout(endpoint string, timeout time.Duration) *DaemonC
 // GetEndpoint returns the daemon endpoint URL
 func (d *DaemonClient) GetEndpoint() string {
 	return d.endpoint
+}
+
+// SetEndpoint updates the daemon endpoint URL
+func (d *DaemonClient) SetEndpoint(endpoint string) {
+	d.endpoint = endpoint
 }
 
 // RPCRequest represents a JSON-RPC 2.0 request

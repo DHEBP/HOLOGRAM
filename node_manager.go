@@ -192,6 +192,109 @@ func (a *App) DetectRunningNode() map[string]interface{} {
 	}
 }
 
+// TestAndConnectEndpoint tests a custom endpoint and connects if successful
+// This allows power users to connect to LAN nodes without running an embedded node
+func (a *App) TestAndConnectEndpoint(endpoint string) map[string]interface{} {
+	if endpoint == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Endpoint cannot be empty",
+		}
+	}
+
+	// Normalize endpoint - strip trailing slash and /json_rpc
+	endpoint = strings.TrimSuffix(endpoint, "/")
+	endpoint = strings.TrimSuffix(endpoint, "/json_rpc")
+
+	a.logToConsole(fmt.Sprintf("[...] Testing connection to %s...", endpoint))
+
+	// Create a temporary client with reasonable timeout
+	client := NewDaemonClientWithTimeout(endpoint, 5*time.Second)
+
+	info, err := client.GetInfo()
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Connection failed: %v", err))
+		return map[string]interface{}{
+			"success":  false,
+			"error":    fmt.Sprintf("Connection failed: %v", err),
+			"endpoint": endpoint,
+		}
+	}
+
+	if info == nil {
+		a.logToConsole("[ERR] No response from node")
+		return map[string]interface{}{
+			"success":  false,
+			"error":    "No response from node",
+			"endpoint": endpoint,
+		}
+	}
+
+	// Parse node info
+	height := int64(0)
+	topoHeight := int64(0)
+	version := ""
+	network := ""
+
+	if h, ok := info["height"].(float64); ok {
+		height = int64(h)
+	}
+	if th, ok := info["topoheight"].(float64); ok {
+		topoHeight = int64(th)
+	}
+	if v, ok := info["version"].(string); ok {
+		version = v
+	}
+	if n, ok := info["network"].(string); ok {
+		network = n
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] Connected to %s (v%s, %s, height: %d)", endpoint, version, network, height))
+
+	// Save the endpoint to settings
+	a.settings["daemon_endpoint"] = endpoint
+	a.logToConsole(fmt.Sprintf("[OK] Saved endpoint: %s", endpoint))
+
+	// Update the daemon client to use this endpoint
+	if a.daemonClient != nil {
+		a.daemonClient.SetEndpoint(endpoint)
+		a.logToConsole("[OK] Daemon client updated to use new endpoint")
+	}
+
+	return map[string]interface{}{
+		"success":    true,
+		"connected":  true,
+		"endpoint":   endpoint,
+		"height":     height,
+		"topoHeight": topoHeight,
+		"version":    version,
+		"network":    network,
+		"message":    fmt.Sprintf("Connected to %s node (v%s) at height %d", network, version, height),
+	}
+}
+
+// IsLANAddress checks if an IP address is on the local network
+func IsLANAddress(ip string) bool {
+	// Check for common LAN ranges
+	lanPrefixes := []string{
+		"192.168.",
+		"10.",
+		"172.16.", "172.17.", "172.18.", "172.19.",
+		"172.20.", "172.21.", "172.22.", "172.23.",
+		"172.24.", "172.25.", "172.26.", "172.27.",
+		"172.28.", "172.29.", "172.30.", "172.31.",
+		"127.",
+		"localhost",
+	}
+
+	for _, prefix := range lanPrefixes {
+		if strings.HasPrefix(ip, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // DetectExistingBlockchain scans common locations for existing blockchain data
 func (a *App) DetectExistingBlockchain() map[string]interface{} {
 	a.logToConsole("[...] Scanning for existing blockchain data...")

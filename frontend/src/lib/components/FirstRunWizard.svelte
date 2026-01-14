@@ -5,7 +5,7 @@
   import { 
     DetectRunningNode, CheckDerodStatus, GetLatestDerodRelease,
     DownloadDerodFromGitHub, DetectExistingBlockchain, StartNode,
-    StartSimulatorMode, SetDevSupportEnabled
+    StartSimulatorMode, SetDevSupportEnabled, TestAndConnectEndpoint
   } from '../../../wailsjs/go/main/App.js';
   import { waitForWails } from '../utils/wails.js';
   import { saveSetting, syncNetworkMode } from '../stores/appState.js';
@@ -30,7 +30,11 @@
   let selectedLocation = '';
   let customLocation = '';
   let useExternalNode = false;
-  let externalEndpoint = 'http://127.0.0.1:10102/json_rpc';
+  let externalEndpoint = 'http://192.168.1.1:10102';
+  
+  // Connection testing state
+  let testingConnection = false;
+  let connectionTestResult = null;
   
   onMount(async () => {
     try {
@@ -115,16 +119,43 @@
     step = 'external_config';
   }
   
-  async function connectToExternal() {
-    try {
-      // Save the external endpoint (using correct backend keys via saveSetting)
-      await saveSetting('daemonEndpoint', externalEndpoint);
-      await saveSetting('useEmbeddedNode', false);
-      
-      showEpochInfo();
-    } catch (err) {
-      error = err.message || 'Failed to save settings';
+  async function testAndConnectExternal() {
+    if (!externalEndpoint) {
+      connectionTestResult = { success: false, error: 'Please enter an endpoint' };
+      return;
     }
+    
+    testingConnection = true;
+    connectionTestResult = null;
+    
+    try {
+      // Test the connection first
+      const result = await TestAndConnectEndpoint(externalEndpoint);
+      connectionTestResult = result;
+      
+      if (result.success) {
+        // Connection successful - save settings and proceed
+        await saveSetting('daemonEndpoint', result.endpoint);
+        await saveSetting('useEmbeddedNode', false);
+        
+        // Brief delay to show success message
+        setTimeout(() => {
+          showEpochInfo();
+        }, 1500);
+      }
+    } catch (err) {
+      connectionTestResult = { 
+        success: false, 
+        error: err.message || 'Connection test failed' 
+      };
+    } finally {
+      testingConnection = false;
+    }
+  }
+  
+  // Legacy function for backwards compatibility
+  async function connectToExternal() {
+    await testAndConnectExternal();
   }
   
   async function useFoundExternal() {
@@ -307,19 +338,25 @@
           <p class="wizard-step-desc">How would you like to connect to the DERO network?</p>
         </div>
         
-        <div class="wizard-options grid-2">
+        <div class="wizard-options grid-3">
           <button on:click={downloadDerod} class="wizard-option primary">
             <span class="wizard-option-icon">◉</span>
-            <div class="wizard-option-title">Mainnet</div>
-            <div class="wizard-option-desc">Live blockchain</div>
-            <span class="wizard-option-badge err">PERMANENT</span>
-            </button>
+            <div class="wizard-option-title">Download Node</div>
+            <div class="wizard-option-desc">New users start here</div>
+            <span class="wizard-option-badge err">~50MB</span>
+          </button>
           <button on:click={chooseExternalNode} class="wizard-option">
+            <span class="wizard-option-icon">⬡</span>
+            <div class="wizard-option-title">LAN / External</div>
+            <div class="wizard-option-desc">Connect to existing node</div>
+            <span class="wizard-option-badge cyan">POWER USER</span>
+          </button>
+          <button on:click={useSimulatorInstead} class="wizard-option">
             <span class="wizard-option-icon">◌</span>
             <div class="wizard-option-title">Simulator</div>
-            <div class="wizard-option-desc">Local simulator</div>
+            <div class="wizard-option-desc">Local test environment</div>
             <span class="wizard-option-badge ok">SAFE • NO COST</span>
-            </button>
+          </button>
         </div>
       
       {:else if step === 'downloading'}
@@ -425,31 +462,70 @@
             <span class="wizard-status-dot cyan"></span>
             <span class="wizard-status-text">Configure</span>
           </div>
-          <span class="wizard-badge live">EXTERNAL</span>
+          <span class="wizard-badge live">LAN / EXTERNAL</span>
         </div>
         
         <div class="wizard-center" style="padding-top: var(--s-2);">
-          <h2 class="wizard-step-title">External Node</h2>
-          <p class="wizard-step-desc">Enter your node endpoint</p>
+          <h2 class="wizard-step-title">Connect to Node</h2>
+          <p class="wizard-step-desc">Enter your LAN or external node address</p>
         </div>
           
         <div class="wizard-form-group">
           <label class="wizard-form-label">Daemon Endpoint</label>
+          <div class="wizard-endpoint-row">
             <input
               type="text"
               bind:value={externalEndpoint}
-              placeholder="http://127.0.0.1:10102/json_rpc"
-            class="input"
+              placeholder="http://192.168.1.100:10102"
+              class="input"
+              disabled={testingConnection}
+              on:keydown={(e) => e.key === 'Enter' && testAndConnectExternal()}
             />
+            <button 
+              on:click={testAndConnectExternal} 
+              disabled={testingConnection}
+              class="wizard-btn wizard-btn-primary"
+            >
+              {#if testingConnection}
+                <span class="wizard-spinner"></span>
+                Testing...
+              {:else}
+                Test & Connect
+              {/if}
+            </button>
           </div>
+          <p class="wizard-form-hint">
+            Example: http://192.168.1.71:10102 (your LAN node IP)
+          </p>
+        </div>
+        
+        <!-- Connection Test Result -->
+        {#if connectionTestResult}
+          {#if connectionTestResult.success}
+            <div class="wizard-alert wizard-alert-success">
+              <Check size={18} />
+              <div class="wizard-alert-content">
+                <strong>Connected to {connectionTestResult.network} node</strong>
+                <span class="wizard-alert-details">
+                  Version {connectionTestResult.version} • Height {connectionTestResult.height?.toLocaleString()}
+                </span>
+              </div>
+            </div>
+          {:else}
+            <div class="wizard-alert wizard-alert-error">
+              <X size={18} />
+              <div class="wizard-alert-content">
+                <strong>Connection failed</strong>
+                <span class="wizard-alert-details">{connectionTestResult.error}</span>
+              </div>
+            </div>
+          {/if}
+        {/if}
           
-        <div class="wizard-buttons">
-          <button on:click={connectToExternal} class="wizard-btn wizard-btn-primary">
-              Connect
-            </button>
-          <button on:click={() => step = 'no_node'} class="wizard-btn wizard-btn-ghost">
-              ← Back
-            </button>
+        <div class="wizard-buttons" style="margin-top: var(--s-4);">
+          <button on:click={() => { connectionTestResult = null; step = 'no_node'; }} class="wizard-btn wizard-btn-ghost">
+            ← Back
+          </button>
         </div>
       
       {:else if step === 'starting'}

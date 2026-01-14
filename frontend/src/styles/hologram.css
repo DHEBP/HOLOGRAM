@@ -1928,6 +1928,10 @@
       grid-template-columns: 1fr 1fr;
     }
     
+    .wizard-options.grid-3 {
+      grid-template-columns: 1fr 1fr 1fr;
+    }
+    
     .wizard-option {
       display: flex;
       flex-direction: column;
@@ -2033,6 +2037,81 @@
     .wizard-option-badge.warn { color: var(--status-warn); border-color: rgba(251, 191, 36, 0.4); }
     .wizard-option-badge.err { color: var(--status-err); border-color: rgba(248, 113, 113, 0.4); }
     .wizard-option-badge.cyan { color: var(--cyan-400); border-color: rgba(34, 211, 238, 0.4); }
+    
+    /* Wizard Endpoint Row - Input + Button side by side */
+    .wizard-endpoint-row {
+      display: flex;
+      gap: var(--s-2);
+      align-items: stretch;
+    }
+    
+    .wizard-endpoint-row .input {
+      flex: 1;
+    }
+    
+    .wizard-endpoint-row .wizard-btn {
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    
+    /* Wizard Form Hint */
+    .wizard-form-hint {
+      font-size: 12px;
+      color: var(--text-4);
+      margin-top: var(--s-2);
+    }
+    
+    /* Wizard Alert Boxes */
+    .wizard-alert {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--s-3);
+      padding: var(--s-3) var(--s-4);
+      border-radius: var(--r-md);
+      margin-top: var(--s-4);
+    }
+    
+    .wizard-alert-success {
+      background: color-mix(in srgb, var(--status-ok) 12%, var(--void-deep));
+      border: 1px solid rgba(52, 211, 153, 0.4);
+      color: var(--status-ok);
+    }
+    
+    .wizard-alert-error {
+      background: color-mix(in srgb, var(--status-err) 12%, var(--void-deep));
+      border: 1px solid rgba(248, 113, 113, 0.4);
+      color: var(--status-err);
+    }
+    
+    .wizard-alert-content {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    
+    .wizard-alert-content strong {
+      font-weight: 600;
+    }
+    
+    .wizard-alert-details {
+      font-size: 12px;
+      opacity: 0.85;
+    }
+    
+    /* Wizard Spinner */
+    .wizard-spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
     
     /* Legacy support for secondary class */
     .wizard-option.secondary {
