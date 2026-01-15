@@ -597,45 +597,40 @@
   <!-- v6.4 Status Panel - Redesigned: Services Grid + Info Rows -->
   <div class="sidebar-status">
     {#if !collapsed}
-      <!-- SERVICES CHIPS: Compact row for binary status indicators (E3 Design) -->
-      <div class="services-chips">
+      <!-- E2 DESIGN: All Status Rows (Fully Unified) -->
+      <div class="info-rows">
+        <!-- Service Status Rows -->
         <button
-          class="service-chip"
-          class:chip-ok={$appState.nodeConnected}
-          class:chip-err={!$appState.nodeConnected}
+          class="service-row"
           on:click|stopPropagation={(e) => handleStatusClick('node', e)}
-          title={$appState.nodeConnected ? 'Node Online' : 'Node Offline'}
+          title={$appState.nodeConnected ? 'Node Online - Click for details' : 'Node Offline - Click for details'}
         >
-          <span class="chip-dot"></span>
-          <span class="chip-label">NODE</span>
+          <span class="service-row-label">NODE</span>
+          <span class="service-row-dot" class:ok={$appState.nodeConnected} class:err={!$appState.nodeConnected}></span>
         </button>
         
         <button
-          class="service-chip"
-          class:chip-ok={$appState.xswdServerRunning}
-          class:chip-err={!$appState.xswdServerRunning}
+          class="service-row"
           on:click|stopPropagation={(e) => handleStatusClick('xswd', e)}
-          title={$appState.xswdServerRunning ? 'XSWD Server Active' : 'XSWD Server Offline'}
+          title={$appState.xswdServerRunning ? 'XSWD Server Active - Click for details' : 'XSWD Server Offline - Click for details'}
         >
-          <span class="chip-dot"></span>
-          <span class="chip-label">XSWD</span>
+          <span class="service-row-label">XSWD</span>
+          <span class="service-row-dot" class:ok={$appState.xswdServerRunning} class:err={!$appState.xswdServerRunning}></span>
         </button>
         
         <button
-          class="service-chip"
-          class:chip-ok={epochStats.enabled && epochStats.active && !epochStats.paused && epochStats.worker_running}
-          class:chip-warn={epochStats.enabled && (epochStats.paused || !epochStats.active || !epochStats.worker_running)}
-          class:chip-err={!epochStats.enabled}
+          class="service-row"
           on:click|stopPropagation={(e) => handleStatusClick('epoch', e)}
           title={!epochStats.enabled ? 'EPOCH Disabled' : epochStats.paused ? 'EPOCH Paused' : epochStats.active && epochStats.worker_running ? 'EPOCH Active' : epochStats.active ? 'EPOCH Ready' : 'EPOCH Connecting'}
         >
-          <span class="chip-dot"></span>
-          <span class="chip-label">EPOCH</span>
+          <span class="service-row-label">EPOCH</span>
+          <span class="service-row-dot" 
+            class:ok={epochStats.enabled && epochStats.active && !epochStats.paused && epochStats.worker_running}
+            class:warn={epochStats.enabled && (epochStats.paused || !epochStats.active || !epochStats.worker_running)}
+            class:err={!epochStats.enabled}></span>
         </button>
-      </div>
-      
-      <!-- INFO ROWS: Network selector and Block height -->
-      <div class="info-rows">
+        
+        <!-- Info Rows: Network selector and Block height -->
         <!-- Network Selector -->
         <div class="network-indicator-wrapper">
           <button
@@ -696,7 +691,7 @@
           </button>
         {/if}
         
-        <!-- GNOMON Progress Row (Option B: Label + Bar + Percentage) -->
+        <!-- GNOMON Progress Row (Bar Only) -->
         <button
           class="gnomon-row"
           class:gnomon-synced={$appState.gnomonRunning && $appState.gnomonProgress >= 100}
@@ -716,17 +711,6 @@
                 style="width: {$appState.gnomonRunning ? Math.min($appState.gnomonProgress, 100) : 100}%"
               ></div>
             </div>
-            <span class="gnomon-percent" 
-              class:synced={$appState.gnomonRunning && $appState.gnomonProgress >= 100}
-              class:offline={!$appState.gnomonRunning}>
-              {#if !$appState.gnomonRunning}
-                OFF
-              {:else if $appState.gnomonProgress >= 100}
-                100%
-              {:else}
-                {$appState.gnomonProgress.toFixed(0)}%
-              {/if}
-            </span>
           </div>
         </button>
       </div>
@@ -1320,7 +1304,7 @@
   .sidebar-menu {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 8px;
     overflow-y: auto;
     overflow-x: hidden; /* Never show horizontal scrollbar */
     padding: 8px 16px;
@@ -1337,43 +1321,32 @@
   .nav-item {
     width: 100%;
     text-align: left;
-    border: none;
-    background: transparent;
+    border: 1px solid var(--border-subtle);
+    background: var(--void-base);
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 14px 8px 26px; /* Increased left padding to align with centered wordmark */
+    padding: 8px 12px;
     font-size: 13px;
     font-weight: 500;
     letter-spacing: 0.02em;
     color: var(--text-2);
-    border-radius: var(--r-md);
+    border-radius: 6px;
     cursor: pointer;
     transition: all 150ms ease;
     position: relative;
   }
   
   .nav-item:hover {
-    background: var(--void-hover);
+    background: var(--void-mid);
+    border-color: var(--cyan-500);
     color: var(--text-1);
   }
   
   .nav-item.active {
-    background: rgba(34, 211, 238, 0.04);
+    background: var(--void-mid);
+    border-color: var(--cyan-500);
     color: var(--cyan-400);
-  }
-  
-  /* v6.4 Active indicator bar (left edge) - matches collapsed style */
-  .nav-item.active::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 6px;
-    bottom: 6px;
-    width: 2px;
-    background: var(--cyan-400);
-    border-radius: 1px;
-    box-shadow: 0 0 6px var(--cyan-400);
   }
   
   /* v6.3 Edge Rail: Collapsed nav items */
@@ -1447,7 +1420,7 @@
   /* Status Panel - 16px horizontal padding to match nav */
   .sidebar-status {
     padding: 8px 16px;
-    border-top: 1px solid var(--border-dim);
+    border-top: 1px solid rgba(255, 255, 255, 0.02);
   }
   
   /* v6.3 Edge Rail: Status LED strip */
@@ -1457,77 +1430,83 @@
   }
   
   /* ============================================
-     v6.5 SERVICES CHIPS - E3 Compact Chip Layout
+     v6.6 SERVICE ROWS - E2 Unified Layout
      ============================================ */
   
-  .services-chips {
+  .service-row {
     display: flex;
-    gap: 6px;
-    margin-bottom: 8px;
-  }
-  
-  .service-chip {
-    flex: 1;
-    display: flex;
+    justify-content: space-between;
     align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 8px 6px;
+    padding: 8px 12px;
     background: var(--void-base);
     border: 1px solid var(--border-subtle);
     border-radius: 6px;
     cursor: pointer;
     transition: all 150ms ease;
-    outline: none;
+    width: 100%;
+    text-align: left;
   }
   
-  .service-chip:hover {
+  .service-row:hover {
     border-color: var(--cyan-500);
     background: var(--void-mid);
   }
   
-  .service-chip:focus {
+  .service-row:focus {
     outline: none;
   }
   
-  .chip-dot {
-    width: 6px;
-    height: 6px;
+  .service-row-dot {
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--text-4);
     transition: all 150ms ease;
     flex-shrink: 0;
+    margin-left: auto;
   }
   
-  .service-chip.chip-ok .chip-dot {
+  .service-row-dot.ok {
     background: var(--status-ok);
-    box-shadow: 0 0 4px var(--status-ok);
+    box-shadow: 0 0 6px var(--status-ok);
   }
   
-  .service-chip.chip-warn .chip-dot {
+  .service-row-dot.warn {
     background: var(--status-warn);
-    box-shadow: 0 0 4px var(--status-warn);
+    box-shadow: 0 0 6px var(--status-warn);
   }
   
-  .service-chip.chip-err .chip-dot {
+  .service-row-dot.err {
     background: var(--status-err);
+    box-shadow: 0 0 4px var(--status-err);
     opacity: 0.6;
   }
   
-  .chip-label {
-    font-size: 9px;
+  .service-row-label {
+    font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.1em;
-    color: var(--text-3);
-    transition: color 150ms ease;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-4);
   }
   
-  .service-chip:hover .chip-label {
-    color: var(--text-1);
-  }
-  
-  .service-chip.chip-ok .chip-label {
+  .service-row-status {
+    font-size: 11px;
+    font-weight: 500;
     color: var(--text-2);
+  }
+  
+  .service-row-status.ok {
+    color: var(--status-ok);
+  }
+  
+  .service-row-status.warn {
+    color: var(--status-warn);
+  }
+  
+  .service-row-status.err {
+    color: var(--status-err);
+    opacity: 0.7;
   }
   
   /* ============================================
@@ -1555,19 +1534,20 @@
   }
   
   .gnomon-label {
-    font-size: 9px;
-    font-weight: 600;
+    font-size: 10px;
+    font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.15em;
     color: var(--text-4);
     flex-shrink: 0;
+    min-width: 58px;
   }
   
   .gnomon-progress-container {
     flex: 1;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 0;
   }
   
   .gnomon-progress-bar {
@@ -1625,66 +1605,62 @@
     opacity: 0.6;
   }
   
-  /* Row state styling */
-  .gnomon-row.gnomon-synced {
-    border-color: rgba(52, 211, 153, 0.2);
-  }
-  
-  .gnomon-row.gnomon-synced:hover {
-    border-color: var(--status-ok);
-  }
-  
+  /* Row state styling - all borders consistent (E2 style) */
+  .gnomon-row.gnomon-synced,
+  .gnomon-row.gnomon-syncing,
   .gnomon-row.gnomon-offline {
-    border-color: rgba(248, 113, 113, 0.15);
+    border-color: var(--border-subtle);
   }
   
+  .gnomon-row.gnomon-synced:hover,
+  .gnomon-row.gnomon-syncing:hover,
   .gnomon-row.gnomon-offline:hover {
-    border-color: rgba(248, 113, 113, 0.3);
+    border-color: var(--cyan-500);
   }
   
   /* ============================================
-     v6.4 INFO ROWS - Network & Block
+     v6.4 INFO ROWS - Network & Block (E3 Style)
      ============================================ */
   
   .info-rows {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    padding-top: 8px;
-    margin-top: 4px;
-    border-top: 1px solid var(--border-dim);
+    gap: 8px;
   }
   
   .info-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 14px;
-    background: transparent;
-    border: none;
-    border-radius: var(--r-sm);
+    padding: 8px 12px;
+    background: var(--void-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
     cursor: pointer;
-    transition: background 150ms ease;
+    transition: all 150ms ease;
     width: 100%;
     text-align: left;
   }
   
   .info-row:hover {
-    background: var(--void-hover);
+    border-color: var(--cyan-500);
+    background: var(--void-mid);
   }
   
   .info-label {
-    font-size: 9px;
-    font-weight: 600;
+    font-size: 10px;
+    font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.15em;
     color: var(--text-4);
   }
   
   .info-value {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--cyan-400);
+    text-align: right;
+    min-width: 64px;
   }
   
   .info-value.value-ok { color: var(--status-ok); }
@@ -1729,10 +1705,10 @@
     width: auto;
   }
   
-  /* Expand dot-column when it contains an avatar */
+  /* Expand dot-column when it contains an avatar or gradient placeholder */
   .wallet-anchor .dot-column {
     width: auto;
-    min-width: 18px;
+    min-width: 40px;
     align-items: center;
     justify-content: center;
   }
@@ -1974,10 +1950,10 @@
     to { transform: rotate(360deg); }
   }
   
-  /* Wallet Section - 16px horizontal padding to match nav */
+  /* Wallet Section - E3 Card Style with proper spacing */
   .wallet-section {
     padding: 12px 16px;
-    border-top: 1px solid var(--border-dim);
+    margin-top: 12px;
     position: relative;
   }
   
@@ -1990,15 +1966,15 @@
     gap: 4px;
   }
   
-  /* v6.2 Wallet Anchor - Smart States */
+  /* v6.2 Wallet Anchor - E3 Card Style */
   .wallet-anchor {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     padding: 12px;
-    background: rgba(34, 211, 238, 0.04);
-    border: 1px solid rgba(34, 211, 238, 0.12);
-    border-radius: var(--r-md);
+    background: var(--void-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
     cursor: pointer;
     transition: all 150ms ease;
     width: 100%;
@@ -2007,11 +1983,13 @@
     /* Ensure enough space for content */
     min-width: 0;
     overflow: visible;
+    box-shadow: none;
   }
   
   .wallet-anchor:hover {
-    background: rgba(34, 211, 238, 0.08);
-    border-color: rgba(34, 211, 238, 0.2);
+    background: var(--void-mid);
+    border-color: rgba(34, 211, 238, 0.35);
+    box-shadow: 0 0 10px rgba(34, 211, 238, 0.18);
   }
   
   /* v6.3 Edge Rail: Collapsed wallet anchor */
@@ -2030,29 +2008,34 @@
   }
   
   .wallet-anchor-connected {
-    background: rgba(34, 211, 238, 0.04);
-    border-color: rgba(34, 211, 238, 0.12);
+    background: var(--void-base);
+    border-color: rgba(34, 211, 238, 0.35);
+    box-shadow: 0 0 10px rgba(34, 211, 238, 0.18);
   }
   
   .wallet-anchor-disconnected {
-    background: rgba(248, 113, 113, 0.04);
-    border-color: rgba(248, 113, 113, 0.12);
+    background: var(--void-base);
+    border-color: var(--border-subtle);
+    box-shadow: none;
   }
   
   .wallet-anchor-disconnected:hover {
-    background: rgba(248, 113, 113, 0.08);
-    border-color: rgba(248, 113, 113, 0.2);
+    background: var(--void-mid);
+    border-color: var(--cyan-500);
+    box-shadow: 0 0 8px rgba(34, 211, 238, 0.2);
   }
   
   /* XSWD Active but no wallet state - subtle cyan */
   .wallet-anchor-xswd-only {
-    background: rgba(34, 211, 238, 0.02);
-    border-color: rgba(34, 211, 238, 0.08);
+    background: var(--void-base);
+    border-color: rgba(34, 211, 238, 0.28);
+    box-shadow: none;
   }
   
   .wallet-anchor-xswd-only:hover {
-    background: rgba(34, 211, 238, 0.05);
-    border-color: rgba(34, 211, 238, 0.15);
+    background: var(--void-mid);
+    border-color: var(--cyan-500);
+    box-shadow: 0 0 8px rgba(34, 211, 238, 0.2);
   }
   
   .wallet-anchor-pending {
@@ -2071,18 +2054,45 @@
     50% { border-color: rgba(251, 191, 36, 0.35); }
   }
   
+  /* Gradient avatar placeholder (E3 Style) - shows when no custom avatar */
   .wallet-dot {
-    width: 7px;
-    height: 7px;
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
     flex-shrink: 0;
-    background: var(--text-4);
+    background: linear-gradient(135deg, var(--cyan-400), var(--emerald-400, #34d399));
+    border: 2px solid var(--cyan-400);
+    transition: all 150ms ease;
   }
   
-  .wallet-dot.dot-ok { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
-  .wallet-dot.dot-warn { background: var(--status-warn); box-shadow: 0 0 6px var(--status-warn); }
-  .wallet-dot.dot-err { background: var(--status-err); box-shadow: 0 0 6px var(--status-err); }
-  .wallet-dot.dot-cyan { background: var(--cyan-400); box-shadow: 0 0 6px var(--cyan-400); }
+  .wallet-dot.dot-ok { 
+    background: linear-gradient(135deg, var(--cyan-400), var(--emerald-400, #34d399));
+    border-color: var(--cyan-400);
+    box-shadow: none;
+  }
+  .wallet-dot.dot-warn { 
+    background: linear-gradient(135deg, var(--status-warn), #f59e0b);
+    border-color: var(--status-warn);
+    box-shadow: none;
+  }
+  .wallet-dot.dot-err { 
+    background: linear-gradient(135deg, var(--status-err), #dc2626);
+    border-color: var(--status-err);
+    opacity: 0.5;
+    box-shadow: none;
+  }
+  .wallet-dot.dot-cyan { 
+    background: linear-gradient(135deg, var(--cyan-400), var(--emerald-400, #34d399));
+    border-color: var(--cyan-400);
+    box-shadow: none;
+  }
+  
+  /* Smaller dot for collapsed state */
+  .wallet-section-collapsed .wallet-dot {
+    width: 24px;
+    height: 24px;
+    border-width: 1.5px;
+  }
   
   /* Villager Avatar Styles */
   .wallet-avatar {
@@ -2178,35 +2188,37 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     gap: 2px;
-    /* Center text group in available space for visual balance */
-    text-align: center;
+    text-align: left;
   }
   
   .wallet-anchor-address {
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 11px;
+    font-weight: 600;
     color: var(--cyan-400);
     white-space: nowrap;
-    overflow: visible;
-    text-overflow: clip;
-    /* Allow address to display fully without truncation */
+    overflow: hidden;
+    text-overflow: ellipsis;
     letter-spacing: 0.01em;
     font-variant-numeric: tabular-nums;
+    width: 100%;
   }
   
   .wallet-anchor-address.disconnected {
     color: var(--text-3);
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
   }
   
   .wallet-anchor-status {
     font-size: 10px;
-    color: var(--text-4);
+    color: var(--status-ok);
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 6px;
   }
   
