@@ -195,13 +195,8 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 	case "GetOwner":
 		scid := getStr("scid")
 		owners := a.gnomonClient.GetAllOwnersAndSCIDs()
-		owner := ""
-		for o, sc := range owners {
-			if sc == scid {
-				owner = o
-				break
-			}
-		}
+		// Map is scid -> owner, so direct lookup
+		owner := owners[scid]
 		return xswdSuccess(map[string]interface{}{
 			"owner": owner,
 		})

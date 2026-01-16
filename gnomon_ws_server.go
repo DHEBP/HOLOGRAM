@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,20 +87,35 @@ func (s *GnomonWSServer) Start(ctx context.Context) error {
 		return fmt.Errorf("WebSocket server already running")
 	}
 
-	// Try to find an available port
-	port := DefaultWSPort
 	var listener net.Listener
 	var err error
 
-	for port <= MaxWSPort {
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
-		listener, err = net.Listen("tcp", addr)
+	// If address was provided, try to use it directly first
+	if s.address != "" && s.address != fmt.Sprintf("127.0.0.1:%d", DefaultWSPort) {
+		listener, err = net.Listen("tcp", s.address)
 		if err == nil {
-			s.address = addr
-			s.port = port
-			break
+			// Parse port from address for tracking
+			if parts := strings.Split(s.address, ":"); len(parts) == 2 {
+				if p, parseErr := strconv.Atoi(parts[1]); parseErr == nil {
+					s.port = p
+				}
+			}
 		}
-		port++
+	}
+
+	// Fall back to auto-port scanning if no address or listen failed
+	if listener == nil {
+		port := DefaultWSPort
+		for port <= MaxWSPort {
+			addr := fmt.Sprintf("127.0.0.1:%d", port)
+			listener, err = net.Listen("tcp", addr)
+			if err == nil {
+				s.address = addr
+				s.port = port
+				break
+			}
+			port++
+		}
 	}
 
 	if listener == nil {
@@ -279,6 +295,16 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 	switch method {
 	// === SCID Queries ===
 	case "getallscids", "get_all_scids":
+		// Return list of SCIDs (keys from scid->owner map)
+		ownersMap := s.app.gnomonClient.GetAllOwnersAndSCIDs()
+		scidList := make([]string, 0, len(ownersMap))
+		for scid := range ownersMap {
+			scidList = append(scidList, scid)
+		}
+		result = scidList
+
+	case "getallownersandscids", "get_all_owners_and_scids":
+		// Return full map for clients that need owner info
 		result = s.app.gnomonClient.GetAllOwnersAndSCIDs()
 
 	case "getscidvariables", "get_scid_variables":

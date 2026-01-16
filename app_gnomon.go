@@ -530,6 +530,7 @@ func (a *App) GetDiscoveredApps() map[string]interface{} {
 	}
 
 	apps := a.gnomonClient.GetTELAApps()
+	tagStore := InitSCIDTagStore()
 
 	epochCount := 0
 
@@ -556,6 +557,12 @@ func (a *App) GetDiscoveredApps() map[string]interface{} {
 			if icon, ok := app["icon"].(string); ok && icon != "" {
 				resolved := a.resolveIconSCID(icon)
 				apps[i]["icon"] = resolved
+			}
+
+			// Attach tag/class metadata from tag store (Simple-Gnomon feature)
+			if meta := tagStore.GetMetadata(scid); meta != nil {
+				apps[i]["class"] = meta.Class
+				apps[i]["tags"] = meta.Tags
 			}
 		}
 	}
