@@ -35,6 +35,7 @@
   // Connection testing state
   let testingConnection = false;
   let connectionTestResult = null;
+  let completing = false;
   
   onMount(async () => {
     try {
@@ -203,20 +204,32 @@
     dispatch('complete');
   }
   
+  async function finalizeWizard(devSupportEnabled) {
+    if (completing) return;
+    completing = true;
+    try {
+      await Promise.race([
+        SetDevSupportEnabled(devSupportEnabled),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timed out enabling developer support')), 3000))
+      ]);
+    } catch (err) {
+      console.error('Failed to update developer support setting:', err);
+    }
+    await saveSetting('wizardComplete', true);
+    dispatch('complete');
+    completing = false;
+  }
+  
   async function enableEpochAndComplete() {
     // Enable developer support and complete wizard
     // Use backend method which also starts the worker
-    await SetDevSupportEnabled(true);
-    await saveSetting('wizardComplete', true);
-    dispatch('complete');
+    await finalizeWizard(true);
   }
   
   async function disableEpochAndComplete() {
     // Disable developer support and complete wizard
     // Use backend method which also stops the worker
-    await SetDevSupportEnabled(false);
-    await saveSetting('wizardComplete', true);
-    dispatch('complete');
+    await finalizeWizard(false);
   }
   
   function skipWizard() {
@@ -599,10 +612,10 @@
         </div>
         
         <div class="wizard-buttons">
-          <button on:click={enableEpochAndComplete} class="wizard-btn wizard-btn-primary">
+          <button on:click={enableEpochAndComplete} class="wizard-btn wizard-btn-primary" disabled={completing}>
             Enable Developer Support
           </button>
-          <button on:click={disableEpochAndComplete} class="wizard-btn wizard-btn-secondary">
+          <button on:click={disableEpochAndComplete} class="wizard-btn wizard-btn-secondary" disabled={completing}>
             No Thanks
           </button>
         </div>

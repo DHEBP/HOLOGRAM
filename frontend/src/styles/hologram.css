@@ -1164,7 +1164,7 @@
       color: var(--void-pure);
       border-color: transparent;
     }
-    .btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); box-shadow: var(--glow-cyan-sm); }
+    .btn-primary:hover { filter: brightness(1.1); box-shadow: var(--glow-cyan-sm); }
     .btn-primary:active { filter: brightness(0.95); transform: translateY(0); }
     
     /* Secondary Button - Outlined */
@@ -2166,7 +2166,6 @@
     .wizard-btn-primary:hover {
       background: var(--cyan-400);
       box-shadow: var(--glow-cyan-sm);
-      transform: translateY(-1px);
     }
     
     .wizard-btn-secondary {

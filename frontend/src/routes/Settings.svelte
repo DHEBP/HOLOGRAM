@@ -74,6 +74,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   let nodeDataDir = '';
   let syncProgress = { progress: 0, isSynced: false };
   let statusInterval;
+  let nodeActionLoading = false;
+  let nodeActionError = '';
+  let advancedOptionsCard;
+  let showExternalNodeHelp = false;
   
   // Privacy Mode state
   let privacyModeEnabled = false;
@@ -97,6 +101,18 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   }
 
   $: isExternalNode = !isLocalEndpoint($settingsState.daemonEndpoint);
+  $: embeddedNodeRunning = nodeStatus.isEmbedded ?? false;
+  $: externalNodeActive = nodeStatus.isExternal ?? isExternalNode;
+  $: nodeModeLabel = embeddedNodeRunning
+    ? 'Embedded node running'
+    : externalNodeActive
+      ? 'External node active'
+      : 'No node running';
+  $: nodeModeBadgeClass = embeddedNodeRunning
+    ? 'badge-ok'
+    : externalNodeActive
+      ? 'badge-cyan'
+      : 'badge-warn';
   
   // Gnomon resync state
   let resyncingGnomon = false;
@@ -120,6 +136,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   let searchMinLikes = 0;
   let showExclusionModal = false;
   let showFullResyncModal = false;
+  let fullResyncConfirmed = false;
   let newExclusionFilter = '';
   
   // Developer Support (EPOCH + Passive Hashing) state
@@ -175,6 +192,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     // Sync network mode from backend first
     await syncNetworkMode();
     await refreshNodeStatus();
+    nodeDataDir = $settingsState.nodeDataDir || '';
     
     // Subscribe to network mode changes
     EventsOn('network-mode-changed', async () => {
@@ -794,6 +812,78 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   }
   
   // Node start/stop controls moved to Network page
+  function focusAdvancedOptions() {
+    if (advancedOptionsCard?.scrollIntoView) {
+      advancedOptionsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+  
+  async function handleNodeModeToggle(useEmbedded) {
+    if (useEmbedded) {
+      await switchToEmbeddedNode();
+    } else {
+      await updateSetting('useEmbeddedNode', false);
+    }
+  }
+  
+  async function startEmbeddedNode() {
+    if (nodeActionLoading) return;
+    nodeActionLoading = true;
+    nodeActionError = '';
+    try {
+      focusAdvancedOptions();
+      await updateSetting('useEmbeddedNode', true);
+      if (nodeDataDir !== $settingsState.nodeDataDir) {
+        await updateSetting('nodeDataDir', nodeDataDir);
+      }
+      const result = await StartNode(nodeDataDir);
+      if (result.isExternal) {
+        nodeActionError = result.message || 'External node detected on the default port. Stop it to start the embedded node.';
+        await updateSetting('useEmbeddedNode', false);
+      } else if (!result.success) {
+        nodeActionError = result.error || 'Failed to start node';
+      }
+      await refreshNodeStatus();
+    } catch (error) {
+      nodeActionError = error.message || 'Failed to start node';
+    } finally {
+      nodeActionLoading = false;
+    }
+  }
+  
+  async function stopEmbeddedNode() {
+    if (nodeActionLoading) return;
+    nodeActionLoading = true;
+    nodeActionError = '';
+    try {
+      const result = await StopNode();
+      if (!result.success) {
+        nodeActionError = result.error || 'Failed to stop node';
+      }
+      await refreshNodeStatus();
+    } catch (error) {
+      nodeActionError = error.message || 'Failed to stop node';
+    } finally {
+      nodeActionLoading = false;
+    }
+  }
+  
+  async function switchToEmbeddedNode() {
+    if (nodeActionLoading) return;
+    nodeActionLoading = true;
+    nodeActionError = '';
+    try {
+      await updateSetting('useEmbeddedNode', true);
+      if (isExternalNode) {
+        await updateSetting('daemonEndpoint', 'http://127.0.0.1:10102');
+      }
+      await refreshNodeStatus();
+    } catch (error) {
+      nodeActionError = error.message || 'Failed to switch to embedded node';
+    } finally {
+      nodeActionLoading = false;
+    }
+  }
   
   async function detectExternalNode() {
     detecting = true;
@@ -971,11 +1061,13 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     }
     
     // Show modal instead of confirm() (confirm doesn't work reliably in Wails)
+    fullResyncConfirmed = false;
     showFullResyncModal = true;
   }
   
   async function confirmFullResync() {
     showFullResyncModal = false;
+    fullResyncConfirmed = false;
     resyncingGnomon = true;
     try {
       // Full resync from block 0
@@ -992,8 +1084,15 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     }
   }
   
+  async function handleFastsyncInstead() {
+    showFullResyncModal = false;
+    fullResyncConfirmed = false;
+    await handleFastsync();
+  }
+  
   function cancelFullResync() {
     showFullResyncModal = false;
+    fullResyncConfirmed = false;
   }
   
   // Search exclusions functions
@@ -1263,8 +1362,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
           </div>
           <div class="card-content">
-            <div class="settings-row" style="flex-direction: column; align-items: stretch;">
-              <div class="form-group" style="margin-bottom: var(--s-4);">
+            <div class="settings-row settings-row-stack">
+              <div class="form-group settings-form-group">
               <div class="slider-header">
                 <span class="form-label">Minimum Content Rating</span>
                 <span class="slider-value c-cyan">{$settingsState.minRating}</span>
@@ -1368,7 +1467,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               </div>
               <span class="settings-hint-label">
                 <Icons name="server" size={12} />
-                {#if isExternalNode}
+                {#if externalNodeActive}
                   External node connected — local controls disabled
                 {:else}
                   Node controls below
@@ -1376,8 +1475,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               </span>
           </div>
           
-          {#if nodeStatus.isRunning}
-              <div class="settings-row" style="flex-direction: column; align-items: stretch;">
+            {#if nodeStatus.isRunning}
+              <div class="settings-row settings-row-stack">
                 <div class="sync-header">
                   <span class="settings-row-label">Sync Progress</span>
                   <span class="sync-progress-value">{syncProgress.progress?.toFixed(2) || 0}%</span>
@@ -1400,6 +1499,190 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
           </div>
         </div>
         
+        <!-- Advanced Options -->
+        <div class="card-wrapper" bind:this={advancedOptionsCard}>
+          <div class="explorer-header">
+            <div class="explorer-header-left">
+              <span class="explorer-header-icon">⬢</span>
+              <span class="explorer-header-title">ADVANCED OPTIONS</span>
+            </div>
+          </div>
+          <div class="card-content">
+            <p class="form-hint mb-4">These settings apply on the next node start</p>
+          
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Fast Sync</div>
+                <div class="settings-row-desc">Skip full block validation during initial sync (faster but less secure)</div>
+              </div>
+              <input 
+                type="checkbox" 
+                bind:checked={fastSyncEnabled}
+                on:change={saveAdvancedNodeConfig}
+                disabled={embeddedNodeRunning}
+                class="toggle"
+              />
+              </div>
+            
+            <div class="settings-row settings-row-stack" class:opacity-50={embeddedNodeRunning}>
+              <div class="form-group settings-form-group-tight">
+                <label class="form-label">Prune History (blocks)</label>
+              <div class="prune-input-row">
+                <input
+                  type="number"
+                  bind:value={pruneHistory}
+                  on:change={saveAdvancedNodeConfig}
+                  min="0"
+                  max="100000"
+                  step="1000"
+                  disabled={embeddedNodeRunning}
+                  class="input input-narrow"
+                />
+                  <span class="form-hint">0 = keep all blocks</span>
+              </div>
+                <p class="form-hint">Remove blocks older than N to save disk space (minimum 1000 if enabled)</p>
+              </div>
+            </div>
+            
+            <div class="settings-row settings-row-stack" class:opacity-50={embeddedNodeRunning}>
+              <div class="form-group settings-form-group-tight">
+                <label class="form-label">Sync Node</label>
+                <input
+                  type="text"
+                  bind:value={syncNodeEndpoint}
+                  on:change={saveAdvancedNodeConfig}
+                  placeholder="e.g., http://node.example.com:10102"
+                  disabled={embeddedNodeRunning}
+                  class="input input-mono-sm"
+                />
+                <p class="form-hint">Sync blockchain state from a trusted remote node instead of P2P (faster initial sync)</p>
+              </div>
+            </div>
+            
+            {#if embeddedNodeRunning}
+              <p class="form-hint c-warn mt-2">Stop the node to change these settings</p>
+            {/if}
+          </div>
+        </div>
+        
+        <!-- Node Controls -->
+        <div class="card-wrapper">
+          <div class="explorer-header">
+            <div class="explorer-header-left">
+              <span class="explorer-header-icon">▣</span>
+              <span class="explorer-header-title">CONTROLS</span>
+            </div>
+            <div class="explorer-header-right">
+              <span class="badge {nodeModeBadgeClass}">{nodeModeLabel}</span>
+            </div>
+          </div>
+          <div class="card-content">
+            {#if nodeActionError}
+              <div class="alert alert-error mb-3">
+                <Icons name="x" size={14} />
+                {nodeActionError}
+              </div>
+            {/if}
+            
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Node Mode</div>
+                <div class="settings-row-desc">Switch between embedded and external node modes</div>
+              </div>
+              <div class="btn-group node-mode-group">
+                <button
+                  class="btn {$settingsState.useEmbeddedNode ? 'btn-primary' : 'btn-secondary'}"
+                  on:click={() => handleNodeModeToggle(true)}
+                  disabled={nodeActionLoading}
+                >
+                  Embedded
+                </button>
+                <button
+                  class="btn {!$settingsState.useEmbeddedNode ? 'btn-primary' : 'btn-secondary'}"
+                  on:click={() => handleNodeModeToggle(false)}
+                  disabled={nodeActionLoading}
+                >
+                  External
+                </button>
+              </div>
+            </div>
+            
+            {#if !$settingsState.useEmbeddedNode}
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-label">External Node Active</div>
+                  <div class="settings-row-desc">Local node controls are disabled while using an external endpoint.</div>
+                </div>
+                <span class="badge badge-cyan">External</span>
+              </div>
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-label">Stop External Node</div>
+                  <div class="settings-row-desc">See how to stop the external daemon on the default port.</div>
+                </div>
+                <button class="btn btn-ghost btn-sm" on:click={() => showExternalNodeHelp = !showExternalNodeHelp}>
+                  {showExternalNodeHelp ? 'Hide Help' : 'Show Help'}
+                </button>
+              </div>
+              {#if showExternalNodeHelp}
+                <div class="alert alert-info settings-alert-top">
+                  <Icons name="info" size={14} />
+                  Stop `derod` in the terminal where it is running, or free port 10102, then switch to Embedded.
+                </div>
+              {/if}
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-label">Detect Running Node</div>
+                  <div class="settings-row-desc">Re-check for any external node on the default port.</div>
+                </div>
+                <button on:click={detectExternalNode} class="btn btn-secondary btn-sm" disabled={detecting}>
+                  {detecting ? 'Detecting...' : 'Detect Running Node'}
+                </button>
+              </div>
+              {#if detectionMessage}
+                <div class="alert alert-info settings-alert-top">
+                  <Icons name="info" size={14} />
+                  {detectionMessage}
+                </div>
+              {/if}
+            {:else}
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-label">Embedded Node</div>
+                  <div class="settings-row-desc">Start or stop the local DERO node</div>
+                </div>
+                {#if embeddedNodeRunning}
+                  <button class="btn btn-danger" on:click={stopEmbeddedNode} disabled={nodeActionLoading}>
+                    {nodeActionLoading ? 'Stopping...' : 'Stop Node'}
+                  </button>
+                {:else}
+                  <button class="btn btn-primary" on:click={startEmbeddedNode} disabled={nodeActionLoading || !derodStatus.installed}>
+                    {nodeActionLoading ? 'Starting...' : 'Start Node'}
+                  </button>
+                {/if}
+              </div>
+              <div class="settings-row settings-row-top-sm">
+                <div class="settings-row-info">
+                  <div class="settings-row-label">Sync Node</div>
+                  <div class="settings-row-desc">
+                    {syncNodeEndpoint ? `Sync: ${syncNodeEndpoint}` : 'Sync: not set'}
+                  </div>
+                </div>
+                <button class="btn btn-ghost btn-sm" on:click={focusAdvancedOptions}>
+                  Configure
+                </button>
+              </div>
+              {#if externalNodeActive && !embeddedNodeRunning}
+                <p class="form-hint c-warn mt-2">External node detected on the default port. Stop it to start the embedded node.</p>
+              {/if}
+              {#if !derodStatus.installed}
+                <p class="form-hint c-warn mt-2">Install the DERO node binary to start a local node.</p>
+              {/if}
+            {/if}
+            
+          </div>
+        </div>
+        
         <!-- Node Binary -->
         <div class="card-wrapper">
           <div class="explorer-header">
@@ -1413,10 +1696,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               <div class="settings-row">
                 <div class="settings-row-info">
                   <div class="settings-row-label">DERO Node (derod)</div>
-                  <div class="settings-row-desc installed-info">
+                  <div class="settings-row-desc settings-row-desc-inline">
                     <span class="badge badge-ok">Installed</span>
-                    <span class="version-text">{derodStatus.version || 'Unknown version'}</span>
-              </div>
+                    <span class="form-hint">{derodStatus.version || 'Unknown version'}</span>
+                  </div>
                 </div>
                 <button on:click={checkLatestRelease} class="btn btn-secondary btn-sm">Check for Updates</button>
             </div>
@@ -1429,8 +1712,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               </div>
             {/if}
           {:else}
-              <div class="settings-row" style="flex-direction: column; align-items: stretch;">
-                <div class="settings-row-info" style="margin-bottom: var(--s-4);">
+              <div class="settings-row settings-row-stack">
+                <div class="settings-row-info settings-row-info-spaced">
                   <div class="settings-row-label">DERO Node Binary</div>
                   <div class="settings-row-desc">The DERO node binary (derod) is required to run a local node.</div>
                 </div>
@@ -1501,15 +1784,16 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
           </div>
           <div class="card-content">
-            <div class="settings-row" style="flex-direction: column; align-items: stretch;">
-              <div class="form-group" style="margin-bottom: 0;">
+            <div class="settings-row settings-row-stack">
+              <div class="form-group settings-form-group-tight">
                 <label class="form-label">Blockchain Data Location</label>
             <input
               type="text"
               bind:value={nodeDataDir}
               placeholder="~/.dero/mainnet (default)"
-              disabled={nodeStatus.isRunning}
+              disabled={embeddedNodeRunning}
                   class="input"
+              on:change={() => updateSetting('nodeDataDir', nodeDataDir)}
             />
                 <p class="form-hint">Leave empty to use default location based on network</p>
               </div>
@@ -1517,102 +1801,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
           </div>
         </div>
         
-        <!-- Advanced Options -->
-        <div class="card-wrapper">
-          <div class="explorer-header">
-            <div class="explorer-header-left">
-              <span class="explorer-header-icon">⬢</span>
-              <span class="explorer-header-title">ADVANCED OPTIONS</span>
-            </div>
-          </div>
-          <div class="card-content">
-            <p class="form-hint mb-4">These settings apply on the next node start</p>
-          
-            <div class="settings-row">
-              <div class="settings-row-info">
-                <div class="settings-row-label">Fast Sync</div>
-                <div class="settings-row-desc">Skip full block validation during initial sync (faster but less secure)</div>
-              </div>
-              <input 
-                type="checkbox" 
-                bind:checked={fastSyncEnabled}
-                on:change={saveAdvancedNodeConfig}
-                disabled={nodeStatus.isRunning}
-                class="toggle"
-              />
-              </div>
-            
-            <div class="settings-row" style="flex-direction: column; align-items: stretch;" class:opacity-50={nodeStatus.isRunning}>
-              <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">Prune History (blocks)</label>
-              <div class="prune-input-row">
-                <input
-                  type="number"
-                  bind:value={pruneHistory}
-                  on:change={saveAdvancedNodeConfig}
-                  min="0"
-                  max="100000"
-                  step="1000"
-                  disabled={nodeStatus.isRunning}
-                    class="input"
-                    style="width: 150px;"
-                />
-                  <span class="form-hint">0 = keep all blocks</span>
-              </div>
-                <p class="form-hint">Remove blocks older than N to save disk space (minimum 1000 if enabled)</p>
-              </div>
-            </div>
-            
-            <div class="settings-row" style="flex-direction: column; align-items: stretch;" class:opacity-50={nodeStatus.isRunning}>
-              <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">Sync Node</label>
-                <input
-                  type="text"
-                  bind:value={syncNodeEndpoint}
-                  on:change={saveAdvancedNodeConfig}
-                  placeholder="e.g., http://node.example.com:10102"
-                  disabled={nodeStatus.isRunning}
-                  class="input"
-                  style="font-family: var(--font-mono); font-size: 12px;"
-                />
-                <p class="form-hint">Sync blockchain state from a trusted remote node instead of P2P (faster initial sync)</p>
-              </div>
-            </div>
-            
-            {#if nodeStatus.isRunning}
-              <p class="form-hint c-warn mt-2">Stop the node to change these settings</p>
-            {/if}
-          </div>
-        </div>
-        
-        <!-- External Node -->
-        <div class="card-wrapper">
-          <div class="explorer-header">
-            <div class="explorer-header-left">
-              <span class="explorer-header-icon">◎</span>
-              <span class="explorer-header-title">EXTERNAL NODE</span>
-            </div>
-          </div>
-          <div class="card-content">
-            <div class="settings-row">
-              <div class="settings-row-info">
-                <div class="settings-row-label">Connect to External Node</div>
-                <div class="settings-row-desc">Connect to an external DERO node instead of running your own</div>
-              </div>
-              <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px;">
-                <button on:click={detectExternalNode} class="btn btn-secondary" disabled={detecting}>
-                  {detecting ? 'Detecting...' : 'Detect Running Node'}
-                </button>
-                {#if detectionMessage}
-                  <span style="font-size: 11px; color: var(--text-3); white-space: nowrap;">
-                    {detectionMessage}
-                  </span>
-                {/if}
-              </div>
-            </div>
-          </div>
-        </div>
-      
       {:else if activeSection === 'simulator'}
         <!-- Simulator Status -->
         <div class="card-wrapper">
@@ -1635,8 +1823,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             {/if}
             
             {#if !simulatorStatus.isInitialized}
-              <div class="settings-row" style="flex-direction: column; align-items: stretch;">
-                <div class="settings-row-info" style="margin-bottom: var(--s-4);">
+              <div class="settings-row settings-row-stack">
+                <div class="settings-row-info settings-row-info-spaced">
                   <div class="settings-row-label">Local Test Environment</div>
                   <div class="settings-row-desc">Perfect for testing smart contracts and dApps. No real value.</div>
                 </div>
@@ -1662,7 +1850,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 </div>
               </div>
               {#if simulatorStatus.walletAddress}
-                <div class="settings-row" style="flex-direction: column; align-items: stretch; gap: var(--s-2);">
+              <div class="settings-row settings-row-stack settings-row-stack-gap">
                   <div class="settings-row-info">
                     <div class="settings-row-label">Wallet</div>
                     <div class="settings-row-desc mono">{formatSimulatorAddress(simulatorStatus.walletAddress)}</div>
@@ -1756,7 +1944,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
         <!-- Developer Support (Unified EPOCH + Passive Hashing) Section -->
         
         <!-- Status Card (with enable toggle in header) -->
-        <div class="card-wrapper" style="margin-bottom: var(--s-6);">
+        <div class="card-wrapper card-wrapper-spaced">
           <div class="explorer-header">
             <div class="explorer-header-left">
               <span class="explorer-header-icon">◎</span>
@@ -1815,7 +2003,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
             
             {#if epochError}
-              <div class="alert alert-warn" style="margin-top: var(--s-4);">
+              <div class="alert alert-warn settings-alert-top-lg">
                 {epochError}
                 <button on:click={handleRetryEpoch} class="btn btn-sm btn-outline mt-2">
                   Retry Connection
@@ -1826,7 +2014,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
         </div>
         
         <!-- Your Contributions Card -->
-        <div class="card-wrapper" style="margin-bottom: var(--s-6);">
+        <div class="card-wrapper card-wrapper-spaced">
           <div class="explorer-header">
             <div class="explorer-header-left">
               <span class="explorer-header-icon">◆</span>
@@ -1915,46 +2103,41 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
           </div>
           <div class="card-content">
-            <!-- Network Radio Cards -->
-            <div class="radio-card-group">
-              <!-- Mainnet -->
-              <button
-                on:click={() => handleNetworkChange('mainnet')}
-                class="radio-card"
-                class:selected={$appState.network === 'mainnet'}
-              >
-                <div class="radio-card-radio"></div>
-                <div class="radio-card-content">
-                  <div class="radio-card-title">Mainnet</div>
-                  <div class="radio-card-desc">Live blockchain</div>
-                  <span class="radio-card-badge warn">Permanent • Costs DERO</span>
-                </div>
-              </button>
-              
-              <!-- Simulator -->
-              <button
-                on:click={() => handleNetworkChange('simulator')}
-                class="radio-card"
-                class:selected={$appState.network === 'simulator'}
-              >
-                <div class="radio-card-radio"></div>
-                <div class="radio-card-content">
-                  <div class="radio-card-title">Simulator</div>
-                  <div class="radio-card-desc">Local simulation</div>
-                  <span class="radio-card-badge safe">Safe • No Cost</span>
-                </div>
-              </button>
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Network Mode</div>
+                <div class="settings-row-desc">Choose the chain the app connects to.</div>
+              </div>
+              <div class="btn-group">
+                <button
+                  class="btn {$appState.network === 'mainnet' ? 'btn-primary' : 'btn-secondary'}"
+                  on:click={() => handleNetworkChange('mainnet')}
+                >
+                  Mainnet
+                </button>
+                <button
+                  class="btn {$appState.network === 'simulator' ? 'btn-primary' : 'btn-secondary'}"
+                  on:click={() => handleNetworkChange('simulator')}
+                >
+                  Simulator
+                </button>
+              </div>
             </div>
             
-            <!-- Network Info -->
-            <div class="setting-row" style="background: transparent; border: none; padding: var(--s-3); margin: 0;">
-              {#if $appState.network === 'mainnet'}
-                <span style="color: var(--text-4); font-size: 12px;"><strong class="c-err">Mainnet:</strong> All transactions are permanent and cost real DERO.</span>
-              {:else if $appState.network === 'simulator'}
-                <span style="color: var(--text-4); font-size: 12px;"><strong class="c-ok">Simulator:</strong> Local blockchain simulation. No cost.</span>
-              {:else}
-                <span style="color: var(--text-4); font-size: 12px;">Network: {$appState.network || 'mainnet'}</span>
-              {/if}
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Mainnet</div>
+                <div class="settings-row-desc">Live blockchain with real DERO.</div>
+              </div>
+              <span class="badge badge-warn">Permanent • Costs DERO</span>
+            </div>
+            
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Simulator</div>
+                <div class="settings-row-desc">Local simulation for testing.</div>
+              </div>
+              <span class="badge badge-ok">Safe • No Cost</span>
             </div>
           </div>
         </div>
@@ -1999,14 +2182,14 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               </button>
             </div>
             
-            <p class="form-hint" style="margin-top: 8px;">
+            <p class="form-hint settings-hint-top-sm">
               Power users: Enter your LAN node address (e.g., http://192.168.1.100:10102)
             </p>
             
             <!-- Connection test result -->
             {#if endpointTestResult}
               {#if endpointTestResult.success}
-                <div class="alert alert-success" style="margin-top: 12px;">
+                <div class="alert alert-success settings-alert-top">
                   <div class="endpoint-success">
                     <Icons name="check" size={16} />
                     <div class="endpoint-success-info">
@@ -2018,14 +2201,14 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   </div>
                 </div>
               {:else}
-                <div class="alert alert-error" style="margin-top: 12px;">
+                <div class="alert alert-error settings-alert-top">
                   <Icons name="x" size={14} />
                   {endpointTestResult.error}
                 </div>
               {/if}
             {/if}
             
-            <div class="settings-row" style="margin-top: 16px;">
+            <div class="settings-row settings-row-top-lg">
               <div class="settings-row-info">
                 <span class="settings-row-label">Connection Status</span>
               </div>
@@ -2053,10 +2236,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 <div class="settings-row-desc">
                   {#if $appState.gnomonRunning}
                     <span class="c-cyan">{$appState.gnomonIndexedHeight.toLocaleString()}</span>
-                    <span style="color: var(--text-4);"> / </span>
+                    <span class="settings-text-muted"> / </span>
                     <span>{$appState.gnomonChainHeight.toLocaleString()} blocks</span>
                   {:else}
-                    <span style="color: var(--text-4);">Not running</span>
+                    <span class="settings-text-muted">Not running</span>
                   {/if}
                 </div>
               </div>
@@ -2103,14 +2286,14 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             {/if}
             
             <!-- Database Management -->
-            <div class="settings-row" style="margin-top: var(--s-4); border-top: 1px solid var(--border-subtle); padding-top: var(--s-4);">
+            <div class="settings-row settings-row-divider">
               <div class="settings-row-info">
                 <div class="settings-row-label">Database Management</div>
                 <div class="settings-row-desc">
                   Reset and re-index the blockchain. Choose your sync method:
                 </div>
               </div>
-              <div class="settings-row-actions" style="display: flex; gap: var(--s-2); align-items: center;">
+              <div class="settings-row-actions">
               <button
                   on:click={handleFastsync}
                 disabled={$appState.gnomonRunning || resyncingGnomon}
@@ -2133,7 +2316,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
             
             <!-- Time Machine -->
-            <div class="time-machine-card" style="margin-top: var(--s-3);">
+            <div class="time-machine-card time-machine-card-top">
               <div class="time-machine-header">
                 <Icons name="clock" size={16} />
                 <span>Time Machine</span>
@@ -2147,8 +2330,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   type="number"
                   bind:value={resyncFromHeight}
                   placeholder="Enter block height..."
-                  class="form-input"
-                  style="flex: 1; font-family: var(--font-mono);"
+                  class="form-input input-flex-mono"
                   min="0"
                   disabled={$appState.gnomonRunning || resyncingFromHeight}
                 />
@@ -2174,10 +2356,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
             
             <!-- Search Tips -->
-            <div class="settings-row" style="margin-top: var(--s-3);">
+            <div class="settings-row settings-row-top-md">
               <div class="settings-row-info">
                 <div class="settings-row-label">Search Tips</div>
-                <div class="settings-row-desc" style="font-family: var(--font-mono); font-size: 12px; line-height: 1.6;">
+                <div class="settings-row-desc settings-row-desc-mono">
                   <strong>key:</strong>owner - Search by SC key<br>
                   <strong>value:</strong>TELA - Search by SC value<br>
                   <strong>code:</strong>STORE - Search SC code
@@ -2186,12 +2368,12 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
             
             <!-- Search Exclusions Filter -->
-            <div class="settings-row" style="margin-top: var(--s-4); border-top: 1px solid var(--border-subtle); padding-top: var(--s-4);">
+            <div class="settings-row settings-row-divider">
               <div class="settings-row-info">
                 <div class="settings-row-label">Search Exclusions</div>
                 <div class="settings-row-desc">
                   Filter out content containing specific text in dURL.
-                  <span style="color: var(--text-muted);">({searchExclusions.length} active filters)</span>
+                  <span class="settings-text-muted">({searchExclusions.length} active filters)</span>
                 </div>
               </div>
               <div class="settings-row-actions">
@@ -2215,7 +2397,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
             
             <!-- Minimum Likes Filter -->
-            <div class="settings-row" style="margin-top: var(--s-3);">
+            <div class="settings-row settings-row-top-md">
               <div class="settings-row-info">
                 <div class="settings-row-label">Minimum Likes %</div>
                 <div class="settings-row-desc">
@@ -2229,8 +2411,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   max="100"
                   bind:value={searchMinLikes}
                   on:change={updateMinLikes}
-                  class="form-input"
-                  style="width: 70px; text-align: center;"
+                  class="form-input input-compact-center"
                 />
                 <span class="input-suffix">%</span>
               </div>
@@ -2238,7 +2419,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             
             <!-- Active Exclusions List -->
             {#if searchExclusions.length > 0}
-              <div class="exclusions-list" style="margin-top: var(--s-3);">
+              <div class="exclusions-list exclusions-list-top">
                 <div class="exclusions-header">Active Filters:</div>
                 <div class="exclusions-tags">
                   {#each searchExclusions as filter}
@@ -2268,7 +2449,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 </button>
               </div>
               <div class="modal-body">
-                <p class="modal-desc">
+                <p class="settings-modal-desc">
                   Add text filters to exclude SCIDs containing these patterns in their dURL.
                   Useful for filtering out unwanted or low-quality content.
                 </p>
@@ -2324,41 +2505,68 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
         <!-- Full Resync Confirmation Modal -->
         {#if showFullResyncModal}
           <div class="modal-overlay" on:click={cancelFullResync}>
-            <div class="modal-content" on:click|stopPropagation>
+            <div class="modal-content modal-content-wide" on:click|stopPropagation>
               <div class="modal-header">
-                <h3 class="modal-title">⚠️ Full Resync Warning</h3>
+                <div class="modal-title">
+                  <Icons name="warning" size={18} className="modal-title-icon resync-title-icon" />
+                  <span>Full Resync</span>
+                </div>
                 <button class="modal-close" on:click={cancelFullResync}>
                   <Icons name="x" size={20} />
                 </button>
               </div>
               <div class="modal-body">
-                <p class="modal-desc" style="color: var(--status-warn); font-weight: 600;">
-                  This will re-index the ENTIRE blockchain from block 0.
+                <p class="settings-modal-lead">Rebuilds the Gnomon index from block 0.</p>
+                <p class="settings-modal-desc">
+                  Use this only when your index is corrupted or missing content. It is the slowest rebuild path.
                 </p>
-                <p class="modal-desc">
-                  On mainnet, this means <strong>6+ million blocks</strong>.
-                </p>
-                <p class="modal-desc" style="color: var(--status-warn);">
-                  <strong>This can take HOURS or even DAYS depending on your system.</strong>
-                </p>
-                <p class="modal-desc">
-                  Are you sure you want to continue?
-                </p>
-                <p class="modal-desc" style="font-size: 0.9em; color: var(--text-muted); font-style: italic; margin-top: var(--s-3);">
-                  💡 Tip: Use "Fastsync" or "Time Machine" for faster results.
-                </p>
+
+                <div class="resync-metrics">
+                  <div class="resync-metric">
+                    <div class="resync-metric-label">Scope</div>
+                    <div class="resync-metric-value">Block 0 → latest</div>
+                    <div class="resync-metric-meta">Mainnet: 6M+ blocks</div>
+                  </div>
+                  <div class="resync-metric">
+                    <div class="resync-metric-label">Duration</div>
+                    <div class="resync-metric-value">Hours to days</div>
+                    <div class="resync-metric-meta">Depends on hardware</div>
+                  </div>
+                </div>
+
+                <div class="resync-choice">
+                  <div>
+                    <div class="resync-choice-title">Try Fastsync first</div>
+                    <div class="resync-choice-desc">Faster rebuild for most recovery cases.</div>
+                  </div>
+                  <button class="btn btn-secondary btn-sm" on:click={handleFastsyncInstead} disabled={resyncingGnomon}>
+                    Use Fastsync
+                  </button>
+                </div>
+
+                <label class="checkbox-wrap resync-confirm">
+                  <input type="checkbox" class="checkbox" bind:checked={fullResyncConfirmed} />
+                  <span class="checkbox-label">
+                    I understand this rebuilds from block 0 and can take hours or days.
+                  </span>
+                </label>
               </div>
-              <div class="modal-footer">
-                <button class="btn btn-danger" on:click={confirmFullResync} disabled={resyncingGnomon}>
+              <div class="modal-footer modal-footer-spread">
+                <button class="btn btn-secondary" on:click={cancelFullResync} disabled={resyncingGnomon}>
+                  Cancel
+                </button>
+                <button
+                  class="btn btn-danger"
+                  on:click={confirmFullResync}
+                  disabled={resyncingGnomon || !fullResyncConfirmed}
+                  title={!fullResyncConfirmed ? 'Confirm the acknowledgement to continue' : ''}
+                >
                   {#if resyncingGnomon}
                     <Icons name="loader" size={14} />
                     Starting...
                   {:else}
-                    Yes, Start Full Resync
+                    Start Full Resync
                   {/if}
-                </button>
-                <button class="btn btn-secondary" on:click={cancelFullResync} disabled={resyncingGnomon}>
-                  Cancel
                 </button>
               </div>
             </div>
@@ -2366,7 +2574,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
         {/if}
         
         <!-- Simple-Gnomon Features Card -->
-        <div class="card-wrapper" style="margin-top: var(--s-4);">
+        <div class="card-wrapper card-wrapper-top">
           <div class="explorer-header">
             <div class="explorer-header-left">
               <span class="explorer-header-icon">◈</span>
@@ -2382,7 +2590,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 <div class="settings-row-desc">
                   {#if gnomonWSStatus.running}
                     <span class="c-cyan">Running on ws://{gnomonWSStatus.address}/ws</span>
-                    <span style="color: var(--text-4);"> • {gnomonWSStatus.clients} client{gnomonWSStatus.clients !== 1 ? 's' : ''}</span>
+                    <span class="settings-text-muted"> • {gnomonWSStatus.clients} client{gnomonWSStatus.clients !== 1 ? 's' : ''}</span>
                   {:else}
                     Enable external apps to query Gnomon data via WebSocket
                   {/if}
@@ -2404,7 +2612,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
             
             <!-- Tag System Stats -->
-            <div class="settings-row" style="margin-top: var(--s-3);">
+            <div class="settings-row settings-row-top-md">
               <div class="settings-row-info">
                 <div class="settings-row-label">Tag Classification System</div>
                 <div class="settings-row-desc">
@@ -2437,7 +2645,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
         </div>
         
         <!-- Time Machine Watch List Card -->
-        <div class="card-wrapper" style="margin-top: var(--s-4);">
+        <div class="card-wrapper card-wrapper-top">
           <div class="explorer-header">
             <div class="explorer-header-left">
               <span class="explorer-header-icon">◎</span>
@@ -2705,7 +2913,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
           {/if}
           
           <!-- GitHub Checks Toggle -->
-          <div class="settings-row" style="margin-top: var(--s-4);">
+          <div class="settings-row settings-row-top-lg">
             <div class="settings-row-info">
               <div class="settings-row-label">Allow GitHub Checks</div>
               <div class="settings-row-desc">Enable auto-download of derod from GitHub. Disable for full privacy (manual install required).</div>
@@ -2719,7 +2927,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
           </div>
           
           {#if $settingsState.allow_github_check === false}
-            <div class="alert alert-warn" style="margin-top: var(--s-2);">
+            <div class="alert alert-warn settings-alert-top-sm">
               <p><strong>GitHub checks disabled</strong></p>
               <p class="form-hint">Auto-download of derod is unavailable. Go to Node settings for manual installation instructions.</p>
             </div>
@@ -2736,7 +2944,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
           </div>
           <div class="card-content">
-            <p class="form-hint" style="margin-bottom: var(--s-4);">
+            <p class="form-hint settings-hint-bottom-md">
             These hosts are always allowed, even when Privacy Mode is enabled.
           </p>
           
@@ -2767,19 +2975,18 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 {#if !['127.0.0.1', 'localhost', '::1', '0.0.0.0'].includes(host)}
                   <button
                     on:click={() => removeHost(host)}
-                    class="btn btn-ghost btn-sm"
-                    style="margin-left: auto;"
+                    class="btn btn-ghost btn-sm settings-ml-auto"
                     title="Remove host"
                   >
                     ✕
                   </button>
                 {:else}
-                  <span class="connection-protocol" style="margin-left: auto;">Required</span>
+                  <span class="connection-protocol settings-ml-auto">Required</span>
                 {/if}
               </div>
             {/each}
             {#if allowedHosts.length === 0}
-              <div class="host-item" style="justify-content: center; color: var(--text-4);">
+              <div class="host-item host-item-empty">
                 No hosts configured
               </div>
             {/if}
@@ -2796,7 +3003,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
           </div>
           <div class="card-content">
-            <p class="form-hint" style="margin-bottom: var(--s-4);">Current network connections used by Hologram</p>
+            <p class="form-hint settings-hint-bottom-md">Current network connections used by Hologram</p>
           
           <div class="connection-list">
             {#each activeConnections as conn}
@@ -2962,17 +3169,17 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   /* === Time Machine Card === */
   .time-machine-card {
-    padding: var(--s-4, 16px);
-    background: var(--void-deep, #08080e);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-    border-radius: var(--r-md, 8px);
+    padding: var(--s-4);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
   }
   
   .time-machine-header {
     display: flex;
     align-items: center;
-    gap: var(--s-2, 8px);
-    margin-bottom: var(--s-2, 8px);
+    gap: var(--s-2);
+    margin-bottom: var(--s-2);
     font-family: var(--font-mono);
     font-size: 13px;
     font-weight: 600;
@@ -2980,7 +3187,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   }
   
   .time-machine-header :global(svg) {
-    color: var(--cyan-400, #22d3ee);
+    color: var(--cyan-400);
   }
   
   .time-machine-current {
@@ -2996,13 +3203,13 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .time-machine-desc {
     font-size: 12px;
     color: var(--text-3);
-    margin-bottom: var(--s-3, 12px);
+    margin-bottom: var(--s-3);
     line-height: 1.5;
   }
   
   .time-machine-controls {
     display: flex;
-    gap: var(--s-2, 8px);
+    gap: var(--s-2);
     align-items: center;
   }
   
@@ -3016,7 +3223,18 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     border: 1px solid var(--border-default);
     border-radius: var(--r-lg);
     overflow: hidden;
-    margin-bottom: var(--s-6, 24px);
+    margin-bottom: var(--s-6);
+  }
+  
+  .card-wrapper-spaced {
+    margin-bottom: var(--s-6);
+  }
+
+  .node-mode-group :global(.btn-primary),
+  .node-mode-group :global(.btn-primary:hover),
+  .node-mode-group :global(.btn-secondary:hover) {
+    transform: none;
+    box-shadow: none;
   }
   
   /* === Explorer-style Headers === */
@@ -3069,15 +3287,15 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   /* === Settings Row (Individual Setting) === */
   .settings-row {
-    padding: var(--s-4, 16px);
-    background: var(--void-deep, #08080e);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-    border-radius: var(--r-md, 8px);
-    margin-bottom: var(--s-3, 12px);
+    padding: var(--s-4);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-3);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--s-4, 16px);
+    gap: var(--s-4);
   }
   
   .settings-row:last-child {
@@ -3095,17 +3313,132 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     flex-shrink: 0;
   }
   
+  .settings-row-stack {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .settings-row-stack-gap {
+    gap: var(--s-2);
+  }
+  
+  .settings-row-top-sm {
+    margin-top: var(--s-2);
+  }
+  
+  .settings-row-top-md {
+    margin-top: var(--s-3);
+  }
+  
+  .settings-row-top-lg {
+    margin-top: var(--s-4);
+  }
+  
+  .settings-row-divider {
+    margin-top: var(--s-4);
+    border-top: 1px solid var(--border-subtle);
+    padding-top: var(--s-4);
+  }
+  
+  .settings-row-info-spaced {
+    margin-bottom: var(--s-4);
+  }
+  
   .settings-row-label {
     font-size: 13px;
     font-weight: 500;
-    color: var(--text-1, #f8f8fc);
+    color: var(--text-1);
     margin-bottom: 2px;
   }
   
   .settings-row-desc {
     font-size: 11px;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
     line-height: 1.5;
+  }
+  
+  .settings-row-desc-inline {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+  }
+  
+  .settings-row-desc-mono {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  
+  .settings-form-group {
+    margin-bottom: var(--s-4);
+  }
+  
+  .settings-form-group-tight {
+    margin-bottom: 0;
+  }
+  
+  .settings-alert-top {
+    margin-top: var(--s-3);
+  }
+  
+  .settings-alert-top-sm {
+    margin-top: var(--s-2);
+  }
+  
+  .settings-alert-top-lg {
+    margin-top: var(--s-4);
+  }
+  
+  .settings-hint-top-sm {
+    margin-top: var(--s-2);
+  }
+  
+  .settings-hint-bottom-md {
+    margin-bottom: var(--s-4);
+  }
+  
+  .settings-text-muted {
+    color: var(--text-4);
+  }
+  
+  .settings-ml-auto {
+    margin-left: auto;
+  }
+  
+  .input-narrow {
+    width: 150px;
+  }
+  
+  .input-mono-sm {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  
+  .input-flex-mono {
+    flex: 1;
+    font-family: var(--font-mono);
+  }
+  
+  .input-compact-center {
+    width: 70px;
+    text-align: center;
+  }
+  
+  .time-machine-card-top {
+    margin-top: var(--s-3);
+  }
+  
+  .exclusions-list-top {
+    margin-top: var(--s-3);
+  }
+  
+  .card-wrapper-top {
+    margin-top: var(--s-4);
+  }
+  
+  .host-item-empty {
+    justify-content: center;
+    color: var(--text-4);
   }
   
   .settings-row-control {
@@ -3125,14 +3458,14 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .settings-stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: var(--s-3, 12px);
+    gap: var(--s-3);
   }
   
   .settings-stat {
-    padding: var(--s-3, 12px);
-    background: var(--void-deep, #08080e);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-    border-radius: var(--r-sm, 5px);
+    padding: var(--s-3);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
     text-align: center;
   }
   
@@ -3141,8 +3474,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     font-family: var(--font-mono);
     font-size: 20px;
     font-weight: 700;
-    color: var(--text-1, #f8f8fc);
-    margin-bottom: var(--s-1, 4px);
+    color: var(--text-1);
+    margin-bottom: var(--s-1);
   }
   
   .settings-stat-label {
@@ -3150,117 +3483,9 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.1em;
-    color: var(--text-4, #505068);
-  }
-  
-  /* === Legacy classes (for backwards compatibility) === */
-  .setting-row-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: var(--s-4, 16px);
-  }
-  
-  .setting-label {
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-2, #a8a8b8);
-  }
-  
-  .setting-desc {
-    font-size: 12px;
-    color: var(--text-4, #505068);
-    margin-top: 2px;
-  }
-  
-  .setting-actions {
-    display: flex;
-    gap: var(--s-2, 8px);
-  }
-  
-  /* Network Radio Cards - v6.1 compliant */
-  .radio-card-group {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: var(--s-4, 16px);
-  }
-
-  .radio-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    padding: var(--s-4, 16px);
-    background: var(--void-deep, #08080e);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 200ms ease-out;
-    text-align: center;
-  }
-
-  .radio-card:hover {
-    background: var(--void-up, #181824);
-    border-color: var(--border-strong, rgba(255, 255, 255, 0.12));
-  }
-
-  .radio-card.selected {
-    border-color: var(--cyan-500, #06b6d4);
-    background: rgba(0, 212, 170, 0.05);
-  }
-
-  .radio-card-radio {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    border: 2px solid var(--border-default);
-    transition: all 200ms;
-  }
-
-  .radio-card.selected .radio-card-radio {
-    border-color: var(--cyan-500);
-    background: var(--cyan-500);
-    box-shadow: inset 0 0 0 3px var(--void-deep);
-  }
-
-  .radio-card-content {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .radio-card-title {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-1);
-  }
-
-  .radio-card-desc {
-    font-size: 11px;
     color: var(--text-4);
   }
-
-  .radio-card-badge {
-    font-size: 10px;
-    padding: 4px 8px;
-    border-radius: var(--r-xs);
-    margin-top: 4px;
-  }
-
-  .radio-card-badge.warn {
-    background: rgba(251, 191, 36, 0.15);
-    color: var(--status-warn, #fbbf24);
-  }
-
-  .radio-card-badge.test {
-    background: rgba(167, 139, 250, 0.15);
-    color: var(--violet-400, #a78bfa);
-  }
-
-  .radio-card-badge.safe {
-    background: rgba(52, 211, 153, 0.15);
-    color: var(--status-ok, #34d399);
-  }
+  
   
   /* Form styles (.form-group, .form-label, .form-hint) come from hologram.css */
   
@@ -3277,12 +3502,12 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
 
   .connection-badge.connected {
     background: rgba(52, 211, 153, 0.15);
-    color: var(--status-ok, #34d399);
+    color: var(--status-ok);
   }
   
   .connection-badge.disconnected {
     background: rgba(248, 113, 113, 0.15);
-    color: var(--status-err, #f87171);
+    color: var(--status-err);
   }
 
   .connection-dot {
@@ -3295,7 +3520,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   /* === Connected Apps v6.1 Styles === */
   .section-desc {
     font-size: 13px;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
     margin-bottom: 20px;
   }
 
@@ -3360,8 +3585,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   }
 
   .app-card {
-    background: var(--void-deep, #08080e);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
     border-radius: 8px;
     overflow: hidden;
   }
@@ -3380,7 +3605,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   }
 
   .app-card-header:hover {
-    background: var(--void-up, #181824);
+    background: var(--void-up);
   }
 
   .app-card-info {
@@ -3429,7 +3654,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
 
   .app-status-badge.connected {
     background: rgba(52, 211, 153, 0.15);
-    color: var(--status-ok, #34d399);
+    color: var(--status-ok);
   }
 
   .app-card-origin {
@@ -3457,7 +3682,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .app-card-expanded {
     padding: 16px;
     border-top: 1px solid var(--border-dim);
-    background: var(--void-pure, #000000);
+    background: var(--void-pure);
   }
 
   .app-timestamps {
@@ -3555,7 +3780,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .btn-danger {
     padding: 8px 16px;
     background: rgba(248, 113, 113, 0.15);
-    color: var(--status-err, #f87171);
+    color: var(--status-err);
     border: none;
     border-radius: 5px;
     font-size: 12px;
@@ -3585,8 +3810,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     align-items: flex-start;
     gap: 12px;
     padding: 12px;
-    background: var(--void-deep, #08080e);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
     border-radius: 8px;
   }
 
@@ -3626,7 +3851,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     text-transform: uppercase;
     letter-spacing: 0.05em;
     background: rgba(251, 191, 36, 0.15);
-    color: var(--status-warn, #fbbf24);
+    color: var(--status-warn);
     border-radius: var(--r-xs);
   }
 
@@ -3651,20 +3876,20 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   .status-detail-text {
     font-size: 13px;
-    color: var(--text-3, #707088);
+    color: var(--text-3);
   }
   
   .progress-section {
-    margin-top: var(--s-5, 20px);
-    padding-top: var(--s-4, 16px);
-    border-top: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
+    margin-top: var(--s-5);
+    padding-top: var(--s-4);
+    border-top: 1px solid var(--border-dim);
   }
   
   .progress-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: var(--s-2, 8px);
+    margin-bottom: var(--s-2);
   }
   
   .progress-value {
@@ -3675,7 +3900,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   /* btn-danger styles come from hologram.css */
   
   .c-text-4 {
-    color: var(--text-4, #505068);
+    color: var(--text-4);
   }
   
   /* Slider styles - supplement hologram.css */
@@ -3683,7 +3908,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: var(--s-2, 8px);
+    margin-bottom: var(--s-2);
   }
   
   .slider-value {
@@ -3695,13 +3920,13 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .checkbox-group {
     display: flex;
     flex-direction: column;
-    gap: var(--s-4, 16px);
+    gap: var(--s-4);
   }
   
   .checkbox-item {
     display: flex;
     align-items: flex-start;
-    gap: var(--s-3, 12px);
+    gap: var(--s-3);
     cursor: pointer;
   }
   
@@ -3713,12 +3938,12 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   .checkbox-text {
     font-size: 13px;
-    color: var(--text-2, #a8a8b8);
+    color: var(--text-2);
   }
   
   .checkbox-hint {
     font-size: 10px;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
   }
   
   /* Card and section styles now come from hologram.css via .section-card classes */
@@ -3728,13 +3953,13 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .mining-stats-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: var(--s-4, 16px);
+    gap: var(--s-4);
   }
   
   .mining-stat {
-    background: var(--void-deep, #0a0a0f);
+    background: var(--void-deep);
     border-radius: 8px;
-    padding: var(--s-4, 16px);
+    padding: var(--s-4);
     text-align: center;
   }
   
@@ -3743,7 +3968,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
     margin-bottom: 4px;
   }
   
@@ -3752,7 +3977,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     font-size: 18px;
     font-weight: 600;
     font-family: var(--font-mono);
-    color: var(--text-1, #e8e8f0);
+    color: var(--text-1);
   }
   
   .mining-difficulty {
@@ -3773,9 +3998,9 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .info-list {
     display: flex;
     flex-direction: column;
-    gap: var(--s-3, 12px);
+    gap: var(--s-3);
     font-size: 13px;
-    color: var(--text-3, #707088);
+    color: var(--text-3);
   }
   
   .info-item {
@@ -3786,83 +4011,83 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .benchmark-form {
     display: flex;
     flex-direction: column;
-    gap: var(--s-4, 16px);
+    gap: var(--s-4);
   }
   
   .benchmark-field {
     display: flex;
     flex-direction: column;
-    gap: var(--s-2, 8px);
+    gap: var(--s-2);
   }
   
   .benchmark-label {
     display: block;
     font-size: 13px;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
   }
   
   .benchmark-slider {
     width: 100%;
-    accent-color: var(--cyan-500, #06b6d4);
+    accent-color: var(--cyan-500);
   }
   
   .benchmark-slider-labels {
     display: flex;
     justify-content: space-between;
     font-size: 12px;
-    color: var(--text-5, #404058);
+    color: var(--text-5);
   }
   
   .benchmark-running {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: var(--s-2, 8px);
+    gap: var(--s-2);
   }
   
   .benchmark-result {
-    margin-top: var(--s-4, 16px);
-    padding: var(--s-4, 16px);
-    background: var(--void-deep, #08080e);
-    border-radius: var(--r-lg, 12px);
+    margin-top: var(--s-4);
+    padding: var(--s-4);
+    background: var(--void-deep);
+    border-radius: var(--r-lg);
     border: 1px solid rgba(6, 182, 212, 0.3);
   }
   
   .benchmark-result-header {
     text-align: center;
-    margin-bottom: var(--s-4, 16px);
+    margin-bottom: var(--s-4);
   }
   
   .benchmark-hashrate {
     font-size: 28px;
     font-weight: 700;
-    color: var(--cyan-400, #22d3ee);
+    color: var(--cyan-400);
   }
   
   .benchmark-threads-used {
     font-size: 12px;
-    color: var(--text-5, #404058);
-    margin-top: var(--s-1, 4px);
+    color: var(--text-5);
+    margin-top: var(--s-1);
   }
   
   .benchmark-per-thread {
-    margin-top: var(--s-3, 12px);
+    margin-top: var(--s-3);
   }
   
   .per-thread-label {
     font-size: 12px;
-    color: var(--text-5, #404058);
+    color: var(--text-5);
   }
   
   .per-thread-list {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--s-1, 4px);
-    margin-top: var(--s-1, 4px);
+    gap: var(--s-1);
+    margin-top: var(--s-1);
   }
   
   .per-thread-item {
-    padding: 4px var(--s-2, 8px);
+    padding: 4px var(--s-2);
     background: var(--void-mid);
     border-radius: var(--r-sm);
     font-size: 12px;
@@ -3941,30 +4166,30 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     align-items: center;
     gap: 12px;
     padding: 16px;
-    background: var(--void-deep, #08080e);
+    background: var(--void-deep);
     border-radius: 8px;
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+    border: 1px solid var(--border-subtle);
   }
   
   .status-indicator .status-dot {
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: var(--text-4, #505068);
+    background: var(--text-4);
   }
   
   .status-indicator.active .status-dot {
-    background: var(--emerald, #10b981);
-    box-shadow: 0 0 8px var(--emerald, #10b981);
+    background: var(--emerald);
+    box-shadow: 0 0 8px var(--emerald);
     animation: pulse-dot 2s infinite;
   }
   
   .status-indicator.paused .status-dot {
-    background: var(--status-warn, #fbbf24);
+    background: var(--status-warn);
   }
   
   .status-indicator.disabled .status-dot {
-    background: var(--status-err, #f87171);
+    background: var(--status-err);
   }
   
   @keyframes pulse-dot {
@@ -3975,7 +4200,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .status-indicator .status-text {
     font-size: 14px;
     font-weight: 500;
-    color: var(--text-1, #f8f8fc);
+    color: var(--text-1);
   }
   
   .pause-reason-box {
@@ -3997,7 +4222,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     align-items: center;
     gap: 8px;
     font-size: 12px;
-    color: var(--status-warn, #fbbf24);
+    color: var(--status-warn);
     margin: 0;
   }
   
@@ -4006,7 +4231,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     align-items: center;
     gap: 8px;
     font-size: 12px;
-    color: var(--emerald, #10b981);
+    color: var(--emerald);
     padding: 8px 16px;
     background: rgba(16, 185, 129, 0.1);
     border-radius: 6px;
@@ -4022,17 +4247,17 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .contribution-stat {
     text-align: center;
     padding: 20px;
-    background: var(--void-deep, #08080e);
+    background: var(--void-deep);
     border-radius: 8px;
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+    border: 1px solid var(--border-subtle);
   }
   
   .contribution-value {
     display: block;
     font-size: 24px;
     font-weight: 600;
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    color: var(--text-1, #f8f8fc);
+    font-family: var(--font-mono);
+    color: var(--text-1);
     margin-bottom: 4px;
   }
   
@@ -4041,13 +4266,13 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
   }
   
   .sessions-info {
     text-align: center;
     font-size: 12px;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
     margin-top: 12px;
   }
   
@@ -4061,7 +4286,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     display: flex;
     gap: 12px;
     padding: 16px;
-    background: var(--void-deep, #08080e);
+    background: var(--void-deep);
     border-radius: 8px;
   }
   
@@ -4074,76 +4299,76 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     justify-content: center;
     background: rgba(34, 211, 238, 0.1);
     border-radius: 8px;
-    color: var(--cyan-400, #22d3ee);
+    color: var(--cyan-400);
   }
   
   .info-content strong {
     display: block;
     font-size: 13px;
     font-weight: 500;
-    color: var(--text-1, #f8f8fc);
+    color: var(--text-1);
     margin-bottom: 4px;
   }
   
   .info-content p {
     font-size: 12px;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
     line-height: 1.4;
     margin: 0;
   }
   
   /* Legacy epoch-info-card styles (kept for compatibility) */
   .epoch-info-card {
-    background: var(--void-mid, #12121c);
-    border: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
-    border-radius: var(--r-xl, 16px);
-    padding: var(--s-5, 20px);
+    background: var(--void-mid);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-xl);
+    padding: var(--s-5);
   }
   
   .epoch-info-title {
     font-weight: 500;
-    color: var(--text-2, #a8a8b8);
-    margin-bottom: var(--s-4, 16px);
+    color: var(--text-2);
+    margin-bottom: var(--s-4);
   }
   
   .epoch-status-label {
     display: flex;
     align-items: center;
-    gap: var(--s-2, 8px);
+    gap: var(--s-2);
   }
   
   /* Stat Grid */
   .stat-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: var(--s-3, 12px);
+    gap: var(--s-3);
   }
   
   /* Simulator wallet balance row */
   .sim-wallet-balance-row {
     display: flex;
     align-items: center;
-    gap: var(--s-2, 8px);
-    padding: var(--s-2, 8px) var(--s-3, 12px);
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
     background: rgba(52, 211, 153, 0.08);
-    border-radius: var(--r-md, 8px);
+    border-radius: var(--r-md);
     border: 1px solid rgba(52, 211, 153, 0.15);
   }
   .sim-wallet-balance-label {
     font-size: 12px;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
   .sim-wallet-balance-value {
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-family: var(--font-mono);
     font-size: 14px;
     font-weight: 600;
-    color: var(--emerald-400, #34d399);
+    color: var(--emerald-400);
   }
   .sim-wallet-balance-hint {
     font-size: 11px;
-    color: var(--text-5, #404058);
+    color: var(--text-5);
     margin-left: auto;
   }
   
@@ -4151,34 +4376,34 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   .action-input-group {
     display: flex;
     align-items: center;
-    gap: var(--s-2, 8px);
+    gap: var(--s-2);
   }
   
   /* Installed Info Row */
   .installed-info {
     display: flex;
     align-items: center;
-    gap: var(--s-2, 8px);
+    gap: var(--s-2);
   }
   
   .version-text {
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
   }
   
   /* Prune Input Row */
   .prune-input-row {
     display: flex;
     align-items: center;
-    gap: var(--s-3, 12px);
+    gap: var(--s-3);
   }
   
   /* Add Host Form */
   .add-host-form {
     display: flex;
-    gap: var(--s-2, 8px);
-    margin-bottom: var(--s-4, 16px);
+    gap: var(--s-2);
+    margin-bottom: var(--s-4);
   }
   
   .host-input {
@@ -4191,23 +4416,23 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: var(--s-1, 4px);
+    gap: var(--s-1);
   }
   
   .connection-log-empty {
     font-size: 13px;
-    color: var(--text-5, #404058);
+    color: var(--text-5);
     text-align: center;
-    padding: var(--s-4, 16px);
+    padding: var(--s-4);
   }
   
   .connection-log-entry {
     display: flex;
     align-items: flex-start;
-    gap: var(--s-2, 8px);
-    padding: var(--s-2, 8px);
-    background: var(--void-deep, #08080e);
-    border-radius: var(--r-md, 8px);
+    gap: var(--s-2);
+    padding: var(--s-2);
+    background: var(--void-deep);
+    border-radius: var(--r-md);
     font-size: 12px;
   }
   
@@ -4215,16 +4440,16 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     width: 8px;
     height: 8px;
     margin-top: 4px;
-    border-radius: var(--r-full, 9999px);
+    border-radius: var(--r-full);
     flex-shrink: 0;
   }
   
   .log-dot-ok {
-    background: var(--status-ok, #34d399);
+    background: var(--status-ok);
   }
   
   .log-dot-err {
-    background: var(--status-err, #f87171);
+    background: var(--status-err);
   }
   
   .log-entry-info {
@@ -4234,14 +4459,14 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   .log-entry-host {
     display: block;
-    color: var(--text-3, #707088);
+    color: var(--text-3);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   
   .log-entry-reason {
-    color: var(--text-5, #404058);
+    color: var(--text-5);
   }
   
   /* === Console Terminal Styles === */
@@ -4309,13 +4534,13 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: var(--s-2, 8px);
+    margin-bottom: var(--s-2);
   }
   
   .sync-progress-value {
     font-size: 13px;
-    color: var(--cyan-400, #22d3ee);
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    color: var(--cyan-400);
+    font-family: var(--font-mono);
   }
   
   /* Update Notice */
@@ -4325,15 +4550,15 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   /* Difficulty Value */
   .difficulty-value {
-    color: var(--cyan-400, #22d3ee);
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    color: var(--cyan-400);
+    font-family: var(--font-mono);
   }
   
   /* EPOCH Hint */
   .epoch-hint {
     font-size: 12px;
-    margin-top: var(--s-2, 8px);
-    color: var(--text-4, #505068);
+    margin-top: var(--s-2);
+    color: var(--text-4);
   }
   
   /* === Phase 4 v6.1 Layout Classes === */
@@ -4343,51 +4568,51 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: var(--s-4, 16px);
+    margin-bottom: var(--s-4);
   }
   
   /* === About Section Styles === */
   .about-details {
-    background: var(--void-deep, #08080e);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-    border-radius: var(--r-md, 8px);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
     overflow: hidden;
-    margin-bottom: var(--s-6, 24px);
+    margin-bottom: var(--s-6);
   }
   
   .about-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: var(--s-3, 12px) var(--s-4, 16px);
+    padding: var(--s-3) var(--s-4);
   }
   
   .about-row:not(:last-child) {
-    border-bottom: 1px solid var(--border-dim, rgba(255, 255, 255, 0.04));
+    border-bottom: 1px solid var(--border-dim);
   }
   
   .about-label {
     font-size: 12px;
     font-weight: 500;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
     text-transform: uppercase;
     letter-spacing: 0.08em;
   }
   
   .about-value {
     font-size: 13px;
-    color: var(--text-2, #b0b0c0);
+    color: var(--text-2);
   }
   
   .about-value.mono {
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-family: var(--font-mono);
   }
   
   .about-network-badge {
     display: inline-block;
     padding: 2px 8px;
-    border-radius: var(--r-sm, 4px);
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    border-radius: var(--r-sm);
+    font-family: var(--font-mono);
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
@@ -4396,32 +4621,32 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   .about-network-badge.mainnet {
     background: rgba(34, 211, 238, 0.1);
-    color: var(--cyan-400, #22d3ee);
+    color: var(--cyan-400);
     border: 1px solid rgba(34, 211, 238, 0.25);
   }
   
   .about-network-badge.simulator {
     background: rgba(248, 113, 113, 0.1);
-    color: var(--status-err, #f87171);
+    color: var(--status-err);
     border: 1px solid rgba(248, 113, 113, 0.25);
   }
   
   .about-footer {
     text-align: center;
-    padding-top: var(--s-4, 16px);
-    border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+    padding-top: var(--s-4);
+    border-top: 1px solid var(--border-subtle);
   }
   
   .about-copyright {
     font-size: 12px;
-    color: var(--text-5, #404058);
-    margin: 0 0 var(--s-1, 4px) 0;
+    color: var(--text-5);
+    margin: 0 0 var(--s-1) 0;
   }
   
   .about-tagline {
     font-size: 13px;
     font-style: italic;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
     margin: 0;
   }
   
@@ -4537,10 +4762,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   .form-input {
     padding: var(--s-2) var(--s-3);
-    background: var(--void-deep, #08080e);
-    border: 1px solid var(--border-default, rgba(255, 255, 255, 0.09));
-    border-radius: var(--r-md, 8px);
-    color: var(--text-1, #f8f8fc);
+    background: var(--void-deep);
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-md);
+    color: var(--text-1);
     font-family: var(--font-mono);
     font-size: 13px;
     outline: none;
@@ -4555,18 +4780,18 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   }
   
   .form-input:focus {
-    border-color: var(--cyan-500, #06b6d4);
+    border-color: var(--cyan-500);
     box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.15);
   }
   
   .form-input::placeholder {
-    color: var(--text-5, #404058);
+    color: var(--text-5);
   }
   
   .input-suffix {
     font-family: var(--font-mono);
     font-size: 13px;
-    color: var(--text-4, #505068);
+    color: var(--text-4);
   }
   
   .btn-group {
@@ -4585,81 +4810,100 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     color: white;
   }
   
-  /* Modal Styles */
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.7);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    backdrop-filter: blur(4px);
+  .settings-modal-lead {
+    margin: 0 0 var(--s-2);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-1);
   }
   
-  .modal-content {
-    background: var(--void-base);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-lg);
-    width: 90%;
-    max-width: 500px;
-    max-height: 80vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+  .settings-modal-desc {
+    margin: 0 0 var(--s-4);
+    font-size: 12px;
+    color: var(--text-3);
+    line-height: 1.6;
   }
   
-  .modal-header {
+  .resync-title-icon {
+    color: var(--status-warn);
+  }
+  
+  .resync-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--s-3);
+    margin-bottom: var(--s-4);
+  }
+  
+  .resync-metric {
+    border-radius: var(--r-lg);
+    border: 1px solid var(--border-subtle);
+    background: var(--void-deep);
+    padding: var(--s-4);
+  }
+  
+  .resync-metric-label {
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--text-4);
+  }
+  
+  .resync-metric-value {
+    margin-top: var(--s-2);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-1);
+  }
+  
+  .resync-metric-meta {
+    margin-top: var(--s-1);
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  
+  .resync-choice {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--s-4);
     padding: var(--s-4);
-    border-bottom: 1px solid var(--border-subtle);
+    border-radius: var(--r-lg);
+    border: 1px solid var(--border-subtle);
+    background: var(--void-up);
+    margin-bottom: var(--s-4);
   }
   
-  .modal-title {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-  
-  .modal-close {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border: none;
-    background: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    border-radius: var(--radius-sm);
-  }
-  
-  .modal-close:hover {
-    background: var(--surface-hover);
-    color: var(--text-primary);
-  }
-  
-  .modal-body {
-    padding: var(--s-4);
-    overflow-y: auto;
-  }
-  
-  .modal-desc {
-    margin: 0 0 var(--s-4);
+  .resync-choice-title {
     font-size: 13px;
-    color: var(--text-secondary);
-    line-height: 1.5;
+    font-weight: 600;
+    color: var(--text-1);
   }
   
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--s-2);
-    padding: var(--s-3) var(--s-4);
-    border-top: 1px solid var(--border-subtle);
+  .resync-choice-desc {
+    margin-top: var(--s-1);
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  
+  .resync-confirm {
+    margin-top: var(--s-2);
+    padding: var(--s-3);
+    border-radius: var(--r-md);
+    border: 1px dashed var(--border-subtle);
+    background: var(--void-deep);
+  }
+  
+  @media (max-width: 560px) {
+    .resync-metrics {
+      grid-template-columns: 1fr;
+    }
+    
+    .resync-choice {
+      flex-direction: column;
+      align-items: stretch;
+    }
   }
   
   /* Toggle Switch */
