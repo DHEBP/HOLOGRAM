@@ -10,6 +10,9 @@
 /* 1. HOLOGRAM Design System - Single Source of Truth */
 @import './styles/hologram.css';
 
+/* Studio styles */
+@import './lib/styles/studio.css';
+
 /* 2. Tailwind */
 @tailwind base;
 @tailwind components;

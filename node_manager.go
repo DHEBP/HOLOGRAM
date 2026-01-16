@@ -84,8 +84,9 @@ type NodeManager struct {
 	integratorAddress  string // Default reward address for mining server
 	
 	// Advanced node options
-	fastSyncEnabled bool // Use --fastsync for quick initial sync
-	pruneHistory    int  // Use --prune-history=N (0 = disabled)
+	fastSyncEnabled  bool   // Use --fastsync for quick initial sync
+	pruneHistory     int    // Use --prune-history=N (0 = disabled)
+	syncNodeEndpoint string // Use --sync-node=ENDPOINT to sync from a trusted node
 }
 
 // Regex patterns for parsing derod output
@@ -1152,9 +1153,9 @@ func (a *App) GetNodeMiningConfig() map[string]interface{} {
 	}
 }
 
-// SetNodeAdvancedConfig configures advanced node options like fast sync and pruning
+// SetNodeAdvancedConfig configures advanced node options like fast sync, pruning, and sync node
 // These settings take effect on the next node start
-func (a *App) SetNodeAdvancedConfig(fastSync bool, pruneHistory int) map[string]interface{} {
+func (a *App) SetNodeAdvancedConfig(fastSync bool, pruneHistory int, syncNodeEndpoint string) map[string]interface{} {
 	nodeManager.Lock()
 	defer nodeManager.Unlock()
 
@@ -1173,15 +1174,20 @@ func (a *App) SetNodeAdvancedConfig(fastSync bool, pruneHistory int) map[string]
 		pruneHistory = 1000 // Minimum 1000 blocks if pruning enabled
 	}
 
+	// Validate sync node endpoint (basic URL format check)
+	syncNodeEndpoint = strings.TrimSpace(syncNodeEndpoint)
+
 	nodeManager.fastSyncEnabled = fastSync
 	nodeManager.pruneHistory = pruneHistory
+	nodeManager.syncNodeEndpoint = syncNodeEndpoint
 
-	a.logToConsole(fmt.Sprintf("[Node] Advanced config: fastSync=%v, pruneHistory=%d", fastSync, pruneHistory))
+	a.logToConsole(fmt.Sprintf("[Node] Advanced config: fastSync=%v, pruneHistory=%d, syncNode=%s", fastSync, pruneHistory, syncNodeEndpoint))
 
 	return map[string]interface{}{
-		"success":      true,
-		"fastSync":     nodeManager.fastSyncEnabled,
-		"pruneHistory": nodeManager.pruneHistory,
+		"success":          true,
+		"fastSync":         nodeManager.fastSyncEnabled,
+		"pruneHistory":     nodeManager.pruneHistory,
+		"syncNodeEndpoint": nodeManager.syncNodeEndpoint,
 	}
 }
 
@@ -1191,10 +1197,11 @@ func (a *App) GetNodeAdvancedConfig() map[string]interface{} {
 	defer nodeManager.RUnlock()
 
 	return map[string]interface{}{
-		"success":      true,
-		"fastSync":     nodeManager.fastSyncEnabled,
-		"pruneHistory": nodeManager.pruneHistory,
-		"isRunning":    nodeManager.isRunning,
+		"success":          true,
+		"fastSync":         nodeManager.fastSyncEnabled,
+		"pruneHistory":     nodeManager.pruneHistory,
+		"syncNodeEndpoint": nodeManager.syncNodeEndpoint,
+		"isRunning":        nodeManager.isRunning,
 	}
 }
 

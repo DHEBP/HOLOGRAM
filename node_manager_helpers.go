@@ -150,6 +150,10 @@ func (a *App) buildNodeArgs(networkMode NetworkMode, fullDataDir string, netConf
 			args = append(args, "--prune-history", fmt.Sprintf("%d", nodeManager.pruneHistory))
 			a.logToConsole(fmt.Sprintf("🧹 Pruning history older than %d blocks", nodeManager.pruneHistory))
 		}
+		if nodeManager.syncNodeEndpoint != "" {
+			args = append(args, "--sync-node", nodeManager.syncNodeEndpoint)
+			a.logToConsole(fmt.Sprintf("[SYNC] Using trusted node for sync: %s", nodeManager.syncNodeEndpoint))
+		}
 	}
 
 	return args

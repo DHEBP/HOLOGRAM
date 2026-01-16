@@ -168,6 +168,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   // Advanced Node Options state
   let fastSyncEnabled = false;
   let pruneHistory = 0;
+  let syncNodeEndpoint = '';
   let advancedNodeLoading = false;
   
   onMount(async () => {
@@ -351,6 +352,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       if (config.success !== false) {
         fastSyncEnabled = config.fastSync || false;
         pruneHistory = config.pruneHistory || 0;
+        syncNodeEndpoint = config.syncNodeEndpoint || '';
       }
     } catch (e) {
       console.error('Failed to load advanced node config:', e);
@@ -360,7 +362,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   async function saveAdvancedNodeConfig() {
     advancedNodeLoading = true;
     try {
-      const result = await SetNodeAdvancedConfig(fastSyncEnabled, pruneHistory);
+      const result = await SetNodeAdvancedConfig(fastSyncEnabled, pruneHistory, syncNodeEndpoint);
       if (!result.success) {
         console.error('Failed to save:', result.error);
       }
@@ -1558,6 +1560,22 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   <span class="form-hint">0 = keep all blocks</span>
               </div>
                 <p class="form-hint">Remove blocks older than N to save disk space (minimum 1000 if enabled)</p>
+              </div>
+            </div>
+            
+            <div class="settings-row" style="flex-direction: column; align-items: stretch;" class:opacity-50={nodeStatus.isRunning}>
+              <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label">Sync Node</label>
+                <input
+                  type="text"
+                  bind:value={syncNodeEndpoint}
+                  on:change={saveAdvancedNodeConfig}
+                  placeholder="e.g., http://node.example.com:10102"
+                  disabled={nodeStatus.isRunning}
+                  class="input"
+                  style="font-family: var(--font-mono); font-size: 12px;"
+                />
+                <p class="form-hint">Sync blockchain state from a trusted remote node instead of P2P (faster initial sync)</p>
               </div>
             </div>
             

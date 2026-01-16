@@ -577,7 +577,7 @@ export function SetMiningAddress(arg1:string):Promise<Record<string, any>>;
 
 export function SetNetworkMode(arg1:string):Promise<Record<string, any>>;
 
-export function SetNodeAdvancedConfig(arg1:boolean,arg2:number):Promise<Record<string, any>>;
+export function SetNodeAdvancedConfig(arg1:boolean,arg2:number,arg3:string):Promise<Record<string, any>>;
 
 export function SetNodeConfig(arg1:Record<string, any>):Promise<Record<string, any>>;
 

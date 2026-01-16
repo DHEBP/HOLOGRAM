@@ -1489,25 +1489,6 @@
     color: var(--text-4);
   }
   
-  .service-row-status {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--text-2);
-  }
-  
-  .service-row-status.ok {
-    color: var(--status-ok);
-  }
-  
-  .service-row-status.warn {
-    color: var(--status-warn);
-  }
-  
-  .service-row-status.err {
-    color: var(--status-err);
-    opacity: 0.7;
-  }
-  
   /* ============================================
      v6.5 GNOMON PROGRESS ROW - Option B Style
      ============================================ */
@@ -1585,23 +1566,6 @@
   @keyframes gnomon-shimmer {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
-  }
-  
-  .gnomon-percent {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--cyan-400);
-    min-width: 32px;
-    text-align: right;
-  }
-  
-  .gnomon-percent.synced {
-    color: var(--status-ok);
-  }
-  
-  .gnomon-percent.offline {
-    color: var(--status-err);
-    opacity: 0.6;
   }
   
   /* Row state styling - all borders consistent (E2 style) */

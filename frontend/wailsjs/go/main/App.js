@@ -1150,8 +1150,8 @@ export function SetNetworkMode(arg1) {
   return window['go']['main']['App']['SetNetworkMode'](arg1);
 }
 
-export function SetNodeAdvancedConfig(arg1, arg2) {
-  return window['go']['main']['App']['SetNodeAdvancedConfig'](arg1, arg2);
+export function SetNodeAdvancedConfig(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetNodeAdvancedConfig'](arg1, arg2, arg3);
 }
 
 export function SetNodeConfig(arg1) {
