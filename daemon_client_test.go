@@ -298,7 +298,6 @@ func TestGetInfoSuccess(t *testing.T) {
 				"difficulty":   float64(12345678),
 				"status":       "OK",
 				"version":      "3.5.1-2.release",
-				"testnet":      false,
 				"tx_pool_size": float64(5),
 			},
 		}

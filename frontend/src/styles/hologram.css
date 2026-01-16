@@ -1857,10 +1857,10 @@
       border: 1px solid rgba(34, 211, 238, 0.25);
     }
     
-    .wizard-network-badge.testnet {
-      background: rgba(251, 191, 36, 0.12);
-      color: var(--amber-400);
-      border: 1px solid rgba(251, 191, 36, 0.25);
+    .wizard-network-badge.simulator {
+      background: rgba(248, 113, 113, 0.12);
+      color: var(--status-err, #f87171);
+      border: 1px solid rgba(248, 113, 113, 0.25);
     }
     
     .wizard-block-info {

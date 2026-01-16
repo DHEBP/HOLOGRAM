@@ -716,14 +716,6 @@
       description: 'Live blockchain - transactions are irreversible'
     },
     { 
-      id: 'testnet', 
-      label: 'Testnet', 
-      icon: 'flask', 
-      status: 'warn',
-      warning: 'Test Network',
-      description: 'Test blockchain - use testnet DERO'
-    },
-    { 
       id: 'simulator', 
       label: 'Simulator', 
       icon: 'gamepad', 
@@ -6063,11 +6055,6 @@ End Function"
     color: var(--status-ok, #34d399);
   }
   
-  .network-badge.testnet {
-    background: rgba(34, 211, 238, 0.2);
-    color: var(--cyan-400, #22d3ee);
-  }
-  
   .success-close {
     display: flex;
     align-items: center;
@@ -7416,11 +7403,6 @@ End Function"
   .network-badge.mainnet {
     background: rgba(248, 113, 113, 0.15);
     color: var(--status-err);
-  }
-  
-  .network-badge.testnet {
-    background: rgba(251, 191, 36, 0.15);
-    color: var(--status-warn);
   }
   
   .network-badge.simulator {

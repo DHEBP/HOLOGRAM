@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { writable, get } from 'svelte/store';
-  import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast } from '../lib/stores/appState.js';
+  import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
   import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride } from '../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -209,10 +209,12 @@ let addressInput = '';
     // Only load apps if Gnomon is already running - don't auto-start
     if (!$appState.gnomonRunning) {
       appsLoading = false;
+      setAppDiscoveryState({ loading: false });
       return;
     }
     
     appsLoading = true;
+    setAppDiscoveryState({ loading: true });
     try {
       // Load content filter config first
       try {
@@ -256,6 +258,7 @@ let addressInput = '';
       appsLoaded = true; // Mark as loaded to prevent retry loop
     } finally {
       appsLoading = false;
+      setAppDiscoveryState({ loading: false, loaded: appsLoaded });
     }
   }
   
@@ -267,6 +270,7 @@ let addressInput = '';
     appsLoaded = false;
     apps = [];
     filteredApps = [];
+    setAppDiscoveryState({ loading: false, loaded: false });
   }
   
   // Reactive: reload apps when Gnomon starts running (if not yet loaded)
@@ -1335,7 +1339,7 @@ let addressInput = '';
   
   // Override WebSocket
   window.WebSocket = function(url, protocols) {
-    // XSWD ports: 44326 (mainnet), 44325 (testnet)
+    // XSWD port: 44326 (mainnet)
     if (url && (url.indexOf('44326') !== -1 || url.indexOf('44325') !== -1 || url.indexOf('xswd') !== -1)) {
       return new XSWDProxy(url);
     }

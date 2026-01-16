@@ -86,6 +86,17 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   // Node detection state
   let detecting = false;
   let detectionMessage = '';
+
+  function isLocalEndpoint(endpoint) {
+    if (!endpoint) return true;
+    const value = endpoint.trim().toLowerCase();
+    return (
+      value.includes('127.0.0.1') ||
+      value.includes('localhost')
+    );
+  }
+
+  $: isExternalNode = !isLocalEndpoint($settingsState.daemonEndpoint);
   
   // Gnomon resync state
   let resyncingGnomon = false;
@@ -1355,7 +1366,11 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               </div>
               <span class="settings-hint-label">
                 <Icons name="server" size={12} />
-                Node controls below
+                {#if isExternalNode}
+                  External node connected — local controls disabled
+                {:else}
+                  Node controls below
+                {/if}
               </span>
           </div>
           
@@ -1898,20 +1913,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 </div>
               </button>
               
-              <!-- Testnet -->
-              <button
-                on:click={() => handleNetworkChange('testnet')}
-                class="radio-card"
-                class:selected={$appState.network === 'testnet'}
-              >
-                <div class="radio-card-radio"></div>
-                <div class="radio-card-content">
-                  <div class="radio-card-title">Testnet</div>
-                  <div class="radio-card-desc">Test blockchain</div>
-                  <span class="radio-card-badge test">Use testnet DERO</span>
-                </div>
-              </button>
-              
               <!-- Simulator -->
               <button
                 on:click={() => handleNetworkChange('simulator')}
@@ -1931,8 +1932,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             <div class="setting-row" style="background: transparent; border: none; padding: var(--s-3); margin: 0;">
               {#if $appState.network === 'mainnet'}
                 <span style="color: var(--text-4); font-size: 12px;"><strong class="c-err">Mainnet:</strong> All transactions are permanent and cost real DERO.</span>
-              {:else if $appState.network === 'testnet'}
-                <span style="color: var(--text-4); font-size: 12px;"><strong class="c-warn">Testnet:</strong> Test blockchain with testnet DERO.</span>
               {:else if $appState.network === 'simulator'}
                 <span style="color: var(--text-4); font-size: 12px;"><strong class="c-ok">Simulator:</strong> Local blockchain simulation. No cost.</span>
               {:else}
@@ -1954,7 +1953,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             <div class="settings-row">
               <div class="settings-row-info">
                 <span class="settings-row-label">Daemon Endpoint</span>
-                <span class="settings-row-desc">Default ports: Mainnet (10102), Testnet (40402), Simulator (20000)</span>
+                <span class="settings-row-desc">Default ports: Mainnet (10102), Simulator (20000)</span>
               </div>
             </div>
             
@@ -4381,12 +4380,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     background: rgba(34, 211, 238, 0.1);
     color: var(--cyan-400, #22d3ee);
     border: 1px solid rgba(34, 211, 238, 0.25);
-  }
-  
-  .about-network-badge.testnet {
-    background: rgba(251, 191, 36, 0.1);
-    color: var(--amber-400, #fbbf24);
-    border: 1px solid rgba(251, 191, 36, 0.25);
   }
   
   .about-network-badge.simulator {

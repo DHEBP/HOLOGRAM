@@ -198,6 +198,8 @@ export const appState = writable({
   gnomonProgress: 0,
   gnomonIndexedHeight: 0,
   gnomonChainHeight: 0,
+  appDiscoveryLoading: false,
+  appDiscoveryLoaded: false,
   chainHeight: 0,
   networkInfo: null,
   network: 'mainnet', // Single source of truth for current network
@@ -309,6 +311,32 @@ export const syncProgress = derived(
   }
 );
 
+export const combinedSyncProgress = derived(
+  appState,
+  ($appState) => {
+    if (!$appState.gnomonRunning) return 0;
+
+    const gnomon = Math.min($appState.gnomonProgress || 0, 100);
+    if (gnomon < 100) {
+      return Math.min(gnomon * 0.9, 90);
+    }
+
+    if (!$appState.appDiscoveryLoaded) {
+      return 90;
+    }
+
+    return 100;
+  }
+);
+
+export function setAppDiscoveryState({ loading, loaded }) {
+  appState.update(state => ({
+    ...state,
+    ...(typeof loading === 'boolean' ? { appDiscoveryLoading: loading } : {}),
+    ...(typeof loaded === 'boolean' ? { appDiscoveryLoaded: loaded } : {}),
+  }));
+}
+
 // Actions
 export async function updateStatus() {
   try {
@@ -356,7 +384,6 @@ export async function syncNetworkMode() {
         // Default ports based on network
         const defaultPorts = {
           mainnet: 10102,
-          testnet: 40402,
           simulator: 20000,
         };
         endpoint = `http://127.0.0.1:${defaultPorts[network] || 10102}`;

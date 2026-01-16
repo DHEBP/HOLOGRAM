@@ -35,8 +35,6 @@ Thumbs.db
 *.db.bak
 mainnet/*.db
 mainnet/*.db.bak
-testnet/*.db
-testnet/*.db.bak
 
 # Cache and temporary files
 datashards/

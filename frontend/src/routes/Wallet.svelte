@@ -481,6 +481,7 @@
             synced: syncResult.synced,
             walletHeight: syncResult.walletHeight,
             daemonHeight: syncResult.daemonHeight,
+            behindBlocks: syncResult.behindBlocks,
             message: syncResult.message
           };
         }

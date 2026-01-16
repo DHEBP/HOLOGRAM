@@ -64,8 +64,6 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 	baseDir := filepath.Join(homeDir, ".dero", "hologram", "datashards")
 	basePath := filepath.Join(baseDir, "gnomon")
 	switch network {
-	case "testnet":
-		basePath = filepath.Join(baseDir, "gnomon_testnet")
 	case "simulator":
 		basePath = filepath.Join(baseDir, "gnomon_simulator")
 	case "mainnet":
@@ -1059,8 +1057,6 @@ func (g *GnomonClient) CleanDB(network string) error {
 	switch strings.ToLower(network) {
 	case "mainnet":
 		dbPath = filepath.Join(baseDir, "gnomon_mainnet")
-	case "testnet":
-		dbPath = filepath.Join(baseDir, "gnomon_testnet")
 	case "simulator":
 		dbPath = filepath.Join(baseDir, "gnomon_simulator")
 	default:

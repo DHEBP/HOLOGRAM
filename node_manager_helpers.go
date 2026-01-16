@@ -66,8 +66,6 @@ func (a *App) checkForExternalNode(expectedEndpoint string, networkMode NetworkM
 	switch networkMode {
 	case NetworkMainnet:
 		networkMatch = (network == "mainnet" || network == "")
-	case NetworkTestnet:
-		networkMatch = (network == "testnet")
 	case NetworkSimulator:
 		networkMatch = (network == "Simulator" || strings.ToLower(network) == "simulator")
 	}
@@ -130,13 +128,7 @@ func (a *App) buildNodeArgs(networkMode NetworkMode, fullDataDir string, netConf
 			"--p2p-bind", fmt.Sprintf("0.0.0.0:%d", nodeManager.p2pPort),
 		}
 
-		// Add network-specific flags
-		if networkMode == NetworkTestnet {
-			args = append(args, netConfig.Flags...)
-			a.logToConsole(fmt.Sprintf("[NET] Network mode: %s (flags: %v)", networkMode, netConfig.Flags))
-		} else {
-			a.logToConsole(fmt.Sprintf("[NET] Network mode: %s", networkMode))
-		}
+		a.logToConsole(fmt.Sprintf("[NET] Network mode: %s", networkMode))
 
 		// Add mining server flags if enabled
 		if nodeManager.miningEnabled {

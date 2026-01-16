@@ -505,7 +505,7 @@ func (sm *SimulatorManager) ResetSimulator() map[string]interface{} {
 	}
 
 	// Delete the blockchain data directory
-	blockchainDir := filepath.Join(sm.baseDir, "testnet_simulator")
+	blockchainDir := filepath.Join(sm.baseDir, "simulator")
 	sm.app.logToConsole(fmt.Sprintf("[RESET] Deleting blockchain data: %s", blockchainDir))
 	if err := os.RemoveAll(blockchainDir); err != nil {
 		sm.app.logToConsole(fmt.Sprintf("[WARN] Failed to delete blockchain data: %v", err))

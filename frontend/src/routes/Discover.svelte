@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { appState, navigateTo, updateStatus } from '../lib/stores/appState.js';
+  import { appState, navigateTo, updateStatus, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { GetDiscoveredApps, SearchApps, GetAppRating, StartGnomon, SetGnomonAutostart } from '../../wailsjs/go/main/App.js';
   import deroIconFallback from '../assets/dero-icon-fallback.svg';
   
@@ -48,10 +48,12 @@
     // Skip if Gnomon isn't running yet
     if (!$appState.gnomonRunning) {
       loading = false;
+      setAppDiscoveryState({ loading: false });
       return;
     }
     
     loading = true;
+    setAppDiscoveryState({ loading: true });
     try {
       const result = await GetDiscoveredApps();
       if (result.success && result.apps) {
@@ -63,6 +65,7 @@
       console.error('Failed to load apps:', error);
     } finally {
       loading = false;
+      setAppDiscoveryState({ loading: false, loaded: true });
     }
   }
   
@@ -72,6 +75,13 @@
   // Reactive: reload apps when Gnomon starts running (if no apps loaded yet)
   $: if ($appState.gnomonRunning && apps.length === 0 && !loading) {
     loadApps();
+  }
+
+  // Reset discovery state when Gnomon stops
+  $: if (!$appState.gnomonRunning && apps.length > 0) {
+    apps = [];
+    filteredApps = [];
+    setAppDiscoveryState({ loading: false, loaded: false });
   }
   
   // Reactive: reload apps when Gnomon syncs more blocks (finds new apps)

@@ -514,7 +514,7 @@ func getXSWDBridgeScript() string {
   // Override WebSocket IMMEDIATELY - must happen before any dApp code runs
   window.WebSocket = function(url, protocols) {
     log('[Bridge] WebSocket constructor called: ' + (url || 'no url'));
-    // XSWD ports: 44326 (mainnet), 44325 (testnet)
+    // XSWD port: 44326 (mainnet)
     if (url && (url.indexOf('44326') !== -1 || url.indexOf('44325') !== -1 || url.indexOf('xswd') !== -1)) {
       log('[Bridge] Intercepting XSWD connection: ' + url);
       try {

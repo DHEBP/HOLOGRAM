@@ -92,7 +92,7 @@ func (a *App) GetBlockExtended(heightOrHash string) map[string]interface{} {
 
 	// Determine network and parse block
 	isMainnet := true
-	if network, ok := a.settings["network"].(string); ok && network == "testnet" {
+	if network, ok := a.settings["network"].(string); ok && network == "simulator" {
 		isMainnet = false
 	}
 	parsed := parseBlockBlob(blob, isMainnet)
@@ -358,9 +358,9 @@ func (a *App) GetCoinbaseMiner(txid string) map[string]interface{} {
 		}
 	}
 
-	// Determine network (mainnet vs testnet)
+	// Determine network (mainnet vs simulator)
 	mainnet := true
-	if network, ok := a.settings["network"].(string); ok && network == "testnet" {
+	if network, ok := a.settings["network"].(string); ok && network == "simulator" {
 		mainnet = false
 	}
 
@@ -446,7 +446,7 @@ func (a *App) GetTransactionExtended(txid string) map[string]interface{} {
 
 	// Determine network mode
 	isMainnet := true
-	if network, ok := a.settings["network"].(string); ok && network == "testnet" {
+	if network, ok := a.settings["network"].(string); ok && network == "simulator" {
 		isMainnet = false
 	}
 
@@ -768,9 +768,9 @@ func (a *App) ValidateProofFull(proofString string, txid string) map[string]inte
 		}
 	}
 
-	// Determine network (mainnet vs testnet)
+	// Determine network (mainnet vs simulator)
 	mainnet := true
-	if network, ok := a.settings["network"].(string); ok && network == "testnet" {
+	if network, ok := a.settings["network"].(string); ok && network == "simulator" {
 		mainnet = false
 	}
 

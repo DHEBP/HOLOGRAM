@@ -24,7 +24,6 @@ type NetworkMode string
 
 const (
 	NetworkMainnet   NetworkMode = "mainnet"
-	NetworkTestnet   NetworkMode = "testnet"
 	NetworkSimulator NetworkMode = "simulator"
 )
 
@@ -47,14 +46,6 @@ func GetNetworkConfig(mode NetworkMode) NetworkConfig {
 			GetWorkPort: 20002, // Not used by simulator, but kept for consistency
 			DataDir:     "simulator",
 			Flags:       []string{}, // Simulator is a separate binary, no flags needed
-		}
-	case NetworkTestnet:
-		return NetworkConfig{
-			RPCPort:     40402,
-			P2PPort:     40401,
-			GetWorkPort: 40400,
-			DataDir:     "testnet",
-			Flags:       []string{"--testnet"},
 		}
 	default: // mainnet
 		return NetworkConfig{
@@ -85,7 +76,7 @@ type NodeManager struct {
 	lastSyncLine  string
 	syncStartTime time.Time
 	
-	// Network mode (mainnet, testnet, simulator)
+	// Network mode (mainnet, simulator)
 	networkMode NetworkMode
 	
 	// Mining server configuration
@@ -529,7 +520,7 @@ func (a *App) StartNodeWithNetwork(dataDir string, network string) map[string]in
 
 	// Set network mode
 	networkMode := NetworkMode(network)
-	if networkMode != NetworkMainnet && networkMode != NetworkTestnet && networkMode != NetworkSimulator {
+	if networkMode != NetworkMainnet && networkMode != NetworkSimulator {
 		networkMode = NetworkMainnet
 	}
 	nodeManager.networkMode = networkMode
@@ -1235,10 +1226,10 @@ func (a *App) SetNetworkMode(network string) map[string]interface{} {
 	}
 
 	mode := NetworkMode(network)
-	if mode != NetworkMainnet && mode != NetworkTestnet && mode != NetworkSimulator {
+	if mode != NetworkMainnet && mode != NetworkSimulator {
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Invalid network mode. Must be mainnet, testnet, or simulator.",
+			"error":   "Invalid network mode. Must be mainnet or simulator.",
 		}
 	}
 
@@ -1303,7 +1294,6 @@ func (a *App) GetNetworkMode() map[string]interface{} {
 		"network":     string(nodeManager.networkMode),
 		"endpoint":    endpoint,
 		"isSimulator": nodeManager.networkMode == NetworkSimulator,
-		"isTestnet":   nodeManager.networkMode == NetworkTestnet,
 		"isMainnet":   nodeManager.networkMode == NetworkMainnet,
 		"rpcPort":     netConfig.RPCPort,
 		"p2pPort":     netConfig.P2PPort,
@@ -1324,15 +1314,6 @@ func (a *App) GetAvailableNetworks() map[string]interface{} {
 			"p2pPort":     10101,
 			"getworkPort": 10100,
 			"color":       "ok", // Green
-		},
-		{
-			"id":          "testnet",
-			"name":        "Testnet",
-			"description": "DERO test network for development",
-			"rpcPort":     40402,
-			"p2pPort":     40401,
-			"getworkPort": 40400,
-			"color":       "warn", // Yellow
 		},
 		{
 			"id":          "simulator",
@@ -1569,8 +1550,8 @@ func (a *App) SetMiningAddress(address string) map[string]interface{} {
 		}
 	}
 
-	// Basic DERO address validation (starts with dero or deto for testnet)
-	if !strings.HasPrefix(strings.ToLower(address), "dero") && !strings.HasPrefix(strings.ToLower(address), "deto") {
+	// Basic DERO address validation (starts with dero)
+	if !strings.HasPrefix(strings.ToLower(address), "dero") {
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Invalid DERO address format",
@@ -1670,7 +1651,7 @@ func (a *App) SetNodeConfig(config map[string]interface{}) map[string]interface{
 	}
 	if v, ok := config["network"].(string); ok {
 		mode := NetworkMode(v)
-		if mode == NetworkMainnet || mode == NetworkTestnet || mode == NetworkSimulator {
+		if mode == NetworkMainnet || mode == NetworkSimulator {
 			nodeManager.networkMode = mode
 		}
 	}

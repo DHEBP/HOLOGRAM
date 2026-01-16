@@ -216,7 +216,6 @@ func (swm *SimulatorWalletManager) RegisterAllWallets(daemonEndpoint string) err
 	swm.log(fmt.Sprintf("[WALLET] Registering %d test wallets on blockchain...", len(swm.wallets)))
 
 	// CRITICAL: Initialize globals for simulator mode
-	globals.Arguments["--testnet"] = true
 	globals.Arguments["--simulator"] = true
 	globals.InitNetwork()
 

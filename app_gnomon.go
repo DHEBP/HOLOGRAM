@@ -394,11 +394,11 @@ func (a *App) CleanGnomonDB(network string) map[string]interface{} {
 	if network == "" {
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Network must be specified (mainnet, testnet, or simulator)",
+			"error":   "Network must be specified (mainnet or simulator)",
 		}
 	}
 
-	validNetworks := []string{"mainnet", "testnet", "simulator"}
+	validNetworks := []string{"mainnet", "simulator"}
 	isValid := false
 	for _, n := range validNetworks {
 		if n == network {
@@ -409,7 +409,7 @@ func (a *App) CleanGnomonDB(network string) map[string]interface{} {
 	if !isValid {
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Invalid network. Must be mainnet, testnet, or simulator",
+			"error":   "Invalid network. Must be mainnet or simulator",
 		}
 	}
 
@@ -499,7 +499,9 @@ func (a *App) getNetworkName() string {
 		return "simulator"
 	}
 	if networkMode, ok := a.settings["network_mode"].(string); ok {
-		return networkMode
+		if networkMode == "simulator" {
+			return "simulator"
+		}
 	}
 	return "mainnet"
 }

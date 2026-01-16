@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
-  import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode, toast } from '../stores/appState.js';
+  import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode, toast, combinedSyncProgress } from '../stores/appState.js';
   import { 
     SetSetting, GetEpochStats, SetNetworkMode,
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus,
@@ -62,7 +62,7 @@
   function formatAddressForDisplay(address) {
     if (!address) return 'Wallet';
     // DERO addresses are typically 69 characters
-    // Most start with "dero1qy" (mainnet) or "dero1qt" (testnet)
+    // Most start with "dero1qy" (mainnet)
     // Show only the last 8 characters for uniqueness and compact display
     if (address.length > 8) {
       return '…' + address.slice(-8);
@@ -184,10 +184,9 @@
   let showNetworkMenu = false;
   
   // Network configuration - v6 colors
-  // Mainnet = Green (primary/production), Testnet = Yellow (caution), Simulator = Red (local/dev)
+  // Mainnet = Green (primary/production), Simulator = Red (local/dev)
   const networks = {
     mainnet: { label: 'Mainnet', icon: 'globe', dotStatus: 'ok' },
-    testnet: { label: 'Testnet', icon: 'flask', dotStatus: 'warn' },
     simulator: { label: 'Simulator', icon: 'gamepad', dotStatus: 'err' },
   };
   
@@ -694,21 +693,21 @@
         <!-- GNOMON Progress Row (Bar Only) -->
         <button
           class="gnomon-row"
-          class:gnomon-synced={$appState.gnomonRunning && $appState.gnomonProgress >= 100}
-          class:gnomon-syncing={$appState.gnomonRunning && $appState.gnomonProgress < 100}
+          class:gnomon-synced={$appState.gnomonRunning && $combinedSyncProgress >= 100}
+          class:gnomon-syncing={$appState.gnomonRunning && $combinedSyncProgress < 100}
           class:gnomon-offline={!$appState.gnomonRunning}
           on:click|stopPropagation={(e) => handleStatusClick('gnomon', e)}
-          title={$appState.gnomonRunning ? ($appState.gnomonProgress >= 100 ? 'Gnomon Synced - Click for details' : `Gnomon syncing ${$appState.gnomonProgress.toFixed(0)}% - Click for details`) : 'Gnomon Offline - Click for details'}
+          title={$appState.gnomonRunning ? ($combinedSyncProgress >= 100 ? 'Gnomon synced + apps indexed - Click for details' : ($appState.gnomonProgress >= 100 ? 'Indexing apps from Gnomon - Click for details' : `Gnomon syncing ${$appState.gnomonProgress.toFixed(0)}% - Click for details`)) : 'Gnomon Offline - Click for details'}
         >
           <span class="gnomon-label">GNOMON</span>
           <div class="gnomon-progress-container">
             <div class="gnomon-progress-bar">
               <div 
                 class="gnomon-progress-fill"
-                class:syncing={$appState.gnomonRunning && $appState.gnomonProgress < 100}
-                class:synced={$appState.gnomonRunning && $appState.gnomonProgress >= 100}
+                class:syncing={$appState.gnomonRunning && $combinedSyncProgress < 100}
+                class:synced={$appState.gnomonRunning && $combinedSyncProgress >= 100}
                 class:offline={!$appState.gnomonRunning}
-                style="width: {$appState.gnomonRunning ? Math.min($appState.gnomonProgress, 100) : 100}%"
+                style="width: {$appState.gnomonRunning ? Math.min($combinedSyncProgress, 100) : 100}%"
               ></div>
             </div>
           </div>

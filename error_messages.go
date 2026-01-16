@@ -138,7 +138,7 @@ var TELADeploymentErrors = []TELADeploymentError{
 		Title:       "Cannot connect to daemon",
 		Description: "Cannot establish a connection to the DERO daemon. The daemon may not be running.",
 		Fix:         "Ensure the daemon is running. In simulator mode, restart simulator mode. Check that the correct port is being used.",
-		Example:     "Default ports:\n• Mainnet: 10102\n• Testnet: 40402\n• Simulator: 20000",
+		Example:     "Default ports:\n• Mainnet: 10102\n• Simulator: 20000",
 	},
 	{
 		Pattern:     `offline|not connected|daemon.*not.*respond|no daemon connection`,

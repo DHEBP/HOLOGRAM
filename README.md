@@ -98,7 +98,6 @@ HOLOGRAM (Wails v2)
 | Mode | Description |
 |------|-------------|
 | **Mainnet** | Full production network |
-| **Testnet** | Development and testing |
 | **Simulator** | Local environment with instant blocks (no real DERO) |
 
 ---

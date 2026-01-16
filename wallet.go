@@ -36,6 +36,44 @@ func NewWalletManager() *WalletManager {
 // Global wallet manager instance
 var walletManager = NewWalletManager()
 
+// walletapi uses global connectivity; start it once per process.
+var walletConnectivityOnce sync.Once
+
+func normalizeDaemonEndpointForWallet(endpoint string) string {
+	// walletapi.Wallet_* typically expects host:port (no scheme) here.
+	// walletapi.Connect() can handle schemes, but SetDaemonAddress is used elsewhere.
+	e := strings.TrimSpace(endpoint)
+	switch {
+	case strings.HasPrefix(e, "http://"):
+		return strings.TrimPrefix(e, "http://")
+	case strings.HasPrefix(e, "https://"):
+		return strings.TrimPrefix(e, "https://")
+	case strings.HasPrefix(e, "ws://"):
+		return strings.TrimPrefix(e, "ws://")
+	case strings.HasPrefix(e, "wss://"):
+		return strings.TrimPrefix(e, "wss://")
+	default:
+		return e
+	}
+}
+
+func (a *App) ensureWalletDaemonConnectivity(endpoint string) {
+	// Ensure walletapi has an active daemon endpoint and is connected.
+	// Keep_Connectivity() will continue to retry and keep the connection alive.
+	if endpoint == "" {
+		endpoint = "127.0.0.1:10102"
+	}
+
+	if err := walletapi.Connect(endpoint); err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Wallet daemon connect failed: %v", err))
+	}
+
+	walletConnectivityOnce.Do(func() {
+		go walletapi.Keep_Connectivity()
+		a.logToConsole("[NET] Wallet daemon connectivity loop started")
+	})
+}
+
 // OpenWallet opens a DERO wallet file
 func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	walletManager.Lock()
@@ -44,13 +82,10 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	// Determine current network mode - check multiple ways for robustness
 	currentNetwork := "mainnet"
 	simArg := globals.Arguments["--simulator"]
-	testArg := globals.Arguments["--testnet"]
 
 	// Check if simulator (can be bool or interface{})
 	if simArg == true || simArg == "true" || fmt.Sprintf("%v", simArg) == "true" {
 		currentNetwork = "simulator"
-	} else if testArg == true || testArg == "true" || fmt.Sprintf("%v", testArg) == "true" {
-		currentNetwork = "testnet"
 	}
 
 	a.logToConsole(fmt.Sprintf("[WALLET] Opening wallet: %s (network: %s)", filePath, currentNetwork))
@@ -78,7 +113,7 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 					if prefix == "dero" {
 						storedNetwork = "mainnet"
 					} else if prefix == "deto" {
-						storedNetwork = "testnet" // testnet and simulator both use deto1
+						storedNetwork = "simulator" // Simulator wallets use deto1-style prefixes
 					}
 				}
 			}
@@ -88,15 +123,9 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 				if currentNetwork == "simulator" && storedNetwork == "mainnet" {
 					networkWarning = "This wallet was last used on mainnet. In simulator mode, your mainnet balance will not be shown."
 					a.logToConsole(fmt.Sprintf("[WARN] Opening mainnet wallet in simulator mode"))
-				} else if currentNetwork == "simulator" && storedNetwork == "testnet" {
-					networkWarning = "This wallet was last used on testnet. In simulator mode, your testnet balance will not be shown."
-					a.logToConsole(fmt.Sprintf("[WARN] Opening testnet wallet in simulator mode"))
 				} else if storedNetwork == "simulator" && currentNetwork == "mainnet" {
 					networkWarning = "This wallet was last used in simulator mode. Now connecting to mainnet."
 					a.logToConsole("[WARN] Opening simulator wallet on mainnet")
-				} else if storedNetwork == "simulator" && currentNetwork == "testnet" {
-					networkWarning = "This wallet was last used in simulator mode. Now connecting to testnet."
-					a.logToConsole("[WARN] Opening simulator wallet on testnet")
 				} else if storedNetwork != currentNetwork {
 					// Generic mismatch warning
 					networkWarning = fmt.Sprintf("This wallet was last used on %s. You are now on %s.", storedNetwork, currentNetwork)
@@ -124,21 +153,23 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	walletManager.walletPath = filePath
 	walletManager.isOpen = true
 
-	// Set network mode (mainnet vs testnet) - MUST be called before GetAddress()
-	wallet.SetNetwork(globals.IsMainnet())
+	// Set network mode (mainnet vs simulator) - MUST be called before GetAddress()
+	wallet.SetNetwork(currentNetwork == "mainnet")
 
 	// Get daemon endpoint from settings
-	endpoint := "127.0.0.1:10102"
+	endpointRaw := "127.0.0.1:10102"
 	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-		// Remove http:// prefix if present
-		endpoint = ep
-		if len(endpoint) > 7 && endpoint[:7] == "http://" {
-			endpoint = endpoint[7:]
-		}
+		endpointRaw = ep
 	}
+	endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
 
 	// Connect wallet to daemon
 	wallet.SetDaemonAddress(endpoint)
+	a.ensureWalletDaemonConnectivity(endpointRaw)
+	wallet.SetOnlineMode()
+	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v", err))
+	}
 
 	// Get wallet info (now with correct network prefix)
 	address := wallet.GetAddress().String()
@@ -251,6 +282,24 @@ func (a *App) SyncWallet() map[string]interface{} {
 	wallet := walletManager.wallet
 	walletManager.RUnlock()
 
+	// Ensure wallet is online and connected to daemon (manual refresh should force this)
+	endpointRaw := "127.0.0.1:10102"
+	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+		endpointRaw = ep
+	}
+	endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
+	wallet.SetDaemonAddress(endpoint)
+	a.ensureWalletDaemonConnectivity(endpointRaw)
+	wallet.SetOnlineMode()
+
+	// Force an immediate sync pass (otherwise height may never advance)
+	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Wallet sync failed: %v", err),
+		}
+	}
+
 	// Get current heights
 	walletHeight := wallet.Get_Height()
 	daemonHeight := wallet.Get_Daemon_Height()
@@ -264,6 +313,7 @@ func (a *App) SyncWallet() map[string]interface{} {
 			"synced":       false,
 			"walletHeight": walletHeight,
 			"daemonHeight": daemonHeight,
+			"behindBlocks": int64(0),
 			"message":      "Daemon not connected",
 		}
 	}
@@ -274,6 +324,7 @@ func (a *App) SyncWallet() map[string]interface{} {
 			"synced":       true,
 			"walletHeight": walletHeight,
 			"daemonHeight": daemonHeight,
+			"behindBlocks": int64(0),
 			"message":      "Wallet is up to date",
 		}
 	}
@@ -306,6 +357,7 @@ func (a *App) SyncWallet() map[string]interface{} {
 				"synced":       true,
 				"walletHeight": newHeight,
 				"daemonHeight": daemonHeight,
+				"behindBlocks": int64(0),
 				"message":      "Wallet synced successfully",
 			}
 		}
@@ -329,6 +381,7 @@ func (a *App) SyncWallet() map[string]interface{} {
 		"synced":       false,
 		"walletHeight": finalHeight,
 		"daemonHeight": daemonHeight,
+		"behindBlocks": int64(daemonHeight) - int64(finalHeight),
 		"message":      fmt.Sprintf("Still syncing: %d / %d blocks", finalHeight, daemonHeight),
 	}
 }
@@ -911,16 +964,17 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			}
 			
 			walletManager.isOpen = true
+			walletManager.wallet.SetNetwork(!a.IsInSimulatorMode())
 			
 			// Set daemon endpoint
-			endpoint := "127.0.0.1:10102"
+			endpointRaw := "127.0.0.1:10102"
 			if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-				endpoint = ep
-				if len(endpoint) > 7 && endpoint[:7] == "http://" {
-					endpoint = endpoint[7:]
-				}
+				endpointRaw = ep
 			}
+			endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
 			walletManager.wallet.SetDaemonAddress(endpoint)
+			a.ensureWalletDaemonConnectivity(endpointRaw)
+			walletManager.wallet.SetOnlineMode()
 		} else {
 			return map[string]interface{}{"success": false, "error": "Wallet not open"}
 		}
@@ -1295,7 +1349,7 @@ type WalletInfo struct {
 	AddressPrefix string `json:"addressPrefix"`
 	LastUsed      int64  `json:"lastUsed"`
 	IsCurrent     bool   `json:"isCurrent"`
-	Network       string `json:"network"` // "mainnet", "testnet", or "simulator"
+	Network       string `json:"network"` // "mainnet" or "simulator"
 }
 
 // SwitchWallet closes the current wallet and opens a different one
@@ -1332,20 +1386,23 @@ func (a *App) SwitchWallet(filePath, password string) map[string]interface{} {
 	walletManager.walletPath = filePath
 	walletManager.isOpen = true
 
-	// Set network mode (mainnet vs testnet) - MUST be called before GetAddress()
-	wallet.SetNetwork(globals.IsMainnet())
+	// Set network mode (mainnet vs simulator) - MUST be called before GetAddress()
+	wallet.SetNetwork(!a.IsInSimulatorMode())
 
 	// Get daemon endpoint from settings
-	endpoint := "127.0.0.1:10102"
+	endpointRaw := "127.0.0.1:10102"
 	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-		endpoint = ep
-		if len(endpoint) > 7 && endpoint[:7] == "http://" {
-			endpoint = endpoint[7:]
-		}
+		endpointRaw = ep
 	}
+	endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
 
 	// Connect wallet to daemon
 	wallet.SetDaemonAddress(endpoint)
+	a.ensureWalletDaemonConnectivity(endpointRaw)
+	wallet.SetOnlineMode()
+	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v", err))
+	}
 
 	// Add to recent wallets with updated timestamp (now with correct network prefix)
 	addToRecentWalletsWithInfo(filePath, wallet.GetAddress().String())
@@ -1388,7 +1445,7 @@ type recentWalletData struct {
 	Path          string `json:"path"`
 	AddressPrefix string `json:"addressPrefix"`
 	LastUsed      int64  `json:"lastUsed"`
-	Network       string `json:"network"` // "mainnet", "testnet", or "simulator"
+	Network       string `json:"network"` // "mainnet" or "simulator"
 }
 
 func addToRecentWalletsWithInfo(path, address string) {
@@ -1398,12 +1455,9 @@ func addToRecentWalletsWithInfo(path, address string) {
 	// Determine current network mode - check multiple ways for robustness
 	network := "mainnet"
 	simArg := globals.Arguments["--simulator"]
-	testArg := globals.Arguments["--testnet"]
 
 	if simArg == true || simArg == "true" || fmt.Sprintf("%v", simArg) == "true" {
 		network = "simulator"
-	} else if testArg == true || testArg == "true" || fmt.Sprintf("%v", testArg) == "true" {
-		network = "testnet"
 	}
 
 	// Create new entry
@@ -1497,7 +1551,7 @@ func loadRecentWalletsWithInfo() []WalletInfo {
 			// Infer from address prefix if possible
 			if len(d.AddressPrefix) > 4 {
 				if d.AddressPrefix[:4] == "deto" {
-					network = "testnet" // or simulator - we can't distinguish
+					network = "simulator"
 				} else {
 					network = "mainnet"
 				}

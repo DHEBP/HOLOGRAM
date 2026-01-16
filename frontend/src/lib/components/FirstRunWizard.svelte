@@ -292,7 +292,7 @@
         <div class="wizard-node-card">
           <!-- Primary info: Network badge + block height -->
           <div class="wizard-node-header">
-            <span class="wizard-network-badge" class:mainnet={existingNode.network === 'mainnet'} class:testnet={existingNode.network === 'testnet'}>
+            <span class="wizard-network-badge" class:mainnet={existingNode.network === 'mainnet'} class:simulator={existingNode.network === 'simulator'}>
               {existingNode.network || 'mainnet'}
             </span>
             <div class="wizard-block-info">

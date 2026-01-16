@@ -161,7 +161,6 @@ func (a *App) setupNetworkForDeployment(wallet *walletapi.Wallet_Disk, isSimulat
 	}
 
 	if isSimulator {
-		globals.Arguments["--testnet"] = true
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
 		a.logToConsole("[DEBUG] Set globals for simulator mode")
@@ -529,7 +528,7 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 		}
 		
 	} else {
-		// NON-SIMULATOR (MAINNET/TESTNET): Use manual transaction building for reliable nonce handling
+	// NON-SIMULATOR (MAINNET): Use manual transaction building for reliable nonce handling
 		// The tela.Installer() library doesn't properly sync wallet nonces between transactions,
 		// so we use the same manual approach that works for simulator mode.
 		
@@ -844,7 +843,7 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 		}
 		
 	} else {
-		// NON-SIMULATOR (MAINNET/TESTNET): Use manual transaction building for reliable nonce handling
+	// NON-SIMULATOR (MAINNET): Use manual transaction building for reliable nonce handling
 		endpoint := walletapi.Daemon_Endpoint_Active
 		if endpoint == "" {
 			return "", fmt.Errorf("daemon endpoint is not set")

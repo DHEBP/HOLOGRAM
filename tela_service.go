@@ -248,10 +248,9 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 	
 	if isSimulator {
 		// Set globals for simulator
-		globals.Arguments["--testnet"] = true
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode (--testnet=true, --simulator=true)")
+		a.logToConsole("[DEBUG] Set globals for simulator mode (--simulator=true)")
 		
 		// Set wallet daemon address and mode (no websocket connection yet)
 	wallet.SetDaemonAddress(endpoint)
@@ -269,7 +268,7 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 		a.logToConsole(fmt.Sprintf("[DEBUG] Set Daemon_Endpoint_Active=%s, Connected=true (tela library will create websocket)", endpoint))
 		a.logToConsole("[OK] Proceeding with installation (tela library will create its own websocket)")
 	} else {
-		// For mainnet/testnet: use setupNetworkForDeployment (which calls walletapi.Connect)
+		// For mainnet: use setupNetworkForDeployment (which calls walletapi.Connect)
 		var err error
 		endpoint, err = a.setupNetworkForDeployment(wallet, isSimulator)
 		if err != nil {
@@ -579,10 +578,9 @@ func (a *App) InstallINDEX(indexJSON string) map[string]interface{} {
 	endpoint := "127.0.0.1:20000"
 	
 	if isSimulator {
-		globals.Arguments["--testnet"] = true
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode (--testnet=true, --simulator=true)")
+		a.logToConsole("[DEBUG] Set globals for simulator mode (--simulator=true)")
 		
 		// Set wallet daemon address and mode (no websocket connection yet)
 		wallet.SetDaemonAddress(endpoint)
@@ -683,10 +681,9 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 	endpoint := "127.0.0.1:10102"
 	if isSimulator {
 		endpoint = "127.0.0.1:20000"
-		globals.Arguments["--testnet"] = true
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode (--testnet=true, --simulator=true)")
+		a.logToConsole("[DEBUG] Set globals for simulator mode (--simulator=true)")
 		
 		// Set wallet daemon address and mode (no websocket connection yet)
 		wallet.SetDaemonAddress(endpoint)
@@ -1169,7 +1166,7 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 	// Reason: The hardcoded SimulatorGasFee (100,000) was overly conservative and blocked
 	// deployments that would have succeeded. Gas is FREE in simulator mode anyway.
 	// The actual deployment uses tela.GetGasEstimate() which validates SC code properly.
-	// For mainnet/testnet, real gas estimation happens per-transaction in deployDOC().
+	// For mainnet, real gas estimation happens per-transaction in deployDOC().
 
 	// Emit start event
 	runtime.EventsEmit(a.ctx, "tela:deploy:start", map[string]interface{}{
@@ -1251,7 +1248,7 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		}
 
 		// CRITICAL: Wait for block confirmation between deployments
-		// On mainnet/testnet, each transaction must be confirmed in a block before the next can be sent
+		// On mainnet, each transaction must be confirmed in a block before the next can be sent
 		// Otherwise the daemon will reject the transaction with "rejected by pool by mempool"
 		if !isSimulator && i < len(batch.Files)-1 { // Don't wait after last DOC (INDEX will handle its own wait)
 			a.logToConsole("[WAIT] Waiting for block confirmation before next DOC...")
@@ -1321,7 +1318,7 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		time.Sleep(1 * time.Second)
 	}
 
-	// MAINNET/TESTNET: Wait for last DOC's block confirmation before creating INDEX
+	// MAINNET: Wait for last DOC's block confirmation before creating INDEX
 	// This ensures all DOC transactions are confirmed before the INDEX references them
 	if !isSimulator && len(batch.Files) > 0 {
 		a.logToConsole("[WAIT] Waiting for last DOC block confirmation before INDEX creation...")

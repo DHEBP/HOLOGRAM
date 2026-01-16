@@ -21,7 +21,6 @@ func main() {
 
 	// Initialize DERO globals for mainnet
 	globals.Arguments = make(map[string]interface{})
-	globals.Arguments["--testnet"] = false
 	globals.Arguments["--simulator"] = false
 	globals.Initialize()
 	globals.InitNetwork() // This sets up the correct address prefixes for mainnet
