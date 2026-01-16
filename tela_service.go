@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/civilware/tela"
@@ -16,6 +17,10 @@ import (
 )
 
 // TELAService handles TELA content operations
+
+// txidCache stores SCID+Height -> TXID mappings to avoid repeated daemon queries
+// Key format: "scid:height" e.g. "abc123...:12345"
+var txidCache sync.Map
 
 // DOCInfo represents information about a file to be installed as a DOC
 type DOCInfo struct {
@@ -1524,7 +1529,14 @@ func (a *App) GetCommitHistory(scid string) map[string]interface{} {
 }
 
 // findSCIDTxAtHeight finds the transaction that interacted with the SCID at a specific height
+// Results are cached to avoid repeated daemon queries for the same SCID+height combination
 func (a *App) findSCIDTxAtHeight(scid string, height int64) string {
+	// Check cache first
+	cacheKey := fmt.Sprintf("%s:%d", scid, height)
+	if cached, ok := txidCache.Load(cacheKey); ok {
+		return cached.(string)
+	}
+
 	// Get block at this height
 	blockResult := a.GetBlock(height)
 	if blockResult["success"] != true {
@@ -1568,18 +1580,24 @@ func (a *App) findSCIDTxAtHeight(scid string, height int64) string {
 		if tx, ok := txInfo["tx"].(map[string]interface{}); ok {
 			// Check if this transaction targets our SCID
 			if txScid, ok := tx["scid"].(string); ok && txScid == scid {
+				// Cache the result before returning
+				txidCache.Store(cacheKey, txHash)
 				return txHash
 			}
 
 			// Also check scdata for SC interactions
 			if scdata, ok := tx["scdata"].(map[string]interface{}); ok {
 				if scidInData, ok := scdata["scid"].(string); ok && scidInData == scid {
+					// Cache the result before returning
+					txidCache.Store(cacheKey, txHash)
 					return txHash
 				}
 			}
 		}
 	}
 
+	// Cache empty result to avoid re-querying (TXID not found at this height)
+	txidCache.Store(cacheKey, "")
 	return ""
 }
 

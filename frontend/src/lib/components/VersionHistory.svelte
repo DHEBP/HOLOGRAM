@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import { GetCommitHistory, GetCommitContent, DiffCommits } from '../../../wailsjs/go/main/App.js';
+  import { GetCommitHistoryWithLabels, GetCommitContent, DiffCommits } from '../../../wailsjs/go/main/App.js';
   import { Icons } from './holo';
   
   export let scid = '';
@@ -33,7 +33,7 @@
     
     loading = true;
     try {
-      const result = await GetCommitHistory(scid);
+      const result = await GetCommitHistoryWithLabels(scid);
       if (result.success) {
         commits = result.commits || [];
       }
