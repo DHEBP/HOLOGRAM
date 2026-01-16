@@ -27,6 +27,8 @@ export function CallXSWD(arg1:string):Promise<Record<string, any>>;
 
 export function CaptureSCState(arg1:string):Promise<Record<string, any>>;
 
+export function ChangeWalletPassword(arg1:string,arg2:string):Promise<Record<string, any>>;
+
 export function CheckAllForUpdates():Promise<Record<string, any>>;
 
 export function CheckAppFilter(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:boolean):Promise<Record<string, any>>;
@@ -78,6 +80,8 @@ export function DaemonGetTxPool():Promise<Record<string, any>>;
 export function DecodeIntegratedAddress(arg1:string):Promise<Record<string, any>>;
 
 export function DeleteContact(arg1:string):Promise<Record<string, any>>;
+
+export function DeleteTransactionLabel(arg1:string):Promise<Record<string, any>>;
 
 export function DeleteVar(arg1:string,arg2:string):Promise<Record<string, any>>;
 
@@ -135,6 +139,8 @@ export function FormatBlockAge(arg1:number):Promise<string>;
 
 export function FundTestWallet(arg1:number,arg2:number):Promise<Record<string, any>>;
 
+export function GenerateSemanticLabel(arg1:string,arg2:number):Promise<string>;
+
 export function GenerateSubDirs(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function GetActiveConnections():Promise<Record<string, any>>;
@@ -156,6 +162,8 @@ export function GetAllMODClasses():Promise<Record<string, any>>;
 export function GetAllSettings():Promise<Record<string, any>>;
 
 export function GetAllTags():Promise<Record<string, any>>;
+
+export function GetAllTransactionLabels():Promise<Record<string, any>>;
 
 export function GetAppDetails(arg1:string):Promise<Record<string, any>>;
 
@@ -190,6 +198,8 @@ export function GetCoinbaseMiner(arg1:string):Promise<Record<string, any>>;
 export function GetCommitContent(arg1:string,arg2:number):Promise<Record<string, any>>;
 
 export function GetCommitHistory(arg1:string):Promise<Record<string, any>>;
+
+export function GetCommitHistoryWithLabels(arg1:string):Promise<Record<string, any>>;
 
 export function GetConnectedApps():Promise<Array<Record<string, any>>>;
 
@@ -376,6 +386,8 @@ export function GetTransactionBasic(arg1:string):Promise<Record<string, any>>;
 export function GetTransactionExtended(arg1:string):Promise<Record<string, any>>;
 
 export function GetTransactionHistory(arg1:number):Promise<Record<string, any>>;
+
+export function GetTransactionLabel(arg1:string):Promise<Record<string, any>>;
 
 export function GetTransactionWithRings(arg1:string):Promise<Record<string, any>>;
 
@@ -592,6 +604,8 @@ export function SetSearchMinLikes(arg1:number):Promise<Record<string, any>>;
 export function SetServerPortStart(arg1:number):Promise<Record<string, any>>;
 
 export function SetSetting(arg1:string):Promise<Record<string, any>>;
+
+export function SetTransactionLabel(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function SetVar(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 

@@ -575,7 +575,7 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string) map[
 	}
 }
 
-// GetTransactionHistory returns recent transactions
+// GetTransactionHistory returns recent transactions with optional labels
 func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 	walletManager.RLock()
 	defer walletManager.RUnlock()
@@ -596,6 +596,9 @@ func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 	// Show_Transfers(scid, coinbase, incoming, outgoing, min_height, max_height, sender, receiver, dstport, srcport)
 	rpcEntries := walletManager.wallet.Show_Transfers(scid, true, true, true, 0, 0, "", "", 0, 0)
 
+	// Load transaction labels for quick lookup
+	labelMap := getTransactionLabelsMap()
+
 	// Convert to frontend-friendly format
 	entries := make([]map[string]interface{}, 0, len(rpcEntries))
 	for _, e := range rpcEntries {
@@ -608,6 +611,10 @@ func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 			"coinbase":    e.Coinbase,
 			"destination": e.Destination,
 			"timestamp":   e.Time.Unix(),
+		}
+		// Include label if one exists for this transaction
+		if label, ok := labelMap[e.TXID]; ok && label != "" {
+			entry["label"] = label
 		}
 		entries = append(entries, entry)
 	}
@@ -2068,6 +2075,226 @@ func saveAddressBook(contacts []AddressBookEntry) {
 	if err := os.WriteFile(filepath.Join(configDir, "address_book.json"), data, 0600); err != nil {
 		log.Printf("Failed to save address book: %v", err)
 	}
+}
+
+// ============================================
+// CHANGE WALLET PASSWORD
+// ============================================
+
+// ChangeWalletPassword changes the password for the currently open wallet
+// Requires current password for verification before changing
+func (a *App) ChangeWalletPassword(currentPassword, newPassword string) map[string]interface{} {
+	walletManager.Lock()
+	defer walletManager.Unlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	if currentPassword == "" || newPassword == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Current and new passwords are required",
+		}
+	}
+
+	if len(newPassword) < 1 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "New password cannot be empty",
+		}
+	}
+
+	// Verify current password by attempting to re-open the wallet
+	tempWallet, err := walletapi.Open_Encrypted_Wallet(walletManager.walletPath, currentPassword)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Password verification failed: %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Current password is incorrect",
+		}
+	}
+	// Close the temporary wallet immediately after verification
+	tempWallet.Close_Encrypted_Wallet()
+
+	// Change the password on the currently open wallet
+	err = walletManager.wallet.Set_Encrypted_Wallet_Password(newPassword)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Failed to change password: %v", err))
+		return ErrorResponse(err)
+	}
+
+	a.logToConsole("[OK] Wallet password changed successfully")
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Wallet password changed successfully",
+	}
+}
+
+// ============================================
+// TRANSACTION LABELS
+// ============================================
+
+// TransactionLabel represents a user-defined label for a transaction
+type TransactionLabel struct {
+	TXID      string `json:"txid"`
+	Label     string `json:"label"`
+	CreatedAt int64  `json:"createdAt"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
+// SetTransactionLabel adds or updates a label for a transaction
+func (a *App) SetTransactionLabel(txid, label string) map[string]interface{} {
+	if txid == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Transaction ID is required",
+		}
+	}
+
+	// Load existing labels
+	labels := loadTransactionLabels()
+
+	now := time.Now().Unix()
+
+	// Check if label exists for this TXID
+	found := false
+	for i, l := range labels {
+		if l.TXID == txid {
+			if label == "" {
+				// Remove label if empty
+				labels = append(labels[:i], labels[i+1:]...)
+			} else {
+				// Update existing label
+				labels[i].Label = label
+				labels[i].UpdatedAt = now
+			}
+			found = true
+			break
+		}
+	}
+
+	// Add new label if not found and label is not empty
+	if !found && label != "" {
+		labels = append(labels, TransactionLabel{
+			TXID:      txid,
+			Label:     label,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+
+	// Save labels
+	saveTransactionLabels(labels)
+
+	if label == "" {
+		a.logToConsole(fmt.Sprintf("[TX] Removed label for transaction %s", txid[:16]+"..."))
+	} else {
+		a.logToConsole(fmt.Sprintf("[TX] Set label for transaction %s: %s", txid[:16]+"...", label))
+	}
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Transaction label saved",
+	}
+}
+
+// GetTransactionLabel retrieves the label for a specific transaction
+func (a *App) GetTransactionLabel(txid string) map[string]interface{} {
+	if txid == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Transaction ID is required",
+		}
+	}
+
+	labels := loadTransactionLabels()
+
+	for _, l := range labels {
+		if l.TXID == txid {
+			return map[string]interface{}{
+				"success": true,
+				"label":   l.Label,
+				"txid":    l.TXID,
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"success": true,
+		"label":   "",
+		"txid":    txid,
+	}
+}
+
+// GetAllTransactionLabels returns all transaction labels
+func (a *App) GetAllTransactionLabels() map[string]interface{} {
+	labels := loadTransactionLabels()
+
+	// Convert to map for easy lookup
+	labelMap := make(map[string]string)
+	for _, l := range labels {
+		labelMap[l.TXID] = l.Label
+	}
+
+	return map[string]interface{}{
+		"success": true,
+		"labels":  labelMap,
+		"count":   len(labels),
+	}
+}
+
+// DeleteTransactionLabel removes a label for a transaction
+func (a *App) DeleteTransactionLabel(txid string) map[string]interface{} {
+	return a.SetTransactionLabel(txid, "") // Setting empty label removes it
+}
+
+// Helper functions for transaction labels storage
+func loadTransactionLabels() []TransactionLabel {
+	configFile := filepath.Join(".", "datashards", "settings", "transaction_labels.json")
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return []TransactionLabel{}
+	}
+
+	var labels []TransactionLabel
+	if err := json.Unmarshal(data, &labels); err != nil {
+		return []TransactionLabel{}
+	}
+
+	return labels
+}
+
+func saveTransactionLabels(labels []TransactionLabel) {
+	configDir := filepath.Join(".", "datashards", "settings")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		log.Printf("Failed to create settings directory: %v", err)
+		return
+	}
+
+	data, err := json.Marshal(labels)
+	if err != nil {
+		log.Printf("Failed to marshal transaction labels: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(configDir, "transaction_labels.json"), data, 0600); err != nil {
+		log.Printf("Failed to save transaction labels: %v", err)
+	}
+}
+
+// getTransactionLabelsMap returns a map of txid -> label for quick lookup
+func getTransactionLabelsMap() map[string]string {
+	labels := loadTransactionLabels()
+	labelMap := make(map[string]string)
+	for _, l := range labels {
+		labelMap[l.TXID] = l.Label
+	}
+	return labelMap
 }
 
 // ============================================

@@ -50,6 +50,10 @@ export function CaptureSCState(arg1) {
   return window['go']['main']['App']['CaptureSCState'](arg1);
 }
 
+export function ChangeWalletPassword(arg1, arg2) {
+  return window['go']['main']['App']['ChangeWalletPassword'](arg1, arg2);
+}
+
 export function CheckAllForUpdates() {
   return window['go']['main']['App']['CheckAllForUpdates']();
 }
@@ -152,6 +156,10 @@ export function DecodeIntegratedAddress(arg1) {
 
 export function DeleteContact(arg1) {
   return window['go']['main']['App']['DeleteContact'](arg1);
+}
+
+export function DeleteTransactionLabel(arg1) {
+  return window['go']['main']['App']['DeleteTransactionLabel'](arg1);
 }
 
 export function DeleteVar(arg1, arg2) {
@@ -266,6 +274,10 @@ export function FundTestWallet(arg1, arg2) {
   return window['go']['main']['App']['FundTestWallet'](arg1, arg2);
 }
 
+export function GenerateSemanticLabel(arg1, arg2) {
+  return window['go']['main']['App']['GenerateSemanticLabel'](arg1, arg2);
+}
+
 export function GenerateSubDirs(arg1, arg2) {
   return window['go']['main']['App']['GenerateSubDirs'](arg1, arg2);
 }
@@ -308,6 +320,10 @@ export function GetAllSettings() {
 
 export function GetAllTags() {
   return window['go']['main']['App']['GetAllTags']();
+}
+
+export function GetAllTransactionLabels() {
+  return window['go']['main']['App']['GetAllTransactionLabels']();
 }
 
 export function GetAppDetails(arg1) {
@@ -376,6 +392,10 @@ export function GetCommitContent(arg1, arg2) {
 
 export function GetCommitHistory(arg1) {
   return window['go']['main']['App']['GetCommitHistory'](arg1);
+}
+
+export function GetCommitHistoryWithLabels(arg1) {
+  return window['go']['main']['App']['GetCommitHistoryWithLabels'](arg1);
 }
 
 export function GetConnectedApps() {
@@ -748,6 +768,10 @@ export function GetTransactionExtended(arg1) {
 
 export function GetTransactionHistory(arg1) {
   return window['go']['main']['App']['GetTransactionHistory'](arg1);
+}
+
+export function GetTransactionLabel(arg1) {
+  return window['go']['main']['App']['GetTransactionLabel'](arg1);
 }
 
 export function GetTransactionWithRings(arg1) {
@@ -1180,6 +1204,10 @@ export function SetServerPortStart(arg1) {
 
 export function SetSetting(arg1) {
   return window['go']['main']['App']['SetSetting'](arg1);
+}
+
+export function SetTransactionLabel(arg1, arg2) {
+  return window['go']['main']['App']['SetTransactionLabel'](arg1, arg2);
 }
 
 export function SetVar(arg1, arg2, arg3) {

@@ -1,7 +1,7 @@
 <script>
   import { walletState, appState, settingsState, walletRequestHistory, clearRequestHistory, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { 
     Copy, ArrowUp, ArrowDown, ArrowLeftRight, Eye, EyeOff,
@@ -165,6 +165,21 @@
   let keysLoading = false;
   let keysError = null;
   
+  // Change Password state
+  let changePasswordCurrent = '';
+  let changePasswordNew = '';
+  let changePasswordConfirm = '';
+  let showChangePasswordCurrent = false;
+  let showChangePasswordNew = false;
+  let changePasswordLoading = false;
+  let changePasswordError = null;
+  let changePasswordSuccess = false;
+  
+  // Transaction Labels state
+  let editingLabelTxid = null;
+  let editingLabelValue = '';
+  let savingLabel = false;
+  
   // ============================================
   // COMPUTED VALUES
   // ============================================
@@ -173,6 +188,8 @@
   $: restorePasswordsMatch = restorePassword === restorePasswordConfirm && restorePassword.length > 0;
   $: seedWordCount = restoreSeed.trim().split(/\s+/).filter(w => w.length > 0).length;
   $: isValidSeed = seedWordCount === 25;
+  $: changePasswordsMatch = changePasswordNew === changePasswordConfirm && changePasswordNew.length > 0;
+  $: canChangePassword = changePasswordCurrent.trim() && changePasswordsMatch;
   
   // Send validation
   $: availableBalance = $walletState.balance / 100000;
@@ -1035,6 +1052,96 @@
   }
   
   // ============================================
+  // CHANGE PASSWORD FUNCTIONS
+  // ============================================
+  async function handleChangePassword() {
+    if (!changePasswordCurrent.trim()) {
+      changePasswordError = 'Please enter your current password';
+      return;
+    }
+    if (!changePasswordNew.trim()) {
+      changePasswordError = 'Please enter a new password';
+      return;
+    }
+    if (changePasswordNew !== changePasswordConfirm) {
+      changePasswordError = 'New passwords do not match';
+      return;
+    }
+    
+    changePasswordLoading = true;
+    changePasswordError = null;
+    changePasswordSuccess = false;
+    
+    try {
+      const result = await ChangeWalletPassword(changePasswordCurrent, changePasswordNew);
+      if (result.success) {
+        changePasswordSuccess = true;
+        toast.success('Wallet password changed successfully');
+        // Clear form
+        changePasswordCurrent = '';
+        changePasswordNew = '';
+        changePasswordConfirm = '';
+      } else {
+        changePasswordError = handleBackendError(result, { showToast: false }) || 'Failed to change password';
+      }
+    } catch (err) {
+      console.error('Error changing password:', err);
+      changePasswordError = err.message || 'Failed to change password';
+    } finally {
+      changePasswordLoading = false;
+    }
+  }
+  
+  function resetChangePassword() {
+    changePasswordCurrent = '';
+    changePasswordNew = '';
+    changePasswordConfirm = '';
+    changePasswordError = null;
+    changePasswordSuccess = false;
+    showChangePasswordCurrent = false;
+    showChangePasswordNew = false;
+  }
+  
+  // ============================================
+  // TRANSACTION LABEL FUNCTIONS
+  // ============================================
+  function startEditLabel(tx) {
+    editingLabelTxid = tx.txid;
+    editingLabelValue = tx.label || '';
+  }
+  
+  function cancelEditLabel() {
+    editingLabelTxid = null;
+    editingLabelValue = '';
+  }
+  
+  async function saveTransactionLabel() {
+    if (!editingLabelTxid) return;
+    
+    savingLabel = true;
+    try {
+      const result = await SetTransactionLabel(editingLabelTxid, editingLabelValue.trim());
+      if (result.success) {
+        // Update the local transaction history
+        transactionHistory = transactionHistory.map(tx => 
+          tx.txid === editingLabelTxid 
+            ? { ...tx, label: editingLabelValue.trim() || undefined }
+            : tx
+        );
+        toast.success(editingLabelValue.trim() ? 'Label saved' : 'Label removed');
+        cancelEditLabel();
+      } else {
+        toast.error(handleBackendError(result, { showToast: false }) || 'Failed to save label');
+      }
+    } catch (err) {
+      console.error('Error saving transaction label:', err);
+      toast.error('Failed to save label');
+    } finally {
+      savingLabel = false;
+    }
+  }
+  
+  // ============================================
   // UTILITY FUNCTIONS
   // ============================================
   function formatBalance(atomic) {
@@ -1639,8 +1746,39 @@
                     </span>
                   </div>
                   <div class="tx-details">
-                    <span class="tx-type">{tx.coinbase ? 'Mining Reward' : tx.incoming ? 'Received' : 'Sent'}</span>
-                    <span class="tx-id">{tx.txid?.slice(0, 20)}...</span>
+                    <div class="tx-type-row">
+                      <span class="tx-type">{tx.coinbase ? 'Mining Reward' : tx.incoming ? 'Received' : 'Sent'}</span>
+                      {#if tx.label && editingLabelTxid !== tx.txid}
+                        <span class="tx-label-badge">{tx.label}</span>
+                      {/if}
+                    </div>
+                    {#if editingLabelTxid === tx.txid}
+                      <div class="tx-label-edit">
+                        <input 
+                          type="text" 
+                          class="tx-label-input" 
+                          bind:value={editingLabelValue}
+                          placeholder="Add a note..."
+                          maxlength="50"
+                          on:keydown={(e) => {
+                            if (e.key === 'Enter') saveTransactionLabel();
+                            if (e.key === 'Escape') cancelEditLabel();
+                          }}
+                        />
+                        <button class="btn-icon-xs" on:click={saveTransactionLabel} disabled={savingLabel} title="Save">
+                          {#if savingLabel}
+                            <Loader2 size={10} class="spin" />
+                          {:else}
+                            <Check size={10} />
+                          {/if}
+                        </button>
+                        <button class="btn-icon-xs" on:click={cancelEditLabel} title="Cancel">
+                          ✕
+                        </button>
+                      </div>
+                    {:else}
+                      <span class="tx-id">{tx.txid?.slice(0, 20)}...</span>
+                    {/if}
                   </div>
                   <div class="tx-meta">
                     <span class="tx-amount" class:positive={tx.incoming || tx.coinbase} class:negative={!tx.incoming && !tx.coinbase}>
@@ -1648,9 +1786,14 @@
                     </span>
                     <span class="tx-timestamp">{formatTime(tx.time)}</span>
                   </div>
-                  <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.txid, 'TXID copied!')} title="Copy TXID">
-                    <Copy size={12} />
-                  </button>
+                  <div class="tx-actions">
+                    <button class="btn-icon-sm" on:click={() => startEditLabel(tx)} title="Add/edit note">
+                      <Edit size={12} />
+                    </button>
+                    <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.txid, 'TXID copied!')} title="Copy TXID">
+                      <Copy size={12} />
+                    </button>
+                  </div>
                 </div>
               {:else}
                 <div class="cmd-empty-state">
@@ -2162,6 +2305,156 @@
                 <div class="backup-actions">
                   <button class="btn btn-ghost" on:click={resetKeys}>
                     Hide Keys
+                  </button>
+                </div>
+              {/if}
+            </div>
+          </div>
+
+          <!-- Change Password Panel -->
+          <div class="cmd-stats-panel" style="margin-top: var(--s-4);">
+            <div class="cmd-panel-header">
+              <div class="cmd-panel-title">
+                <span class="cmd-panel-icon">■</span>
+                CHANGE PASSWORD
+              </div>
+            </div>
+            
+            <div class="backup-content">
+              {#if changePasswordSuccess}
+                <div class="success-message">
+                  <Check size={20} />
+                  <div>
+                    <strong>Password Changed Successfully</strong>
+                    <p>Your wallet is now protected with the new password.</p>
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button class="btn btn-ghost" on:click={resetChangePassword}>
+                    Done
+                  </button>
+                </div>
+              {:else}
+                <p class="change-password-desc">
+                  Change your wallet's encryption password. You'll need your current password to make this change.
+                </p>
+                
+                <div class="form-group">
+                  <label class="form-label">Current Password</label>
+                  <div class="input-wrap">
+                    {#if showChangePasswordCurrent}
+                      <input 
+                        type="text" 
+                        class="input" 
+                        bind:value={changePasswordCurrent} 
+                        placeholder="Enter current password" 
+                        autocomplete="off"
+                      />
+                    {:else}
+                      <input 
+                        type="password" 
+                        class="input" 
+                        bind:value={changePasswordCurrent} 
+                        placeholder="Enter current password" 
+                        autocomplete="off"
+                      />
+                    {/if}
+                    <button 
+                      type="button" 
+                      class="input-action" 
+                      on:click={() => showChangePasswordCurrent = !showChangePasswordCurrent}
+                    >
+                      {#if showChangePasswordCurrent}
+                        <EyeOff size={16} strokeWidth={1.5} />
+                      {:else}
+                        <Eye size={16} strokeWidth={1.5} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">New Password</label>
+                  <div class="input-wrap">
+                    {#if showChangePasswordNew}
+                      <input 
+                        type="text" 
+                        class="input" 
+                        bind:value={changePasswordNew} 
+                        placeholder="Enter new password" 
+                        autocomplete="off"
+                      />
+                    {:else}
+                      <input 
+                        type="password" 
+                        class="input" 
+                        bind:value={changePasswordNew} 
+                        placeholder="Enter new password" 
+                        autocomplete="off"
+                      />
+                    {/if}
+                    <button 
+                      type="button" 
+                      class="input-action" 
+                      on:click={() => showChangePasswordNew = !showChangePasswordNew}
+                    >
+                      {#if showChangePasswordNew}
+                        <EyeOff size={16} strokeWidth={1.5} />
+                      {:else}
+                        <Eye size={16} strokeWidth={1.5} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+                
+                <div class="form-group">
+                  <label class="form-label">Confirm New Password</label>
+                  <div class="input-wrap">
+                    {#if showChangePasswordNew}
+                      <input 
+                        type="text" 
+                        class="input" 
+                        bind:value={changePasswordConfirm} 
+                        placeholder="Confirm new password" 
+                        autocomplete="off"
+                        class:input-error={changePasswordConfirm && !changePasswordsMatch}
+                      />
+                    {:else}
+                      <input 
+                        type="password" 
+                        class="input" 
+                        bind:value={changePasswordConfirm} 
+                        placeholder="Confirm new password" 
+                        autocomplete="off"
+                        class:input-error={changePasswordConfirm && !changePasswordsMatch}
+                      />
+                    {/if}
+                  </div>
+                  {#if changePasswordConfirm && !changePasswordsMatch}
+                    <span class="form-hint error">Passwords do not match</span>
+                  {/if}
+                </div>
+                
+                {#if changePasswordError}
+                  <div class="alert alert-error">
+                    <AlertTriangle size={14} />
+                    <span>{changePasswordError}</span>
+                  </div>
+                {/if}
+                
+                <div class="form-actions">
+                  <button 
+                    class="btn btn-primary" 
+                    on:click={handleChangePassword} 
+                    disabled={changePasswordLoading || !canChangePassword}
+                  >
+                    {#if changePasswordLoading}
+                      <Loader2 size={14} class="spin" />
+                      Changing...
+                    {:else}
+                      <Key size={14} />
+                      Change Password
+                    {/if}
                   </button>
                 </div>
               {/if}
@@ -3560,6 +3853,133 @@
   .tx-timestamp {
     font-size: 11px;
     color: var(--text-4);
+  }
+  
+  /* Transaction Label Styles */
+  .tx-type-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+  
+  .tx-label-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    background: rgba(34, 211, 238, 0.1);
+    border: 1px solid rgba(34, 211, 238, 0.2);
+    border-radius: var(--r-sm);
+    color: var(--cyan-400);
+    white-space: nowrap;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  .tx-label-edit {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+    margin-top: 2px;
+  }
+  
+  .tx-label-input {
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    padding: 2px 6px;
+    font-size: 11px;
+    color: var(--text-1);
+    width: 140px;
+  }
+  
+  .tx-label-input:focus {
+    outline: none;
+    border-color: var(--cyan-400);
+  }
+  
+  .tx-label-input::placeholder {
+    color: var(--text-4);
+  }
+  
+  .btn-icon-xs {
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--void-mid);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    color: var(--text-3);
+    cursor: pointer;
+    font-size: 10px;
+    transition: all 150ms ease;
+  }
+  
+  .btn-icon-xs:hover {
+    background: var(--void-up);
+    color: var(--text-1);
+    border-color: var(--border-dim);
+  }
+  
+  .btn-icon-xs:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  .tx-actions {
+    display: flex;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  
+  .tx-row-detailed:hover .tx-actions .btn-icon-sm {
+    opacity: 1;
+  }
+  
+  .tx-actions .btn-icon-sm {
+    opacity: 0;
+    transition: opacity 150ms ease;
+  }
+  
+  /* Change Password Styles */
+  .change-password-desc {
+    font-size: 13px;
+    color: var(--text-3);
+    margin-bottom: var(--s-4);
+    line-height: 1.5;
+  }
+  
+  .success-message {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-3);
+    padding: var(--s-4);
+    background: rgba(52, 211, 153, 0.08);
+    border: 1px solid rgba(52, 211, 153, 0.2);
+    border-radius: var(--r-md);
+    color: var(--status-ok);
+  }
+  
+  .success-message strong {
+    display: block;
+    margin-bottom: var(--s-1);
+  }
+  
+  .success-message p {
+    font-size: 13px;
+    color: var(--text-2);
+    margin: 0;
+  }
+  
+  .form-hint.error {
+    color: var(--status-err);
+    font-size: 11px;
+    margin-top: var(--s-1);
+  }
+  
+  .input-error {
+    border-color: var(--status-err) !important;
   }
   
   /* Spin Animation */
