@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -325,11 +326,14 @@ func (w *DevSupportWorker) isOnBattery() bool {
 		}
 		return string(out) == "0\n" // 0 means not on AC
 	case "windows":
-		// Windows: battery detection requires syscall to GetSystemPowerStatus
-		// Full implementation would use: kernel32.GetSystemPowerStatus()
-		// For v1.0, assume not on battery (safer for background hashing)
-		// TODO: Implement proper Windows battery detection using syscall
-		return false
+		// Windows: use PowerShell to check battery status via WMI
+		out, err := exec.Command("powershell", "-Command",
+			"(Get-WmiObject Win32_Battery).BatteryStatus").Output()
+		if err != nil {
+			return false // Assume plugged in if we can't detect
+		}
+		// BatteryStatus: 1 = Discharging (on battery), 2 = AC Power
+		return strings.TrimSpace(string(out)) == "1"
 	}
 	return false
 }
