@@ -20,7 +20,7 @@
     Package, FileText, Coins, Clock, Copy, ArrowLeft, Home, X, ChevronLeft, ChevronRight,
     FileCode, User, Globe, Lock, Info, AlertTriangle, Check, Loader2, Shield, Pickaxe,
     ChevronDown, Search, Layers, Activity, CheckCircle, BarChart3, Palette, Wallet, Zap, Link,
-    GitBranch, History, Key, Database, Code
+    GitBranch, History, Key, Database, Code, Eye, EyeOff
   } from 'lucide-svelte';
   
   // v6.2 Sidebar navigation state - Simplified (landing view + tools only)
@@ -1259,6 +1259,11 @@
       height: (c.count / maxCount) * 100
     }));
   })();
+  
+  // Auto-check watch status when viewing an SC
+  $: if (searchResult?.type === 'sc' && searchQuery) {
+    loadWatchedSCs();
+  }
 </script>
 
 <!-- v6.2 Unified Explorer - Landing View + Search Results + Validator -->
@@ -2042,6 +2047,22 @@
                       View as TX
                     </button>
                   {/if}
+                  <button 
+                    class="cmd-link-btn watch-btn"
+                    class:watching={isCurrentSCWatched}
+                    on:click={() => isCurrentSCWatched ? unwatchCurrentSC() : watchCurrentSC()}
+                    disabled={watchingInProgress}
+                    title={isCurrentSCWatched ? 'Stop watching this SC' : 'Watch for state changes'}
+                  >
+                    {#if watchingInProgress}
+                      <Loader2 size={12} class="spin" />
+                    {:else if isCurrentSCWatched}
+                      <EyeOff size={12} />
+                    {:else}
+                      <Eye size={12} />
+                    {/if}
+                    {isCurrentSCWatched ? 'Watching' : 'Watch'}
+                  </button>
                 </div>
               </div>
               <div class="cmd-stats-unified" style="grid-template-columns: 1fr;">
@@ -5727,6 +5748,23 @@
   .btn-sm {
     padding: var(--s-1) var(--s-2);
     font-size: 11px;
+  }
+  
+  /* Watch Button in SC Header */
+  .watch-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  
+  .watch-btn.watching {
+    color: var(--cyan, #00d4aa);
+    border-color: rgba(0, 212, 170, 0.3);
+  }
+  
+  .watch-btn.watching:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-dim);
   }
   
   /* Time Machine Section */
