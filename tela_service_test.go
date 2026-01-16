@@ -512,6 +512,335 @@ func BenchmarkDOCInfoUnmarshal(b *testing.B) {
 	}
 }
 
+// ============== Version Control Tests ==============
+
+func TestCommit_JSONMarshaling(t *testing.T) {
+	commit := Commit{
+		Number:    1,
+		TXID:      "abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+		Height:    12345,
+		Timestamp: 1700000000,
+		IsCurrent: true,
+		Label:     "Initial deployment",
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(commit)
+	if err != nil {
+		t.Fatalf("Failed to marshal Commit: %v", err)
+	}
+
+	// Unmarshal back
+	var decoded Commit
+	if err := json.Unmarshal(jsonData, &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal Commit: %v", err)
+	}
+
+	// Verify fields
+	if decoded.Number != commit.Number {
+		t.Errorf("Number mismatch: got %d, expected %d", decoded.Number, commit.Number)
+	}
+	if decoded.TXID != commit.TXID {
+		t.Errorf("TXID mismatch: got %s, expected %s", decoded.TXID, commit.TXID)
+	}
+	if decoded.Height != commit.Height {
+		t.Errorf("Height mismatch: got %d, expected %d", decoded.Height, commit.Height)
+	}
+	if decoded.IsCurrent != commit.IsCurrent {
+		t.Errorf("IsCurrent mismatch: got %v, expected %v", decoded.IsCurrent, commit.IsCurrent)
+	}
+	if decoded.Label != commit.Label {
+		t.Errorf("Label mismatch: got %s, expected %s", decoded.Label, commit.Label)
+	}
+}
+
+func TestFileDiff_JSONMarshaling(t *testing.T) {
+	fileDiff := FileDiff{
+		FileName: "index.html",
+		Status:   "modified",
+		LineDiffs: []map[string]interface{}{
+			{"type": "modified", "line": 5, "oldContent": "<h1>Old</h1>", "newContent": "<h1>New</h1>"},
+			{"type": "added", "line": 10, "content": "<p>New paragraph</p>"},
+		},
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(fileDiff)
+	if err != nil {
+		t.Fatalf("Failed to marshal FileDiff: %v", err)
+	}
+
+	// Unmarshal back
+	var decoded FileDiff
+	if err := json.Unmarshal(jsonData, &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal FileDiff: %v", err)
+	}
+
+	if decoded.FileName != fileDiff.FileName {
+		t.Errorf("FileName mismatch: got %s, expected %s", decoded.FileName, fileDiff.FileName)
+	}
+	if decoded.Status != fileDiff.Status {
+		t.Errorf("Status mismatch: got %s, expected %s", decoded.Status, fileDiff.Status)
+	}
+	if len(decoded.LineDiffs) != len(fileDiff.LineDiffs) {
+		t.Errorf("LineDiffs count mismatch: got %d, expected %d", len(decoded.LineDiffs), len(fileDiff.LineDiffs))
+	}
+}
+
+func TestGenerateDiff(t *testing.T) {
+	tests := []struct {
+		name       string
+		oldContent string
+		newContent string
+		wantLen    int
+		wantTypes  []string
+	}{
+		{
+			name:       "No changes",
+			oldContent: "line1\nline2\nline3",
+			newContent: "line1\nline2\nline3",
+			wantLen:    0,
+			wantTypes:  []string{},
+		},
+		{
+			name:       "Added lines",
+			oldContent: "line1\nline2",
+			newContent: "line1\nline2\nline3\nline4",
+			wantLen:    2,
+			wantTypes:  []string{"added", "added"},
+		},
+		{
+			name:       "Removed lines",
+			oldContent: "line1\nline2\nline3\nline4",
+			newContent: "line1\nline2",
+			wantLen:    2,
+			wantTypes:  []string{"removed", "removed"},
+		},
+		{
+			name:       "Modified lines",
+			oldContent: "line1\nold line\nline3",
+			newContent: "line1\nnew line\nline3",
+			wantLen:    1,
+			wantTypes:  []string{"modified"},
+		},
+		{
+			name:       "Mixed changes",
+			oldContent: "line1\nremoved\nmodified old",
+			newContent: "line1\nmodified new\nadded",
+			wantLen:    2,
+			wantTypes:  []string{"modified", "modified"},
+		},
+		{
+			name:       "Empty to content",
+			oldContent: "",
+			newContent: "new line",
+			wantLen:    1,
+			wantTypes:  []string{"added"},
+		},
+		{
+			name:       "Content to empty",
+			oldContent: "old line",
+			newContent: "",
+			wantLen:    1,
+			wantTypes:  []string{"removed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			diff := generateDiff(tt.oldContent, tt.newContent)
+			
+			if len(diff) != tt.wantLen {
+				t.Errorf("generateDiff() returned %d changes, want %d", len(diff), tt.wantLen)
+			}
+
+			for i, wantType := range tt.wantTypes {
+				if i >= len(diff) {
+					break
+				}
+				if diffType, ok := diff[i]["type"].(string); ok && diffType != wantType {
+					t.Errorf("diff[%d].type = %s, want %s", i, diffType, wantType)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerateFileDiffs(t *testing.T) {
+	tests := []struct {
+		name           string
+		filesA         map[string]string
+		filesB         map[string]string
+		wantFiles      int
+		wantStatuses   map[string]string // filename -> expected status
+	}{
+		{
+			name:         "No changes",
+			filesA:       map[string]string{"index.html": "<html></html>"},
+			filesB:       map[string]string{"index.html": "<html></html>"},
+			wantFiles:    0, // No diff for unchanged files
+			wantStatuses: map[string]string{},
+		},
+		{
+			name:         "File added",
+			filesA:       map[string]string{},
+			filesB:       map[string]string{"new.js": "console.log()"},
+			wantFiles:    1,
+			wantStatuses: map[string]string{"new.js": "added"},
+		},
+		{
+			name:         "File removed",
+			filesA:       map[string]string{"old.css": "body{}"},
+			filesB:       map[string]string{},
+			wantFiles:    1,
+			wantStatuses: map[string]string{"old.css": "removed"},
+		},
+		{
+			name:         "File modified",
+			filesA:       map[string]string{"app.js": "const old = 1;"},
+			filesB:       map[string]string{"app.js": "const new = 2;"},
+			wantFiles:    1,
+			wantStatuses: map[string]string{"app.js": "modified"},
+		},
+		{
+			name: "Multiple changes",
+			filesA: map[string]string{
+				"index.html": "<html>old</html>",
+				"removed.js": "deleted",
+			},
+			filesB: map[string]string{
+				"index.html": "<html>new</html>",
+				"added.css":  "body{}",
+			},
+			wantFiles: 3,
+			wantStatuses: map[string]string{
+				"index.html": "modified",
+				"removed.js": "removed",
+				"added.css":  "added",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			diffs := generateFileDiffs(tt.filesA, tt.filesB)
+
+			if len(diffs) != tt.wantFiles {
+				t.Errorf("generateFileDiffs() returned %d file diffs, want %d", len(diffs), tt.wantFiles)
+			}
+
+			for _, diff := range diffs {
+				wantStatus, exists := tt.wantStatuses[diff.FileName]
+				if exists && diff.Status != wantStatus {
+					t.Errorf("file %s: got status %s, want %s", diff.FileName, diff.Status, wantStatus)
+				}
+			}
+		})
+	}
+}
+
+func TestExtractDocCodeFromSC(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     string
+		expected string
+	}{
+		{
+			name:     "Standard DOC format",
+			code:     "/* <html>content</html> */\nFunction Initialize() Uint64\n10 RETURN 0\nEnd Function",
+			expected: "<html>content</html>",
+		},
+		{
+			name:     "No comment block",
+			code:     "Function Initialize() Uint64\n10 RETURN 0\nEnd Function",
+			expected: "Function Initialize() Uint64\n10 RETURN 0\nEnd Function",
+		},
+		{
+			name:     "Empty comment",
+			code:     "/* */Function foo",
+			expected: "",
+		},
+		{
+			name:     "Multi-line content",
+			code:     "/* line1\nline2\nline3 */rest",
+			expected: "line1\nline2\nline3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractDocCodeFromSC(tt.code)
+			if result != tt.expected {
+				t.Errorf("extractDocCodeFromSC() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestInferFileNameFromDocType(t *testing.T) {
+	tests := []struct {
+		docType  string
+		durl     string
+		expected string
+	}{
+		{"TELA-HTML-1", "", "index.html"},
+		{"TELA-HTML-1", "myapp.tela", "index.html"},
+		{"TELA-CSS-1", "", "content.css"},
+		{"TELA-CSS-1", "styles", "styles.css"},
+		{"TELA-JS-1", "", "content.js"},
+		{"TELA-JS-1", "app.lib", "app.js"},
+		{"TELA-JSON-1", "", "content.json"},
+		{"TELA-SVG-1", "", "content.svg"},
+		{"TELA-MD-1", "", "content.md"},
+		{"UNKNOWN", "", "content.txt"},
+		{"", "", "content.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.docType+"_"+tt.durl, func(t *testing.T) {
+			result := inferFileNameFromDocType(tt.docType, tt.durl)
+			if result != tt.expected {
+				t.Errorf("inferFileNameFromDocType(%s, %s) = %s, want %s", tt.docType, tt.durl, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCommitDiff_JSONMarshaling(t *testing.T) {
+	diff := CommitDiff{
+		SCID:       "abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+		FromCommit: 1,
+		ToCommit:   2,
+		FromTXID:   "txid1",
+		ToTXID:     "txid2",
+		FileDiffs: []FileDiff{
+			{FileName: "test.html", Status: "modified"},
+		},
+		Summary:    "1 modified",
+		HasChanges: true,
+	}
+
+	jsonData, err := json.Marshal(diff)
+	if err != nil {
+		t.Fatalf("Failed to marshal CommitDiff: %v", err)
+	}
+
+	var decoded CommitDiff
+	if err := json.Unmarshal(jsonData, &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal CommitDiff: %v", err)
+	}
+
+	if decoded.FromCommit != diff.FromCommit || decoded.ToCommit != diff.ToCommit {
+		t.Errorf("Commit numbers mismatch")
+	}
+	if decoded.Summary != diff.Summary {
+		t.Errorf("Summary mismatch: got %s, want %s", decoded.Summary, diff.Summary)
+	}
+	if decoded.HasChanges != diff.HasChanges {
+		t.Errorf("HasChanges mismatch")
+	}
+}
+
 // ============== Integration Test Helpers ==============
 // These require simulator mode to be running
 
@@ -545,6 +874,28 @@ func TestIntegration_FullTELADeployment(t *testing.T) {
 	t.Log("4. Select a folder with HTML/CSS/JS files")
 	t.Log("5. Click Deploy")
 	t.Log("6. Verify app appears in Browser > Discover")
+	
+	t.Skip("Manual test required - run with Hologram in simulator mode")
+}
+
+// TestIntegration_VersionControl tests version control functionality
+// Run with: go test -run TestIntegration_VersionControl
+func TestIntegration_VersionControl(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	t.Log("Integration test for Version Control - requires simulator mode")
+	t.Log("Steps to test manually:")
+	t.Log("1. Start Hologram in Simulator mode")
+	t.Log("2. Deploy a TELA INDEX with files")
+	t.Log("3. Update the INDEX (change a file, add a DOC)")
+	t.Log("4. Go to Studio > enter the INDEX SCID")
+	t.Log("5. Click 'Version History'")
+	t.Log("6. Verify: commits appear with heights and TXIDs")
+	t.Log("7. Click on different versions to see content")
+	t.Log("8. Use Compare Mode to diff two versions")
+	t.Log("9. Verify file-based diff shows which files changed")
 	
 	t.Skip("Manual test required - run with Hologram in simulator mode")
 }

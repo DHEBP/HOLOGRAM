@@ -1435,6 +1435,34 @@ type Commit struct {
 	Height    int64  `json:"height"`    // Block height of the commit
 	Timestamp int64  `json:"timestamp"` // Unix timestamp (if available)
 	IsCurrent bool   `json:"isCurrent"` // True if this is the latest version
+	Label     string `json:"label"`     // Auto-generated semantic label
+}
+
+// VersionedContent represents content retrieved at a specific commit
+type VersionedContent struct {
+	Files   map[string]string `json:"files"`   // filename -> content
+	DOCs    []string          `json:"docs"`    // DOC SCIDs in this version
+	DURL    string            `json:"durl"`    // dURL at this version
+	Version int               `json:"version"` // Commit number
+}
+
+// FileDiff represents differences in a single file between versions
+type FileDiff struct {
+	FileName  string                   `json:"fileName"`
+	Status    string                   `json:"status"` // "added", "removed", "modified", "unchanged"
+	LineDiffs []map[string]interface{} `json:"lineDiffs,omitempty"`
+}
+
+// CommitDiff represents the full diff between two commits
+type CommitDiff struct {
+	SCID       string     `json:"scid"`
+	FromCommit int        `json:"fromCommit"`
+	ToCommit   int        `json:"toCommit"`
+	FromTXID   string     `json:"fromTxid"`
+	ToTXID     string     `json:"toTxid"`
+	FileDiffs  []FileDiff `json:"fileDiffs"`
+	Summary    string     `json:"summary"`
+	HasChanges bool       `json:"hasChanges"`
 }
 
 // GetCommitHistory retrieves all commits (versions) for a TELA SCID
@@ -1461,13 +1489,28 @@ func (a *App) GetCommitHistory(scid string) map[string]interface{} {
 		}
 	}
 
-	// Build commit list
+	// Build commit list with TXIDs
 	for i, height := range heights {
-		commits = append(commits, Commit{
+		commit := Commit{
 			Number:    i + 1,
 			Height:    height,
 			IsCurrent: i == len(heights)-1,
-		})
+		}
+
+		// Try to get TXID for this commit by querying the block
+		txid := a.findSCIDTxAtHeight(scid, height)
+		if txid != "" {
+			commit.TXID = txid
+		}
+
+		// Generate semantic label
+		if i == 0 {
+			commit.Label = "Initial deployment"
+		} else {
+			commit.Label = fmt.Sprintf("Update #%d", i)
+		}
+
+		commits = append(commits, commit)
 	}
 
 	a.logToConsole(fmt.Sprintf("[OK] Found %d commits", len(commits)))
@@ -1478,6 +1521,179 @@ func (a *App) GetCommitHistory(scid string) map[string]interface{} {
 		"commits": commits,
 		"count":   len(commits),
 	}
+}
+
+// findSCIDTxAtHeight finds the transaction that interacted with the SCID at a specific height
+func (a *App) findSCIDTxAtHeight(scid string, height int64) string {
+	// Get block at this height
+	blockResult := a.GetBlock(height)
+	if blockResult["success"] != true {
+		return ""
+	}
+
+	block, ok := blockResult["block"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	// Get transaction hashes from block
+	txHashes := []string{}
+
+	// Try different field names for tx hashes
+	if txs, ok := block["tx_hashes"].([]interface{}); ok {
+		for _, tx := range txs {
+			if txHash, ok := tx.(string); ok {
+				txHashes = append(txHashes, txHash)
+			}
+		}
+	}
+
+	// If no tx_hashes, try getting extended block info
+	if len(txHashes) == 0 {
+		extBlock := a.GetBlockExtended(fmt.Sprintf("%d", height))
+		if extBlock["success"] == true {
+			if txs, ok := extBlock["tx_hashes"].([]string); ok {
+				txHashes = txs
+			}
+		}
+	}
+
+	// Search through transactions for one that targets this SCID
+	for _, txHash := range txHashes {
+		txInfo := a.GetTransactionBasic(txHash)
+		if txInfo["success"] != true {
+			continue
+		}
+
+		if tx, ok := txInfo["tx"].(map[string]interface{}); ok {
+			// Check if this transaction targets our SCID
+			if txScid, ok := tx["scid"].(string); ok && txScid == scid {
+				return txHash
+			}
+
+			// Also check scdata for SC interactions
+			if scdata, ok := tx["scdata"].(map[string]interface{}); ok {
+				if scidInData, ok := scdata["scid"].(string); ok && scidInData == scid {
+					return txHash
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// GenerateSemanticLabel creates a descriptive label for a commit based on file changes
+// This is called when comparing two consecutive versions to generate meaningful labels
+func (a *App) GenerateSemanticLabel(scid string, commitNum int) string {
+	// First commit is always "Initial deployment"
+	if commitNum == 1 {
+		return "Initial deployment"
+	}
+
+	// Try to get diff with previous commit to determine what changed
+	diffResult := a.DiffCommits(scid, commitNum-1, commitNum)
+	if diffResult["success"] != true {
+		return fmt.Sprintf("Update #%d", commitNum-1)
+	}
+
+	// Analyze the file changes
+	fileDiffs, ok := diffResult["fileDiffs"].([]FileDiff)
+	if !ok || len(fileDiffs) == 0 {
+		return fmt.Sprintf("Update #%d", commitNum-1)
+	}
+
+	// Build a descriptive label
+	added := []string{}
+	modified := []string{}
+	removed := []string{}
+
+	for _, fd := range fileDiffs {
+		switch fd.Status {
+		case "added":
+			added = append(added, fd.FileName)
+		case "modified":
+			modified = append(modified, fd.FileName)
+		case "removed":
+			removed = append(removed, fd.FileName)
+		}
+	}
+
+	// Generate label based on changes
+	parts := []string{}
+
+	if len(modified) > 0 {
+		if len(modified) <= 2 {
+			parts = append(parts, "Updated "+strings.Join(modified, ", "))
+		} else {
+			parts = append(parts, fmt.Sprintf("Updated %d files", len(modified)))
+		}
+	}
+
+	if len(added) > 0 {
+		if len(added) <= 2 {
+			parts = append(parts, "Added "+strings.Join(added, ", "))
+		} else {
+			parts = append(parts, fmt.Sprintf("Added %d files", len(added)))
+		}
+	}
+
+	if len(removed) > 0 {
+		if len(removed) <= 2 {
+			parts = append(parts, "Removed "+strings.Join(removed, ", "))
+		} else {
+			parts = append(parts, fmt.Sprintf("Removed %d files", len(removed)))
+		}
+	}
+
+	if len(parts) == 0 {
+		return fmt.Sprintf("Update #%d", commitNum-1)
+	}
+
+	// Truncate if too long
+	label := strings.Join(parts, ", ")
+	if len(label) > 60 {
+		label = label[:57] + "..."
+	}
+
+	return label
+}
+
+// GetCommitHistoryWithLabels retrieves commit history with enhanced semantic labels
+// This is a more expensive call as it fetches content to generate labels
+func (a *App) GetCommitHistoryWithLabels(scid string) map[string]interface{} {
+	// Get basic history first
+	result := a.GetCommitHistory(scid)
+	if result["success"] != true {
+		return result
+	}
+
+	commits, ok := result["commits"].([]Commit)
+	if !ok || len(commits) == 0 {
+		return result
+	}
+
+	// Enhance labels by analyzing changes
+	// Note: This can be slow for large histories, so we only do it for recent commits
+	maxEnhance := 5 // Only enhance the last 5 commits
+	startIdx := len(commits) - maxEnhance
+	if startIdx < 0 {
+		startIdx = 0
+	}
+
+	for i := startIdx; i < len(commits); i++ {
+		// Skip first commit (already has "Initial deployment")
+		if commits[i].Number == 1 {
+			continue
+		}
+
+		// Generate semantic label based on diff with previous version
+		label := a.GenerateSemanticLabel(scid, commits[i].Number)
+		commits[i].Label = label
+	}
+
+	result["commits"] = commits
+	return result
 }
 
 // getCommitHistoryFromDaemon fetches commit history directly from daemon
@@ -1496,10 +1712,16 @@ func (a *App) getCommitHistoryFromDaemon(scid string) map[string]interface{} {
 			// C often contains version count
 			versionCount := parseVersionCount(cVal)
 			for i := 1; i <= versionCount; i++ {
-				commits = append(commits, Commit{
+				commit := Commit{
 					Number:    i,
 					IsCurrent: i == versionCount,
-				})
+				}
+				if i == 1 {
+					commit.Label = "Initial deployment"
+				} else {
+					commit.Label = fmt.Sprintf("Update #%d", i-1)
+				}
+				commits = append(commits, commit)
 			}
 		}
 	}
@@ -1519,7 +1741,7 @@ func (a *App) GetCommitContent(scid string, commitNum int) map[string]interface{
 	// Get commit history first
 	historyResult := a.GetCommitHistory(scid)
 	commits, ok := historyResult["commits"].([]Commit)
-	if !ok || len(commits) < commitNum {
+	if !ok || len(commits) < commitNum || commitNum < 1 {
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Commit %d not found", commitNum),
@@ -1528,12 +1750,65 @@ func (a *App) GetCommitContent(scid string, commitNum int) map[string]interface{
 
 	commit := commits[commitNum-1]
 
-	// Clone at this specific commit
-	var content string
-	if commit.Height > 0 {
-		// We have the height; clone at that point
-		// Note: This requires tela.CloneAtCommit or similar functionality
-		content = fmt.Sprintf("Content at block height %d", commit.Height)
+	// Get daemon endpoint for cloning
+	endpoint := a.daemonClient.GetEndpoint()
+	if endpoint == "" {
+		endpoint = "127.0.0.1:10102"
+	}
+	// Ensure http:// prefix is stripped for tela library
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+	endpoint = strings.TrimPrefix(endpoint, "https://")
+
+	// If we have a TXID, use CloneAtCommit to get content at that specific version
+	var files map[string]string
+	var docs []string
+	var durl string
+
+	if commit.TXID != "" {
+		a.logToConsole(fmt.Sprintf("[DOC] Cloning at commit TXID: %s", commit.TXID[:16]+"..."))
+
+		// Use tela.CloneAtCommit to clone content at this specific version
+		err := tela.CloneAtCommit(scid, commit.TXID, endpoint)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[ERR] CloneAtCommit failed: %v", err))
+			// Fall back to getting current SC info
+			return a.getCommitContentFallback(scid, commit, commitNum)
+		}
+
+		// Read cloned files
+		clonePath := tela.GetClonePath()
+		files, err = a.readClonedFiles(clonePath)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Could not read cloned files: %v", err))
+		}
+
+		// Clean up clone directory
+		if clonePath != "" {
+			os.RemoveAll(clonePath)
+		}
+	} else if commit.IsCurrent {
+		// For current version without TXID, get live content
+		return a.getCommitContentFallback(scid, commit, commitNum)
+	} else {
+		// Historical commit without TXID - limited info available
+		return map[string]interface{}{
+			"success":   true,
+			"scid":      scid,
+			"commit":    commit,
+			"commitNum": commitNum,
+			"files":     map[string]string{},
+			"docs":      []string{},
+			"durl":      "",
+			"message":   fmt.Sprintf("Content at commit %d (TXID not available - limited data)", commitNum),
+			"warning":   "Historical commit TXID not indexed. Content may be incomplete.",
+		}
+	}
+
+	// Get INDEX info for docs and durl
+	indexInfo, err := tela.GetINDEXInfo(scid, endpoint)
+	if err == nil {
+		durl = indexInfo.DURL
+		docs = indexInfo.DOCs
 	}
 
 	return map[string]interface{}{
@@ -1541,9 +1816,173 @@ func (a *App) GetCommitContent(scid string, commitNum int) map[string]interface{
 		"scid":      scid,
 		"commit":    commit,
 		"commitNum": commitNum,
-		"content":   content,
+		"files":     files,
+		"docs":      docs,
+		"durl":      durl,
 		"message":   fmt.Sprintf("Content at commit %d", commitNum),
 	}
+}
+
+// getCommitContentFallback gets content when CloneAtCommit is not available
+func (a *App) getCommitContentFallback(scid string, commit Commit, commitNum int) map[string]interface{} {
+	endpoint := a.daemonClient.GetEndpoint()
+	if endpoint == "" {
+		endpoint = "127.0.0.1:10102"
+	}
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+	endpoint = strings.TrimPrefix(endpoint, "https://")
+
+	var files = make(map[string]string)
+	var docs []string
+	var durl string
+
+	// Get INDEX info
+	indexInfo, err := tela.GetINDEXInfo(scid, endpoint)
+	if err != nil {
+		// Might be a DOC, not an INDEX
+		docInfo, docErr := tela.GetDOCInfo(scid, endpoint)
+		if docErr == nil {
+			// It's a DOC - get the code directly
+			scData, _ := a.daemonClient.GetSC(scid, true, false)
+			if code, ok := scData["code"].(string); ok {
+				// Extract doc content from SC code
+				docContent := extractDocCodeFromSC(code)
+				fileName := inferFileNameFromDocType(docInfo.DocType, docInfo.DURL)
+				files[fileName] = docContent
+			}
+			durl = docInfo.DURL
+		}
+	} else {
+		durl = indexInfo.DURL
+		docs = indexInfo.DOCs
+
+		// Get content for each DOC in the INDEX
+		for _, docScid := range docs {
+			docInfo, docErr := tela.GetDOCInfo(docScid, endpoint)
+			if docErr != nil {
+				continue
+			}
+
+			scData, _ := a.daemonClient.GetSC(docScid, true, false)
+			if code, ok := scData["code"].(string); ok {
+				docContent := extractDocCodeFromSC(code)
+				fileName := inferFileNameFromDocType(docInfo.DocType, docInfo.DURL)
+				if docInfo.SubDir != "" {
+					fileName = docInfo.SubDir + "/" + fileName
+				}
+				files[fileName] = docContent
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"success":   true,
+		"scid":      scid,
+		"commit":    commit,
+		"commitNum": commitNum,
+		"files":     files,
+		"docs":      docs,
+		"durl":      durl,
+		"message":   fmt.Sprintf("Content at commit %d (current version)", commitNum),
+	}
+}
+
+// readClonedFiles reads all files from a cloned TELA directory
+func (a *App) readClonedFiles(basePath string) (map[string]string, error) {
+	files := make(map[string]string)
+
+	if basePath == "" {
+		return files, fmt.Errorf("empty clone path")
+	}
+
+	err := filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		// Get relative path
+		relPath, err := filepath.Rel(basePath, path)
+		if err != nil {
+			relPath = filepath.Base(path)
+		}
+
+		// Read file content
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil // Skip files we can't read
+		}
+
+		files[relPath] = string(content)
+		return nil
+	})
+
+	return files, err
+}
+
+// extractDocCodeFromSC extracts the document content from SC code
+func extractDocCodeFromSC(code string) string {
+	// TELA DOC code is stored in a comment block at the start of the SC
+	// Format: /* DOC_CONTENT */ followed by the actual BASIC code
+	if strings.HasPrefix(code, "/*") {
+		endIdx := strings.Index(code, "*/")
+		if endIdx > 2 {
+			return strings.TrimSpace(code[2:endIdx])
+		}
+	}
+	return code
+}
+
+// inferFileNameFromDocType generates a filename from doc type and dURL
+func inferFileNameFromDocType(docType, durl string) string {
+	// Extract extension from docType (e.g., "TELA-HTML-1" -> "html")
+	ext := ".txt"
+	isHTML := false
+	switch {
+	case strings.Contains(docType, "HTML"):
+		ext = ".html"
+		isHTML = true
+	case strings.Contains(docType, "CSS"):
+		ext = ".css"
+	case strings.Contains(docType, "JSON"):
+		// Check JSON before JS since "JS" is substring of "JSON"
+		ext = ".json"
+	case strings.Contains(docType, "JS"):
+		ext = ".js"
+	case strings.Contains(docType, "SVG"):
+		ext = ".svg"
+	case strings.Contains(docType, "MD"):
+		ext = ".md"
+	}
+
+	// Try to extract filename from dURL
+	if durl != "" {
+		// dURL might be like "myapp.tela" or just a name
+		baseName := strings.TrimSuffix(durl, ".tela")
+		baseName = strings.TrimSuffix(baseName, ".lib")
+		if baseName != "" {
+			// If dURL suggests a specific file, use that
+			if strings.HasSuffix(durl, ext) {
+				return durl
+			}
+			// Default to index for HTML
+			if isHTML {
+				return "index.html"
+			}
+			return baseName + ext
+		}
+	}
+
+	// For HTML without dURL, default to index.html
+	if isHTML {
+		return "index.html"
+	}
+
+	// Fallback
+	return "content" + ext
 }
 
 // DiffCommits compares two commits and returns the differences
@@ -1554,27 +1993,133 @@ func (a *App) DiffCommits(scid string, commitA, commitB int) map[string]interfac
 	contentAResult := a.GetCommitContent(scid, commitA)
 	contentBResult := a.GetCommitContent(scid, commitB)
 
-	if !contentAResult["success"].(bool) {
+	if contentAResult["success"] != true {
 		return contentAResult
 	}
-	if !contentBResult["success"].(bool) {
+	if contentBResult["success"] != true {
 		return contentBResult
 	}
 
-	contentA, _ := contentAResult["content"].(string)
-	contentB, _ := contentBResult["content"].(string)
+	// Extract files from both commits
+	filesA := make(map[string]string)
+	filesB := make(map[string]string)
 
-	// Generate simple line-by-line diff
-	diff := generateDiff(contentA, contentB)
+	if f, ok := contentAResult["files"].(map[string]string); ok {
+		filesA = f
+	}
+	if f, ok := contentBResult["files"].(map[string]string); ok {
+		filesB = f
+	}
+
+	// Get commit info for TXIDs
+	commitInfoA, _ := contentAResult["commit"].(Commit)
+	commitInfoB, _ := contentBResult["commit"].(Commit)
+
+	// Generate file-based diff
+	fileDiffs := generateFileDiffs(filesA, filesB)
+
+	// Generate summary
+	added, modified, removed := 0, 0, 0
+	for _, fd := range fileDiffs {
+		switch fd.Status {
+		case "added":
+			added++
+		case "modified":
+			modified++
+		case "removed":
+			removed++
+		}
+	}
+
+	summary := ""
+	if added+modified+removed == 0 {
+		summary = "No changes"
+	} else {
+		parts := []string{}
+		if modified > 0 {
+			parts = append(parts, fmt.Sprintf("%d modified", modified))
+		}
+		if added > 0 {
+			parts = append(parts, fmt.Sprintf("%d added", added))
+		}
+		if removed > 0 {
+			parts = append(parts, fmt.Sprintf("%d removed", removed))
+		}
+		summary = strings.Join(parts, ", ")
+	}
+
+	// Also provide legacy single-content diff for backward compatibility
+	// Concatenate all files for simple diff
+	var contentA, contentB string
+	for name, content := range filesA {
+		contentA += fmt.Sprintf("// === %s ===\n%s\n\n", name, content)
+	}
+	for name, content := range filesB {
+		contentB += fmt.Sprintf("// === %s ===\n%s\n\n", name, content)
+	}
+	legacyDiff := generateDiff(contentA, contentB)
 
 	return map[string]interface{}{
-		"success":  true,
-		"scid":     scid,
-		"commitA":  commitA,
-		"commitB":  commitB,
-		"diff":     diff,
-		"hasChanges": contentA != contentB,
+		"success":    true,
+		"scid":       scid,
+		"commitA":    commitA,
+		"commitB":    commitB,
+		"fromTxid":   commitInfoA.TXID,
+		"toTxid":     commitInfoB.TXID,
+		"fileDiffs":  fileDiffs,
+		"diff":       legacyDiff, // Legacy format for backward compatibility
+		"summary":    summary,
+		"hasChanges": added+modified+removed > 0,
+		"stats": map[string]int{
+			"added":    added,
+			"modified": modified,
+			"removed":  removed,
+		},
 	}
+}
+
+// generateFileDiffs compares two sets of files and generates per-file diffs
+func generateFileDiffs(filesA, filesB map[string]string) []FileDiff {
+	diffs := []FileDiff{}
+
+	// Track all filenames
+	allFiles := make(map[string]bool)
+	for name := range filesA {
+		allFiles[name] = true
+	}
+	for name := range filesB {
+		allFiles[name] = true
+	}
+
+	// Compare each file
+	for name := range allFiles {
+		contentA, existsA := filesA[name]
+		contentB, existsB := filesB[name]
+
+		var fd FileDiff
+		fd.FileName = name
+
+		if !existsA && existsB {
+			// File was added
+			fd.Status = "added"
+			fd.LineDiffs = generateDiff("", contentB)
+		} else if existsA && !existsB {
+			// File was removed
+			fd.Status = "removed"
+			fd.LineDiffs = generateDiff(contentA, "")
+		} else if contentA != contentB {
+			// File was modified
+			fd.Status = "modified"
+			fd.LineDiffs = generateDiff(contentA, contentB)
+		} else {
+			// File unchanged - skip
+			continue
+		}
+
+		diffs = append(diffs, fd)
+	}
+
+	return diffs
 }
 
 // generateDiff creates a simple line-by-line diff
