@@ -2239,6 +2239,17 @@
       gap: 6px;
     }
     
+    .wizard-skip-lan {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: var(--s-3);
+    }
+    
+    .wizard-skip-lan:hover {
+      color: var(--cyan-400);
+    }
+    
     /* Wizard EPOCH Info Step - Compact inline icon for card header */
     .wizard-epoch-icon {
       display: flex;

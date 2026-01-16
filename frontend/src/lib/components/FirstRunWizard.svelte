@@ -467,6 +467,10 @@
         <button on:click={startWithEmbedded} class="wizard-btn wizard-btn-primary">
             Start Node
           </button>
+        
+        <button on:click={chooseExternalNode} class="wizard-skip wizard-skip-lan">
+          <Zap size={14} /> Connect to LAN / External node instead
+        </button>
       
       {:else if step === 'external_config'}
         <!-- Status Bar -->
