@@ -2240,10 +2240,12 @@
     }
     
     .wizard-skip-lan {
-      display: inline-flex;
+      display: flex;
       align-items: center;
+      justify-content: center;
       gap: 6px;
       margin-top: var(--s-3);
+      width: 100%;
     }
     
     .wizard-skip-lan:hover {
