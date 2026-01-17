@@ -57,6 +57,53 @@ let addressInput = '';
   ];
   let activeTabId = 'discover';
   let tabIdCounter = 1;
+  let saveSessionTimer;
+  
+  function saveBrowserSession() {
+    appState.update(state => ({
+      ...state,
+      browserSession: {
+        tabs,
+        activeTabId,
+        tabIdCounter,
+        addressInput,
+        showWelcome,
+        selectedCategory,
+        selectedTag,
+        sortBy,
+        minRating,
+        showBlockedApps,
+        updatedAt: Date.now()
+      }
+    }));
+  }
+  
+  function scheduleBrowserSessionSave() {
+    clearTimeout(saveSessionTimer);
+    saveSessionTimer = setTimeout(() => {
+      saveBrowserSession();
+    }, 200);
+  }
+  
+  function restoreBrowserSession() {
+    const session = get(appState).browserSession;
+    if (!session || !session.tabs || session.tabs.length === 0) {
+      return false;
+    }
+    
+    tabs = session.tabs;
+    activeTabId = session.activeTabId || session.tabs[0].id;
+    tabIdCounter = session.tabIdCounter || session.tabs.length;
+    addressInput = session.addressInput || '';
+    showWelcome = typeof session.showWelcome === 'boolean' ? session.showWelcome : true;
+    selectedCategory = session.selectedCategory || 'top';
+    selectedTag = session.selectedTag || '';
+    sortBy = session.sortBy || 'rating';
+    minRating = typeof session.minRating === 'number' ? session.minRating : 0;
+    showBlockedApps = typeof session.showBlockedApps === 'boolean' ? session.showBlockedApps : false;
+    
+    return true;
+  }
   
   // Helper to get current tab
   function getCurrentTab() {
@@ -260,11 +307,45 @@ let addressInput = '';
     } finally {
       appsLoading = false;
       setAppDiscoveryState({ loading: false, loaded: appsLoaded });
+      if (appsLoaded) {
+        const currentIndexedHeight = get(appState).gnomonIndexedHeight || 0;
+        appState.update(state => ({
+          ...state,
+          appDiscoveryCache: {
+            apps,
+            availableTags,
+            blockedApps: Array.from(blockedApps),
+            warnedApps: Array.from(warnedApps.entries()),
+            contentFilterEnabled,
+            lastLoadedAt: Date.now(),
+            lastIndexedHeight: currentIndexedHeight
+          }
+        }));
+      }
     }
   }
   
   // Track last indexed height for reactive reload
   let lastIndexedHeight = 0;
+  
+  function restoreDiscoveryCache() {
+    const cache = get(appState).appDiscoveryCache;
+    if (!cache || !cache.apps || cache.apps.length === 0) {
+      return false;
+    }
+    
+    apps = cache.apps;
+    availableTags = cache.availableTags || [];
+    blockedApps = new Set(cache.blockedApps || []);
+    warnedApps = new Map(cache.warnedApps || []);
+    contentFilterEnabled = !!cache.contentFilterEnabled;
+    appsLoaded = true;
+    appsLoading = false;
+    lastIndexedHeight = cache.lastIndexedHeight || get(appState).gnomonIndexedHeight || 0;
+    applyFilters();
+    setAppDiscoveryState({ loading: false, loaded: true });
+    return true;
+  }
   
   // Reset appsLoaded when Gnomon stops (so it can reload when restarted)
   $: if (!$appState.gnomonRunning && appsLoaded) {
@@ -414,16 +495,19 @@ let addressInput = '';
   function handleCategoryChange(categoryId) {
     selectedCategory = categoryId;
     applyFilters();
+    scheduleBrowserSessionSave();
   }
   
   function handleTagChange(tag) {
     selectedTag = tag === selectedTag ? '' : tag; // Toggle tag
     applyFilters();
+    scheduleBrowserSessionSave();
   }
   
   function handleSortChange(event) {
     sortBy = event.target.value;
     applyFilters();
+    scheduleBrowserSessionSave();
   }
   
   function getRatingBadge(avg) {
@@ -497,6 +581,9 @@ let addressInput = '';
   }
   
   onMount(async () => {
+    restoreBrowserSession();
+    restoreDiscoveryCache();
+
     unsubscribePending = pendingNavigation.subscribe((nav) => {
       if (nav?.url && !hasNavigated) {
         hasNavigated = true;
@@ -773,8 +860,10 @@ let addressInput = '';
 
     // Try to restore last loaded TELA session for fast back-navigation
     await restoreTelaSession();
-    
-    loadApps();
+
+    if ($appState.gnomonRunning && !appsLoaded && !appsLoading) {
+      loadApps();
+    }
     
     return () => {
       window.removeEventListener('search-result', handleSearchResult);
@@ -788,6 +877,7 @@ let addressInput = '';
     if (unsubscribeConsole) unsubscribeConsole();
     if (unsubscribeWalletRequests) unsubscribeWalletRequests();
     EventsOff('localdev:reload');
+    saveBrowserSession();
   });
   
   // ========== LOCAL DEV MODE HELPERS ==========
@@ -1011,6 +1101,7 @@ let addressInput = '';
     // Update active tab with display name
     const displayName = isDURL ? cleanInput : cleanInput.substring(0, 16) + '...';
     updateActiveTab(displayName, cleanInput, 'box');
+    scheduleBrowserSessionSave();
     
     try {
       const navResult = await Navigate(backendInput);
@@ -1689,6 +1780,7 @@ let addressInput = '';
     addressInput = '';
     // Update current tab to show it's at home
     updateActiveTab('Discover Apps', '', 'home');
+    scheduleBrowserSessionSave();
     if (contentFrame) {
       try {
         contentFrame.removeAttribute('src');
@@ -1722,6 +1814,7 @@ let addressInput = '';
     };
     tabs = [...tabs, newTab];
     activeTabId = newTab.id;
+    scheduleBrowserSessionSave();
     
     if (url) {
       addressInput = url;
@@ -1757,6 +1850,7 @@ let addressInput = '';
         navigate(true);
       }
     }
+    scheduleBrowserSessionSave();
   }
   
   function switchTab(tabId) {
@@ -1773,6 +1867,7 @@ let addressInput = '';
         navigate(true);
       }
     }
+    scheduleBrowserSessionSave();
   }
   
   function updateActiveTab(title, url, icon) {
@@ -1781,6 +1876,7 @@ let addressInput = '';
         ? { ...t, title: title || t.title, url: url || t.url, icon: icon || t.icon }
         : t
     );
+    scheduleBrowserSessionSave();
   }
   
   function handleKeydown(event) {

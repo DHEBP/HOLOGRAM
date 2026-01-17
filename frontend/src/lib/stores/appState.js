@@ -199,6 +199,13 @@ export const appState = writable({
   gnomonIndexedHeight: 0,
   gnomonChainHeight: 0,
   telaSession: null,
+  browserSession: null,
+  appDiscoveryCache: {
+    apps: [],
+    availableTags: [],
+    lastLoadedAt: 0,
+    lastIndexedHeight: 0,
+  },
   appDiscoveryLoading: false,
   appDiscoveryLoaded: false,
   chainHeight: 0,
