@@ -236,6 +236,8 @@ func (a *App) StartGnomon() map[string]interface{} {
 		network = net
 	}
 
+	a.logToConsole(fmt.Sprintf("[Gnomon] Connecting to daemon: %s (network: %s)", endpoint, network))
+
 	err := a.gnomonClient.Start(endpoint, network)
 	if err != nil {
 		a.logToConsole(fmt.Sprintf("[ERR] Gnomon start failed: %v", err))
@@ -245,9 +247,57 @@ func (a *App) StartGnomon() map[string]interface{} {
 	a.logToConsole("[OK] Gnomon indexer started successfully")
 	a.settings["gnomon_enabled"] = true
 
+	// Start a connection monitor goroutine to provide feedback
+	go a.monitorGnomonConnection(endpoint)
+
 	return map[string]interface{}{
 		"success": true,
 		"message": "Gnomon indexer started",
+	}
+}
+
+// monitorGnomonConnection provides user feedback when Gnomon is stuck connecting
+func (a *App) monitorGnomonConnection(endpoint string) {
+	connectionWarned := false
+	connectedLogged := false
+	checkInterval := 5 * time.Second
+	warningThreshold := 15 * time.Second
+	startTime := time.Now()
+
+	for {
+		time.Sleep(checkInterval)
+
+		// Check if Gnomon is still running
+		if !a.gnomonClient.IsRunning() {
+			return // Gnomon was stopped, exit monitor
+		}
+
+		status := a.gnomonClient.GetStatus()
+		chainHeight, _ := status["chain_height"].(int64)
+		connecting, _ := status["connecting"].(bool)
+
+		if connecting || chainHeight == 0 {
+			elapsed := time.Since(startTime)
+			if elapsed > warningThreshold && !connectionWarned {
+				a.logToConsole(fmt.Sprintf("[Gnomon] Still connecting to %s... (waiting %.0fs)", endpoint, elapsed.Seconds()))
+				connectionWarned = true
+			}
+		} else {
+			// Connected! Log once and exit monitor
+			if !connectedLogged {
+				a.logToConsole(fmt.Sprintf("[Gnomon] Connected to daemon, chain height: %d", chainHeight))
+				connectedLogged = true
+			}
+			return // Successfully connected, exit monitor
+		}
+
+		// Safety timeout - stop monitoring after 5 minutes
+		if time.Since(startTime) > 5*time.Minute {
+			if !connectedLogged {
+				a.logToConsole("[Gnomon] Connection monitor timeout - check if daemon endpoint is correct")
+			}
+			return
+		}
 	}
 }
 

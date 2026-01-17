@@ -53,6 +53,11 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 		return fmt.Errorf("gnomon already running")
 	}
 
+	// Strip http:// or https:// prefix - Gnomon's indexer.Connect() adds "ws://" internally
+	// So we need to pass just "host:port" to avoid "ws://http://host:port/ws"
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+	endpoint = strings.TrimPrefix(endpoint, "https://")
+
 	// Determine data path based on network
 	// Use UserHomeDir instead of Getwd for packaged macOS apps
 	homeDir, err := os.UserHomeDir()
@@ -202,6 +207,7 @@ func (g *GnomonClient) GetStatus() map[string]interface{} {
 	if !g.IsRunning() {
 		return map[string]interface{}{
 			"running":        false,
+			"connecting":     false,
 			"indexed_height": 0,
 			"chain_height":   0,
 			"progress":       0.0,
@@ -211,6 +217,10 @@ func (g *GnomonClient) GetStatus() map[string]interface{} {
 	indexed := g.Indexer.LastIndexedHeight
 	chain := g.Indexer.ChainHeight
 
+	// If chain height is 0, Gnomon is still trying to connect to the daemon
+	// This happens when the connection loop in StartDaemonMode is retrying
+	connecting := chain == 0
+
 	progress := 0.0
 	if chain > 0 {
 		progress = (float64(indexed) / float64(chain)) * 100.0
@@ -218,6 +228,7 @@ func (g *GnomonClient) GetStatus() map[string]interface{} {
 
 	return map[string]interface{}{
 		"running":        true,
+		"connecting":     connecting,
 		"indexed_height": indexed,
 		"chain_height":   chain,
 		"progress":       progress,
