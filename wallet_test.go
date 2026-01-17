@@ -534,9 +534,10 @@ func TestAddToRecentWallets_NoDuplicates(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	originalWd, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(originalWd)
+	// Override the data directory for this test
+	originalOverride := testDataDirOverride
+	testDataDirOverride = tempDir
+	defer func() { testDataDirOverride = originalOverride }()
 
 	// Reset wallet manager
 	walletManager.Lock()
@@ -573,9 +574,10 @@ func TestAddToRecentWallets_Max5(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	originalWd, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(originalWd)
+	// Override the data directory for this test
+	originalOverride := testDataDirOverride
+	testDataDirOverride = tempDir
+	defer func() { testDataDirOverride = originalOverride }()
 
 	// Reset
 	walletManager.Lock()
@@ -603,14 +605,12 @@ func TestLoadSaveRecentWallets_Roundtrip(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	originalWd, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(originalWd)
+	// Override the data directory for this test
+	originalOverride := testDataDirOverride
+	testDataDirOverride = tempDir
+	defer func() { testDataDirOverride = originalOverride }()
 
-	// Create settings directory
-	os.MkdirAll(filepath.Join(".", "datashards", "settings"), 0700)
-
-	// Save some wallets
+	// Save some wallets (saveRecentWallets creates directories as needed)
 	testWallets := []string{"/path/a.db", "/path/b.db"}
 	saveRecentWallets(testWallets)
 
@@ -633,9 +633,10 @@ func TestLoadRecentWallets_NoFile(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	originalWd, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(originalWd)
+	// Override the data directory for this test
+	originalOverride := testDataDirOverride
+	testDataDirOverride = tempDir
+	defer func() { testDataDirOverride = originalOverride }()
 
 	// No settings file exists
 	loaded := loadRecentWallets()
@@ -652,12 +653,13 @@ func TestLoadRecentWallets_InvalidJSON(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	originalWd, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(originalWd)
+	// Override the data directory for this test
+	originalOverride := testDataDirOverride
+	testDataDirOverride = tempDir
+	defer func() { testDataDirOverride = originalOverride }()
 
-	// Create invalid JSON file
-	settingsDir := filepath.Join(".", "datashards", "settings")
+	// Create invalid JSON file in the test data directory
+	settingsDir := filepath.Join(tempDir, "datashards", "settings")
 	os.MkdirAll(settingsDir, 0700)
 	os.WriteFile(filepath.Join(settingsDir, "recent_wallets.json"), []byte("invalid json"), 0600)
 
