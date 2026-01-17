@@ -4,6 +4,7 @@ import (
     "fmt"
     "os"
     "path/filepath"
+    "strings"
 
     "github.com/deroproject/graviton"
 )
@@ -28,8 +29,7 @@ type GravitonCache struct {
 // NewGravitonCache initializes a disk-backed graviton store under datashards/cache.
 func NewGravitonCache() *GravitonCache {
     // Determine cache path alongside other datashards
-    wd, _ := os.Getwd()
-    cachePath := filepath.Join(wd, "datashards", "tela_cache")
+	cachePath := filepath.Join(getDatashardsDir(), "tela_cache")
     _ = os.MkdirAll(cachePath, 0755)
 
     // Initialize disk store
@@ -53,13 +53,11 @@ func (c *GravitonCache) GetHTML(scid string) (string, bool) {
     ss, err := c.store.LoadSnapshot(0); if err != nil { return "", false }
     tree, _ := ss.GetTree(c.tree); if tree == nil { return "", false }
     v, _ := tree.Get([]byte(scid)); if v == nil { return "", false }
-    // Attempt to parse versioned payload first: [8 bytes little-endian version][raw html]
-    if len(v) >= 8 {
-        // best-effort decode
-        // We stored JSON below; for backward compat, return as-is when JSON
-        return string(v), true
+    s := string(v)
+    if html, ok := extractHTMLFromPayload(s); ok {
+        return html, true
     }
-    return string(v), true
+    return s, true
 }
 
 // PutHTMLVersion stores an entry tagged by a version (e.g., latest interaction height)
@@ -227,6 +225,51 @@ func (c *GravitonCache) GetHTMLIfVersion(scid string, version int64) (string, bo
     return "", false
 }
 
+// PutDURLMapping stores a normalized dURL -> SCID mapping for fast resolution.
+func (c *GravitonCache) PutDURLMapping(durl string, scid string) error {
+    if c.store == nil {
+        return fmt.Errorf("cache store not initialized")
+    }
+    durl = normalizeDURL(durl)
+    if durl == "" || scid == "" {
+        return nil
+    }
+    ss, err := c.store.LoadSnapshot(0)
+    if err != nil {
+        return err
+    }
+    tree, _ := ss.GetTree("durl_cache")
+    if err := tree.Put([]byte(durl), []byte(scid)); err != nil {
+        return err
+    }
+    _, err = graviton.Commit(tree)
+    return err
+}
+
+// GetDURLMapping loads a normalized dURL -> SCID mapping.
+func (c *GravitonCache) GetDURLMapping(durl string) (string, bool) {
+    if c.store == nil {
+        return "", false
+    }
+    durl = normalizeDURL(durl)
+    if durl == "" {
+        return "", false
+    }
+    ss, err := c.store.LoadSnapshot(0)
+    if err != nil {
+        return "", false
+    }
+    tree, _ := ss.GetTree("durl_cache")
+    if tree == nil {
+        return "", false
+    }
+    v, _ := tree.Get([]byte(durl))
+    if v == nil {
+        return "", false
+    }
+    return string(v), true
+}
+
 // indexOf returns the first index of substr in s or -1
 func indexOf(s, substr string) int {
     // naive search to avoid importing strings again (already used elsewhere but keep local helpers)
@@ -257,6 +300,56 @@ func unescapeJSON(s string) string {
         }
     }
     return string(out)
+}
+
+func extractHTMLFromPayload(payload string) (string, bool) {
+    if idx := indexOf(payload, "\"h\":"); idx >= 0 {
+        i := idx + 5
+        for i < len(payload) && payload[i] != '"' { i++ }
+        if i < len(payload) && payload[i] == '"' {
+            i++
+            j := i
+            esc := false
+            for j < len(payload) {
+                if payload[j] == '"' && !esc { break }
+                if payload[j] == '\\' && !esc { esc = true } else { esc = false }
+                j++
+            }
+            if j <= len(payload) {
+                raw := payload[i:j]
+                raw = unescapeJSON(raw)
+                return raw, true
+            }
+        }
+    }
+    return "", false
+}
+
+func normalizeDURL(durl string) string {
+    durl = strings.ToLower(strings.TrimSpace(durl))
+    if strings.HasPrefix(durl, "dero://") {
+        durl = durl[7:]
+    }
+    return durl
+}
+
+func (a *App) cacheDURLMapping(durl string, scid string) {
+    if a == nil || a.cache == nil {
+        return
+    }
+    if gc, ok := a.cache.(*GravitonCache); ok {
+        _ = gc.PutDURLMapping(durl, scid)
+    }
+}
+
+func (a *App) getCachedDURLMapping(durl string) (string, bool) {
+    if a == nil || a.cache == nil {
+        return "", false
+    }
+    if gc, ok := a.cache.(*GravitonCache); ok {
+        return gc.GetDURLMapping(durl)
+    }
+    return "", false
 }
 
 // ---------------- Inverted Index Persistence (ftindex) -----------------

@@ -114,8 +114,7 @@ type OfflineCache struct {
 
 // NewOfflineCache creates a new offline cache service
 func NewOfflineCache(logFn func(string)) (*OfflineCache, error) {
-	wd, _ := os.Getwd()
-	cachePath := filepath.Join(wd, "datashards", "offline_cache")
+	cachePath := filepath.Join(getDatashardsDir(), "offline_cache")
 	_ = os.MkdirAll(cachePath, 0755)
 
 	store, err := graviton.NewDiskStore(cachePath)

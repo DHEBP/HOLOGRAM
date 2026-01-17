@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride } from '../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
@@ -42,6 +42,7 @@ let addressInput = '';
   let suggestions = [];
   let showSuggestions = false;
   let contentFrame;
+  let telaServerFallback = null;
   let selectedIndex = -1;
   let debounceTimer;
   let unsubscribePending;
@@ -495,7 +496,7 @@ let addressInput = '';
     return favList.some(f => f.scid === app.scid || (f.durl && f.durl === app.durl));
   }
   
-  onMount(() => {
+  onMount(async () => {
     unsubscribePending = pendingNavigation.subscribe((nav) => {
       if (nav?.url && !hasNavigated) {
         hasNavigated = true;
@@ -769,6 +770,9 @@ let addressInput = '';
     
     // Hot reload listener for local dev mode
     EventsOn('localdev:reload', handleLocalDevReload);
+
+    // Try to restore last loaded TELA session for fast back-navigation
+    await restoreTelaSession();
     
     loadApps();
     
@@ -784,15 +788,6 @@ let addressInput = '';
     if (unsubscribeConsole) unsubscribeConsole();
     if (unsubscribeWalletRequests) unsubscribeWalletRequests();
     EventsOff('localdev:reload');
-    
-    // Cleanup active TELA server
-    if (activeTelaServer) {
-      try {
-        await ShutdownServer(activeTelaServer);
-      } catch (e) {
-        // Server cleanup error (non-critical)
-      }
-    }
   });
   
   // ========== LOCAL DEV MODE HELPERS ==========
@@ -1131,39 +1126,86 @@ let addressInput = '';
     }
   }
   
-  // Track active TELA server for cleanup
+  // Track active TELA server for reuse between route switches
   let activeTelaServer = null;
+  let activeTelaScid = null;
+  let activeTelaUrl = null;
+
+  async function restoreTelaSession() {
+    const session = get(appState).telaSession;
+    if (!session || !session.serverName || !session.serverUrl || !session.scid) {
+      return false;
+    }
+
+    try {
+      const servers = await ListActiveServers();
+      const active = servers?.servers?.find((s) => s.name === session.serverName);
+      if (!active) {
+        return false;
+      }
+
+      activeTelaServer = session.serverName;
+      activeTelaScid = session.scid;
+      activeTelaUrl = session.serverUrl;
+      addressInput = session.durl || session.scid;
+
+      updateActiveTab(session.title || 'App', addressInput, 'box');
+      addConsoleLog(`[Server] Reusing active TELA server: ${session.serverUrl}`);
+
+      if (contentFrame) {
+        contentFrame.removeAttribute('srcdoc');
+        contentFrame.src = `${session.serverUrl}?_t=${Date.now()}`;
+        showWelcome = false;
+        loading = false;
+      }
+
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
   
-  async function handleFetchResult(result, scid) {
-    if (result.success && result.content) {
-      currentMeta = result.meta || {};
-      currentMeta.scid = scid;
-      addConsoleLog(`Content loaded (${result.content.length} bytes)`);
+  async function startTelaServer(scid, background = false) {
+    try {
+      // Shutdown previous server if any (only if switching to a different SCID)
+      if (activeTelaServer && activeTelaScid && activeTelaScid !== scid) {
+        await ShutdownServer(activeTelaServer);
+        activeTelaServer = null;
+        activeTelaScid = null;
+        activeTelaUrl = null;
+      }
       
-      // Try HTTP server approach first (enables real XSWD connection)
+      // Ensure XSWD server is running for wallet connections
       try {
-        // Shutdown previous server if any
-        if (activeTelaServer) {
-          await ShutdownServer(activeTelaServer);
-          activeTelaServer = null;
+        const xswdResult = await ConnectXSWD();
+        if (xswdResult.success) {
+          addConsoleLog('[XSWD] Server ready');
         }
-        
-        // Ensure XSWD server is running for wallet connections
-        try {
-          const xswdResult = await ConnectXSWD();
-          if (xswdResult.success) {
-            addConsoleLog('[XSWD] Server ready');
-          }
-        } catch (e) {
-          addConsoleLog(`[Warn] XSWD: ${e.message}`);
-        }
-        
-        // Start real HTTP server for this TELA content
-        const serverResult = await ServeTELAContent(scid);
-        
+      } catch (e) {
+        addConsoleLog(`[Warn] XSWD: ${e.message}`);
+      }
+      
+      // Start real HTTP server for this TELA content
+      const serverResult = await ServeTELAContent(scid);
+      
       if (serverResult.success && serverResult.url) {
         addConsoleLog(`[Server] TELA server started: ${serverResult.url}`);
         activeTelaServer = serverResult.name;
+        activeTelaScid = scid;
+        activeTelaUrl = serverResult.url;
+        telaServerFallback = null;
+
+        appState.update(state => ({
+          ...state,
+          telaSession: {
+            scid,
+            serverName: serverResult.name,
+            serverUrl: serverResult.url,
+            durl: currentMeta?.durl || '',
+            title: currentMeta?.name || currentMeta?.title || scid.slice(0, 12),
+            updatedAt: Date.now()
+          }
+        }));
         
         // Load iframe from real HTTP URL
         if (contentFrame) {
@@ -1177,12 +1219,44 @@ let addressInput = '';
           contentFrame.src = cacheBustedUrl;
           showWelcome = false;
         }
-        return;
-      } else {
-          addConsoleLog(`[Warn] HTTP server failed, falling back to srcdoc: ${serverResult.error || 'Unknown'}`);
-        }
-      } catch (e) {
+        return true;
+      }
+
+      if (!background) {
+        const errorMsg = serverResult.error || 'Unknown';
+        telaServerFallback = { scid, error: errorMsg };
+        addConsoleLog(`[Warn] HTTP server failed, falling back to srcdoc: ${errorMsg}`);
+        appState.update(state => ({ ...state, telaSession: null }));
+      }
+      return false;
+    } catch (e) {
+      if (!background) {
+        telaServerFallback = { scid, error: e.message };
         addConsoleLog(`[Warn] HTTP server error, falling back to srcdoc: ${e.message}`);
+        appState.update(state => ({ ...state, telaSession: null }));
+      }
+      return false;
+    }
+  }
+
+  async function handleFetchResult(result, scid) {
+    if (result.success && result.content) {
+      telaServerFallback = null;
+      currentMeta = result.meta || {};
+      currentMeta.scid = scid;
+      addConsoleLog(`Content loaded (${result.content.length} bytes)`);
+
+      if (currentMeta?.stale) {
+        addConsoleLog('[FAST] Rendering cached content while refreshing...');
+        renderContent(result.content);
+        showWelcome = false;
+        startTelaServer(scid, true);
+        return;
+      }
+      
+      const started = await startTelaServer(scid, false);
+      if (started) {
+        return;
       }
       
       // Fallback to srcdoc (with bridge injection)
@@ -1909,6 +1983,23 @@ let addressInput = '';
         </svg>
       </button>
   </div>
+  
+  {#if telaServerFallback}
+    <div class="alert alert-warning" style="margin: var(--s-4) var(--s-5) 0;">
+      <div class="alert-icon">
+        <Icons name="alert-triangle" size={16} />
+      </div>
+      <div class="alert-content">
+        <div class="alert-title">TELA server fallback active</div>
+        <div class="alert-text">
+          Running in srcdoc mode. Wallet connections and app scripts may be limited.
+          {#if telaServerFallback.error}
+            Error: {telaServerFallback.error}
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
   
   <!-- Content Area -->
   <div class="browser-content-area" tabindex="-1">

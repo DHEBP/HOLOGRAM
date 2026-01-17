@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/civilware/tela"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -100,6 +101,34 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.logToConsole("[START] TELA Browser starting up...")
 
+	// Ensure datashards are writable before any TELA operations
+	// CRITICAL: This MUST succeed or TELA apps will fail with "read-only file system" errors
+	dataDir := getHologramDataDir()
+	a.logToConsole(fmt.Sprintf("[INIT] Setting TELA datashards path to: %s", dataDir))
+
+	// IMPORTANT:
+	// `tela` caches its shard path at package init (tela.path.main = shards.GetPath()).
+	// Calling `shards.SetPath()` later does NOT update tela's internal path.
+	// We must use `tela.SetShardPath()` so both shards + tela are updated.
+	err := tela.SetShardPath(dataDir)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] TELA datashards path not writable: %v", err))
+		a.logToConsole("[ERR] TELA apps will NOT work correctly - datashards directory cannot be created")
+		// Try to create the directory manually as a fallback
+		if mkErr := os.MkdirAll(filepath.Join(dataDir, "datashards"), 0755); mkErr != nil {
+			a.logToConsole(fmt.Sprintf("[ERR] Manual datashards creation also failed: %v", mkErr))
+		} else {
+			// Retry after manual creation
+			if err = tela.SetShardPath(dataDir); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] SetShardPath still failed after manual creation: %v", err))
+			} else {
+				a.logToConsole(fmt.Sprintf("[OK] TELA datashards path set (after retry): %s", filepath.Join(dataDir, "datashards")))
+			}
+		}
+	} else {
+		a.logToConsole(fmt.Sprintf("[OK] TELA datashards path: %s", filepath.Join(dataDir, "datashards")))
+	}
+
 	// Initialize XSWD permission manager
 	if gc, ok := a.cache.(*GravitonCache); ok {
 		InitPermissionManager(gc)
@@ -107,7 +136,6 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// Initialize Phase 5 Services
-	var err error
 	a.offlineCache, err = NewOfflineCache(a.logToConsole)
 	if err != nil {
 		a.logToConsole(fmt.Sprintf("[WARN] Offline cache initialization failed: %v", err))
@@ -124,8 +152,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// NRS Cache
-	wd, _ := os.Getwd()
-	a.nrsCache = NewNRSCache(filepath.Join(wd, "datashards", "nrs_cache"))
+	a.nrsCache = NewNRSCache(filepath.Join(getDatashardsDir(), "nrs_cache"))
 	a.nrsCache.SetApp(a)
 	a.logToConsole("[NRS] NRS cache initialized")
 
@@ -520,6 +547,21 @@ func (a *App) FetchSCID(scid string) map[string]interface{} {
 		}
 	}
 
+	// Fallback: serve last cached content even if version is unknown/mismatched
+	if a.cache != nil {
+		if html, ok := a.cache.GetHTML(scid); ok && html != "" {
+			a.logToConsole("[FAST] Cache hit (unverified): serving last cached content")
+			ch := computeContentHash(html)
+			return map[string]interface{}{
+				"success": true,
+				"scid":    scid,
+				"content": html,
+				"meta":    map[string]interface{}{"cache": true, "stale": true, "version": version, "hash": ch},
+				"message": "Content served from cache (unverified)",
+			}
+		}
+	}
+
 	content, err := a.FetchTELAContent(scid)
 	if err != nil {
 		a.logToConsole(fmt.Sprintf("[ERR] Fetch failed: %v", err))
@@ -547,6 +589,7 @@ func (a *App) FetchSCID(scid string) map[string]interface{} {
 			if err := a.cache.PutHTMLVersionHashWithDURL(scid, durl, version, ch, content.HTML); err != nil {
 				a.logToConsole(fmt.Sprintf("[WARN]  Cache write (with dURL) failed: %v", err))
 			}
+			a.cacheDURLMapping(durl, scid)
 		} else if err := a.cache.PutHTMLVersionHash(scid, version, ch, content.HTML); err != nil {
 			a.logToConsole(fmt.Sprintf("[WARN]  Cache write failed: %v", err))
 		}
@@ -569,15 +612,35 @@ func (a *App) FetchSCID(scid string) map[string]interface{} {
 // FetchByDURL resolves a dURL → SCID and serves from cache
 func (a *App) FetchByDURL(durl string) map[string]interface{} {
 	name := durl
-	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Gnomon not running",
+	cachedSCID, cached := a.getCachedDURLMapping(name)
+	scid := ""
+
+	// Fast path: serve cached HTML immediately when we have a cached mapping
+	if cached && a.cache != nil {
+		if html, ok := a.cache.GetHTML(cachedSCID); ok && html != "" {
+			ch := computeContentHash(html)
+			return map[string]interface{}{
+				"success": true,
+				"scid":    cachedSCID,
+				"content": html,
+				"meta": map[string]interface{}{
+					"cache":      true,
+					"stale":      true,
+					"hash":       ch,
+					"durl":       name,
+					"durl_cache": true,
+				},
+				"message": "Content served from cache (unverified)",
+			}
 		}
 	}
-	scid, ok := a.gnomonClient.ResolveDURL(name)
-	if !ok {
-		if sc, ok2 := a.gnomonClient.ResolveName(name); ok2 {
+
+	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
+		if cached {
+			scid = cachedSCID
+		} else if sc, ok := a.gnomonClient.ResolveDURL(name); ok {
+			scid = sc
+		} else if sc, ok2 := a.gnomonClient.ResolveName(name); ok2 {
 			scid = sc
 		} else {
 			return map[string]interface{}{
@@ -585,9 +648,23 @@ func (a *App) FetchByDURL(durl string) map[string]interface{} {
 				"error":   "dURL not found",
 			}
 		}
+	} else if cached {
+		scid = cachedSCID
+	} else {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Gnomon not running",
+		}
 	}
 
-	var version int64 = a.gnomonClient.LatestInteractionHeight(scid)
+	if scid != "" {
+		a.cacheDURLMapping(name, scid)
+	}
+
+	var version int64 = 0
+	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
+		version = a.gnomonClient.LatestInteractionHeight(scid)
+	}
 	if a.cache != nil {
 		if html, ok := a.cache.GetHTMLIfVersionByDURL(name, version); ok && html != "" {
 			ch := computeContentHash(html)
@@ -605,6 +682,9 @@ func (a *App) FetchByDURL(durl string) map[string]interface{} {
 	if res != nil && res["success"] == true {
 		if meta, ok := res["meta"].(map[string]interface{}); ok {
 			meta["durl"] = name
+			if cached {
+				meta["durl_cache"] = true
+			}
 		}
 	}
 	return res

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -798,10 +800,16 @@ func (a *App) ServeTELAContent(scid string) map[string]interface{} {
 	// Start server using tela library
 	telaLink, err := tela.ServeTELA(scid, endpoint)
 	if err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] Failed to start server: %v", err))
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Failed to start server: %v", err),
+		// Retry once if a stale clone already exists
+		if cleanupTelaCloneFromError(err, a.logToConsole) {
+			telaLink, err = tela.ServeTELA(scid, endpoint)
+		}
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[ERR] Failed to start server: %v", err))
+			return map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("Failed to start server: %v", err),
+			}
 		}
 	}
 
@@ -849,6 +857,48 @@ func (a *App) ServeTELAContent(scid string) map[string]interface{} {
 		"url":     proxyURL, // Return proxy URL
 		"message": "TELA server started with CSP header removal",
 	}
+}
+
+func cleanupTelaCloneFromError(err error, logFn func(string)) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "already exists") {
+		return false
+	}
+
+	const filePrefix = "file "
+	idx := strings.Index(msg, filePrefix)
+	if idx < 0 {
+		return false
+	}
+	rest := msg[idx+len(filePrefix):]
+	end := strings.Index(rest, " already exists")
+	if end < 0 {
+		return false
+	}
+	filePath := strings.TrimSpace(rest[:end])
+	if filePath == "" {
+		return false
+	}
+
+	dir := filepath.Dir(filePath)
+	if !strings.Contains(dir, string(filepath.Separator)+"datashards"+string(filepath.Separator)+"tela"+string(filepath.Separator)) {
+		return false
+	}
+
+	if rmErr := os.RemoveAll(dir); rmErr != nil {
+		if logFn != nil {
+			logFn(fmt.Sprintf("[WARN] Failed to remove stale TELA clone: %v", rmErr))
+		}
+		return false
+	}
+
+	if logFn != nil {
+		logFn(fmt.Sprintf("[OK] Removed stale TELA clone: %s", dir))
+	}
+	return true
 }
 
 // GetServerPortRange returns the current port range for TELA servers

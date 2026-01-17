@@ -774,7 +774,7 @@ func (a *App) CreateWallet(filePath, password string) map[string]interface{} {
 		// Clean the name - remove any .db extension if user added it
 		name := strings.TrimSuffix(filePath, ".db")
 		// Construct path in wallets directory
-		filePath = filepath.Join(".", "datashards", "wallets", name+".db")
+		filePath = filepath.Join(getDatashardsDir(), "wallets", name+".db")
 	}
 
 	a.logToConsole(fmt.Sprintf("[WALLET] Creating new wallet: %s", filePath))
@@ -830,7 +830,7 @@ func (a *App) RestoreWallet(filePath, password, seed string) map[string]interfac
 		// Clean the name - remove any .db extension if user added it
 		name := strings.TrimSuffix(filePath, ".db")
 		// Construct path in wallets directory
-		filePath = filepath.Join(".", "datashards", "wallets", name+".db")
+		filePath = filepath.Join(getDatashardsDir(), "wallets", name+".db")
 	}
 
 	a.logToConsole("[WALLET] Restoring wallet from seed...")
@@ -911,7 +911,7 @@ func addToRecentWallets(path string) {
 }
 
 func saveRecentWallets(wallets []string) {
-	configDir := filepath.Join(".", "datashards", "settings")
+	configDir := filepath.Join(getDatashardsDir(), "settings")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		log.Printf("Failed to create settings directory: %v", err)
 		return
@@ -929,7 +929,7 @@ func saveRecentWallets(wallets []string) {
 }
 
 func loadRecentWallets() []string {
-	configFile := filepath.Join(".", "datashards", "settings", "recent_wallets.json")
+	configFile := filepath.Join(getDatashardsDir(), "settings", "recent_wallets.json")
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return []string{}
@@ -1503,7 +1503,7 @@ func addToRecentWalletsWithInfo(path, address string) {
 }
 
 func loadRecentWalletsData() []recentWalletData {
-	configFile := filepath.Join(".", "datashards", "settings", "recent_wallets_info.json")
+	configFile := filepath.Join(getDatashardsDir(), "settings", "recent_wallets_info.json")
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		// Try to migrate from old format
@@ -1531,7 +1531,7 @@ func loadRecentWalletsData() []recentWalletData {
 }
 
 func saveRecentWalletsData(wallets []recentWalletData) {
-	configDir := filepath.Join(".", "datashards", "settings")
+	configDir := filepath.Join(getDatashardsDir(), "settings")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		log.Printf("Failed to create settings directory: %v", err)
 		return
@@ -1874,7 +1874,7 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 
 // Helper functions for tracked tokens storage
 func loadTrackedTokens() []TrackedToken {
-	configFile := filepath.Join(".", "datashards", "settings", "tracked_tokens.json")
+	configFile := filepath.Join(getDatashardsDir(), "settings", "tracked_tokens.json")
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return []TrackedToken{}
@@ -1889,7 +1889,7 @@ func loadTrackedTokens() []TrackedToken {
 }
 
 func saveTrackedTokens(tokens []TrackedToken) {
-	configDir := filepath.Join(".", "datashards", "settings")
+	configDir := filepath.Join(getDatashardsDir(), "settings")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		log.Printf("Failed to create settings directory: %v", err)
 		return
@@ -2045,7 +2045,7 @@ func (a *App) DeleteContact(id string) map[string]interface{} {
 
 // Helper functions for address book storage
 func loadAddressBook() []AddressBookEntry {
-	configFile := filepath.Join(".", "datashards", "settings", "address_book.json")
+	configFile := filepath.Join(getDatashardsDir(), "settings", "address_book.json")
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return []AddressBookEntry{}
@@ -2060,7 +2060,7 @@ func loadAddressBook() []AddressBookEntry {
 }
 
 func saveAddressBook(contacts []AddressBookEntry) {
-	configDir := filepath.Join(".", "datashards", "settings")
+	configDir := filepath.Join(getDatashardsDir(), "settings")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		log.Printf("Failed to create settings directory: %v", err)
 		return
@@ -2255,7 +2255,7 @@ func (a *App) DeleteTransactionLabel(txid string) map[string]interface{} {
 
 // Helper functions for transaction labels storage
 func loadTransactionLabels() []TransactionLabel {
-	configFile := filepath.Join(".", "datashards", "settings", "transaction_labels.json")
+	configFile := filepath.Join(getDatashardsDir(), "settings", "transaction_labels.json")
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return []TransactionLabel{}
@@ -2270,7 +2270,7 @@ func loadTransactionLabels() []TransactionLabel {
 }
 
 func saveTransactionLabels(labels []TransactionLabel) {
-	configDir := filepath.Join(".", "datashards", "settings")
+	configDir := filepath.Join(getDatashardsDir(), "settings")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		log.Printf("Failed to create settings directory: %v", err)
 		return
