@@ -669,7 +669,20 @@ let addressInput = '';
       // Only handle messages from our iframe
       if (!contentFrame || event.source !== contentFrame.contentWindow) {
         if (event.data && event.data.type === 'xswd-request') {
-          addConsoleLog(`[Warn] Message from unexpected source`);
+          // Identify the source for debugging
+          let sourceInfo = 'unknown';
+          if (event.source === window) {
+            sourceInfo = 'main window (self)';
+          } else if (event.source === window.parent) {
+            sourceInfo = 'parent window';
+          } else if (event.source === window.top) {
+            sourceInfo = 'top window';
+          } else if (!contentFrame) {
+            sourceInfo = 'no iframe loaded yet';
+          } else {
+            sourceInfo = `other window (origin: ${event.origin || 'null'})`;
+          }
+          addConsoleLog(`[Warn] Message from unexpected source: ${sourceInfo}`);
         }
         return;
       }
