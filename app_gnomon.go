@@ -619,6 +619,10 @@ func (a *App) GetDiscoveredApps() map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[Gnomon] Found %d TELA apps (%d with EPOCH support)", len(apps), epochCount))
 
+	// Mark apps as loaded - this signals to the frontend that the expensive
+	// GetDiscoveredApps operation has completed at least once
+	a.gnomonClient.SetAppsLoaded(true)
+
 	return map[string]interface{}{
 		"success": true,
 		"apps":    apps,

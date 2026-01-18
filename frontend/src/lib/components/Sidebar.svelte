@@ -691,23 +691,30 @@
         {/if}
         
         <!-- GNOMON Progress Row (Bar Only) -->
+        <!-- States:
+             - syncing: gnomonProgress < 100 (cyan shimmer)
+             - loading-apps: gnomonProgress >= 100 but apps not loaded yet (green shimmer+pulse)
+             - synced: gnomonProgress >= 100 AND apps loaded (solid green)
+             - offline: gnomon not running (dim red) -->
         <button
           class="gnomon-row"
-          class:gnomon-synced={$appState.gnomonRunning && $combinedSyncProgress >= 100}
-          class:gnomon-syncing={$appState.gnomonRunning && $combinedSyncProgress < 100}
+          class:gnomon-synced={$appState.gnomonRunning && $appState.gnomonProgress >= 100 && $appState.gnomonAppsLoaded}
+          class:gnomon-loading-apps={$appState.gnomonRunning && $appState.gnomonProgress >= 100 && !$appState.gnomonAppsLoaded}
+          class:gnomon-syncing={$appState.gnomonRunning && $appState.gnomonProgress < 100}
           class:gnomon-offline={!$appState.gnomonRunning}
           on:click|stopPropagation={(e) => handleStatusClick('gnomon', e)}
-          title={$appState.gnomonRunning ? ($combinedSyncProgress >= 100 ? 'Gnomon synced + apps indexed - Click for details' : ($appState.gnomonProgress >= 100 ? 'Indexing apps from Gnomon - Click for details' : `Gnomon syncing ${$appState.gnomonProgress.toFixed(0)}% - Click for details`)) : 'Gnomon Offline - Click for details'}
+          title={$appState.gnomonRunning ? ($appState.gnomonProgress >= 100 ? ($appState.gnomonAppsLoaded ? 'Gnomon synced + apps loaded - Click for details' : 'Loading apps from Gnomon... - Click for details') : `Gnomon syncing ${$appState.gnomonProgress.toFixed(0)}% - Click for details`) : 'Gnomon Offline - Click for details'}
         >
           <span class="gnomon-label">GNOMON</span>
           <div class="gnomon-progress-container">
             <div class="gnomon-progress-bar">
               <div 
                 class="gnomon-progress-fill"
-                class:syncing={$appState.gnomonRunning && $combinedSyncProgress < 100}
-                class:synced={$appState.gnomonRunning && $combinedSyncProgress >= 100}
+                class:syncing={$appState.gnomonRunning && $appState.gnomonProgress < 100}
+                class:loading-apps={$appState.gnomonRunning && $appState.gnomonProgress >= 100 && !$appState.gnomonAppsLoaded}
+                class:synced={$appState.gnomonRunning && $appState.gnomonProgress >= 100 && $appState.gnomonAppsLoaded}
                 class:offline={!$appState.gnomonRunning}
-                style="width: {$appState.gnomonRunning ? Math.min($combinedSyncProgress, 100) : 100}%"
+                style="width: {$appState.gnomonRunning ? Math.min($appState.gnomonProgress, 100) : 100}%"
               ></div>
             </div>
           </div>
@@ -1557,6 +1564,32 @@
     background: var(--status-ok);
   }
   
+  /* Loading apps state - green shimmer+pulse animation
+     Indicates: Gnomon is synced (100%) but apps are still being discovered/loaded
+     This bridges the UX gap between "synced" indicator and apps actually appearing */
+  .gnomon-progress-fill.loading-apps {
+    background: linear-gradient(90deg, var(--status-ok), #5effc1, var(--status-ok));
+    background-size: 200% 100%;
+    animation: gnomon-shimmer-pulse 3s ease-in-out infinite;
+  }
+  
+  @keyframes gnomon-shimmer-pulse {
+    0% { 
+      background-position: 200% 0;
+      opacity: 1;
+    }
+    25% { opacity: 0.7; }
+    50% { 
+      background-position: 0% 0;
+      opacity: 1;
+    }
+    75% { opacity: 0.7; }
+    100% { 
+      background-position: -200% 0;
+      opacity: 1;
+    }
+  }
+  
   /* Offline state - red dim */
   .gnomon-progress-fill.offline {
     background: var(--status-err);
@@ -1571,12 +1604,14 @@
   /* Row state styling - all borders consistent (E2 style) */
   .gnomon-row.gnomon-synced,
   .gnomon-row.gnomon-syncing,
+  .gnomon-row.gnomon-loading-apps,
   .gnomon-row.gnomon-offline {
     border-color: var(--border-subtle);
   }
   
   .gnomon-row.gnomon-synced:hover,
   .gnomon-row.gnomon-syncing:hover,
+  .gnomon-row.gnomon-loading-apps:hover,
   .gnomon-row.gnomon-offline:hover {
     border-color: var(--cyan-500);
   }

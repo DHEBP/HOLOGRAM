@@ -23,6 +23,7 @@ type GnomonClient struct {
 	running          bool
 	disableFastsync  bool  // Temporary flag to disable fastsync for next start (used after resync)
 	startFromHeight  int64 // If > 0, start indexing from this height instead of 0 or current
+	appsLoaded       bool  // True when GetDiscoveredApps() has completed at least once
 }
 
 const maxParallelBlocks = 10
@@ -182,6 +183,7 @@ func (g *GnomonClient) Stop() {
 		g.Indexer.Close()
 		g.Indexer = nil
 		g.running = false
+		g.appsLoaded = false // Reset apps loaded state
 	}
 }
 
@@ -195,6 +197,16 @@ func (g *GnomonClient) SetDisableFastsync(disable bool) {
 // This is useful for resyncing recent contracts without indexing the entire chain
 func (g *GnomonClient) SetStartFromHeight(height int64) {
 	g.startFromHeight = height
+}
+
+// SetAppsLoaded sets the appsLoaded flag (called by App.GetDiscoveredApps)
+func (g *GnomonClient) SetAppsLoaded(loaded bool) {
+	g.appsLoaded = loaded
+}
+
+// IsAppsLoaded returns whether apps have been loaded at least once
+func (g *GnomonClient) IsAppsLoaded() bool {
+	return g.appsLoaded
 }
 
 // IsRunning returns whether Gnomon is running
@@ -234,6 +246,7 @@ func (g *GnomonClient) GetStatus() map[string]interface{} {
 		"progress":       progress,
 		"db_type":        g.dbType,
 		"db_path":        g.dbPath,
+		"apps_loaded":    g.appsLoaded,
 	}
 }
 

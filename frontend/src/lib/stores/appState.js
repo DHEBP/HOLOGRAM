@@ -198,6 +198,7 @@ export const appState = writable({
   gnomonProgress: 0,
   gnomonIndexedHeight: 0,
   gnomonChainHeight: 0,
+  gnomonAppsLoaded: false, // True when GetDiscoveredApps() has completed at least once
   telaSession: null,
   browserSession: null,
   appDiscoveryCache: {
@@ -369,6 +370,7 @@ export async function updateStatus() {
       gnomonProgress: gnomonStatus?.status?.progress || 0,
       gnomonIndexedHeight: gnomonStatus?.status?.indexed_height || 0,
       gnomonChainHeight: gnomonStatus?.status?.chain_height || 0,
+      gnomonAppsLoaded: gnomonStatus?.status?.apps_loaded || false,
     }));
   } catch (error) {
     console.error('Status update error:', error);
