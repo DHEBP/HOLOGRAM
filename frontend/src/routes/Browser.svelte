@@ -141,7 +141,7 @@ let addressInput = '';
   // App discovery state
   let apps = [];
   let filteredApps = [];
-  let appsLoading = true;
+  let appsLoading = false;
   let appsLoaded = false; // Track if we've attempted to load apps (prevents infinite loop when 0 apps found)
   let selectedCategory = 'top';
   let sortBy = 'rating';
