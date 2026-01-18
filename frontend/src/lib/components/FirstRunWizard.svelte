@@ -504,7 +504,7 @@
               class="wizard-btn wizard-btn-primary"
             >
               {#if testingConnection}
-                <span class="wizard-spinner"></span>
+                <span class="wizard-spinner wizard-spinner-sm"></span>
                 Testing...
               {:else}
                 Test & Connect

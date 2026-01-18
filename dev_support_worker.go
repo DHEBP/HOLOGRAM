@@ -6,9 +6,11 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/civilware/epoch"
@@ -19,17 +21,17 @@ type DevSupportWorker struct {
 	sync.RWMutex
 
 	// Configuration
-	enabled       bool          // User setting: is dev support enabled
-	hashesPerCycle int          // Hashes to compute per cycle (default: 50)
-	cycleInterval time.Duration // Time between cycles (default: 5 seconds)
+	enabled        bool          // User setting: is dev support enabled
+	hashesPerCycle int           // Hashes to compute per cycle (default: 50)
+	cycleInterval  time.Duration // Time between cycles (default: 5 seconds)
 
 	// Runtime state
-	running       bool
-	paused        bool
-	pauseReason   string
-	manualPaused  bool   // True when paused by Pause() call (for app support)
-	manualReason  string // Reason for manual pause
-	stopChan      chan struct{}
+	running      bool
+	paused       bool
+	pauseReason  string
+	manualPaused bool   // True when paused by Pause() call (for app support)
+	manualReason string // Reason for manual pause
+	stopChan     chan struct{}
 
 	// Statistics (persisted)
 	stats DevSupportStats
@@ -44,16 +46,16 @@ type DevSupportWorker struct {
 
 // DevSupportStats tracks developer support contributions
 type DevSupportStats struct {
-	TotalHashes      uint64    `json:"total_hashes"`
-	TotalHashesStr   string    `json:"total_hashes_str"`
-	MiniBlocksFound  int       `json:"miniblocks_found"`
-	UptimeSeconds    int64     `json:"uptime_seconds"`
-	SessionHashes    uint64    `json:"session_hashes"`
-	SessionMiniblocks int      `json:"session_miniblocks"`
-	SessionStart     time.Time `json:"session_start"`
-	LastActive       time.Time `json:"last_active"`
-	TotalSessions    int       `json:"total_sessions"`
-	
+	TotalHashes       uint64    `json:"total_hashes"`
+	TotalHashesStr    string    `json:"total_hashes_str"`
+	MiniBlocksFound   int       `json:"miniblocks_found"`
+	UptimeSeconds     int64     `json:"uptime_seconds"`
+	SessionHashes     uint64    `json:"session_hashes"`
+	SessionMiniblocks int       `json:"session_miniblocks"`
+	SessionStart      time.Time `json:"session_start"`
+	LastActive        time.Time `json:"last_active"`
+	TotalSessions     int       `json:"total_sessions"`
+
 	// Current state
 	IsRunning   bool   `json:"is_running"`
 	IsPaused    bool   `json:"is_paused"`
@@ -204,7 +206,7 @@ func (w *DevSupportWorker) runLoop() {
 func (w *DevSupportWorker) doCycle() {
 	// Check pause conditions
 	pauseReason := w.checkPauseConditions()
-	
+
 	w.Lock()
 	if pauseReason != PauseReasonNone {
 		if !w.paused {
@@ -311,7 +313,15 @@ func (w *DevSupportWorker) isOnBattery() bool {
 	switch runtime.GOOS {
 	case "darwin":
 		// macOS: check using pmset
-		out, err := exec.Command("pmset", "-g", "batt").Output()
+		cmd := exec.Command("pmset", "-g", "batt")
+		if runtime.GOOS == "windows" {
+			attr := &syscall.SysProcAttr{}
+			if f := reflect.ValueOf(attr).Elem().FieldByName("HideWindow"); f.IsValid() {
+				f.SetBool(true)
+			}
+			cmd.SysProcAttr = attr
+		}
+		out, err := cmd.Output()
 		if err != nil {
 			return false
 		}
@@ -320,15 +330,29 @@ func (w *DevSupportWorker) isOnBattery() bool {
 	case "linux":
 		// Linux: check /sys/class/power_supply/
 		// Simplified check - look for AC adapter status
-		out, err := exec.Command("cat", "/sys/class/power_supply/AC/online").Output()
+		cmd := exec.Command("cat", "/sys/class/power_supply/AC/online")
+		if runtime.GOOS == "windows" {
+			attr := &syscall.SysProcAttr{}
+			if f := reflect.ValueOf(attr).Elem().FieldByName("HideWindow"); f.IsValid() {
+				f.SetBool(true)
+			}
+			cmd.SysProcAttr = attr
+		}
+		out, err := cmd.Output()
 		if err != nil {
 			return false
 		}
 		return string(out) == "0\n" // 0 means not on AC
 	case "windows":
 		// Windows: use PowerShell to check battery status via WMI
-		out, err := exec.Command("powershell", "-Command",
-			"(Get-WmiObject Win32_Battery).BatteryStatus").Output()
+		cmd := exec.Command("powershell", "-Command",
+			"(Get-WmiObject Win32_Battery).BatteryStatus")
+		attr := &syscall.SysProcAttr{}
+		if f := reflect.ValueOf(attr).Elem().FieldByName("HideWindow"); f.IsValid() {
+			f.SetBool(true)
+		}
+		cmd.SysProcAttr = attr
+		out, err := cmd.Output()
 		if err != nil {
 			return false // Assume plugged in if we can't detect
 		}
@@ -351,7 +375,7 @@ func (w *DevSupportWorker) isHighCPULoad() bool {
 func (w *DevSupportWorker) GetStats() DevSupportStats {
 	w.RLock()
 	defer w.RUnlock()
-	
+
 	stats := w.stats
 	stats.UptimeSeconds = int64(time.Since(w.stats.SessionStart).Seconds())
 	stats.IsRunning = w.running
@@ -364,12 +388,12 @@ func (w *DevSupportWorker) GetStats() DevSupportStats {
 func (w *DevSupportWorker) SetStats(stats DevSupportStats) {
 	w.Lock()
 	defer w.Unlock()
-	
+
 	// Preserve runtime state
 	isRunning := w.running
 	isPaused := w.paused
 	pauseReason := w.pauseReason
-	
+
 	w.stats = stats
 	w.stats.IsRunning = isRunning
 	w.stats.IsPaused = isPaused

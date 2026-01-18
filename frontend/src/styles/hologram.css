@@ -2038,23 +2038,20 @@
     .wizard-option-badge.err { color: var(--status-err); border-color: rgba(248, 113, 113, 0.4); }
     .wizard-option-badge.cyan { color: var(--cyan-400); border-color: rgba(34, 211, 238, 0.4); }
     
-    /* Wizard Endpoint Row - Input + Button side by side */
+    /* Wizard Endpoint Row - Input + Button stacked vertically */
     .wizard-endpoint-row {
       display: flex;
+      flex-direction: column;
       gap: var(--s-2);
-      align-items: stretch;
       width: 100%;
     }
     
     .wizard-endpoint-row .input {
-      flex: 1 1 0%;
-      min-width: 0;
-      width: auto;
+      width: 100%;
     }
     
     .wizard-endpoint-row .wizard-btn {
-      flex-shrink: 0;
-      white-space: nowrap;
+      width: 100%;
     }
     
     /* Wizard Form Hint */
