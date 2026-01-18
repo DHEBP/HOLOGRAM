@@ -33,6 +33,18 @@
     status: ''
   };
   
+  // Network switch modal state
+  let showNetworkSwitchModal = false;
+  let networkSwitchTarget = 'simulator'; // 'simulator' or 'mainnet'
+  const networkSwitchSteps = [
+    { id: 0, label: 'Checking current connection' },
+    { id: 1, label: 'Checking simulator binary' },
+    { id: 2, label: 'Starting simulator daemon' },
+    { id: 3, label: 'Waiting for daemon ready' },
+    { id: 4, label: 'Setting up test wallets' },
+    { id: 5, label: 'Configuring Gnomon' }
+  ];
+  
   // Wallet menu state
   let showWalletMenu = false;
   let recentWalletsInfo = [];
@@ -132,6 +144,7 @@
     // Listen for simulator completion
     EventsOn("simulator:complete", (data) => {
       simulatorStarting = false;
+      showNetworkSwitchModal = false;
       if (data.success) {
         toast.success(data.message || 'Simulator mode activated!', 3000);
         // Immediately sync network mode and refresh status
@@ -143,6 +156,7 @@
     // Listen for simulator errors
     EventsOn("simulator:error", (data) => {
       simulatorStarting = false;
+      showNetworkSwitchModal = false;
       toast.error(data.error || 'Simulator startup failed', 5000);
     });
   });
@@ -243,13 +257,15 @@
     showSimulatorConfirm = false;
     
     if (simulatorAction === 'start') {
-      // Start simulator mode with loading state
+      // Start simulator mode with loading state and progress modal
       simulatorStarting = true;
+      networkSwitchTarget = 'simulator';
       simulatorProgress = { step: 0, message: 'Starting simulator...', status: 'starting' };
+      showNetworkSwitchModal = true;
       
       try {
         const result = await StartSimulatorMode();
-        simulatorStarting = false;
+        // Note: simulatorStarting and showNetworkSwitchModal are reset by event handlers
         
         if (result.success) {
           // Network mode will be updated via the completion event handler
@@ -257,21 +273,30 @@
           await doSwitchNetwork('simulator');
           await refreshSimulatorStatus();
         } else {
+          simulatorStarting = false;
+          showNetworkSwitchModal = false;
           toast.error(result.error || 'Failed to start simulator', 5000);
         }
       } catch (e) {
         simulatorStarting = false;
+        showNetworkSwitchModal = false;
         toast.error(e.message || 'Failed to start simulator', 5000);
       }
     } else if (simulatorAction === 'stop') {
-      // Stop simulator and switch to mainnet
+      // Stop simulator and switch to mainnet with progress modal
+      networkSwitchTarget = 'mainnet';
+      simulatorProgress = { step: 0, message: 'Stopping simulator...', status: 'stopping' };
+      showNetworkSwitchModal = true;
+      
       try {
         await StopSimulatorMode();
         await doSwitchNetwork('mainnet');
         await refreshSimulatorStatus();
-        toast.success('Simulator stopped', 2000);
+        showNetworkSwitchModal = false;
+        toast.success('Switched to Mainnet', 2000);
       } catch (e) {
         console.error('Failed to stop simulator:', e);
+        showNetworkSwitchModal = false;
         toast.error('Failed to stop simulator: ' + e.message, 5000);
       }
     }
@@ -1260,6 +1285,76 @@
           {/if}
         </button>
       </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Network Switch Progress Modal -->
+{#if showNetworkSwitchModal}
+  <div class="network-switch-backdrop">
+    <div class="network-switch-modal">
+      <!-- Header -->
+      <div class="network-switch-header">
+        <div class="network-switch-icon" class:simulator={networkSwitchTarget === 'simulator'} class:mainnet={networkSwitchTarget === 'mainnet'}>
+          {#if networkSwitchTarget === 'simulator'}
+            <Gamepad2 size={24} strokeWidth={1.5} />
+          {:else}
+            <Globe2 size={24} strokeWidth={1.5} />
+          {/if}
+        </div>
+        <h2 class="network-switch-title">
+          Switching to {networkSwitchTarget === 'simulator' ? 'Simulator' : 'Mainnet'}
+        </h2>
+        <p class="network-switch-subtitle">
+          {#if networkSwitchTarget === 'simulator'}
+            This typically takes about 30 seconds
+          {:else}
+            Stopping simulator and reconnecting...
+          {/if}
+        </p>
+      </div>
+      
+      {#if networkSwitchTarget === 'simulator'}
+        <!-- Step Checklist (only for simulator start) -->
+        <div class="network-switch-steps">
+          {#each networkSwitchSteps as step}
+            {@const isComplete = simulatorProgress.step > step.id}
+            {@const isInProgress = simulatorProgress.step === step.id}
+            {@const isPending = simulatorProgress.step < step.id}
+            <div class="network-switch-step" class:complete={isComplete} class:in-progress={isInProgress} class:pending={isPending}>
+              <div class="step-icon">
+                {#if isComplete}
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                {:else if isInProgress}
+                  <div class="step-spinner"></div>
+                {:else}
+                  <div class="step-circle"></div>
+                {/if}
+              </div>
+              <span class="step-label">{step.label}</span>
+            </div>
+          {/each}
+        </div>
+        
+        <!-- Progress Bar -->
+        <div class="network-switch-progress">
+          <div class="progress-bar-track">
+            <div 
+              class="progress-bar-fill simulator"
+              style="width: {Math.min((simulatorProgress.step / 5) * 100, 100)}%"
+            ></div>
+          </div>
+          <span class="progress-text">Step {simulatorProgress.step}/{networkSwitchSteps.length}</span>
+        </div>
+      {:else}
+        <!-- Simple spinner for mainnet (stopping simulator) -->
+        <div class="network-switch-simple">
+          <div class="simple-spinner"></div>
+          <p class="simple-message">Closing simulator services and connecting to mainnet node...</p>
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -2925,5 +3020,244 @@
   
   :global(.c-violet) {
     color: var(--violet-400);
+  }
+  
+  /* ============================================
+     NETWORK SWITCH PROGRESS MODAL
+     ============================================ */
+  .network-switch-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    animation: fadeIn 0.2s ease-out;
+  }
+  
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  
+  .network-switch-modal {
+    background: var(--void-mid);
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-lg);
+    width: 360px;
+    max-width: 90vw;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+    animation: slideUp 0.3s ease-out;
+  }
+  
+  @keyframes slideUp {
+    from { 
+      opacity: 0;
+      transform: translateY(20px) scale(0.95);
+    }
+    to { 
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  
+  /* Header */
+  .network-switch-header {
+    padding: var(--s-5) var(--s-5) var(--s-4);
+    text-align: center;
+    border-bottom: 1px solid var(--border-dim);
+  }
+  
+  .network-switch-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: 1px solid;
+    margin-bottom: var(--s-3);
+  }
+  
+  .network-switch-icon.simulator {
+    color: var(--status-err);
+    background: rgba(248, 113, 113, 0.08);
+    border-color: rgba(248, 113, 113, 0.25);
+    box-shadow: 0 0 20px rgba(248, 113, 113, 0.15);
+  }
+  
+  .network-switch-icon.mainnet {
+    color: var(--status-ok);
+    background: rgba(52, 211, 153, 0.08);
+    border-color: rgba(52, 211, 153, 0.25);
+    box-shadow: 0 0 20px rgba(52, 211, 153, 0.15);
+  }
+  
+  .network-switch-title {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-1);
+    margin: 0 0 var(--s-2);
+  }
+  
+  .network-switch-subtitle {
+    font-size: 12px;
+    color: var(--text-3);
+    margin: 0;
+  }
+  
+  /* Steps Checklist */
+  .network-switch-steps {
+    padding: var(--s-4) var(--s-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  
+  .network-switch-step {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-2) 0;
+    transition: opacity 0.2s ease;
+  }
+  
+  .network-switch-step.pending {
+    opacity: 0.4;
+  }
+  
+  .network-switch-step.complete {
+    opacity: 0.7;
+  }
+  
+  .network-switch-step.in-progress {
+    opacity: 1;
+  }
+  
+  .step-icon {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  
+  .network-switch-step.complete .step-icon {
+    color: var(--status-ok);
+  }
+  
+  .network-switch-step.in-progress .step-icon {
+    color: var(--cyan-400);
+  }
+  
+  .network-switch-step.pending .step-icon {
+    color: var(--text-4);
+  }
+  
+  .step-circle {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+  }
+  
+  .step-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  
+  .step-label {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-2);
+  }
+  
+  .network-switch-step.in-progress .step-label {
+    color: var(--text-1);
+  }
+  
+  .network-switch-step.complete .step-label {
+    color: var(--text-3);
+  }
+  
+  /* Progress Bar */
+  .network-switch-progress {
+    padding: var(--s-3) var(--s-5) var(--s-4);
+    border-top: 1px solid var(--border-dim);
+    background: var(--void-deep);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  
+  .progress-bar-track {
+    height: 4px;
+    background: var(--void-up);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s ease-out;
+  }
+  
+  .progress-bar-fill.simulator {
+    background: linear-gradient(90deg, var(--status-err), var(--pink-400));
+  }
+  
+  .progress-bar-fill.mainnet {
+    background: linear-gradient(90deg, var(--cyan-400), var(--status-ok));
+  }
+  
+  .progress-text {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-4);
+    text-align: center;
+  }
+  
+  /* Simple spinner view for mainnet switch */
+  .network-switch-simple {
+    padding: var(--s-5);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s-4);
+  }
+  
+  .simple-spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--void-up);
+    border-top-color: var(--status-ok);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  
+  .simple-message {
+    font-size: 12px;
+    color: var(--text-3);
+    text-align: center;
+    line-height: 1.5;
+    margin: 0;
   }
 </style>
