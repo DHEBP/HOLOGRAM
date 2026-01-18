@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { settingsState, appState, consoleLogs, clearConsoleLogs, syncNetworkMode, saveSetting, loadSettings } from '../lib/stores/appState.js';
+  import { settingsState, appState, consoleLogs, clearConsoleLogs, syncNetworkMode, saveSetting, loadSettings, updateStatus } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
   import { 
     SetSetting, StartGnomon, StopGnomon, ResyncGnomon, ResyncGnomonFromHeight,
@@ -968,10 +968,14 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   }
   
   async function handleGnomonToggle() {
-    if ($appState.gnomonRunning) {
-      await StopGnomon();
-    } else {
-      await StartGnomon();
+    try {
+      if ($appState.gnomonRunning) {
+        await StopGnomon();
+      } else {
+        await StartGnomon();
+      }
+    } finally {
+      await updateStatus();
     }
   }
   
@@ -993,6 +997,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       console.error('[Gnomon] Resync error:', e);
     } finally {
       resyncingGnomon = false;
+      await updateStatus();
     }
   }
   
@@ -1021,6 +1026,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       console.error('[Gnomon] Resync from height error:', e);
     } finally {
       resyncingFromHeight = false;
+      await updateStatus();
     }
   }
   
@@ -1051,6 +1057,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       console.error('[Gnomon] Fastsync error:', e);
     } finally {
       resyncingGnomon = false;
+      await updateStatus();
     }
   }
   
@@ -1081,6 +1088,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       console.error('[Gnomon] Full resync error:', e);
     } finally {
       resyncingGnomon = false;
+      await updateStatus();
     }
   }
   
