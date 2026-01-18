@@ -1306,14 +1306,6 @@
                   + {formatBalance($walletState.lockedBalance)} locked
                 </div>
               {/if}
-              {#if syncStatus && syncStatus.walletHeight}
-                <div class="sync-height-info">
-                  Block: {syncStatus.walletHeight.toLocaleString()}
-                  {#if syncStatus.daemonHeight && syncStatus.daemonHeight > syncStatus.walletHeight}
-                    / {syncStatus.daemonHeight.toLocaleString()}
-                  {/if}
-                </div>
-              {/if}
               <div class="wallet-address-row">
                 <span class="address-text">{formatAddress($walletState.address)}</span>
                 <button class="btn-icon-sm" on:click={copyAddress} title="Copy address">
