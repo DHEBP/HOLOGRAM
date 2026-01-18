@@ -301,13 +301,26 @@ let addressInput = '';
       }
       
       appsLoaded = true; // Mark as loaded even if 0 apps found
+      
+      // If we found 0 apps but Gnomon just started (fastsync), retry after a delay
+      // This handles the case where block sync is instant but app discovery takes time
+      if (apps.length === 0 && get(appState).gnomonRunning) {
+        console.log('[Browser] No apps found yet, will retry in 5 seconds...');
+        setTimeout(() => {
+          if (get(appState).gnomonRunning && apps.length === 0) {
+            console.log('[Browser] Retrying app discovery...');
+            appsLoaded = false; // Reset to allow reload
+            loadApps();
+          }
+        }, 5000);
+      }
     } catch (error) {
       console.error('Failed to load apps:', error);
       appsLoaded = true; // Mark as loaded to prevent retry loop
     } finally {
       appsLoading = false;
       setAppDiscoveryState({ loading: false, loaded: appsLoaded });
-      if (appsLoaded) {
+      if (appsLoaded && apps.length > 0) {
         const currentIndexedHeight = get(appState).gnomonIndexedHeight || 0;
         appState.update(state => ({
           ...state,
