@@ -1720,6 +1720,11 @@ let addressInput = '';
     const isHexSCID = /^[a-fA-F0-9]{64}$/.test(cleanValue);
     
     if (!isHexSCID) {
+      if (!cleanValue || cleanValue.length < 2) {
+        suggestions = [];
+        showSuggestions = false;
+        return;
+      }
       try {
         const result = await GetNameSuggestions(cleanValue);
         if (result.success && result.suggestions) {

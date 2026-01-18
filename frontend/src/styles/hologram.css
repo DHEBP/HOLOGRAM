@@ -4206,6 +4206,7 @@
       border: 1px solid var(--border-subtle);
       border-radius: var(--r-lg);
       padding: var(--s-1) var(--s-2);
+      position: relative;
     }
     .browser-url-protocol {
       font-size: 12px;
@@ -4681,6 +4682,8 @@
       border-radius: var(--r-lg);
       box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
       overflow: hidden;
+      max-height: 320px;
+      overflow-y: auto;
       z-index: 100;
     }
     
