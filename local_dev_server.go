@@ -92,9 +92,9 @@ func (a *App) StartLocalDevServer(directory string) map[string]interface{} {
 		}
 	}
 
-	// Create file server with CORS headers
+	// Create file server with CORS headers and XSWD bridge injection
 	fs := http.FileServer(http.Dir(directory))
-	handler := localDevCORSMiddleware(fs)
+	handler := localDevCORSMiddleware(fs, directory)
 
 	// Create server
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -259,7 +259,7 @@ func findAvailablePort() (int, error) {
 }
 
 // localDevCORSMiddleware adds CORS headers and proper MIME types for local development
-func localDevCORSMiddleware(next http.Handler) http.Handler {
+func localDevCORSMiddleware(next http.Handler, directory string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers for development
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -285,10 +285,169 @@ func localDevCORSMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Content-Type", "image/svg+xml")
 		case ".html", ".htm":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			// For HTML files, inject the XSWD bridge script
+			serveHTMLWithBridge(w, r, directory)
+			return
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// serveHTMLWithBridge reads an HTML file and injects the XSWD bridge script at the beginning
+func serveHTMLWithBridge(w http.ResponseWriter, r *http.Request, directory string) {
+	// Determine file path
+	urlPath := r.URL.Path
+	if urlPath == "" || urlPath == "/" {
+		urlPath = "/index.html"
+	}
+	
+	filePath := filepath.Join(directory, urlPath)
+	
+	// Read the HTML file
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	
+	// Inject the XSWD bridge script at the very beginning
+	bridgeScript := getLocalDevXSWDBridgeScript()
+	injectedContent := bridgeScript + string(content)
+	
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(injectedContent)))
+	w.Write([]byte(injectedContent))
+}
+
+// getLocalDevXSWDBridgeScript returns the XSWD bridge script that intercepts WebSocket connections
+func getLocalDevXSWDBridgeScript() string {
+	return `<script>
+(function() {
+  'use strict';
+  
+  // Simple log to parent
+  function log(msg) {
+    try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*'); } catch(e) {}
+  }
+  
+  log('[Bridge] Initializing...');
+  
+  // Store original WebSocket
+  var OriginalWebSocket = window.WebSocket;
+  
+  // Request ID for parent communication
+  var reqId = 0;
+  var pending = {};
+  
+  // Listen for parent responses
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'xswd-response' && pending[e.data.id]) {
+      var p = pending[e.data.id];
+      delete pending[e.data.id];
+      e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.result);
+    }
+  });
+  
+  // Send to parent and wait
+  function request(action, payload) {
+    return new Promise(function(resolve, reject) {
+      var id = ++reqId;
+      pending[id] = { resolve: resolve, reject: reject };
+      window.parent.postMessage({ type: 'xswd-request', id: id, action: action, payload: payload }, '*');
+      setTimeout(function() { if (pending[id]) { delete pending[id]; reject(new Error('timeout')); } }, 60000);
+    });
+  }
+  
+  // XSWD WebSocket Proxy
+  function XSWDProxy(url) {
+    var self = this;
+    self.url = url;
+    self.readyState = 0;
+    self.onopen = null;
+    self.onmessage = null;
+    self.onerror = null;
+    self.onclose = null;
+    self._auth = 'pending';
+    self._queue = [];
+    
+    log('[XSWD] Connection intercepted: ' + url);
+    
+    // Simulate connection open
+    setTimeout(function() {
+      self.readyState = 1;
+      log('[XSWD] WebSocket opened');
+      if (self.onopen) self.onopen({ type: 'open', target: self });
+      while (self._queue.length) self._handle(self._queue.shift());
+    }, 5);
+  }
+  
+  XSWDProxy.prototype.send = function(data) {
+    if (this.readyState === 0) { this._queue.push(data); return; }
+    if (this.readyState !== 1) throw new Error('WebSocket closed');
+    this._handle(data);
+  };
+  
+  XSWDProxy.prototype._handle = function(data) {
+    var self = this;
+    try {
+      var msg = typeof data === 'string' ? JSON.parse(data) : data;
+      log('[XSWD] ' + (msg.method || 'handshake'));
+      
+      // Handshake (has name/description, no method)
+      if (!msg.method && (msg.name || msg.description)) {
+        request('connect', { appInfo: msg }).then(function(ok) {
+          self._auth = ok ? 'ok' : 'denied';
+          log(ok ? '[OK] Connection approved' : '[Denied] Connection denied');
+          self._respond({ accepted: !!ok });
+        }).catch(function(e) {
+          self._auth = 'denied';
+          self._respond({ accepted: false, message: e.message });
+        });
+        return;
+      }
+      
+      // RPC call
+      request('call', { method: msg.method, params: msg.params, authState: self._auth }).then(function(r) {
+        self._respond({ jsonrpc: '2.0', id: msg.id, result: r });
+      }).catch(function(e) {
+        self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
+      });
+    } catch(e) {
+      log('[Error] XSWD error: ' + e.message);
+    }
+  };
+  
+  XSWDProxy.prototype._respond = function(r) {
+    var self = this;
+    if (self.onmessage) setTimeout(function() { self.onmessage({ type: 'message', data: JSON.stringify(r), target: self }); }, 0);
+  };
+  
+  XSWDProxy.prototype.close = function() {
+    this.readyState = 3;
+    if (this.onclose) this.onclose({ type: 'close', code: 1000 });
+  };
+  
+  XSWDProxy.CONNECTING = 0;
+  XSWDProxy.OPEN = 1;
+  XSWDProxy.CLOSING = 2;
+  XSWDProxy.CLOSED = 3;
+  
+  // Override WebSocket
+  window.WebSocket = function(url, protocols) {
+    // XSWD port: 44326 (mainnet)
+    if (url && (url.indexOf('44326') !== -1 || url.indexOf('44325') !== -1 || url.indexOf('xswd') !== -1)) {
+      return new XSWDProxy(url);
+    }
+    return protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
+  };
+  window.WebSocket.CONNECTING = 0;
+  window.WebSocket.OPEN = 1;
+  window.WebSocket.CLOSING = 2;
+  window.WebSocket.CLOSED = 3;
+  
+  log('[Bridge] Ready - WebSocket interception active');
+})();
+</script>`
 }
 
 // ================== File Watcher (Hot Reload) ==================
