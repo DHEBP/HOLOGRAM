@@ -1322,6 +1322,38 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			"hex":     fmt.Sprintf("%x", tx.Serialize()),
 		}
 		
+	case "GetTrackedAssets", "gettrackedassets":
+		// Return tracked asset balances
+		// For the internal wallet, we return DERO balance at minimum
+		// The wallet's Balance map is private, so we access what we can
+		balance, lockedBalance := wallet.Get_Balance()
+		
+		// SCID "0000...0000" (zero SCID) represents native DERO
+		zeroScid := "0000000000000000000000000000000000000000000000000000000000000000"
+		
+		balances := map[string]uint64{
+			zeroScid: balance,
+		}
+		
+		// Check for only_positive_balances param
+		onlyPositive := true // default
+		if opb, ok := params["only_positive_balances"].(bool); ok {
+			onlyPositive = opb
+		}
+		
+		// Filter zero balances if only_positive_balances is true
+		if onlyPositive && balance == 0 {
+			balances = map[string]uint64{}
+		}
+		
+		return map[string]interface{}{
+			"success": true,
+			"result": map[string]interface{}{
+				"balances":        balances,
+				"locked_balance":  lockedBalance,
+			},
+		}
+		
 	default:
 		return map[string]interface{}{"success": false, "error": "Method not supported internally yet"}
 	}

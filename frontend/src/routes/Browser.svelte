@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory } from '../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
@@ -35,6 +35,79 @@ function getPermissionDescription(permId) {
   return descriptions[permId] || 'Unknown permission';
 }
 
+function resetXSWDSubscriptions() {
+  xswdSubscriptions = { new_topoheight: false, new_balance: false, new_entry: false };
+  lastTopoheight = null;
+  lastBalance = null;
+  lastEntryTxid = null;
+  stopXSWDSubscriptionPolling();
+}
+
+function stopXSWDSubscriptionPolling() {
+  if (xswdPollTimer) {
+    clearInterval(xswdPollTimer);
+    xswdPollTimer = null;
+  }
+  xswdPollingActive = false;
+}
+
+function sendXSWDEvent(method, params) {
+  if (!contentFrame || !contentFrame.contentWindow) return;
+  contentFrame.contentWindow.postMessage({
+    type: 'xswd-event',
+    method,
+    params
+  }, '*');
+}
+
+async function pollXSWDSubscriptions() {
+  // Guard against overlapping polls - if a previous poll is still running (e.g., slow API),
+  // skip this cycle. This is intentional to prevent request pile-up.
+  if (xswdPollingActive) return;
+  xswdPollingActive = true;
+  try {
+    if (xswdSubscriptions.new_topoheight) {
+      const stats = await GetLiveStats();
+      const topo = stats?.topoheight;
+      if (typeof topo === 'number' && topo !== lastTopoheight) {
+        lastTopoheight = topo;
+        sendXSWDEvent('new_topoheight', { topoheight: topo });
+      }
+    }
+
+    if (xswdSubscriptions.new_balance) {
+      const balanceResult = await GetBalance();
+      if (balanceResult?.success) {
+        const currentBalance = balanceResult?.balance ?? balanceResult?.result?.balance;
+        if (typeof currentBalance === 'number' && currentBalance !== lastBalance) {
+          lastBalance = currentBalance;
+          sendXSWDEvent('new_balance', { balance: currentBalance });
+        }
+      }
+    }
+
+    if (xswdSubscriptions.new_entry) {
+      const history = await GetTransactionHistory(5);
+      if (history?.success && Array.isArray(history.transactions) && history.transactions.length > 0) {
+        const latest = history.transactions[history.transactions.length - 1];
+        if (latest?.txid && latest.txid !== lastEntryTxid) {
+          lastEntryTxid = latest.txid;
+          sendXSWDEvent('new_entry', latest);
+        }
+      }
+    }
+  } catch (e) {
+    addConsoleLog(`[Warn] Subscription polling error: ${e.message || e}`, 'warn');
+  } finally {
+    xswdPollingActive = false;
+  }
+}
+
+function startXSWDSubscriptionPolling() {
+  if (xswdPollTimer) return;
+  xswdPollTimer = setInterval(pollXSWDSubscriptions, 2000);
+}
+
 let addressInput = '';
   let loading = false;
   let showWelcome = true;
@@ -50,6 +123,12 @@ let addressInput = '';
   let hasNavigated = false;
   let previousWalletRequestCount = 0;
   let addressBarFocused = false;
+  let xswdPollTimer = null;
+  let xswdPollingActive = false;
+  let xswdSubscriptions = { new_topoheight: false, new_balance: false, new_entry: false };
+  let lastTopoheight = null;
+  let lastBalance = null;
+  let lastEntryTxid = null;
   
   // Browser tabs state - each tab has its own history
   let tabs = [
@@ -707,8 +786,14 @@ let addressInput = '';
             addConsoleLog(`[Browser] Connect request from: ${payload.appInfo?.name || 'Unknown App'}`);
             // Request wallet connection approval
             const settings = get(settingsState);
+            const currentWalletState = get(walletState);
             addConsoleLog(`[Browser] integratedWallet setting: ${settings.integratedWallet}`);
+            addConsoleLog(`[Browser] wallet isOpen: ${currentWalletState.isOpen}`);
             if (settings.integratedWallet) {
+              // Check if wallet is open - most dApps need wallet methods after connect
+              if (!currentWalletState.isOpen) {
+                addConsoleLog('[Browser] Integrated wallet mode but no wallet open - warning user');
+              }
               try {
                 // Auto-approve during hot reload to avoid modal interruption
                 if (hotReloadInProgress) {
@@ -725,6 +810,8 @@ let addressInput = '';
                   );
                   // Default to read-only unless app explicitly requests wallet permissions
                   const isReadOnly = !hasWalletPerms;
+                  // Flag if wallet is not open but app likely needs it
+                  const walletNotOpen = !currentWalletState.isOpen;
                   
                   const approval = await requestWalletApproval({
                     type: 'connect',
@@ -732,6 +819,7 @@ let addressInput = '';
                     origin: addressInput,
                     description: payload.appInfo?.description || '',
                     isReadOnly: isReadOnly,
+                    walletNotOpen: walletNotOpen,
                     requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
                       id: p,
                       name: getPermissionName(p),
@@ -769,6 +857,31 @@ let addressInput = '';
             // Handle XSWD method call
             const { method, params, authState } = payload;
             const normalizedMethod = method.replace('DERO.', '');
+          const methodLower = normalizedMethod.toLowerCase();
+          const callSettings = get(settingsState);
+          
+          // Handle Subscribe/Unsubscribe for integrated wallet by polling
+          if (callSettings.integratedWallet && (methodLower === 'subscribe' || methodLower === 'unsubscribe')) {
+            const eventType = params?.event;
+            if (!eventType || !Object.prototype.hasOwnProperty.call(xswdSubscriptions, eventType)) {
+              throw new Error(`Unknown event type: ${eventType || 'undefined'}`);
+            }
+            
+            if (methodLower === 'subscribe') {
+              xswdSubscriptions[eventType] = true;
+              addConsoleLog(`[Browser] Subscribed (internal): ${eventType}`);
+              startXSWDSubscriptionPolling();
+              result = { event: eventType, subscribed: true };
+            } else {
+              xswdSubscriptions[eventType] = false;
+              addConsoleLog(`[Browser] Unsubscribed (internal): ${eventType}`);
+              if (!xswdSubscriptions.new_topoheight && !xswdSubscriptions.new_balance && !xswdSubscriptions.new_entry) {
+                stopXSWDSubscriptionPolling();
+              }
+              result = { event: eventType, subscribed: false };
+            }
+            break;
+          }
             
             // Wallet methods that require authorization
             const walletMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
@@ -791,12 +904,10 @@ let addressInput = '';
               result = 'Logged in';
             } else {
               // Route through XSWD/wallet
-              const callSettings = get(settingsState);
               const signingMethods = ['transfer', 'scinvoke', 'sign', 'Transfer', 'SC_Invoke'];
               const readMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
                                    'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
                                    'SplitIntegratedAddress', 'QueryKey'];
-              const methodLower = method.toLowerCase().replace('dero.', '');
               
               // Check if this is a wallet method (read or write)
               const isWalletMethod = walletMethods.includes(normalizedMethod);
@@ -903,6 +1014,7 @@ let addressInput = '';
     if (unsubscribeConsole) unsubscribeConsole();
     if (unsubscribeWalletRequests) unsubscribeWalletRequests();
     EventsOff('localdev:reload');
+    stopXSWDSubscriptionPolling();
     saveBrowserSession();
   });
   
@@ -1097,6 +1209,7 @@ let addressInput = '';
     loading = true;
     showWelcome = false;
     hasNavigated = false;
+    resetXSWDSubscriptions();
     
     // Strip any existing dero:// prefix from input (badge provides it visually)
     let cleanInput = addressInput.trim();
@@ -1165,6 +1278,7 @@ let addressInput = '';
   // Navigate to local dev server
   async function navigateToLocalDev(url, fromHistory = false) {
     const directory = url.slice(8); // Remove 'local://'
+    resetXSWDSubscriptions();
     
     try {
       // Get the local dev server status to find the URL
@@ -1445,6 +1559,7 @@ let addressInput = '';
   // Request ID for parent communication
   var reqId = 0;
   var pending = {};
+  var proxies = [];
   
   // Listen for parent responses
   window.addEventListener('message', function(e) {
@@ -1452,6 +1567,17 @@ let addressInput = '';
       var p = pending[e.data.id];
       delete pending[e.data.id];
       e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.result);
+    }
+  });
+  
+  // Listen for subscription events from parent
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'xswd-event' && proxies.length) {
+      proxies.forEach(function(p) {
+        if (p && typeof p._notify === 'function') {
+          p._notify(e.data.method, e.data.params);
+        }
+      });
     }
   });
   
@@ -1476,6 +1602,7 @@ let addressInput = '';
     self.onclose = null;
     self._auth = 'pending';
     self._queue = [];
+    proxies.push(self);
     
     log('[XSWD] Connection intercepted: ' + url);
     
@@ -1530,8 +1657,19 @@ let addressInput = '';
     if (self.onmessage) setTimeout(function() { self.onmessage({ type: 'message', data: JSON.stringify(r), target: self }); }, 0);
   };
   
+  XSWDProxy.prototype._notify = function(method, params) {
+    var self = this;
+    if (self.onmessage) {
+      var notification = { jsonrpc: '2.0', method: method, params: params };
+      setTimeout(function() { self.onmessage({ type: 'message', data: JSON.stringify(notification), target: self }); }, 0);
+    }
+  };
+  
   XSWDProxy.prototype.close = function() {
     this.readyState = 3;
+    // Remove from proxies array to prevent memory leaks
+    var idx = proxies.indexOf(this);
+    if (idx > -1) proxies.splice(idx, 1);
     if (this.onclose) this.onclose({ type: 'close', code: 1000 });
   };
   

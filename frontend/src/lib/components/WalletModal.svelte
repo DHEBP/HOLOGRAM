@@ -422,11 +422,22 @@
       </div>
 
       <!-- Wallet State Section - only show for non-read-only requests -->
-      {#if request.type === 'connect' && request.isReadOnly}
+      {#if request.type === 'connect' && request.isReadOnly && !request.walletNotOpen}
         <!-- Read-only apps don't need wallet access -->
         <div class="wallet-readonly-info">
           <span class="wallet-readonly-info-icon">◎</span>
           <span>No wallet needed for this connection</span>
+        </div>
+      {:else if request.type === 'connect' && request.walletNotOpen}
+        <!-- Warning: integrated wallet mode but no wallet open -->
+        <div class="modal-alert modal-alert-warning" style="margin-bottom: 1rem;">
+          <span class="modal-alert-icon">!</span>
+          <div style="flex: 1;">
+            <strong>No wallet open</strong><br/>
+            <span style="font-size: 0.85rem; opacity: 0.9;">
+              This app may require wallet features. Open a wallet first or the app may not work correctly.
+            </span>
+          </div>
         </div>
       {:else if $walletState.isOpen}
         <!-- Current wallet is open - show wallet switcher option -->
