@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -274,6 +275,15 @@ func localDevCORSMiddleware(next http.Handler, directory string) http.Handler {
 
 		// Ensure proper MIME types for common web files
 		ext := filepath.Ext(r.URL.Path)
+		urlPath := r.URL.Path
+		
+		// Handle root path or paths ending with / as index.html requests
+		if urlPath == "" || urlPath == "/" || strings.HasSuffix(urlPath, "/") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			serveHTMLWithBridge(w, r, directory)
+			return
+		}
+		
 		switch ext {
 		case ".css":
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
@@ -338,6 +348,7 @@ func getLocalDevXSWDBridgeScript() string {
   // Request ID for parent communication
   var reqId = 0;
   var pending = {};
+  var proxies = [];
   
   // Listen for parent responses
   window.addEventListener('message', function(e) {
@@ -345,6 +356,17 @@ func getLocalDevXSWDBridgeScript() string {
       var p = pending[e.data.id];
       delete pending[e.data.id];
       e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.result);
+    }
+  });
+  
+  // Listen for subscription events from parent
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'xswd-event' && proxies.length) {
+      proxies.forEach(function(p) {
+        if (p && typeof p._notify === 'function') {
+          p._notify(e.data.method, e.data.params);
+        }
+      });
     }
   });
   
@@ -369,6 +391,7 @@ func getLocalDevXSWDBridgeScript() string {
     self.onclose = null;
     self._auth = 'pending';
     self._queue = [];
+    proxies.push(self);
     
     log('[XSWD] Connection intercepted: ' + url);
     
@@ -422,8 +445,19 @@ func getLocalDevXSWDBridgeScript() string {
     if (self.onmessage) setTimeout(function() { self.onmessage({ type: 'message', data: JSON.stringify(r), target: self }); }, 0);
   };
   
+  XSWDProxy.prototype._notify = function(method, params) {
+    var self = this;
+    if (self.onmessage) {
+      var notification = { jsonrpc: '2.0', method: method, params: params };
+      setTimeout(function() { self.onmessage({ type: 'message', data: JSON.stringify(notification), target: self }); }, 0);
+    }
+  };
+  
   XSWDProxy.prototype.close = function() {
     this.readyState = 3;
+    // Remove from proxies array to prevent memory leaks
+    var idx = proxies.indexOf(this);
+    if (idx > -1) proxies.splice(idx, 1);
     if (this.onclose) this.onclose({ type: 'close', code: 1000 });
   };
   
