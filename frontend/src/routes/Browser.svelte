@@ -1225,9 +1225,21 @@ let addressInput = '';
           directory: status.directory
         };
         
-        // Render using the same method as blockchain content (allows telaHost injection)
-        renderContent(html);
-        addConsoleLog(`[OK] Local content rendered (${html.length} bytes)`);
+        // For local dev, use iframe.src directly instead of srcdoc
+        // This gives proper HTTP context so external scripts can load
+        // (srcdoc uses about: protocol which blocks script loading)
+        if (contentFrame) {
+          contentFrame.removeAttribute('srcdoc');
+          const cacheBustedUrl = `${status.url}?_t=${Date.now()}`;
+          contentFrame.src = cacheBustedUrl;
+          showWelcome = false;
+          
+          // Inject telaHost API after iframe loads
+          contentFrame.onload = () => {
+            setTimeout(() => injectTelaHostAPI(), 50);
+          };
+        }
+        addConsoleLog(`[OK] Local dev loaded via HTTP: ${status.url}`);
         
       } catch (fetchError) {
         addConsoleLog(`[Error] Failed to fetch from local server: ${fetchError}`, 'error');
