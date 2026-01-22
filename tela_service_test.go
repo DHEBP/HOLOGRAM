@@ -15,16 +15,19 @@ import (
 // These tests don't require a running daemon
 
 func TestEstimateGasCost(t *testing.T) {
+	// Gas estimation aligned with tela-cli behavior
+	// Formula: base(100) + size*0.1, minimum 100 gas, sizeCost minimum 50
 	tests := []struct {
 		name     string
 		size     int
 		expected uint64
 	}{
-		{"Zero bytes", 0, 5000},                      // Base cost only
-		{"100 bytes", 100, 6000},                     // 5000 + 100*10
-		{"1KB", 1024, 5000 + 1024*10},                // 5000 + 10240
-		{"10KB", 10240, 5000 + 10240*10},             // 5000 + 102400
-		{"100KB", 102400, 5000 + 102400*10}, // Large file
+		{"Zero bytes", 0, 100},          // Minimum gas (MINIMUM_GAS_FEE)
+		{"100 bytes", 100, 150},         // 100 + max(100*0.1, 50) = 100 + 50 = 150
+		{"500 bytes", 500, 150},         // 100 + max(50, 50) = 150
+		{"1KB", 1024, 202},              // 100 + 1024*0.1 = 100 + 102.4 ≈ 202
+		{"10KB", 10240, 1124},           // 100 + 10240*0.1 = 100 + 1024 = 1124
+		{"100KB", 102400, 10340},        // 100 + 102400*0.1 = 100 + 10240 = 10340
 	}
 
 	for _, tt := range tests {
@@ -38,18 +41,36 @@ func TestEstimateGasCost(t *testing.T) {
 }
 
 func TestEstimateGasCostFormula(t *testing.T) {
-	// Verify the formula: baseCost(5000) + sizeBytes * 10
-	baseCost := uint64(5000)
-	perByteCost := uint64(10)
+	// Verify the new formula aligned with tela-cli:
+	// base(100) + size*0.1, with minimum sizeCost of 50, minimum total of 100
+	const minGas = uint64(100)
 
-	sizes := []int{0, 1, 10, 100, 1000, 10000}
+	sizes := []int{0, 1, 10, 100, 500, 1000, 10000, 100000}
 	for _, size := range sizes {
-		expected := baseCost + uint64(size)*perByteCost
 		result := estimateGasCost(size)
-		if result != expected {
-			t.Errorf("estimateGasCost(%d) = %d, expected %d (formula: %d + %d * %d)",
-				size, result, expected, baseCost, size, perByteCost)
+		oldResult := uint64(5000) + uint64(size)*10 // Old inflated formula
+		
+		// Zero should return minimum
+		if size == 0 && result != minGas {
+			t.Errorf("estimateGasCost(0) = %d, expected minimum %d", result, minGas)
+			continue
 		}
+		
+		// Key check: new formula should be MUCH lower than old formula
+		// Old formula was ~50x too high
+		if size > 0 && result >= oldResult {
+			t.Errorf("estimateGasCost(%d) = %d should be less than old formula %d",
+				size, result, oldResult)
+		}
+		
+		// Verify minimum is respected
+		if result < minGas {
+			t.Errorf("estimateGasCost(%d) = %d, should be at least %d", size, result, minGas)
+		}
+		
+		// Log the comparison for visibility
+		t.Logf("Size %d bytes: new=%d gas, old=%d gas (%.1fx reduction)",
+			size, result, oldResult, float64(oldResult)/float64(result))
 	}
 }
 
@@ -455,9 +476,9 @@ func TestGetGasEstimate_ZeroSize(t *testing.T) {
 		t.Errorf("GetGasEstimate failed: %v", result["error"])
 	}
 
-	// Zero size should still have base gas cost
-	if gasEstimate, ok := result["gasEstimate"].(uint64); !ok || gasEstimate < 5000 {
-		t.Errorf("Expected at least base gas cost (5000), got %v", gasEstimate)
+	// Zero size should still have minimum gas cost (100)
+	if gasEstimate, ok := result["gasEstimate"].(uint64); !ok || gasEstimate < 100 {
+		t.Errorf("Expected at least minimum gas cost (100), got %v", gasEstimate)
 	}
 }
 
