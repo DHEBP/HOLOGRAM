@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory } from '../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
@@ -1226,6 +1226,18 @@ let addressInput = '';
       return;
     }
     
+    // Handle local file paths (auto-start dev server for telaHost support)
+    // Detect: /path/to/dir, /path/to/file.html, ~/path, C:\path (Windows)
+    const isLocalFilePath = cleanInput.startsWith('/') || 
+                            cleanInput.startsWith('~') ||
+                            cleanInput.startsWith('file://') ||
+                            /^[A-Za-z]:[\\\/]/.test(cleanInput);  // Windows paths
+    
+    if (isLocalFilePath) {
+      await navigateToLocalFile(cleanInput, fromHistory);
+      return;
+    }
+    
     // Reset local dev mode for non-local URLs
     isLocalDevMode = false;
     localDevUrl = '';
@@ -1275,21 +1287,172 @@ let addressInput = '';
     }
   }
   
-  // Navigate to local dev server
+  // Navigate to a local file path (auto-starts Local Dev Server for telaHost support)
+  // This enables developers to test dApps locally with full telaHost API access
+  async function navigateToLocalFile(filePath, fromHistory = false) {
+    resetXSWDSubscriptions();
+    
+    // Clean up the file path
+    let cleanPath = filePath.trim();
+    
+    // Remove file:// prefix if present
+    if (cleanPath.startsWith('file://')) {
+      cleanPath = cleanPath.slice(7);
+    }
+    
+    // Expand ~ to home directory (frontend can't do this, backend handles it)
+    // For now, just pass it through - the backend will handle validation
+    
+    // Extract directory from file path
+    // If it ends with .html or another file extension, get the parent directory
+    let directory = cleanPath;
+    const lastSlash = cleanPath.lastIndexOf('/');
+    const lastBackslash = cleanPath.lastIndexOf('\\');
+    const lastSep = Math.max(lastSlash, lastBackslash);
+    
+    if (lastSep > 0) {
+      const afterSep = cleanPath.substring(lastSep + 1);
+      // Check if this looks like a file (has extension)
+      if (afterSep.includes('.')) {
+        directory = cleanPath.substring(0, lastSep);
+      }
+    }
+    
+    addConsoleLog(`[Local File] Detected local path: ${cleanPath}`);
+    addConsoleLog(`[Local File] Directory: ${directory}`);
+    
+    try {
+      // Check if Local Dev Server is already running for this directory
+      const status = await GetLocalDevServerStatus();
+      
+      if (status.running && status.directory === directory) {
+        // Server already running for this directory, just load it
+        addConsoleLog(`[Local File] Dev server already running for this directory`);
+        await loadFromLocalDevServer(status, directory, filePath, fromHistory);
+        return;
+      }
+      
+      // Start Local Dev Server for this directory
+      addConsoleLog(`[Local File] Starting dev server for: ${directory}`);
+      const serverResult = await StartLocalDevServer(directory);
+      
+      if (serverResult.success) {
+        addConsoleLog(`[OK] Local dev server started at ${serverResult.url}`);
+        toast.success(`Dev server started for local testing`);
+        await loadFromLocalDevServer(serverResult, directory, filePath, fromHistory);
+      } else {
+        addConsoleLog(`[Error] Failed to start dev server: ${serverResult.error}`, 'error');
+        toast.error(serverResult.error || 'Failed to start local dev server');
+        showWelcome = true;
+        loading = false;
+      }
+    } catch (error) {
+      addConsoleLog(`[Error] Local file navigation error: ${error}`, 'error');
+      toast.error(`Could not load local file: ${error.message || error}`);
+      showWelcome = true;
+      loading = false;
+    }
+  }
+  
+  // Helper function to load content from Local Dev Server
+  async function loadFromLocalDevServer(serverInfo, directory, originalPath, fromHistory) {
+    isLocalDevMode = true;
+    localDevUrl = serverInfo.url;
+    
+    // Update tab with directory name
+    const dirName = directory.split('/').pop() || directory.split('\\').pop() || 'Local Dev';
+    updateActiveTab(`${dirName}`, originalPath, 'server');
+    scheduleBrowserSessionSave();
+    
+    // Add to per-tab history
+    if (!fromHistory) {
+      pushToTabHistory(originalPath);
+    }
+    
+    addConsoleLog(`[Server] Loading from local dev server: ${serverInfo.url}`);
+    addConsoleLog(`📂 Directory: ${directory}`);
+    
+    try {
+      // Add cache-busting to ensure fresh content
+      const cacheBuster = `?_t=${Date.now()}`;
+      const fetchUrl = serverInfo.url + cacheBuster;
+      
+      const response = await fetch(fetchUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      let html = await response.text();
+      addConsoleLog(`📄 Fetched HTML (${html.length} bytes)`);
+      
+      // Inline CSS to avoid cross-origin issues
+      html = await inlineLocalDevCSS(html, serverInfo.url);
+      
+      // Rewrite remaining URLs (scripts, images, etc.)
+      html = rewriteLocalDevUrls(html, serverInfo.url);
+      
+      currentMeta = {
+        name: dirName,
+        isLocal: true,
+        directory: directory
+      };
+      
+      // Use iframe.src directly for proper HTTP context
+      // This enables telaHost injection (same-origin)
+      if (contentFrame) {
+        contentFrame.removeAttribute('srcdoc');
+        const cacheBustedUrl = `${serverInfo.url}?_t=${Date.now()}`;
+        contentFrame.src = cacheBustedUrl;
+        showWelcome = false;
+        
+        // Inject telaHost API after iframe loads
+        contentFrame.onload = () => {
+          setTimeout(() => injectTelaHostAPI(), 50);
+        };
+      }
+      addConsoleLog(`[OK] Local file loaded via HTTP (telaHost available)`);
+      
+    } catch (fetchError) {
+      addConsoleLog(`[Error] Failed to fetch from local server: ${fetchError}`, 'error');
+      toast.error(`Failed to load local content: ${fetchError.message}`);
+      showWelcome = true;
+    } finally {
+      loading = false;
+    }
+  }
+  
+  // Navigate to local dev server (legacy local:// URL handler)
   async function navigateToLocalDev(url, fromHistory = false) {
     const directory = url.slice(8); // Remove 'local://'
     resetXSWDSubscriptions();
     
     try {
-      // Get the local dev server status to find the URL
+      // Check if Local Dev Server is running
       const status = await GetLocalDevServerStatus();
       
+      // Auto-start server if not running (NEW: enables seamless local:// navigation)
       if (!status.running) {
-        addConsoleLog('[Error] Local dev server is not running. Start it from Studio > Serve.', 'error');
-        toast.error('Local dev server not running. Start it from Studio → Serve.');
-        showWelcome = true;
-        loading = false;
-        return;
+        if (directory) {
+          addConsoleLog(`[Local] Auto-starting dev server for: ${directory}`);
+          const serverResult = await StartLocalDevServer(directory);
+          if (!serverResult.success) {
+            addConsoleLog(`[Error] Failed to start dev server: ${serverResult.error}`, 'error');
+            toast.error(serverResult.error || 'Failed to start local dev server');
+            showWelcome = true;
+            loading = false;
+            return;
+          }
+          addConsoleLog(`[OK] Local dev server started at ${serverResult.url}`);
+          // Use the newly started server
+          await loadFromLocalDevServer(serverResult, directory, url, fromHistory);
+          return;
+        } else {
+          addConsoleLog('[Error] Local dev server is not running. Provide a directory path.', 'error');
+          toast.error('No directory specified. Use local:///path/to/dir or start server from Studio.');
+          showWelcome = true;
+          loading = false;
+          return;
+        }
       }
       
       // Check if the directory matches (only warn if directories differ)
