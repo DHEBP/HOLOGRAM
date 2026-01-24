@@ -381,11 +381,24 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			return
 		}
 		
-		// Get daemon endpoint from app settings
-		endpoint := "127.0.0.1:10102"
-		if s.app != nil {
-			if ep, ok := s.app.settings["daemon_endpoint"].(string); ok && ep != "" {
-				endpoint = ep
+		// Determine endpoint based on mode:
+		// 1. If simulator mode is active, use simulator daemon (port 20000)
+		// 2. Otherwise, use configured daemon endpoint or default mainnet (port 10102)
+		var endpoint string
+		var isSimulator bool
+		
+		if s.app != nil && s.app.simulatorManager != nil && s.app.simulatorManager.isInitialized {
+			// Simulator mode active - use simulator daemon endpoint
+			endpoint = "127.0.0.1:20000"
+			isSimulator = true
+			log.Printf("[XSWD] GetDaemon: Simulator mode active, using endpoint %s", endpoint)
+		} else {
+			// Normal mode - use configured endpoint or default
+			endpoint = "127.0.0.1:10102"
+			if s.app != nil {
+				if ep, ok := s.app.settings["daemon_endpoint"].(string); ok && ep != "" {
+					endpoint = ep
+				}
 			}
 		}
 		
@@ -398,8 +411,11 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		
 		// Format as WebSocket URL for dApp to connect
 		// Use wss:// if original was https://, otherwise ws://
+		// Simulator always uses ws:// (local, unencrypted)
 		var wsEndpoint string
-		if s.app != nil {
+		if isSimulator {
+			wsEndpoint = fmt.Sprintf("ws://%s/ws", endpoint)
+		} else if s.app != nil {
 			if ep, ok := s.app.settings["daemon_endpoint"].(string); ok && len(ep) > 8 && ep[:8] == "https://" {
 				wsEndpoint = fmt.Sprintf("wss://%s/ws", endpoint)
 			} else {
@@ -409,7 +425,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			wsEndpoint = fmt.Sprintf("ws://%s/ws", endpoint)
 		}
 		
-		log.Printf("[XSWD] GetDaemon: returning endpoint %s", wsEndpoint)
+		log.Printf("[XSWD] GetDaemon: returning endpoint %s (simulator=%v)", wsEndpoint, isSimulator)
 		result = map[string]interface{}{"endpoint": wsEndpoint}
 		s.sendResponse(conn, req.ID, result, nil)
 

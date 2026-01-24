@@ -1388,8 +1388,40 @@ let addressInput = '';
       // Inline CSS to avoid cross-origin issues
       html = await inlineLocalDevCSS(html, serverInfo.url);
       
-      // Rewrite remaining URLs (scripts, images, etc.)
+      // CRITICAL: Inject telaHost placeholder script FIRST, before any other modifications
+      // This ensures telaHost exists (even if null) when scripts check for it
+      // The actual API will be injected by parent window immediately after iframe loads
+      // Note: We split the closing script tag to avoid Svelte parser confusion
+      const telaHostPlaceholder = 
+        '<scr' + 'ipt>' +
+        '(function(){' +
+        'if(typeof window.telaHost==="undefined"){' +
+        'window.telaHost=null;' +
+        'window.__waitingForTelaHost=true;' +
+        '}' +
+        '})();' +
+        '</scr' + 'ipt>';
+      
+      // Inject at the very start of <head> (before base tag or any other scripts)
+      if (html.includes('<head>')) {
+        html = html.replace('<head>', '<head>' + telaHostPlaceholder);
+      } else if (html.includes('</head>')) {
+        html = html.replace('</head>', telaHostPlaceholder + '</head>');
+      } else {
+        // No head, inject at start of body or beginning
+        if (html.includes('<body>')) {
+          html = html.replace('<body>', '<head>' + telaHostPlaceholder + '</head><body>');
+        } else {
+          html = telaHostPlaceholder + html;
+        }
+      }
+      
+      // Rewrite remaining URLs (scripts, images, etc.) to absolute URLs
+      // This allows us to use srcdoc while maintaining asset loading
+      // Note: base tag will be added AFTER telaHost placeholder
       html = rewriteLocalDevUrls(html, serverInfo.url);
+      
+      addConsoleLog('[OK] Injected telaHost placeholder script into HTML (runs before other scripts)');
       
       currentMeta = {
         name: dirName,
@@ -1397,17 +1429,32 @@ let addressInput = '';
         directory: directory
       };
       
-      // Use iframe.src directly for proper HTTP context
-      // This enables telaHost injection (same-origin)
+      // Use srcdoc with modified HTML (includes telaHost placeholder)
+      // Assets use absolute URLs so they still load from server
       if (contentFrame) {
-        contentFrame.removeAttribute('srcdoc');
-        const cacheBustedUrl = `${serverInfo.url}?_t=${Date.now()}`;
-        contentFrame.src = cacheBustedUrl;
+        contentFrame.removeAttribute('src');
+        contentFrame.srcdoc = html;
         showWelcome = false;
         
-        // Inject telaHost API after iframe loads
+        // Inject actual telaHost API immediately after iframe loads
+        // The placeholder prevents errors, but we need the real API
         contentFrame.onload = () => {
-          setTimeout(() => injectTelaHostAPI(), 50);
+          setTimeout(() => {
+            try {
+              injectTelaHostAPI();
+              // Verify injection worked
+              const iframeWindow = contentFrame?.contentWindow;
+              if (iframeWindow?.telaHost) {
+                addConsoleLog('[OK] telaHost API injected successfully (placeholder was set early)');
+              } else {
+                addConsoleLog('[WARN] telaHost injection may have failed - retrying...', 'warn');
+                // Retry injection
+                setTimeout(() => injectTelaHostAPI(), 100);
+              }
+            } catch (e) {
+              addConsoleLog(`[ERROR] Failed to inject telaHost: ${e.message}`, 'error');
+            }
+          }, 10);
         };
       }
       addConsoleLog(`[OK] Local file loaded via HTTP (telaHost available)`);
