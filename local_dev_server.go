@@ -245,10 +245,13 @@ func (a *App) RefreshLocalDevServer() map[string]interface{} {
 
 // ================== Helper Functions ==================
 
-// findAvailablePort finds an available port starting from 8080
+// findAvailablePort finds an available port starting from 50080
+// Note: Avoids ports 8080-9000 which conflict with DERO services:
+//   - 8080: Block explorer (derod)
+//   - 10102/20000/40402: RPC ports (mainnet/simulator/testnet)
 func findAvailablePort() (int, error) {
-	// Try ports in the 8080-9000 range
-	for port := 8080; port < 9000; port++ {
+	// Try ports in the 50080-51000 range (avoids DERO reserved ports)
+	for port := 50080; port < 51000; port++ {
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
 		listener, err := net.Listen("tcp", addr)
 		if err == nil {
@@ -256,7 +259,7 @@ func findAvailablePort() (int, error) {
 			return port, nil
 		}
 	}
-	return 0, fmt.Errorf("no available ports in range 8080-9000")
+	return 0, fmt.Errorf("no available ports in range 50080-51000")
 }
 
 // localDevCORSMiddleware adds CORS headers and proper MIME types for local development

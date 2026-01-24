@@ -135,6 +135,13 @@ func (swm *SimulatorWalletManager) SetupWallets(baseDir string) error {
 		return nil
 	}
 
+	// CRITICAL: Set globals for simulator mode BEFORE creating wallets
+	// The wallet creation uses globals to determine address prefixes
+	// InitNetwork() sets Config based on --testnet flag
+	globals.Arguments["--simulator"] = true
+	globals.Arguments["--testnet"] = true
+	globals.InitNetwork()
+
 	swm.walletsDir = swm.GetWalletsDir(baseDir)
 
 	// Create wallets directory
@@ -216,7 +223,9 @@ func (swm *SimulatorWalletManager) RegisterAllWallets(daemonEndpoint string) err
 	swm.log(fmt.Sprintf("[WALLET] Registering %d test wallets on blockchain...", len(swm.wallets)))
 
 	// CRITICAL: Initialize globals for simulator mode
+	// InitNetwork() sets Config based on --testnet flag
 	globals.Arguments["--simulator"] = true
+	globals.Arguments["--testnet"] = true
 	globals.InitNetwork()
 
 	// Connect walletapi for registration
@@ -280,6 +289,7 @@ func (swm *SimulatorWalletManager) RegisterAllWallets(daemonEndpoint string) err
 // ================== Balance Sync Functions ==================
 
 // syncBalancesUnlocked syncs balances for all wallets (must hold lock)
+// Uses direct daemon query via GetDecryptedBalanceAtTopoHeight for accurate balances
 func (swm *SimulatorWalletManager) syncBalancesUnlocked() {
 	for i, tw := range swm.wallets {
 		if tw.wallet == nil {
@@ -290,20 +300,24 @@ func (swm *SimulatorWalletManager) syncBalancesUnlocked() {
 		// Ensure wallet is in online mode
 		tw.wallet.SetOnlineMode()
 
-		if err := tw.wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-			swm.log(fmt.Sprintf("[WARN] Wallet %d: Sync failed: %v", i, err))
-			continue
+		// Use direct daemon query instead of wallet's internal state
+		// The wallet's Sync_Wallet_Memory_With_Daemon() and Get_Balance() can return
+		// stale data in simulator mode, especially for incoming transactions
+		var zerohash [32]byte // zero SCID for native DERO
+		balance, _, err := tw.wallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, tw.Address)
+		if err != nil {
+			// Fallback to wallet's internal state if direct query fails
+			tw.wallet.Sync_Wallet_Memory_With_Daemon()
+			balance, _ = tw.wallet.Get_Balance()
 		}
 
-		mature, locked := tw.wallet.Get_Balance()
 		oldBalance := tw.Balance
-		tw.Balance = mature
-		tw.Locked = locked
+		tw.Balance = balance
 		tw.Registered = tw.wallet.IsRegistered()
 
 		// Log if balance changed
-		if oldBalance != mature {
-			swm.log(fmt.Sprintf("[SYNC] Wallet %d: Balance changed %d -> %d", i, oldBalance, mature))
+		if oldBalance != balance {
+			swm.log(fmt.Sprintf("[SYNC] Wallet %d: Balance changed %d -> %d", i, oldBalance, balance))
 		}
 	}
 }
@@ -810,6 +824,13 @@ func (a *App) FundTestWallet(targetIndex int, amount uint64) map[string]interfac
 			"error":   fmt.Sprintf("Target wallet %d not found", targetIndex),
 		}
 	}
+
+	// CRITICAL: Set globals for simulator mode before walletapi.Connect()
+	// The walletapi checks globals.IsMainnet() which compares Config.Name
+	// InitNetwork() sets Config based on --testnet flag
+	globals.Arguments["--simulator"] = true
+	globals.Arguments["--testnet"] = true
+	globals.InitNetwork()
 
 	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
 

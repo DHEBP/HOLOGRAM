@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/deroproject/derohe/globals"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -75,6 +76,15 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 	}()
 
 	sm.app.logToConsole("[SIM] Starting Simulator Mode...")
+	
+	// CRITICAL: Set globals for simulator mode EARLY
+	// This must happen before any walletapi.Connect() calls throughout the simulator lifecycle
+	// The walletapi checks globals.IsMainnet() which compares Config.Name
+	// InitNetwork() sets Config based on --testnet flag, so we must set BOTH flags
+	globals.Arguments["--simulator"] = true
+	globals.Arguments["--testnet"] = true // Required for InitNetwork() to set Config = Testnet
+	globals.InitNetwork()
+	sm.app.logToConsole("[SIM] Set globals for simulator mode (--simulator=true, --testnet=true)")
 	
 	// Emit initial progress event
 	if sm.app.ctx != nil {
