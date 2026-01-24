@@ -1494,7 +1494,7 @@
                   <button class="btn btn-ghost" on:click={() => { sendStep = 1; sendError = null; }}>
                     ← Back
                   </button>
-                  <button class="btn btn-primary" disabled={sendLoading || !sendPassword} on:click={executeSend}>
+                  <button class="btn btn-primary" disabled={sendLoading || (!sendPassword && !$appState.isSimulator)} on:click={executeSend}>
                     {#if sendLoading}
                       <Loader2 size={14} class="spin" />
                       Sending...
