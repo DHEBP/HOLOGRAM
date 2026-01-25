@@ -376,8 +376,6 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	// Returns just host:port - dApps are expected to add protocol prefix and /ws path themselves
 	// This matches Engram's behavior
 	case "GetDaemon", "DERO.GetDaemon":
-		log.Printf("[XSWD] GetDaemon: request from origin=%q, reqID=%v", origin, req.ID)
-		
 		// Check if permission granted (requires view_address like other read methods)
 		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
 			log.Printf("[XSWD] GetDaemon: DENIED - origin=%q does not have view_address permission", origin)
@@ -390,27 +388,19 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		// 1. If simulator mode is active, use simulator daemon (port 20000)
 		// 2. Otherwise, use configured daemon endpoint or default mainnet (port 10102)
 		var endpoint string
-		var endpointSource string
 		
 		if s.app != nil && s.app.simulatorManager != nil && s.app.simulatorManager.isInitialized {
 			// Simulator mode active - use simulator daemon endpoint
 			endpoint = "127.0.0.1:20000"
-			endpointSource = "simulator"
-			log.Printf("[XSWD] GetDaemon: Simulator mode active, using endpoint %s", endpoint)
 		} else {
 			// Normal mode - use configured endpoint or default
 			endpoint = "127.0.0.1:10102"
-			endpointSource = "default"
 			if s.app != nil {
 				if ep, ok := s.app.settings["daemon_endpoint"].(string); ok && ep != "" {
 					endpoint = ep
-					endpointSource = "settings"
 				}
 			}
 		}
-		
-		// Log the raw endpoint before stripping
-		log.Printf("[XSWD] GetDaemon: raw endpoint=%q source=%s", endpoint, endpointSource)
 		
 		// Strip http:// or https:// prefix if present - return just host:port
 		if len(endpoint) > 7 && endpoint[:7] == "http://" {
@@ -418,8 +408,6 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		} else if len(endpoint) > 8 && endpoint[:8] == "https://" {
 			endpoint = endpoint[8:]
 		}
-		
-		log.Printf("[XSWD] GetDaemon: RETURNING endpoint=%q (source=%s) to origin=%q", endpoint, endpointSource, origin)
 		result = map[string]interface{}{"endpoint": endpoint}
 		s.sendResponse(conn, req.ID, result, nil)
 

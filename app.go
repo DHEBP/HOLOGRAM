@@ -358,26 +358,19 @@ func (a *App) CallXSWD(methodJSON string) map[string]interface{} {
 	// Returns just host:port - dApps are expected to add the ws:// prefix and /ws path themselves
 	// This matches Engram's behavior
 	if request.Method == "GetDaemon" {
-		log.Printf("[XSWD] GetDaemon: request received via CallXSWD (frontend bridge)")
 		endpoint := "127.0.0.1:10102"
-		endpointSource := "default"
 		
 		if a.simulatorManager != nil && a.simulatorManager.isInitialized {
 			endpoint = "127.0.0.1:20000"
-			endpointSource = "simulator"
-			log.Printf("[XSWD] GetDaemon: Simulator mode active")
 		} else {
 			// Check if there's a custom daemon endpoint configured
 			if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-				log.Printf("[XSWD] GetDaemon: raw settings daemon_endpoint=%q", ep)
 				// Strip protocol prefix if present
 				ep = strings.TrimPrefix(ep, "http://")
 				ep = strings.TrimPrefix(ep, "https://")
 				endpoint = ep
-				endpointSource = "settings"
 			}
 		}
-		log.Printf("[XSWD] GetDaemon: RETURNING endpoint=%q (source=%s)", endpoint, endpointSource)
 		return xswdSuccess(map[string]interface{}{
 			"endpoint": endpoint,
 		})

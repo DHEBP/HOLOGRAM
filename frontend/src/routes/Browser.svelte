@@ -1436,7 +1436,13 @@ let addressInput = '';
       // Note: base tag will be added AFTER telaHost placeholder
       html = rewriteLocalDevUrls(html, serverInfo.url);
       
-      addConsoleLog('[OK] Injected telaHost placeholder script into HTML (runs before other scripts)');
+      // CRITICAL: Inject the XSWD bridge script for WebSocket interception
+      // This enables dApps to connect via XSWD (ws://localhost:44326/xswd)
+      // The bridge proxies WebSocket calls through postMessage to the parent Browser.svelte
+      const bridgeScript = getXSWDBridgeScript();
+      html = bridgeScript + html;
+      
+      addConsoleLog('[OK] Injected XSWD bridge and telaHost placeholder into HTML');
       
       currentMeta = {
         name: dirName,
@@ -1444,7 +1450,7 @@ let addressInput = '';
         directory: directory
       };
       
-      // Use srcdoc with modified HTML (includes telaHost placeholder)
+      // Use srcdoc with modified HTML (includes XSWD bridge + telaHost placeholder)
       // Assets use absolute URLs so they still load from server
       if (contentFrame) {
         contentFrame.removeAttribute('src');
@@ -1842,21 +1848,11 @@ let addressInput = '';
   }
   
   XSWDProxy.prototype.send = function(data) {
-    // Debug: log all send attempts
-    try {
-      var parsed = typeof data === 'string' ? JSON.parse(data) : data;
-      log('[DEBUG] XSWDProxy.send called: method=' + (parsed.method || 'handshake') + ', readyState=' + this.readyState);
-    } catch(e) {
-      log('[DEBUG] XSWDProxy.send called: parseError, readyState=' + this.readyState);
-    }
-    
     if (this.readyState === 0) { 
-      log('[DEBUG] Queueing message (readyState=0)');
       this._queue.push(data); 
       return; 
     }
     if (this.readyState !== 1) {
-      log('[DEBUG] Socket not open, readyState=' + this.readyState);
       throw new Error('WebSocket closed');
     }
     this._handle(data);
