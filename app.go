@@ -101,6 +101,10 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.logToConsole("[START] TELA Browser starting up...")
 
+	// Load persisted settings (daemon_endpoint, network, etc.) before any connections
+	// This ensures user-configured endpoints survive app restarts
+	a.loadSettings()
+
 	// Ensure datashards are writable before any TELA operations
 	// CRITICAL: This MUST succeed or TELA apps will fail with "read-only file system" errors
 	dataDir := getHologramDataDir()
