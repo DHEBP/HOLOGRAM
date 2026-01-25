@@ -1772,6 +1772,49 @@ let addressInput = '';
     try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*'); } catch(e) {}
   }
   
+  // Intercept console methods to capture dApp logs
+  (function() {
+    var methods = ['log', 'warn', 'error', 'info', 'debug'];
+    var prefixes = { log: 'LOG', warn: 'WARN', error: 'ERROR', info: 'INFO', debug: 'DEBUG' };
+    methods.forEach(function(method) {
+      var original = console[method];
+      console[method] = function() {
+        // Call original so browser DevTools still works
+        if (original) original.apply(console, arguments);
+        // Forward to parent
+        try {
+          var args = Array.prototype.slice.call(arguments);
+          var msg = '[dApp:' + prefixes[method] + '] ' + args.map(function(a) {
+            if (a === null) return 'null';
+            if (a === undefined) return 'undefined';
+            if (typeof a === 'object') {
+              try { return JSON.stringify(a); } catch(e) { return String(a); }
+            }
+            return String(a);
+          }).join(' ');
+          window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*');
+        } catch(e) {}
+      };
+    });
+  })();
+  
+  // Capture uncaught errors
+  window.addEventListener('error', function(e) {
+    try {
+      var msg = '[dApp:UNCAUGHT] ' + (e.message || 'Unknown error') + ' at ' + (e.filename || 'unknown') + ':' + (e.lineno || '?');
+      window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*');
+    } catch(ex) {}
+  });
+  
+  // Capture unhandled promise rejections
+  window.addEventListener('unhandledrejection', function(e) {
+    try {
+      var reason = e.reason;
+      var msg = '[dApp:REJECTION] ' + (reason instanceof Error ? reason.message : String(reason));
+      window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*');
+    } catch(ex) {}
+  });
+  
   log('[Bridge] Initializing...');
   
   // Spoof location to look like a normal HTTP page (Engram serves at localhost:8082)
