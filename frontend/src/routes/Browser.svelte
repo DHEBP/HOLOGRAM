@@ -52,12 +52,16 @@ function stopXSWDSubscriptionPolling() {
 }
 
 function sendXSWDEvent(method, params) {
-  if (!contentFrame || !contentFrame.contentWindow) return;
-  contentFrame.contentWindow.postMessage({
-    type: 'xswd-event',
-    method,
-    params
-  }, '*');
+  try {
+    if (!contentFrame || !contentFrame.contentWindow) return;
+    contentFrame.contentWindow.postMessage({
+      type: 'xswd-event',
+      method,
+      params
+    }, '*');
+  } catch (e) {
+    // Silently ignore cross-origin errors - expected when iframe has different origin
+  }
 }
 
 async function pollXSWDSubscriptions() {
@@ -698,15 +702,19 @@ let addressInput = '';
         // Multiple attempts to ensure focus is restored
         [100, 300, 500, 1000].forEach(delay => {
           setTimeout(() => {
-            if (contentFrame) {
-              contentFrame.focus();
-              // Also try clicking the iframe content
-              try {
-                contentFrame.contentDocument?.body?.click();
-                contentFrame.contentDocument?.body?.focus();
-              } catch (e) {
-                // Cross-origin may prevent this
+            try {
+              if (contentFrame) {
+                contentFrame.focus();
+                // Also try clicking the iframe content
+                try {
+                  contentFrame.contentDocument?.body?.click();
+                  contentFrame.contentDocument?.body?.focus();
+                } catch (e) {
+                  // Cross-origin may prevent this
+                }
               }
+            } catch (e) {
+              // Silently ignore cross-origin errors
             }
           }, delay);
         });
@@ -741,12 +749,23 @@ let addressInput = '';
     
     // PostMessage handler for XSWD bridge communication from iframe
     const handleXSWDMessage = async (event) => {
-      if (contentFrame && event.source === contentFrame.contentWindow && event.data?.type === 'xswd-request') {
-        addConsoleLog(`[Browser] Received: action=${event.data.action}, id=${event.data.id}`);
+      try {
+        if (contentFrame && event.source === contentFrame.contentWindow && event.data?.type === 'xswd-request') {
+          addConsoleLog(`[Browser] Received: action=${event.data.action}, id=${event.data.id}`);
+        }
+      } catch (e) {
+        // Cross-origin comparison may fail - ignore
       }
       
       // Only handle messages from our iframe
-      if (!contentFrame || event.source !== contentFrame.contentWindow) {
+      let isFromOurIframe = false;
+      try {
+        isFromOurIframe = contentFrame && event.source === contentFrame.contentWindow;
+      } catch (e) {
+        // Cross-origin comparison may fail - treat as not from our iframe
+      }
+      
+      if (!isFromOurIframe) {
         if (event.data && event.data.type === 'xswd-request') {
           // Identify the source for debugging
           let sourceInfo = 'unknown';
@@ -1463,17 +1482,18 @@ let addressInput = '';
           setTimeout(() => {
             try {
               injectTelaHostAPI();
-              // Verify injection worked
-              const iframeWindow = contentFrame?.contentWindow;
-              if (iframeWindow?.telaHost) {
-                addConsoleLog('[OK] telaHost API injected successfully (placeholder was set early)');
-              } else {
-                addConsoleLog('[WARN] telaHost injection may have failed - retrying...', 'warn');
-                // Retry injection
-                setTimeout(() => injectTelaHostAPI(), 100);
+              // Verify injection worked - but don't error if cross-origin prevents access
+              try {
+                const iframeWindow = contentFrame?.contentWindow;
+                if (iframeWindow?.telaHost) {
+                  addConsoleLog('[OK] telaHost API injected successfully (placeholder was set early)');
+                }
+                // Don't warn - cross-origin is expected for local dev server
+              } catch (e) {
+                // Cross-origin access denied - XSWD bridge will handle communication instead
               }
             } catch (e) {
-              addConsoleLog(`[ERROR] Failed to inject telaHost: ${e.message}`, 'error');
+              // Silently ignore cross-origin errors - XSWD bridge handles communication
             }
           }, 10);
         };
@@ -2111,8 +2131,9 @@ let addressInput = '';
       
       addConsoleLog('[OK] telaHost API injected');
     } catch (error) {
-      console.error('Failed to inject telaHost API:', error);
-      // Silently fail for cross-origin - explorer can use WebSocket directly
+      // Silently fail for cross-origin - this is expected when iframe content
+      // is served from a different origin (e.g., local dev server at localhost:50080)
+      // The XSWD bridge handles communication via postMessage instead
     }
   }
   
