@@ -2001,6 +2001,40 @@ let addressInput = '';
   
   log('[Bridge] Ready - WebSocket interception active');
   
+  // Create telaHost API that works via postMessage (cross-origin safe)
+  // This ensures dApps can use telaHost.getDaemon() even in production builds
+  // where direct iframe DOM injection may fail due to cross-origin restrictions
+  window.telaHost = {
+    getDaemon: function() {
+      log('[telaHost] getDaemon called');
+      return request('call', { method: 'GetDaemon', params: {}, authState: 'ok' }).then(function(r) {
+        log('[telaHost] getDaemon result: ' + JSON.stringify(r));
+        return r && r.endpoint ? r.endpoint : r;
+      });
+    },
+    call: function(method, params) {
+      log('[telaHost] call: ' + method);
+      return request('call', { method: method, params: params || {}, authState: 'ok' });
+    },
+    getAddress: function() {
+      return request('call', { method: 'GetAddress', params: {}, authState: 'ok' }).then(function(r) {
+        return r && r.address ? r.address : r;
+      });
+    },
+    getBalance: function() {
+      return request('call', { method: 'GetBalance', params: {}, authState: 'ok' }).then(function(r) {
+        return { balance: r && r.balance || 0, unlocked: r && r.unlocked_balance || 0 };
+      });
+    },
+    connect: function() {
+      return request('connect', { name: 'dApp', description: 'dApp via telaHost' });
+    },
+    isConnected: function() {
+      return proxies.length > 0 && proxies[0] && proxies[0]._auth === 'ok';
+    }
+  };
+  log('[telaHost] API ready via postMessage bridge');
+  
   // Monitor what happens after page loads
   window.addEventListener('DOMContentLoaded', function() {
     log('📄 [DOM] DOMContentLoaded');
