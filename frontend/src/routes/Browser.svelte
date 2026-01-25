@@ -856,6 +856,7 @@ let addressInput = '';
           case 'call':
             // Handle XSWD method call
             const { method, params, authState } = payload;
+            addConsoleLog(`[DEBUG] XSWD call received: method=${method}, authState=${authState}`);
             const normalizedMethod = method.replace('DERO.', '');
           const methodLower = normalizedMethod.toLowerCase();
           const callSettings = get(settingsState);
@@ -902,6 +903,20 @@ let addressInput = '';
               result = params;
             } else if (normalizedMethod === 'Login') {
               result = 'Logged in';
+            } else if (normalizedMethod === 'GetDaemon') {
+              // GetDaemon - returns daemon endpoint for direct node communication
+              // Always route through CallXSWD since it's handled specially in app.go
+              addConsoleLog(`[Browser] GetDaemon requested - routing to backend`);
+              const xswdResult = await CallXSWD(JSON.stringify({ method: 'GetDaemon', params: params || {} }));
+              addConsoleLog(`[Browser] GetDaemon result: ${JSON.stringify(xswdResult)}`);
+              if (xswdResult && xswdResult.success) {
+                result = xswdResult.result;
+                addConsoleLog(`[OK] GetDaemon succeeded: endpoint=${result?.endpoint}`);
+              } else {
+                const errorMsg = xswdResult?.error || 'GetDaemon call failed';
+                addConsoleLog(`[Error] GetDaemon failed: ${errorMsg}`);
+                throw new Error(errorMsg);
+              }
             } else {
               // Route through XSWD/wallet
               const signingMethods = ['transfer', 'scinvoke', 'sign', 'Transfer', 'SC_Invoke'];
@@ -1827,8 +1842,23 @@ let addressInput = '';
   }
   
   XSWDProxy.prototype.send = function(data) {
-    if (this.readyState === 0) { this._queue.push(data); return; }
-    if (this.readyState !== 1) throw new Error('WebSocket closed');
+    // Debug: log all send attempts
+    try {
+      var parsed = typeof data === 'string' ? JSON.parse(data) : data;
+      log('[DEBUG] XSWDProxy.send called: method=' + (parsed.method || 'handshake') + ', readyState=' + this.readyState);
+    } catch(e) {
+      log('[DEBUG] XSWDProxy.send called: parseError, readyState=' + this.readyState);
+    }
+    
+    if (this.readyState === 0) { 
+      log('[DEBUG] Queueing message (readyState=0)');
+      this._queue.push(data); 
+      return; 
+    }
+    if (this.readyState !== 1) {
+      log('[DEBUG] Socket not open, readyState=' + this.readyState);
+      throw new Error('WebSocket closed');
+    }
     this._handle(data);
   };
   
@@ -1836,7 +1866,7 @@ let addressInput = '';
     var self = this;
     try {
       var msg = typeof data === 'string' ? JSON.parse(data) : data;
-      log('[XSWD] ' + (msg.method || 'handshake'));
+      log('[XSWD] ' + (msg.method || 'handshake') + ' (id=' + msg.id + ')');
       
       // Handshake (has name/description, no method)
       if (!msg.method && (msg.name || msg.description)) {
