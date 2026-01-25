@@ -371,8 +371,10 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		}
 		s.sendResponse(conn, req.ID, result, nil)
 
-	// GetDaemon - Returns daemon WebSocket endpoint for direct node communication
+	// GetDaemon - Returns daemon endpoint for direct node communication
 	// dApps use this to connect directly to the node for read operations (GetSC, tx tracking, etc.)
+	// Returns just host:port - dApps are expected to add protocol prefix and /ws path themselves
+	// This matches Engram's behavior
 	case "GetDaemon", "DERO.GetDaemon":
 		// Check if permission granted (requires view_address like other read methods)
 		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
@@ -385,12 +387,10 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		// 1. If simulator mode is active, use simulator daemon (port 20000)
 		// 2. Otherwise, use configured daemon endpoint or default mainnet (port 10102)
 		var endpoint string
-		var isSimulator bool
 		
 		if s.app != nil && s.app.simulatorManager != nil && s.app.simulatorManager.isInitialized {
 			// Simulator mode active - use simulator daemon endpoint
 			endpoint = "127.0.0.1:20000"
-			isSimulator = true
 			log.Printf("[XSWD] GetDaemon: Simulator mode active, using endpoint %s", endpoint)
 		} else {
 			// Normal mode - use configured endpoint or default
@@ -402,31 +402,15 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			}
 		}
 		
-		// Strip http:// or https:// prefix if present
+		// Strip http:// or https:// prefix if present - return just host:port
 		if len(endpoint) > 7 && endpoint[:7] == "http://" {
 			endpoint = endpoint[7:]
 		} else if len(endpoint) > 8 && endpoint[:8] == "https://" {
 			endpoint = endpoint[8:]
 		}
 		
-		// Format as WebSocket URL for dApp to connect
-		// Use wss:// if original was https://, otherwise ws://
-		// Simulator always uses ws:// (local, unencrypted)
-		var wsEndpoint string
-		if isSimulator {
-			wsEndpoint = fmt.Sprintf("ws://%s/ws", endpoint)
-		} else if s.app != nil {
-			if ep, ok := s.app.settings["daemon_endpoint"].(string); ok && len(ep) > 8 && ep[:8] == "https://" {
-				wsEndpoint = fmt.Sprintf("wss://%s/ws", endpoint)
-			} else {
-				wsEndpoint = fmt.Sprintf("ws://%s/ws", endpoint)
-			}
-		} else {
-			wsEndpoint = fmt.Sprintf("ws://%s/ws", endpoint)
-		}
-		
-		log.Printf("[XSWD] GetDaemon: returning endpoint %s (simulator=%v)", wsEndpoint, isSimulator)
-		result = map[string]interface{}{"endpoint": wsEndpoint}
+		log.Printf("[XSWD] GetDaemon: returning endpoint %s", endpoint)
+		result = map[string]interface{}{"endpoint": endpoint}
 		s.sendResponse(conn, req.ID, result, nil)
 
 	default:

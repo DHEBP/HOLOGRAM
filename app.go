@@ -351,6 +351,8 @@ func (a *App) CallXSWD(methodJSON string) map[string]interface{} {
 
 	// GetDaemon - always handle this first, regardless of XSWD server state
 	// This is critical for dApps that need to connect directly to the daemon
+	// Returns just host:port - dApps are expected to add the ws:// prefix and /ws path themselves
+	// This matches Engram's behavior
 	if request.Method == "GetDaemon" {
 		endpoint := "127.0.0.1:10102"
 		if a.simulatorManager != nil && a.simulatorManager.isInitialized {
@@ -367,7 +369,7 @@ func (a *App) CallXSWD(methodJSON string) map[string]interface{} {
 			log.Printf("[XSWD] GetDaemon: Returning configured endpoint %s", endpoint)
 		}
 		return xswdSuccess(map[string]interface{}{
-			"endpoint": fmt.Sprintf("ws://%s/ws", endpoint),
+			"endpoint": endpoint,
 		})
 	}
 
