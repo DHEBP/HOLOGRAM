@@ -1775,14 +1775,22 @@ let addressInput = '';
   (function() {
     var methods = ['log', 'warn', 'error', 'info', 'debug'];
     var prefixes = { log: 'LOG', warn: 'WARN', error: 'ERROR', info: 'INFO', debug: 'DEBUG' };
+    var isForwarding = false; // Prevent infinite loops
     methods.forEach(function(method) {
       var original = console[method];
       console[method] = function() {
         // Call original so browser DevTools still works
         if (original) original.apply(console, arguments);
+        // Prevent infinite loop: don't forward if we're already forwarding
+        if (isForwarding) return;
         // Forward to parent
         try {
           var args = Array.prototype.slice.call(arguments);
+          // Skip forwarding messages about xswd-response to prevent loops
+          var firstArg = args[0];
+          if (typeof firstArg === 'string' && firstArg.indexOf('xswd-response') !== -1) return;
+          if (typeof firstArg === 'string' && firstArg.indexOf('received message') !== -1) return;
+          
           var msg = '[dApp:' + prefixes[method] + '] ' + args.map(function(a) {
             if (a === null) return 'null';
             if (a === undefined) return 'undefined';
@@ -1791,8 +1799,10 @@ let addressInput = '';
             }
             return String(a);
           }).join(' ');
+          isForwarding = true;
           window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*');
-        } catch(e) {}
+          isForwarding = false;
+        } catch(e) { isForwarding = false; }
       };
     });
   })();
