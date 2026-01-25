@@ -362,6 +362,18 @@ func (a *App) CallXSWD(methodJSON string) map[string]interface{} {
 
 		case strings.HasPrefix(request.Method, "Gnomon."):
 			return a.routeGnomonCall(request.Method, request.Params)
+
+		case request.Method == "GetDaemon":
+			// GetDaemon - return daemon endpoint for dApps to connect directly
+			// In simulator mode, return simulator endpoint; otherwise mainnet
+			endpoint := "127.0.0.1:10102"
+			if a.simulatorManager != nil && a.simulatorManager.isInitialized {
+				endpoint = "127.0.0.1:20000"
+				log.Printf("[XSWD] GetDaemon: Simulator mode active, returning %s", endpoint)
+			}
+			return xswdSuccess(map[string]interface{}{
+				"endpoint": fmt.Sprintf("ws://%s/ws", endpoint),
+			})
 		}
 	}
 
