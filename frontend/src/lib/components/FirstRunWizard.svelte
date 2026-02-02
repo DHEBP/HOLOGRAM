@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
-  import { Check, X, Diamond, AlertTriangle, Zap, Shield, Heart, Gamepad2 } from 'lucide-svelte';
+  import { Check, X, Diamond, AlertTriangle, Zap, Shield, Heart, Gamepad2, Terminal } from 'lucide-svelte';
   import Wordmark from './Wordmark.svelte';
   import { 
     DetectRunningNode, CheckDerodStatus, GetLatestDerodRelease,
@@ -352,11 +352,11 @@
         </div>
         
         <div class="wizard-options grid-3">
-          <button on:click={downloadDerod} class="wizard-option primary">
-            <span class="wizard-option-icon">◉</span>
-            <div class="wizard-option-title">Download Node</div>
-            <div class="wizard-option-desc">New users start here</div>
-            <span class="wizard-option-badge err">~50MB</span>
+          <button on:click={() => step = 'build_instructions'} class="wizard-option primary">
+            <span class="wizard-option-icon"><Terminal size={20} /></span>
+            <div class="wizard-option-title">Build Node</div>
+            <div class="wizard-option-desc">Build from source</div>
+            <span class="wizard-option-badge ok">RECOMMENDED</span>
           </button>
           <button on:click={chooseExternalNode} class="wizard-option">
             <span class="wizard-option-icon">⬡</span>
@@ -369,6 +369,42 @@
             <div class="wizard-option-title">Simulator</div>
             <div class="wizard-option-desc">Local test environment</div>
             <span class="wizard-option-badge ok">SAFE • NO COST</span>
+          </button>
+        </div>
+      
+      {:else if step === 'build_instructions'}
+        <!-- Status Bar -->
+        <div class="wizard-status-bar">
+          <div class="wizard-status-left">
+            <span class="wizard-status-dot cyan"></span>
+            <span class="wizard-status-text">Build from Source</span>
+          </div>
+          <span class="wizard-badge live">INSTRUCTIONS</span>
+        </div>
+        
+        <div class="wizard-center" style="padding-top: var(--s-2);">
+          <h2 class="wizard-step-title">Build DERO Node</h2>
+          <p class="wizard-step-desc">Run this command in the HOLOGRAM directory:</p>
+        </div>
+        
+        <div class="wizard-code-block">
+          <code>make all</code>
+        </div>
+        
+        <p class="wizard-step-desc" style="margin-top: var(--s-3); color: var(--text-3);">
+          This builds HOLOGRAM along with derod and simulator from source.
+          <br/>Binaries will be placed in <code>build/bin/</code>
+        </p>
+        
+        <div class="wizard-buttons" style="margin-top: var(--s-4);">
+          <button on:click={runInitialChecks} class="wizard-btn wizard-btn-primary">
+            I've Built It - Check Again
+          </button>
+          <button on:click={downloadDerod} class="wizard-btn wizard-btn-secondary">
+            Download Pre-built Instead
+          </button>
+          <button on:click={() => step = 'no_node'} class="wizard-btn wizard-btn-ghost">
+            ← Back
           </button>
         </div>
       
@@ -660,7 +696,7 @@
       <button on:click={useSimulatorInstead} class="wizard-skip wizard-skip-simulator">
         <Gamepad2 size={14} /> Use Simulator Instead
       </button>
-    {:else if step === 'checking' || step === 'starting' || step === 'starting_simulator' || step === 'downloading' || step === 'epoch_info'}
+    {:else if step === 'checking' || step === 'starting' || step === 'starting_simulator' || step === 'downloading' || step === 'epoch_info' || step === 'build_instructions'}
       <!-- Hide skip on loading/transition states -->
     {:else}
       <button on:click={skipWizard} class="wizard-skip">
@@ -669,3 +705,23 @@
     {/if}
   </div>
 </div>
+
+<style>
+  .wizard-code-block {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius-md);
+    padding: var(--s-3) var(--s-4);
+    font-family: var(--font-mono);
+    font-size: 16px;
+    color: var(--accent-cyan);
+    text-align: center;
+    user-select: all;
+    cursor: text;
+  }
+  
+  .wizard-code-block code {
+    background: none;
+    padding: 0;
+  }
+</style>

@@ -44,10 +44,24 @@ Browse TELA applications. Manage your DERO. Build and deploy dApps with an integ
 
 ### Prerequisites
 
-- **Go** 1.21+
+- **Go** 1.23.0+
 - **Wails** v2 CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 - **Node.js** 18+
-- **DERO Daemon** (derod) — auto-downloads if not found
+
+#### Linux-specific Dependencies
+
+```bash
+# Ubuntu/Debian
+sudo apt install libgtk-3-dev libglib2.0-dev libwebkit2gtk-4.0-dev
+
+# Fedora
+sudo dnf install gtk3-devel glib2-devel webkit2gtk4.1-devel
+
+# Arch Linux
+sudo pacman -S gtk3 glib2 webkit2gtk
+```
+
+> **Note:** Ubuntu 24.04/Debian 13 users may need additional steps for webkit2gtk-4.0. See [Linux Setup Guide](docs/LINUX-SETUP.md).
 
 ### Development
 
@@ -58,10 +72,28 @@ cd frontend && npm install && cd ..
 wails dev
 ```
 
-### Production Build
+### Production Build (Recommended)
+
+Build HOLOGRAM along with derod and simulator from source:
 
 ```bash
-# Build for current platform
+# Build everything (HOLOGRAM + derod + simulator)
+make all
+
+# Output:
+# build/bin/Hologram (or Hologram.app on macOS)
+# build/bin/derod-{platform}
+# build/bin/simulator-{platform}
+```
+
+This builds the DERO daemon and simulator directly from the derohe source code, eliminating the need to download pre-built binaries.
+
+### Alternative: HOLOGRAM Only
+
+If you prefer to download derod separately:
+
+```bash
+# Build HOLOGRAM only
 wails build
 
 # Output locations:

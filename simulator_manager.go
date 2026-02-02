@@ -136,20 +136,25 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 		})
 	}
 	binaryPath := GetSimulatorBinaryPath()
+	binaryName := getSimulatorBinaryName() // Platform-specific name
 	if binaryPath == "" {
 		sm.app.logToConsole("[ERR] Simulator binary not found")
-		sm.app.logToConsole("[INFO] Simulator requires simulator-darwin binary from derod Release142+")
-		sm.app.logToConsole("[INFO] Location: ~/.dero/hologram/derod/{version}/simulator-darwin")
+		sm.app.logToConsole(fmt.Sprintf("[INFO] Simulator requires %s binary", binaryName))
+		sm.app.logToConsole("[INFO] Option 1: Run 'make all' to build from source (recommended)")
+		sm.app.logToConsole(fmt.Sprintf("[INFO] Option 2: Download from DERO releases and place in ~/.dero/hologram/derod/{version}/%s", binaryName))
+		errorMsg := fmt.Sprintf("Simulator binary (%s) not found. Run 'make all' to build from source, or download from DERO releases.", binaryName)
 		if sm.app.ctx != nil {
 			wailsRuntime.EventsEmit(sm.app.ctx, "simulator:error", map[string]interface{}{
-				"error": "Simulator binary (simulator-darwin) not found. Please ensure derod Release142+ is installed.",
-				"step":  "check_binary",
+				"error":      errorMsg,
+				"binaryName": binaryName,
+				"step":       "check_binary",
 			})
 		}
 		return map[string]interface{}{
-			"success": false,
-			"error":   "Simulator binary (simulator-darwin) not found. Please ensure derod Release142+ is installed.",
-			"step":    "check_binary",
+			"success":    false,
+			"error":      errorMsg,
+			"binaryName": binaryName,
+			"step":       "check_binary",
 		}
 	}
 	sm.app.logToConsole(fmt.Sprintf("[OK] Simulator binary found: %s", binaryPath))

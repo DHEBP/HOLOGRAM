@@ -329,12 +329,27 @@ func (a *App) DetectExistingBlockchain() map[string]interface{} {
 	}
 }
 
+// getDerodBinaryName returns the platform-specific derod binary name
+func getDerodBinaryName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "derod-darwin"
+	case "windows":
+		return fmt.Sprintf("derod-windows-%s.exe", runtime.GOARCH)
+	case "linux":
+		return fmt.Sprintf("derod-linux-%s", runtime.GOARCH)
+	default:
+		return "derod"
+	}
+}
+
 // GetBinaryPath returns the path to the derod binary for the current platform
 // Search order:
-// 1. Downloaded derod at ~/.dero/hologram/derod/{version}/derod
-// 2. Bundled binaries directory (for manual installs)
-// 3. System PATH
-// 4. Common locations (~/.dero/, /usr/local/bin/)
+// 1. Co-located binary (built from source via Makefile) - build/bin/derod-*
+// 2. Downloaded derod at ~/.dero/hologram/derod/{version}/derod
+// 3. Bundled binaries directory (for manual installs)
+// 4. System PATH
+// 5. Common locations (~/.dero/, /usr/local/bin/)
 func GetBinaryPath() string {
 	// DERO binaries have platform-specific names
 	var binaryNames []string
@@ -354,6 +369,27 @@ func GetBinaryPath() string {
 		}
 	default:
 		binaryNames = []string{"derod"}
+	}
+
+	// 0. Check co-located binary (built from source via Makefile)
+	// This is the preferred method - binaries built alongside HOLOGRAM
+	execPath, err := os.Executable()
+	if err == nil {
+		execDir := filepath.Dir(execPath)
+		for _, binaryName := range binaryNames {
+			colocatedPath := filepath.Join(execDir, binaryName)
+			if _, err := os.Stat(colocatedPath); err == nil {
+				return colocatedPath
+			}
+		}
+		// Also check build/bin relative to working directory (for dev mode)
+		for _, binaryName := range binaryNames {
+			buildPath := filepath.Join("build", "bin", binaryName)
+			if _, err := os.Stat(buildPath); err == nil {
+				absPath, _ := filepath.Abs(buildPath)
+				return absPath
+			}
+		}
 	}
 
 	homeDir, _ := os.UserHomeDir()
@@ -409,12 +445,27 @@ func GetBinaryPath() string {
 	return ""
 }
 
+// getSimulatorBinaryName returns the platform-specific simulator binary name
+func getSimulatorBinaryName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "simulator-darwin"
+	case "windows":
+		return fmt.Sprintf("simulator-windows-%s.exe", runtime.GOARCH)
+	case "linux":
+		return fmt.Sprintf("simulator-linux-%s", runtime.GOARCH)
+	default:
+		return "simulator"
+	}
+}
+
 // GetSimulatorBinaryPath returns the path to the simulator binary for the current platform
 // Search order:
-// 1. Downloaded derod at ~/.dero/hologram/derod/{version}/simulator-darwin (or platform-specific)
-// 2. Bundled binaries directory
-// 3. System PATH
-// 4. Common locations
+// 1. Co-located binary (built from source via Makefile) - build/bin/simulator-*
+// 2. Downloaded derod at ~/.dero/hologram/derod/{version}/simulator-* (platform-specific)
+// 3. Bundled binaries directory
+// 4. System PATH
+// 5. Common locations
 func GetSimulatorBinaryPath() string {
 	// Simulator binaries have platform-specific names
 	var binaryNames []string
@@ -434,6 +485,27 @@ func GetSimulatorBinaryPath() string {
 		}
 	default:
 		binaryNames = []string{"simulator"}
+	}
+
+	// 0. Check co-located binary (built from source via Makefile)
+	// This is the preferred method - binaries built alongside HOLOGRAM
+	execPath, err := os.Executable()
+	if err == nil {
+		execDir := filepath.Dir(execPath)
+		for _, binaryName := range binaryNames {
+			colocatedPath := filepath.Join(execDir, binaryName)
+			if _, err := os.Stat(colocatedPath); err == nil {
+				return colocatedPath
+			}
+		}
+		// Also check build/bin relative to working directory (for dev mode)
+		for _, binaryName := range binaryNames {
+			buildPath := filepath.Join("build", "bin", binaryName)
+			if _, err := os.Stat(buildPath); err == nil {
+				absPath, _ := filepath.Abs(buildPath)
+				return absPath
+			}
+		}
 	}
 
 	homeDir, _ := os.UserHomeDir()
