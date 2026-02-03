@@ -38,7 +38,6 @@ BUILD_DIR = build/bin
 DEROHE_PKG = github.com/deroproject/derohe
 
 # Get derohe module path from go mod
-DEROHE_PATH = $(shell go list -m -f '{{.Dir}}' $(DEROHE_PKG) 2>/dev/null)
 
 # Default target - build derod/simulator FIRST, then hologram
 # This order is important because wails build runs go mod tidy which
