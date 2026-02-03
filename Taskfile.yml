@@ -1,0 +1,96 @@
+version: '3'
+
+vars:
+  GOOS:
+    sh: go env GOOS
+
+  GOARCH: 
+    sh: go env GOARCH
+  
+  BUILD_DIR: build/bin
+  
+  DEROHE_PKG: github.com/deroproject/derohe
+  
+  HOLOGRAM_BIN: '{{- if eq OS "windows" -}}Hologram.exe{{- else if eq OS "darwin" -}}Hologram.app{{- else -}}Hologram{{- end}}'
+
+  DEROD_BIN: '{{- if eq OS "windows" -}}derod.exe{{- else if eq OS "darwin" -}}derod-darwin{{- else -}}derod-linux-{{.GOARCH}}{{- end}}'
+
+  SIMULATOR_BIN: '{{- if eq OS "windows" -}}simulator.exe{{- else if eq OS "darwin" -}}simulator-darwin{{- else -}}simulator-linux-{{.GOARCH}}{{- end}}'
+  
+  
+tasks:
+
+  check-derohe:
+    cmds:
+      - echo '🔍 Checking derohe dependency...'
+      - go get {{.DEROHE_PKG}}/cmd/derod@v0.0.0-20250813215012-9b6a8b82c839
+      - go get {{.DEROHE_PKG}}/cmd/simulator@v0.0.0-20250813215012-9b6a8b82c839
+
+  derod:
+    cmds:
+      - task: check-derohe
+      - echo "building derod from derohe source..."
+      - mkdir -p {{.BUILD_DIR}}
+      - go build -o "{{.BUILD_DIR}}/{{.DEROD_BIN}}" {{.DEROHE_PKG}}/cmd/derod
+      - chmod +x {{.BUILD_DIR}}/{{.DEROD_BIN}}
+      - echo "derod built {{.BUILD_DIR}}/{{.DEROD_BIN}}"
+      
+  simulator:
+    cmds:
+      - task: check-derohe
+      - echo "building simulator from derohe source..."
+      - mkdir -p {{.BUILD_DIR}}
+      - go build -o "{{.BUILD_DIR}}/{{.SIMULATOR_BIN}}" {{.DEROHE_PKG}}/cmd/simulator
+      - chmod +x {{.BUILD_DIR}}/{{.SIMULATOR_BIN}}
+      - echo "simulator built {{.BUILD_DIR}}/{{.SIMULATOR_BIN}}"
+    
+  hologram:
+    cmds:
+      - echo "building hologram..."
+      - wails build
+      - echo "build hologram"
+    
+  clean:
+    cmds:
+      - echo "cleaning build artifacts"
+      - rm -rf {{.BUILD_DIR}}
+      - echo "clean complete"
+
+  dev:
+    cmds:
+      - wails dev
+  
+  help:
+    silent: true
+    cmds:
+      - echo "HOLOGRAM Build System"
+      - echo ""
+      - echo "Running 'task' by its self will build derod + simulator + hologram"
+      - echo ""
+      - echo "Targets:"
+      - echo "  hologram   - Build HOLOGRAM only"
+      - echo "  derod      - Build derod from derohe source"
+      - echo "  simulator  - Build simulator from derohe source"
+      - echo "  dev        - Run in development mode"
+      - echo "  clean      - Remove build artifacts"
+      - echo "  help       - Show this help"
+      - echo ""
+      - echo "Platform {{.GOOS}}/{{.GOARCH}}"
+      - echo ""
+      - echo "The 'task' command builds everything needed to run HOLOGRAM"
+      - echo "without downloading any pre-built binaries."
+
+  default:
+    cmds:
+    - task: derod
+    - task: simulator
+    - task: hologram
+    platform: [windows]
+      - cmd:
+        - echo "Run with {{.BUILD_DIR}}\{{.HOLOGRAM_BIN}}"
+    platform: [linux]
+      - cmd:
+        - echo "Run with ./{{.BUILD_DIR}}/{{.HOLOGRAM_BIN}}"
+    platform: [darwin]
+      - cmd:
+        - echo "Run with open {{.BUILD_DIR}}/{{.HOLOGRAM_BIN}}"
