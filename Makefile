@@ -2,12 +2,11 @@
 # Builds HOLOGRAM along with derod and simulator from derohe source
 #
 # Usage:
-#   make          - Build HOLOGRAM only (uses wails build)
-#   make all      - Build HOLOGRAM + derod + simulator
-#   make derod    - Build derod only
-#   make simulator - Build simulator only
-#   make clean    - Clean build artifacts
-#   make dev      - Run in development mode
+#   make            - Build HOLOGRAM + derod + simulator
+#   make derod      - Build derod only
+#   make simulator  - Build simulator only
+#   make clean      - Clean build artifacts
+#   make dev        - Run in development mode
 #
 # The derod and simulator binaries are built from the derohe dependency
 # and placed alongside the HOLOGRAM executable in build/bin/
