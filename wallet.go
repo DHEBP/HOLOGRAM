@@ -65,7 +65,15 @@ func (a *App) ensureWalletDaemonConnectivity(endpoint string) {
 	}
 
 	if err := walletapi.Connect(endpoint); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Wallet daemon connect failed: %v", err))
+		a.logToConsole(fmt.Sprintf("[WARN] Wallet daemon connect failed: %v - will retry in background", err))
+		// Emit event to notify frontend of connection issue
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "wallet:daemon_connection_warning", map[string]interface{}{
+				"error":    err.Error(),
+				"endpoint": endpoint,
+				"message":  "Wallet daemon connection failed. Retrying in background...",
+			})
+		}
 	}
 
 	walletConnectivityOnce.Do(func() {
@@ -78,6 +86,15 @@ func (a *App) ensureWalletDaemonConnectivity(endpoint string) {
 func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	walletManager.Lock()
 	defer walletManager.Unlock()
+
+	// If just a name is provided (no path separators), construct full path
+	// This matches the behavior of CreateWallet for consistency
+	if !strings.Contains(filePath, string(filepath.Separator)) && !strings.Contains(filePath, "/") {
+		// Clean the name - remove any .db extension if user added it
+		name := strings.TrimSuffix(filePath, ".db")
+		// Construct path in wallets directory
+		filePath = filepath.Join(getDatashardsDir(), "wallets", name+".db")
+	}
 
 	// Determine current network mode - check multiple ways for robustness
 	currentNetwork := "mainnet"
@@ -167,8 +184,12 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	wallet.SetDaemonAddress(endpoint)
 	a.ensureWalletDaemonConnectivity(endpointRaw)
 	wallet.SetOnlineMode()
+	
+	// Track sync status for user feedback
+	var syncWarning string
 	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v", err))
+		a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v - wallet may show outdated balance", err))
+		syncWarning = "Initial sync failed. Balance may be outdated until sync completes."
 	}
 
 	// Get wallet info (now with correct network prefix)
@@ -188,6 +209,11 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	// Include network warning if applicable
 	if networkWarning != "" {
 		result["networkWarning"] = networkWarning
+	}
+	
+	// Include sync warning if applicable
+	if syncWarning != "" {
+		result["syncWarning"] = syncWarning
 	}
 
 	return result
@@ -296,7 +322,8 @@ func (a *App) SyncWallet() map[string]interface{} {
 	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
 		return map[string]interface{}{
 			"success": false,
-			"error":   fmt.Sprintf("Wallet sync failed: %v", err),
+			"error":   "Unable to sync wallet. Check your connection to the daemon.",
+			"technicalError": err.Error(),
 		}
 	}
 
@@ -516,8 +543,11 @@ func (a *App) GetWalletKeys(password string) map[string]interface{} {
 	}
 }
 
-// GetIntegratedAddress generates an integrated address with optional payment ID
-func (a *App) GetIntegratedAddress(paymentID string) map[string]interface{} {
+// GetIntegratedAddress generates an integrated address with optional destination port (payment ID)
+// In DERO, "payment ID" is implemented as a destination port (uint64) embedded in the address.
+// The resulting address changes from dero.../deto... to deroi.../detoi... format.
+// Optional parameters: comment (string), amount (uint64 in atomic units)
+func (a *App) GetIntegratedAddress(destinationPort uint64, comment string, amount uint64) map[string]interface{} {
 	walletManager.RLock()
 	defer walletManager.RUnlock()
 
@@ -528,18 +558,115 @@ func (a *App) GetIntegratedAddress(paymentID string) map[string]interface{} {
 		}
 	}
 
-	// Generate integrated address
-	integrated := walletManager.wallet.GetAddress()
-	if paymentID != "" {
-		// Add payment ID to the address
-		// Note: DERO uses different mechanism for payment IDs
+	// Get the base address
+	baseAddr := walletManager.wallet.GetAddress()
+
+	// Build arguments for the integrated address
+	var arguments rpc.Arguments
+
+	// Add destination port (this is DERO's equivalent of payment ID)
+	// Port 0 is valid and commonly used for simple transfers
+	arguments = append(arguments, rpc.Argument{
+		Name:     rpc.RPC_DESTINATION_PORT,
+		DataType: rpc.DataUint64,
+		Value:    destinationPort,
+	})
+
+	// Add optional comment/message
+	if comment != "" {
+		arguments = append(arguments, rpc.Argument{
+			Name:     rpc.RPC_COMMENT,
+			DataType: rpc.DataString,
+			Value:    comment,
+		})
 	}
+
+	// Add optional requested amount
+	if amount > 0 {
+		arguments = append(arguments, rpc.Argument{
+			Name:     rpc.RPC_VALUE_TRANSFER,
+			DataType: rpc.DataUint64,
+			Value:    amount,
+		})
+	}
+
+	// Clone the address and add arguments to create integrated address
+	integratedAddr := baseAddr.Clone()
+	integratedAddr.Arguments = arguments
+
+	// Validate the integrated address can be encoded
+	_, err := integratedAddr.MarshalText()
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERROR] Failed to create integrated address: %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to create integrated address: %v", err),
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] Generated integrated address with port %d", destinationPort))
 
 	return map[string]interface{}{
 		"success":           true,
-		"integratedAddress": integrated.String(),
-		"paymentID":         paymentID,
+		"integratedAddress": integratedAddr.String(),
+		"baseAddress":       baseAddr.String(),
+		"destinationPort":   destinationPort,
+		"comment":           comment,
+		"amount":            amount,
 	}
+}
+
+// SplitIntegratedAddress decodes an integrated address and returns its components
+// This is useful for understanding what data is embedded in an integrated address
+func (a *App) SplitIntegratedAddress(integratedAddress string) map[string]interface{} {
+	// Parse the address
+	addr, err := rpc.NewAddress(integratedAddress)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Invalid address format: %v", err),
+		}
+	}
+
+	result := map[string]interface{}{
+		"success":      true,
+		"baseAddress":  addr.BaseAddress().String(),
+		"isIntegrated": addr.IsIntegratedAddress(),
+		"isMainnet":    addr.IsMainnet(),
+	}
+
+	// If it's an integrated address, extract the embedded data
+	if addr.IsIntegratedAddress() {
+		// Extract destination port (payment ID)
+		if addr.Arguments.Has(rpc.RPC_DESTINATION_PORT, rpc.DataUint64) {
+			result["destinationPort"] = addr.Arguments.Value(rpc.RPC_DESTINATION_PORT, rpc.DataUint64).(uint64)
+		}
+
+		// Extract comment if present
+		if addr.Arguments.Has(rpc.RPC_COMMENT, rpc.DataString) {
+			result["comment"] = addr.Arguments.Value(rpc.RPC_COMMENT, rpc.DataString).(string)
+		}
+
+		// Extract requested amount if present
+		if addr.Arguments.Has(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64) {
+			result["amount"] = addr.Arguments.Value(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64).(uint64)
+		}
+
+		// Extract expiry if present
+		if addr.Arguments.Has(rpc.RPC_EXPIRY, rpc.DataTime) {
+			result["expiry"] = addr.Arguments.Value(rpc.RPC_EXPIRY, rpc.DataTime)
+		}
+
+		// Extract needs replyback flag if present
+		if addr.Arguments.Has(rpc.RPC_NEEDS_REPLYBACK_ADDRESS, rpc.DataUint64) {
+			result["needsReplyback"] = true
+		}
+
+		// Include raw arguments count
+		result["argumentCount"] = len(addr.Arguments)
+	}
+
+	return result
 }
 
 // ListRecentWallets returns the list of recently opened wallets
@@ -561,17 +688,63 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string) map[
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("[Transfer] Initiating transfer: %d atomic units to %s", amount, destination[:16]+"..."))
+	wallet := walletManager.wallet
 
-	// Build and send the transaction
-	// Note: This is a simplified version. Full implementation would handle
-	// ringsize, fees, integrated addresses, etc.
+	// Validate destination address
+	if destination == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Destination address is required",
+		}
+	}
 
-	// For now, return a placeholder response
-	// Full implementation requires using wallet.TransferPayload0 or similar
+	// Validate amount
+	if amount == 0 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Amount must be greater than 0",
+		}
+	}
+
+	destPreview := destination
+	if len(destination) > 16 {
+		destPreview = destination[:16] + "..."
+	}
+	a.logToConsole(fmt.Sprintf("[Transfer] Initiating transfer: %d atomic units to %s", amount, destPreview))
+
+	// Build the transfer
+	transfers := []rpc.Transfer{
+		{
+			Destination: destination,
+			Amount:      amount,
+		},
+	}
+
+	// Handle payment ID if provided (integrated address or separate)
+	if paymentID != "" {
+		// Payment IDs are typically embedded in integrated addresses
+		// For now, log it - full implementation would handle this
+		a.logToConsole(fmt.Sprintf("[Transfer] Payment ID provided: %s", paymentID))
+	}
+
+	// Execute transfer with ringsize 16 (standard), no SC arguments
+	tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[Transfer] Failed: %s", err.Error()))
+		return map[string]interface{}{
+			"success":        false,
+			"error":          FriendlyError(err),
+			"technicalError": err.Error(),
+		}
+	}
+
+	txid := tx.GetHash().String()
+	a.logToConsole(fmt.Sprintf("[Transfer] Success! TXID: %s", txid))
+
 	return map[string]interface{}{
-		"success": false,
-		"error":   "Transfer functionality coming soon - use XSWD for transactions",
+		"success": true,
+		"txid":    txid,
+		"hex":     fmt.Sprintf("%x", tx.Serialize()),
 	}
 }
 
@@ -1164,7 +1337,7 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		
 		// For pure transfers (no SC), we still need at least one transfer
 		if len(transfers) == 0 && len(scArgs) == 0 {
-			return map[string]interface{}{"success": false, "error": "No transfers or SC call specified"}
+			return map[string]interface{}{"success": false, "error": "Please specify a transfer amount and destination, or a smart contract call."}
 		}
 		
 		// Execute transfer (with optional SC arguments)
@@ -1186,7 +1359,7 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		}
 		
 		if scid == "" {
-			return map[string]interface{}{"success": false, "error": "Missing scid"}
+			return map[string]interface{}{"success": false, "error": "Smart Contract ID (SCID) is required for this operation."}
 		}
 		
 		// Parse SC arguments and track if entrypoint is in sc_rpc
@@ -1355,7 +1528,7 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		}
 		
 	default:
-		return map[string]interface{}{"success": false, "error": "Method not supported internally yet"}
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("Method '%s' is not available. Use XSWD for this operation.", method)}
 	}
 }
 

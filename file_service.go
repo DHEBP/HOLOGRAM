@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -843,6 +844,76 @@ func computeLineDiff(lines1, lines2 []string) []DiffLine {
 	}
 
 	return diffs
+}
+
+// SaveBinaryFileWithDialog opens a native save dialog and writes binary content (base64 encoded) to the selected file
+// This is used for saving images, PDFs, and other binary files from TELA apps
+// The content parameter should be base64-encoded binary data
+func (a *App) SaveBinaryFileWithDialog(defaultFilename string, base64Content string, filterName string, filterPattern string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[FILE] SaveBinaryFileWithDialog: %s", defaultFilename))
+	
+	// Decode base64 content
+	// Handle data URL format (e.g., "data:image/png;base64,...")
+	content := base64Content
+	if strings.Contains(content, ",") {
+		parts := strings.SplitN(content, ",", 2)
+		if len(parts) == 2 {
+			content = parts[1]
+		}
+	}
+	
+	data, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to decode base64 content: %v", err),
+		}
+	}
+
+	// Open native save dialog
+	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: defaultFilename,
+		Title:           "Save File",
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: filterName,
+				Pattern:     filterPattern,
+			},
+		},
+	})
+
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Save dialog error: %v", err),
+		}
+	}
+
+	// User cancelled
+	if savePath == "" {
+		return map[string]interface{}{
+			"success":   false,
+			"cancelled": true,
+			"error":     "Save cancelled by user",
+		}
+	}
+
+	// Write the binary file
+	err = os.WriteFile(savePath, data, 0644)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to write file: %v", err),
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] Saved binary file to: %s (%d bytes)", savePath, len(data)))
+
+	return map[string]interface{}{
+		"success": true,
+		"path":    savePath,
+		"size":    len(data),
+	}
 }
 
 // SaveFileWithDialog opens a native save dialog and writes content to the selected file

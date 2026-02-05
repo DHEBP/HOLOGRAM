@@ -47,6 +47,9 @@ type XSWDServer struct {
 	// Track client origins for permission checking
 	clientOrigins map[*websocket.Conn]string
 	
+	// Track client app names for display in wallet modal
+	clientAppNames map[*websocket.Conn]string
+	
 	// Track subscriptions per client
 	clientSubscriptions map[*websocket.Conn]*ClientSubscriptions
 	
@@ -70,6 +73,7 @@ func NewXSWDServer(app *App) *XSWDServer {
 		},
 		pendingRequests:     make(map[string]*XSWDPendingRequest),
 		clientOrigins:       make(map[*websocket.Conn]string),
+		clientAppNames:      make(map[*websocket.Conn]string),
 		clientSubscriptions: make(map[*websocket.Conn]*ClientSubscriptions),
 		stopPusher:          make(chan struct{}),
 	}
@@ -88,6 +92,13 @@ func (s *XSWDServer) Start() {
 		log.Println("[START] Starting internal XSWD server on 127.0.0.1:44326")
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("[ERR] XSWD server error: %v", err)
+			// Notify frontend of XSWD server failure
+			if s.app != nil && s.app.ctx != nil {
+				runtime.EventsEmit(s.app.ctx, "xswd:server_error", map[string]interface{}{
+					"error":   err.Error(),
+					"message": "XSWD server encountered an error. dApp connections may not work.",
+				})
+			}
 		}
 	}()
 	
@@ -149,6 +160,7 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		origin := s.clientOrigins[conn]
 		delete(s.clients, conn)
 		delete(s.clientOrigins, conn)
+		delete(s.clientAppNames, conn)
 		delete(s.clientSubscriptions, conn)
 		s.lock.Unlock()
 		
@@ -173,6 +185,15 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		var req JSONRPCRequest
 		if err := json.Unmarshal(message, &req); err != nil {
 			log.Printf("[ERR] JSON Unmarshal error: %v", err)
+			// Send error response to client
+			errResp := JSONRPCResponse{
+				JSONRPC: "2.0",
+				Error:   &JSONRPCError{Code: -32700, Message: "Failed to parse JSON request. Check message format."},
+				ID:      nil,
+			}
+			if respBytes, marshalErr := json.Marshal(errResp); marshalErr == nil {
+				conn.WriteMessage(websocket.TextMessage, respBytes)
+			}
 			continue
 		}
 
@@ -228,7 +249,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	case "GetAddress", "DERO.GetAddress":
 		// Check if permission granted
 		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: view_address not granted"}
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -244,7 +265,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	case "GetBalance", "DERO.GetBalance":
 		// Check if permission granted
 		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: view_balance not granted"}
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -261,7 +282,8 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		// Check if base permission granted (still requires per-TX approval)
 		if pm != nil && origin != "" {
 			if !pm.HasPermission(origin, requiredPerm) {
-				errRes = &JSONRPCError{Code: -32003, Message: fmt.Sprintf("Permission denied: %s not granted", requiredPerm)}
+				permInfo := GetPermissionInfo(requiredPerm)
+				errRes = &JSONRPCError{Code: -32003, Message: fmt.Sprintf("Permission denied: %s permission not granted", permInfo.Name)}
 				s.sendResponse(conn, req.ID, nil, errRes)
 				return
 			}
@@ -334,7 +356,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		
 		eventType, _ := params["event"].(string)
 		if eventType == "" {
-			errRes = &JSONRPCError{Code: -32602, Message: "Invalid params: 'event' required"}
+			errRes = &JSONRPCError{Code: -32602, Message: "Subscription event type is required. Valid types: new_topoheight, new_balance, new_entry"}
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -358,7 +380,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			log.Printf("[NET] Client subscribed to new_entry")
 		default:
 			s.lock.Unlock()
-			errRes = &JSONRPCError{Code: -32602, Message: fmt.Sprintf("Unknown event type: %s", eventType)}
+			errRes = &JSONRPCError{Code: -32602, Message: fmt.Sprintf("Unknown subscription event type: %s. Valid types: new_topoheight, new_balance, new_entry", eventType)}
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -379,7 +401,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		// Check if permission granted (requires view_address like other read methods)
 		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
 			log.Printf("[XSWD] GetDaemon: DENIED - origin=%q does not have view_address permission", origin)
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: view_address not granted"}
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -413,7 +435,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 
 	default:
 		log.Printf("[ERR] XSWD Method not found: %s", req.Method)
-		errRes = &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Method not found: %s", req.Method)}
+		errRes = &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Unknown method: %s. Check XSWD documentation for supported methods.", req.Method)}
 		s.sendResponse(conn, req.ID, nil, errRes)
 	}
 }
@@ -543,9 +565,10 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		pm.SetActiveClient(origin, true)
 	}
 	
-	// Store origin for this connection
+	// Store origin and app name for this connection
 	s.lock.Lock()
 	s.clientOrigins[conn] = origin
+	s.clientAppNames[conn] = appName
 	s.lock.Unlock()
 
 	s.sendRawJSON(conn, map[string]interface{}{
@@ -566,8 +589,21 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 	// Parse params
 	var paramsMap map[string]interface{}
 	if err := json.Unmarshal(req.Params, &paramsMap); err != nil {
-		s.sendResponse(conn, req.ID, nil, &JSONRPCError{Code: -32700, Message: "Parse error"})
+		s.sendResponse(conn, req.ID, nil, &JSONRPCError{Code: -32700, Message: "Failed to parse request parameters. Check JSON format."})
 		return
+	}
+	
+	// Get app name and origin for this connection
+	s.lock.RLock()
+	appName := s.clientAppNames[conn]
+	origin := s.clientOrigins[conn]
+	s.lock.RUnlock()
+	
+	if appName == "" {
+		appName = "External dApp"
+	}
+	if origin == "" {
+		origin = "Websocket"
 	}
 
 	// Store request
@@ -580,13 +616,13 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 	s.pendingLock.Unlock()
 
 	// Notify frontend
-	log.Printf("[XSWD] Emitting xswd:request for %s", req.Method)
+	log.Printf("[XSWD] Emitting xswd:request for %s from %s", req.Method, appName)
 	runtime.EventsEmit(s.app.ctx, "xswd:request", map[string]interface{}{
 		"id":      reqID,
 		"method":  req.Method,
 		"params":  paramsMap,
-		"appName": "External dApp",
-		"origin":  "Websocket",
+		"appName": appName,
+		"origin":  origin,
 	})
 
 	// Wait for response (blocking this goroutine)

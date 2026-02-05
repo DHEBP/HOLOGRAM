@@ -543,6 +543,18 @@ func isTextBasedFile(fileName string) bool {
 	return textExtensions[ext]
 }
 
+// isHTMLFile returns true if the filename suggests an HTML file
+// This is used to detect HTML files that are stored with TELA-STATIC docType
+func isHTMLFile(fileName string) bool {
+	ext := strings.ToLower(filepath.Ext(fileName))
+	htmlExtensions := map[string]bool{
+		".html": true,
+		".htm":  true,
+		".xhtml": true,
+	}
+	return htmlExtensions[ext]
+}
+
 // assembleShardFiles concatenates shard file contents in DOC order into a simple HTML wrapper
 func assembleShardFiles(content *TELAContent) string {
     if content == nil || len(content.Files) == 0 {
@@ -822,9 +834,14 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 			content.SCIDs[fileName] = scid
 		}
 		
-		// If this is a text-based file and we don't have HTML yet, render it as readable text
-		// This allows standalone text documents (like .txt files) to be displayed properly
-		if content.HTML == "" && isTextBasedFile(fileName) {
+		// IMPORTANT: If this is an HTML file (like index.html), treat it as the main HTML content
+		// Some TELA apps use TELA-STATIC for HTML files instead of TELA-HTML
+		if content.HTML == "" && isHTMLFile(fileName) {
+			a.logToConsole(fmt.Sprintf("  [STATIC] Detected HTML file %s - using as main content", fileName))
+			content.HTML = fileContent
+		} else if content.HTML == "" && isTextBasedFile(fileName) {
+			// If this is a text-based file and we don't have HTML yet, render it as readable text
+			// This allows standalone text documents (like .txt files) to be displayed properly
 			a.logToConsole(fmt.Sprintf("  [STATIC] Rendering text file %s as readable document", fileName))
 			content.HTML = renderTextViewer(fileName, fileContent, scid)
 		} else {
