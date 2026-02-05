@@ -2098,7 +2098,7 @@
                     Copy Code
                   </button>
                 </div>
-                <pre class="cmd-code-preview">{@html highlightDVMBasic(searchResult.data.code)}</pre>
+                <pre class="cmd-code-preview">{searchResult.data.code}</pre>
               </div>
             {/if}
             

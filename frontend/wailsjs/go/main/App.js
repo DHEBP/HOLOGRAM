@@ -494,8 +494,8 @@ export function GetINDEXInfo(arg1) {
   return window['go']['main']['App']['GetINDEXInfo'](arg1);
 }
 
-export function GetIntegratedAddress(arg1) {
-  return window['go']['main']['App']['GetIntegratedAddress'](arg1);
+export function GetIntegratedAddress(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetIntegratedAddress'](arg1, arg2, arg3);
 }
 
 export function GetLatestDerodRelease() {
@@ -1066,6 +1066,10 @@ export function RewindChain(arg1) {
   return window['go']['main']['App']['RewindChain'](arg1);
 }
 
+export function SaveBinaryFileWithDialog(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveBinaryFileWithDialog'](arg1, arg2, arg3, arg4);
+}
+
 export function SaveFileWithDialog(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SaveFileWithDialog'](arg1, arg2, arg3, arg4);
 }
@@ -1240,6 +1244,10 @@ export function ShutdownTELAServers() {
 
 export function SignMessage(arg1) {
   return window['go']['main']['App']['SignMessage'](arg1);
+}
+
+export function SplitIntegratedAddress(arg1) {
+  return window['go']['main']['App']['SplitIntegratedAddress'](arg1);
 }
 
 export function StartBlockMonitoring() {

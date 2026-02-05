@@ -249,7 +249,7 @@ export function GetHistory():Promise<Array<string>>;
 
 export function GetINDEXInfo(arg1:string):Promise<Record<string, any>>;
 
-export function GetIntegratedAddress(arg1:string):Promise<Record<string, any>>;
+export function GetIntegratedAddress(arg1:number,arg2:string,arg3:number):Promise<Record<string, any>>;
 
 export function GetLatestDerodRelease():Promise<Record<string, any>>;
 
@@ -535,6 +535,8 @@ export function RevokeXSWDConnection(arg1:string):Promise<Record<string, any>>;
 
 export function RewindChain(arg1:number):Promise<Record<string, any>>;
 
+export function SaveBinaryFileWithDialog(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
+
 export function SaveFileWithDialog(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
 export function ScanFolder(arg1:string):Promise<Record<string, any>>;
@@ -622,6 +624,8 @@ export function ShutdownServer(arg1:string):Promise<Record<string, any>>;
 export function ShutdownTELAServers():Promise<Record<string, any>>;
 
 export function SignMessage(arg1:string):Promise<Record<string, any>>;
+
+export function SplitIntegratedAddress(arg1:string):Promise<Record<string, any>>;
 
 export function StartBlockMonitoring():Promise<void>;
 

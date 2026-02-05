@@ -252,18 +252,57 @@
       const requestType = req.type || (req.method ? 'sign' : 'connect');
       const appName = req.appName || 'External dApp';
       
-      const payload = requestType === 'connect'
-        ? {
-            appName: appName,
-            description: req.description,
-            origin: req.origin || 'XSWD',
+      // Build payload for signing requests with comprehensive SC and transfer parsing
+      let payload;
+      if (requestType === 'connect') {
+        payload = {
+          appName: appName,
+          description: req.description,
+          origin: req.origin || 'XSWD',
+        };
+      } else {
+        // Parse SC data from sc_rpc array
+        const scRpc = req.params?.sc_rpc || req.params?.sc_data || [];
+        
+        // Extract entrypoint from sc_rpc if present
+        let entrypoint = req.params?.entrypoint;
+        if (!entrypoint && Array.isArray(scRpc)) {
+          const entrypointArg = scRpc.find(arg => arg.name === 'entrypoint');
+          if (entrypointArg) {
+            entrypoint = entrypointArg.value;
           }
-        : {
-            transfers: req.params?.transfers,
-            sc_data: req.params?.sc_rpc || req.params?.sc_data,
-            scid: req.params?.scid,
-            entrypoint: req.params?.entrypoint,
-          };
+        }
+        
+        // Parse transfers - handle both array and single transfer formats
+        let transfers = req.params?.transfers;
+        
+        // For scinvoke without explicit transfers, check if there's a DERO amount
+        // being sent with the SC call (common pattern for SC interactions)
+        if (!transfers && req.params?.scid) {
+          // SC invoke without transfers - may still have implicit value
+          transfers = [];
+        }
+        
+        // Extract SC arguments (excluding entrypoint) for display
+        let scArgs = [];
+        if (Array.isArray(scRpc)) {
+          scArgs = scRpc.filter(arg => arg.name !== 'entrypoint').map(arg => ({
+            name: arg.name,
+            type: arg.datatype,
+            value: arg.value
+          }));
+        }
+        
+        payload = {
+          method: req.method,
+          transfers: transfers,
+          sc_data: scRpc,
+          sc_args: scArgs,
+          scid: req.params?.scid,
+          entrypoint: entrypoint,
+          ringsize: req.params?.ringsize,
+        };
+      }
 
       // Show toast notification for incoming request
       const toastMessage = requestType === 'connect'

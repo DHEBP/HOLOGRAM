@@ -558,8 +558,17 @@
   // WALLET MANAGEMENT
   // ============================================
   async function openWallet() {
-    if (!walletPath || !password) {
+    // Context-aware validation messages (Bug #33 fix)
+    if (!walletPath && !password) {
       error = 'Please provide wallet path and password';
+      return;
+    }
+    if (!walletPath) {
+      error = 'Please provide wallet path';
+      return;
+    }
+    if (!password) {
+      error = 'Please provide password';
       return;
     }
     

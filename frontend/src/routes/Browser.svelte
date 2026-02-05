@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog } from '../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
@@ -39,7 +39,7 @@ function resetXSWDSubscriptions() {
   xswdSubscriptions = { new_topoheight: false, new_balance: false, new_entry: false };
   lastTopoheight = null;
   lastBalance = null;
-  lastEntryTxid = null;
+  seenEntryTxids = new Set();
   stopXSWDSubscriptionPolling();
 }
 
@@ -91,12 +91,19 @@ async function pollXSWDSubscriptions() {
     }
 
     if (xswdSubscriptions.new_entry) {
-      const history = await GetTransactionHistory(5);
+      const history = await GetTransactionHistory(10);
       if (history?.success && Array.isArray(history.transactions) && history.transactions.length > 0) {
-        const latest = history.transactions[history.transactions.length - 1];
-        if (latest?.txid && latest.txid !== lastEntryTxid) {
-          lastEntryTxid = latest.txid;
-          sendXSWDEvent('new_entry', latest);
+        // Iterate through all transactions (oldest to newest) and emit events for new ones
+        for (const tx of history.transactions) {
+          if (tx?.txid && !seenEntryTxids.has(tx.txid)) {
+            seenEntryTxids.add(tx.txid);
+            sendXSWDEvent('new_entry', tx);
+          }
+        }
+        // Limit the Set size to prevent memory growth (keep last 100 txids)
+        if (seenEntryTxids.size > 100) {
+          const txidsArray = Array.from(seenEntryTxids);
+          seenEntryTxids = new Set(txidsArray.slice(-100));
         }
       }
     }
@@ -132,7 +139,7 @@ let addressInput = '';
   let xswdSubscriptions = { new_topoheight: false, new_balance: false, new_entry: false };
   let lastTopoheight = null;
   let lastBalance = null;
-  let lastEntryTxid = null;
+  let seenEntryTxids = new Set();
   
   // Browser tabs state - each tab has its own history
   let tabs = [
@@ -2186,8 +2193,73 @@ let addressInput = '';
         },
         scInvoke: async (params) => {
           return iframeWindow.telaHost.call('scinvoke', params);
-        }
+        },
+        // File operations for TELA apps
+        // saveFile allows dApps to save files to the user's filesystem via native dialog
+        // Supports both text content and binary data (base64 encoded)
+        saveFile: async (options = {}) => {
+          const { filename = 'download', content, base64, mimeType = 'application/octet-stream' } = options;
+          
+          // Determine filter based on file extension or mimeType
+          let filterName = 'All Files';
+          let filterPattern = '*.*';
+          const ext = filename.split('.').pop()?.toLowerCase();
+          
+          if (ext === 'png' || mimeType.includes('png')) {
+            filterName = 'PNG Images';
+            filterPattern = '*.png';
+          } else if (ext === 'jpg' || ext === 'jpeg' || mimeType.includes('jpeg')) {
+            filterName = 'JPEG Images';
+            filterPattern = '*.jpg;*.jpeg';
+          } else if (ext === 'json' || mimeType.includes('json')) {
+            filterName = 'JSON Files';
+            filterPattern = '*.json';
+          } else if (ext === 'txt' || mimeType.includes('text')) {
+            filterName = 'Text Files';
+            filterPattern = '*.txt';
+          }
+          
+          try {
+            // Use binary save for base64 content (images, etc.)
+            if (base64) {
+              const result = await SaveBinaryFileWithDialog(filename, base64, filterName, filterPattern);
+              if (result.cancelled) {
+                return { success: false, cancelled: true };
+              }
+              if (!result.success) {
+                throw new Error(result.error || 'Save failed');
+              }
+              return { success: true, path: result.path, size: result.size };
+            }
+            
+            // For text content, we could use SaveFileWithDialog but let's use binary for consistency
+            // Convert text to base64
+            if (content) {
+              const base64Content = btoa(unescape(encodeURIComponent(content)));
+              const result = await SaveBinaryFileWithDialog(filename, base64Content, filterName, filterPattern);
+              if (result.cancelled) {
+                return { success: false, cancelled: true };
+              }
+              if (!result.success) {
+                throw new Error(result.error || 'Save failed');
+              }
+              return { success: true, path: result.path, size: result.size };
+            }
+            
+            throw new Error('No content provided - use content (string) or base64 (binary)');
+          } catch (error) {
+            addConsoleLog(`[ERR] telaHost.saveFile failed: ${error.message}`);
+            throw error;
+          }
+        },
+        // Check if running in HOLOGRAM (for feature detection)
+        isHologram: () => true,
+        version: '1.0.0'
       };
+      
+      // Inject download interceptor to handle <a download> clicks natively
+      // This makes standard browser downloads work transparently in HOLOGRAM
+      injectDownloadInterceptor(iframeWindow);
       
       // Notify explorer that telaHost is now available (in case it initialized before injection)
       try {
@@ -2220,6 +2292,129 @@ let addressInput = '';
       // Silently fail for cross-origin - this is expected when iframe content
       // is served from a different origin (e.g., local dev server at localhost:50080)
       // The XSWD bridge handles communication via postMessage instead
+    }
+  }
+  
+  // Inject download interceptor to make standard <a download> work in HOLOGRAM
+  // This intercepts clicks on anchor tags with download attribute and handles them natively
+  function injectDownloadInterceptor(iframeWindow) {
+    if (!iframeWindow || !iframeWindow.document) return;
+    
+    try {
+      // Skip if already injected
+      if (iframeWindow.__hologramDownloadInterceptor) return;
+      iframeWindow.__hologramDownloadInterceptor = true;
+      
+      // Store original createElement to intercept anchor creation
+      const originalCreateElement = iframeWindow.document.createElement.bind(iframeWindow.document);
+      
+      // Intercept document-level click events for download links
+      iframeWindow.document.addEventListener('click', async (e) => {
+        // Find the anchor element (might be the target or a parent)
+        let anchor = e.target;
+        while (anchor && anchor.tagName !== 'A') {
+          anchor = anchor.parentElement;
+        }
+        
+        if (!anchor || !anchor.hasAttribute('download')) return;
+        
+        const href = anchor.href;
+        const filename = anchor.download || 'download';
+        
+        // Only intercept blob: URLs (the problematic ones in WebView)
+        if (!href || !href.startsWith('blob:')) return;
+        
+        // Prevent default download behavior
+        e.preventDefault();
+        e.stopPropagation();
+        
+        addConsoleLog(`[Download] Intercepting blob download: ${filename}`);
+        
+        try {
+          // Fetch the blob
+          const response = await iframeWindow.fetch(href);
+          const blob = await response.blob();
+          
+          // Convert blob to base64
+          const base64 = await new Promise((resolve, reject) => {
+            const reader = new iframeWindow.FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          
+          // Use telaHost.saveFile to save via native dialog
+          if (iframeWindow.telaHost && iframeWindow.telaHost.saveFile) {
+            const result = await iframeWindow.telaHost.saveFile({
+              filename: filename,
+              base64: base64,
+              mimeType: blob.type || 'application/octet-stream'
+            });
+            
+            if (result.success) {
+              addConsoleLog(`[OK] File saved: ${result.path}`);
+            } else if (result.cancelled) {
+              addConsoleLog(`[Info] Download cancelled by user`);
+            } else {
+              addConsoleLog(`[ERR] Save failed: ${result.error}`, 'error');
+            }
+          } else {
+            addConsoleLog(`[ERR] telaHost.saveFile not available`, 'error');
+          }
+        } catch (err) {
+          addConsoleLog(`[ERR] Download intercept failed: ${err.message}`, 'error');
+        }
+      }, true); // Use capture phase to intercept before app handlers
+      
+      // Also intercept programmatic clicks on dynamically created anchors
+      // Override the click method on anchor elements
+      const originalHTMLAnchorClick = iframeWindow.HTMLAnchorElement.prototype.click;
+      iframeWindow.HTMLAnchorElement.prototype.click = async function() {
+        if (this.hasAttribute('download') && this.href && this.href.startsWith('blob:')) {
+          const filename = this.download || 'download';
+          const href = this.href;
+          
+          addConsoleLog(`[Download] Intercepting programmatic blob download: ${filename}`);
+          
+          try {
+            const response = await iframeWindow.fetch(href);
+            const blob = await response.blob();
+            
+            const base64 = await new Promise((resolve, reject) => {
+              const reader = new iframeWindow.FileReader();
+              reader.onloadend = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+            
+            if (iframeWindow.telaHost && iframeWindow.telaHost.saveFile) {
+              const result = await iframeWindow.telaHost.saveFile({
+                filename: filename,
+                base64: base64,
+                mimeType: blob.type || 'application/octet-stream'
+              });
+              
+              if (result.success) {
+                addConsoleLog(`[OK] File saved: ${result.path}`);
+              } else if (result.cancelled) {
+                addConsoleLog(`[Info] Download cancelled by user`);
+              }
+            }
+          } catch (err) {
+            addConsoleLog(`[ERR] Programmatic download failed: ${err.message}`, 'error');
+            // Fall back to original behavior
+            return originalHTMLAnchorClick.call(this);
+          }
+          return;
+        }
+        
+        // For non-blob downloads, use original behavior
+        return originalHTMLAnchorClick.call(this);
+      };
+      
+      addConsoleLog('[OK] Download interceptor installed');
+    } catch (error) {
+      // Silently fail for cross-origin iframes
     }
   }
   
