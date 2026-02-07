@@ -1306,24 +1306,3 @@ func (a *App) GetTransactionWithRings(txid string) map[string]interface{} {
 	}
 }
 
-// GetRandomAddress generates a new random DERO address (for testing/receiving)
-func (a *App) GetRandomAddress() map[string]interface{} {
-	// This would typically use the wallet to generate an integrated address
-	// For now, return an error indicating wallet is needed
-	
-	wallet := GetWallet()
-	if wallet == nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "No wallet is currently open",
-		}
-	}
-
-	address := wallet.GetAddress().String()
-
-	return map[string]interface{}{
-		"success": true,
-		"address": address,
-	}
-}
-

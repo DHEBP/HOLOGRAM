@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { appState } from '../lib/stores/appState.js';
-  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline } from '../../wailsjs/go/main/App.js';
+  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline, GetBlockByHash, GetCoinbaseMiner, GetAddressSCIDReferences, GetBlockchainStats } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -123,6 +123,15 @@
   let changeTimelineLoading = false;
   let showChangeTimeline = false;
   
+  // Block miner attribution state (2B)
+  let blockMinerAddress = '';
+  
+  // Address SCID cross-references state (2C)
+  let addressSCIDRefs = [];
+  
+  // Blockchain stats dashboard state (2D)
+  let blockchainStats = null;
+  
   // Landing view state (merged from Search.svelte)
   let recentSearches = [];
   let showHistoryModal = false;
@@ -231,6 +240,9 @@
   onMount(async () => {
     // Load recent searches for landing view
     loadRecentSearches();
+    
+    // 2D: Load blockchain stats for landing dashboard
+    loadBlockchainStats();
     
     await loadRecentData(0);
     
@@ -496,6 +508,43 @@
   }
   
   /**
+   * Fetch coinbase miner address for a given txid (2B)
+   */
+  async function fetchCoinbaseMiner(txid) {
+    try {
+      const result = await GetCoinbaseMiner(txid);
+      if (result.success && result.isCoinbase && result.minerAddress) {
+        return result.minerAddress;
+      }
+    } catch (e) { /* not coinbase */ }
+    return null;
+  }
+  
+  /**
+   * Load SCID cross-references for an address (2C)
+   */
+  async function loadAddressSCIDRefs(address) {
+    try {
+      const result = await GetAddressSCIDReferences(address);
+      if (result.success && result.references) {
+        addressSCIDRefs = result.references;
+      }
+    } catch (e) { addressSCIDRefs = []; }
+  }
+  
+  /**
+   * Load blockchain stats for the landing dashboard (2D)
+   */
+  async function loadBlockchainStats() {
+    try {
+      const result = await GetBlockchainStats();
+      if (result.success && result.stats) {
+        blockchainStats = result.stats;
+      }
+    } catch (e) { blockchainStats = null; }
+  }
+  
+  /**
    * Perform search using OmniSearch backend
    */
   async function performSearch(query, detectedType, addToHistory = true) {
@@ -509,6 +558,56 @@
       const result = await OmniSearch(query);
       
       if (!result.success) {
+        // 2A: If hash didn't resolve via OmniSearch, try as block hash
+        const isHex64 = /^[a-fA-F0-9]{64}$/.test(query);
+        if (isHex64) {
+          try {
+            const blockResult = await GetBlockByHash(query);
+            if (blockResult.success && blockResult.block) {
+              const bd = blockResult.block;
+              searchResult = {
+                type: 'block',
+                data: bd,
+                height: bd.height,
+                topoheight: bd.topoheight,
+                hash: bd.hash || query,
+                tips: bd.tips || [],
+                nonce: bd.nonce,
+                depth: bd.depth,
+                difficulty: bd.difficulty,
+                miners: bd.miners || [],
+                minerAddress: bd.miner_address,
+                reward: bd.reward,
+                totalFees: bd.total_fees,
+                sizeKb: bd.size_kb,
+                sizeBytes: bd.size_bytes,
+                txCount: bd.tx_count,
+                txHashes: bd.tx_hashes || [],
+                txs: bd.txs || [],
+                orphanStatus: bd.orphan_status,
+                syncBlock: bd.sync_block,
+                sideBlock: bd.side_block,
+                timestamp: bd.timestamp,
+                age: bd.age,
+                blockTime: bd.block_time,
+              };
+              toast.info('Found block by hash', 2000);
+              // Fetch miner for the block's coinbase TX
+              if (searchResult.txHashes?.length > 0 && !searchResult.minerAddress) {
+                fetchCoinbaseMiner(searchResult.txHashes[0]).then(addr => {
+                  if (addr) { blockMinerAddress = addr; searchResult.minerAddress = addr; searchResult = searchResult; }
+                });
+              }
+              if (addToHistory) {
+                navHistory = navHistory.slice(0, currentNavIndex + 1);
+                navHistory.push({ type: 'block', query });
+                currentNavIndex = navHistory.length - 1;
+              }
+              loading = false;
+              return;
+            }
+          } catch (e) { /* not a block hash either */ }
+        }
         console.error('Search failed:', result.error);
         toast.error(result.error || 'Search failed. Please try again.');
         loading = false;
@@ -568,6 +667,13 @@
             age: result.data.age,
             blockTime: result.data.block_time,
           };
+          // 2B: Fetch miner attribution from coinbase TX if not already present
+          blockMinerAddress = '';
+          if (searchResult.txHashes?.length > 0 && !searchResult.minerAddress) {
+            fetchCoinbaseMiner(searchResult.txHashes[0]).then(addr => {
+              if (addr) { blockMinerAddress = addr; searchResult.minerAddress = addr; searchResult = searchResult; }
+            });
+          }
           break;
           
         case 'tx':
@@ -621,6 +727,9 @@
             data: result.data,
             address: query,
           };
+          // 2C: Load SCID cross-references for this address
+          addressSCIDRefs = [];
+          loadAddressSCIDRefs(query);
           break;
           
         case 'durl':
@@ -1348,6 +1457,21 @@
           {/if}
         </div>
       </div>
+      
+      <!-- 2D: Blockchain Stats Dashboard -->
+      {#if blockchainStats}
+        <div class="stats-overview">
+          <h3>Blockchain Overview</h3>
+          <div class="stats-grid">
+            {#if blockchainStats.height}<div class="stat-item"><span class="stat-label">Height</span><span class="stat-value">{blockchainStats.height?.toLocaleString()}</span></div>{/if}
+            {#if blockchainStats.topoheight}<div class="stat-item"><span class="stat-label">Topoheight</span><span class="stat-value">{blockchainStats.topoheight?.toLocaleString()}</span></div>{/if}
+            {#if blockchainStats.difficulty}<div class="stat-item"><span class="stat-label">Difficulty</span><span class="stat-value">{blockchainStats.difficulty?.toLocaleString()}</span></div>{/if}
+            {#if blockchainStats.hashrate}<div class="stat-item"><span class="stat-label">Hashrate</span><span class="stat-value">{blockchainStats.hashrate}</span></div>{/if}
+            {#if blockchainStats.avg_block_time}<div class="stat-item"><span class="stat-label">Avg Block Time</span><span class="stat-value">{blockchainStats.avg_block_time}s</span></div>{/if}
+            {#if blockchainStats.supply}<div class="stat-item"><span class="stat-label">Supply</span><span class="stat-value">{blockchainStats.supply}</span></div>{/if}
+          </div>
+        </div>
+      {/if}
     </div>
   </div>
 {:else}
@@ -2726,6 +2850,31 @@
                 <div class="cmd-empty-state">
                   <Package size={20} strokeWidth={1.5} class="cmd-empty-icon" />
                   <span class="cmd-empty-text">No TELA apps owned by this address</span>
+                </div>
+              </div>
+            {/if}
+            
+            <!-- 2C: Address SCID Cross-References -->
+            {#if addressSCIDRefs.length > 0}
+              <div class="cmd-stats-panel" style="margin-top: var(--s-4);">
+                <div class="cmd-panel-header">
+                  <div class="cmd-panel-title">
+                    <span class="cmd-panel-icon">⬡</span>
+                    REFERENCED IN SMART CONTRACTS
+                  </div>
+                  <span class="cmd-badge">{addressSCIDRefs.length} refs</span>
+                </div>
+                <div class="cmd-list-content">
+                  {#each addressSCIDRefs as ref}
+                    <button
+                      on:click={() => goToSC(ref.scid || ref)}
+                      class="cmd-list-item"
+                    >
+                      <span class="cmd-list-hash">{(ref.scid || ref).slice(0, 16)}...{(ref.scid || ref).slice(-8)}</span>
+                      {#if ref.name}<span class="cmd-list-type">{ref.name}</span>{/if}
+                      <ChevronRight size={12} strokeWidth={1.5} class="cmd-list-arrow" />
+                    </button>
+                  {/each}
                 </div>
               </div>
             {/if}
@@ -6276,6 +6425,14 @@
     color: var(--purple-400);
   }
   
+  /* 2D: Blockchain Stats Dashboard */
+  .stats-overview { background: rgba(20, 20, 30, 0.6); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; margin-top: 16px; }
+  .stats-overview h3 { font-size: 0.85rem; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; }
+  .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .stat-item { display: flex; flex-direction: column; gap: 4px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px; }
+  .stat-label { font-size: 0.7rem; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-value { font-size: 1rem; color: #52c8db; font-weight: 600; font-family: var(--font-mono, monospace); }
+
   /* Spin animation for loaders */
   :global(.spin) {
     animation: spin 1s linear infinite;

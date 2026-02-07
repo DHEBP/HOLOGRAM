@@ -1,7 +1,7 @@
 <script>
-  import { walletState, appState, settingsState, walletRequestHistory, clearRequestHistory, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
+  import { walletState, appState, settingsState, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { 
     Copy, ArrowUp, ArrowDown, ArrowLeftRight, Eye, EyeOff,
@@ -88,6 +88,7 @@
   // WALLET DATA STATE
   // ============================================
   let transactionHistory = [];
+  let transactionLabels = {};
   
   // ============================================
   // SEND SECTION STATE (3-step flow)
@@ -113,6 +114,23 @@
   // ============================================
   let requestAmount = '';
   let requestDesc = '';
+  let requestComment = '';
+  
+  // ============================================
+  // SEND - INTEGRATED ADDRESS DETECTION
+  // ============================================
+  let decodedPaymentInfo = null;
+  
+  // ============================================
+  // MINING EARNINGS STATE
+  // ============================================
+  let miningEarnings = [];
+  let miningEarningsSummary = null;
+  
+  // ============================================
+  // WALLET PATH & EVENTS STATE
+  // ============================================
+  let currentWalletPath = '';
   
   // ============================================
   // HISTORY SECTION STATE
@@ -217,6 +235,14 @@
   // Seed words display
   $: seedWords = createdSeed ? createdSeed.split(' ') : [];
   
+  // Load mining earnings when mining filter is selected
+  $: if (historyFilter === 'mining') {
+    loadMiningEarnings();
+  }
+  
+  // Detect integrated addresses when send destination changes
+  $: checkIntegratedAddress(sendDest);
+  
   // Scroll to top when section changes
   let pageContentEl;
   $: if (activeSection && pageContentEl) {
@@ -253,6 +279,8 @@
         await refreshBalance();
         await loadTransactionHistory();
         startPolling();
+        loadWalletPath();
+        SubscribeToWalletEvents().catch(() => {});
       }
       
       // Load enhanced wallet info for recent wallets
@@ -319,6 +347,7 @@
     stopPolling();
     EventsOff('simulator:complete');
     EventsOff('network-mode-changed');
+    UnsubscribeFromEvents();
     // Clean up section navigation listener
     if (window._walletNavigateHandler) {
       window.removeEventListener('navigate-section', window._walletNavigateHandler);
@@ -446,6 +475,8 @@
         await refreshBalance();
         await loadTransactionHistory();
         startPolling();
+        loadWalletPath();
+        SubscribeToWalletEvents().catch(() => {});
         toast.success(`Connected to test wallet #${wallet.index}`);
       } else {
         error = result.error || 'Failed to open test wallet';
@@ -536,8 +567,32 @@
       if (result.success && result.transactions) {
         transactionHistory = result.transactions;
       }
+      await loadTransactionLabels();
     } catch (err) {
       console.error('Error fetching transaction history:', err);
+    }
+  }
+
+  async function loadTransactionLabels() {
+    try {
+      const result = await GetAllTransactionLabels();
+      if (result.success && result.labels) {
+        transactionLabels = result.labels;
+      }
+    } catch (e) {
+      console.error('Failed to load transaction labels:', e);
+    }
+  }
+
+  async function deleteTransactionLabel(txid) {
+    try {
+      const result = await DeleteTransactionLabel(txid);
+      if (result.success) {
+        delete transactionLabels[txid];
+        transactionLabels = transactionLabels; // trigger reactivity
+      }
+    } catch (e) {
+      console.error('Failed to delete label:', e);
     }
   }
   
@@ -595,6 +650,8 @@
         await refreshBalance();
         await loadTransactionHistory();
         startPolling();
+        loadWalletPath();
+        SubscribeToWalletEvents().catch(() => {});
         
         const recents = await ListRecentWallets();
         if (recents) recentWallets = recents;
@@ -831,6 +888,65 @@
     return addressType === 'integrated' && integratedAddress 
       ? integratedAddress 
       : $walletState.address;
+  }
+  
+  // ============================================
+  // PAYMENT REQUEST (INTEGRATED ADDRESS)
+  // ============================================
+  async function createPaymentRequest() {
+    if (!requestAmount && !requestComment) return;
+    try {
+      const amountAtomic = Math.round(parseFloat(requestAmount || '0') * 100000);
+      const result = await CreatePaymentRequest(amountAtomic, requestComment || '');
+      if (result.success && result.integrated_address) {
+        // Use the integrated address for display/QR
+        integratedAddress = result.integrated_address;
+      }
+    } catch (e) {
+      console.error('Failed to create payment request:', e);
+    }
+  }
+  
+  // ============================================
+  // SEND - INTEGRATED ADDRESS DETECTION
+  // ============================================
+  async function checkIntegratedAddress(addr) {
+    if (!addr || addr.length < 100) return; // Integrated addresses are longer
+    try {
+      const result = await DecodeIntegratedAddress(addr);
+      if (result.success && result.decoded) {
+        decodedPaymentInfo = result.decoded;
+      } else {
+        decodedPaymentInfo = null;
+      }
+    } catch (e) {
+      decodedPaymentInfo = null;
+    }
+  }
+  
+  // ============================================
+  // MINING EARNINGS
+  // ============================================
+  async function loadMiningEarnings() {
+    try {
+      const [summaryResult, earningsResult] = await Promise.all([
+        GetMiningEarningsSummary(),
+        GetWalletMiningEarnings(50)
+      ]);
+      if (summaryResult.success) miningEarningsSummary = summaryResult;
+      if (earningsResult.success) miningEarnings = earningsResult.earnings || [];
+    } catch (e) {
+      console.error('Failed to load mining earnings:', e);
+    }
+  }
+  
+  // ============================================
+  // WALLET PATH
+  // ============================================
+  async function loadWalletPath() {
+    try {
+      currentWalletPath = await GetCurrentWalletPath() || '';
+    } catch (e) { currentWalletPath = ''; }
   }
   
   // ============================================
@@ -1321,6 +1437,11 @@
                   <Copy size={12} />
                 </button>
               </div>
+              {#if currentWalletPath}
+                <div class="wallet-path" title={currentWalletPath}>
+                  {currentWalletPath.split('/').pop() || currentWalletPath.split('\\').pop()}
+                </div>
+              {/if}
             </div>
           </div>
 
@@ -1380,6 +1501,7 @@
                   <span class="tx-amt" class:tx-amt-in={tx.incoming || tx.coinbase} class:tx-amt-out={!tx.incoming && !tx.coinbase}>
                     {tx.incoming || tx.coinbase ? '+' : '-'}{formatBalance(tx.amount)} DERO
                   </span>
+                  {#if transactionLabels[tx.txid]}<span class="tx-label">{transactionLabels[tx.txid]}<button on:click|stopPropagation={() => deleteTransactionLabel(tx.txid)}>×</button></span>{/if}
                 </div>
               {:else}
                 <div class="cmd-empty-state">
@@ -1423,6 +1545,13 @@
                   />
                   {#if sendDest && !isValidSendAddress}
                     <span class="form-error">Invalid DERO address</span>
+                  {/if}
+                  {#if decodedPaymentInfo}
+                    <div class="decoded-payment-info">
+                      <span class="decoded-label">Payment Request Detected</span>
+                      {#if decodedPaymentInfo.amount}<span>Amount: {decodedPaymentInfo.amount}</span>{/if}
+                      {#if decodedPaymentInfo.comment}<span>Note: {decodedPaymentInfo.comment}</span>{/if}
+                    </div>
                   {/if}
                 </div>
                 
@@ -1649,6 +1778,22 @@
                 />
               </div>
               
+              <div class="form-group">
+                <label class="form-label">Comment for Integrated Address (optional)</label>
+                <input 
+                  type="text" 
+                  class="input" 
+                  bind:value={requestComment} 
+                  placeholder="Note to embed in address..." 
+                />
+              </div>
+              
+              <div class="request-actions" style="margin-bottom: 12px;">
+                <button class="btn btn-secondary" on:click={createPaymentRequest} disabled={!requestAmount && !requestComment}>
+                  Generate Integrated Address
+                </button>
+              </div>
+              
               {#if paymentUri}
                 <!-- QR Code with URI -->
                 <div class="qr-display">
@@ -1719,6 +1864,14 @@
             </div>
           </div>
 
+          {#if historyFilter === 'mining' && miningEarningsSummary}
+            <div class="mining-summary">
+              <span class="mining-stat">Total: {miningEarningsSummary.formatted || '0'} DERO</span>
+              <span class="mining-stat">Blocks: {miningEarningsSummary.blocks_count || 0}</span>
+              <span class="mining-stat">Miniblocks: {miningEarningsSummary.minis_count || 0}</span>
+            </div>
+          {/if}
+
           <!-- Transaction List -->
           <div class="cmd-stats-panel">
             <div class="cmd-panel-header">
@@ -1752,6 +1905,7 @@
                       {#if tx.label && editingLabelTxid !== tx.txid}
                         <span class="tx-label-badge">{tx.label}</span>
                       {/if}
+                      {#if transactionLabels[tx.txid]}<span class="tx-label">{transactionLabels[tx.txid]}<button on:click|stopPropagation={() => deleteTransactionLabel(tx.txid)}>×</button></span>{/if}
                     </div>
                     {#if editingLabelTxid === tx.txid}
                       <div class="tx-label-edit">
@@ -4329,4 +4483,20 @@
     background: var(--border-dim);
     margin: var(--s-2) 0;
   }
+
+  .tx-label { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: rgba(82, 200, 219, 0.15); border: 1px solid rgba(82, 200, 219, 0.3); border-radius: 4px; font-size: 0.75rem; color: #52c8db; }
+  .tx-label button { background: none; border: none; color: rgba(255,255,255,0.4); cursor: pointer; padding: 0 2px; font-size: 0.85rem; }
+  .tx-label button:hover { color: #ff6b6b; }
+
+  /* Decoded Payment Info (Send - Integrated Address Detection) */
+  .decoded-payment-info { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; background: rgba(82, 200, 219, 0.1); border: 1px solid rgba(82, 200, 219, 0.2); border-radius: 8px; font-size: 0.8rem; margin-top: 8px; }
+  .decoded-label { color: #52c8db; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  /* Mining Earnings Summary */
+  .mining-summary { display: flex; gap: 16px; padding: 10px 16px; background: rgba(82, 200, 219, 0.08); border: 1px solid rgba(82, 200, 219, 0.15); border-radius: 8px; margin-bottom: 12px; font-size: 0.8rem; }
+  .mining-stat { color: rgba(255,255,255,0.7); }
+  .mining-stat:first-child { color: #52c8db; font-weight: 600; }
+
+  /* Wallet Path Display */
+  .wallet-path { font-size: 0.7rem; color: rgba(255,255,255,0.35); font-family: var(--font-mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
 </style>

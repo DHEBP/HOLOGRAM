@@ -727,6 +727,12 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string) map[
 		a.logToConsole(fmt.Sprintf("[Transfer] Payment ID provided: %s", paymentID))
 	}
 
+	// Pre-flight: verify daemon connectivity before attempting transfer
+	if errResp := checkDaemonConnectivity(wallet); errResp != nil {
+		a.logToConsole("[Transfer] Failed: wallet not connected to daemon")
+		return errResp
+	}
+	
 	// Execute transfer with ringsize 16 (standard), no SC arguments
 	tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
 	if err != nil {
@@ -1062,45 +1068,6 @@ func GetWallet() *walletapi.Wallet_Disk {
 	return nil
 }
 
-// Helper function to add wallet to recent list
-func addToRecentWallets(path string) {
-	// Remove if already exists
-	newRecent := []string{path}
-	for _, p := range walletManager.recentWallets {
-		if p != path {
-			newRecent = append(newRecent, p)
-		}
-	}
-
-	// Keep only last 5
-	if len(newRecent) > 5 {
-		newRecent = newRecent[:5]
-	}
-
-	walletManager.recentWallets = newRecent
-
-	// Save to settings file
-	saveRecentWallets(newRecent)
-}
-
-func saveRecentWallets(wallets []string) {
-	configDir := filepath.Join(getDatashardsDir(), "settings")
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		log.Printf("Failed to create settings directory: %v", err)
-		return
-	}
-
-	data, err := json.Marshal(wallets)
-	if err != nil {
-		log.Printf("Failed to marshal recent wallets: %v", err)
-		return
-	}
-
-	if err := os.WriteFile(filepath.Join(configDir, "recent_wallets.json"), data, 0600); err != nil {
-		log.Printf("Failed to save recent wallets: %v", err)
-	}
-}
-
 func loadRecentWallets() []string {
 	configFile := filepath.Join(getDatashardsDir(), "settings", "recent_wallets.json")
 	data, err := os.ReadFile(configFile)
@@ -1125,6 +1092,19 @@ func init() {
 func (a *App) ApproveWalletConnection() map[string]interface{} {
 	a.logToConsole("[OK] Wallet connection approved by user")
 	return map[string]interface{}{"success": true}
+}
+
+// checkDaemonConnectivity verifies the wallet can reach the daemon before attempting a transaction.
+// Returns nil if connected, or an error response map if not.
+func checkDaemonConnectivity(wallet *walletapi.Wallet_Disk) map[string]interface{} {
+	if wallet.Get_Daemon_Height() == 0 {
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "Wallet is not connected to the daemon. Please check your connection and try again.",
+			"technicalError": "daemon height is 0 — no active daemon connection",
+		}
+	}
+	return nil
 }
 
 // InternalWalletCall executes a wallet method directly using the embedded wallet
@@ -1340,6 +1320,11 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			return map[string]interface{}{"success": false, "error": "Please specify a transfer amount and destination, or a smart contract call."}
 		}
 		
+		// Pre-flight: verify daemon connectivity before attempting transaction
+		if errResp := checkDaemonConnectivity(wallet); errResp != nil {
+			return errResp
+		}
+		
 		// Execute transfer (with optional SC arguments)
 		tx, err := wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
 		if err != nil {
@@ -1476,12 +1461,12 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			}
 		}
 
-		// Execute SC Invoke
-		// Note: WalletAPI might differ on SC invoke method signature
-		// Using TransferPayload0 with SC args
-		// For SC invoke, destination is usually random burn address or handled via rpc args
+		// Pre-flight: verify daemon connectivity before attempting SC invoke
+		if errResp := checkDaemonConnectivity(wallet); errResp != nil {
+			return errResp
+		}
 		
-		// For SC invocation, we generally use TransferPayload0 with Arguments
+		// Execute SC Invoke via TransferPayload0 with SC args
 		// If we are sending DERO to the SC, we include it in transfers
 		
 		tx, err := wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)

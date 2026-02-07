@@ -11,6 +11,7 @@ import RatingsBreakdown from '../lib/components/RatingsBreakdown.svelte';
 import VersionHistory from '../lib/components/VersionHistory.svelte';
 import { Star, History, GitBranch, Heart } from 'lucide-svelte';
 import deroIconFallback from '../assets/dero-icon-fallback.svg';
+import OmniSearch from '../lib/components/OmniSearch.svelte';
 
 // Permission helpers for XSWD connection requests
 function getPermissionName(permId) {
@@ -120,6 +121,7 @@ function startXSWDSubscriptionPolling() {
 }
 
 let addressInput = '';
+  let addressInputEl;
   let loading = false;
   let showWelcome = true;
   let currentMeta = {};
@@ -686,6 +688,11 @@ let addressInput = '';
   onMount(async () => {
     restoreBrowserSession();
     restoreDiscoveryCache();
+    
+    // Auto-focus address bar when entering Browser section
+    if (addressInputEl) {
+      addressInputEl.focus();
+    }
 
     unsubscribePending = pendingNavigation.subscribe((nav) => {
       if (nav?.url && !hasNavigated) {
@@ -2598,6 +2605,30 @@ let addressInput = '';
     scheduleBrowserSessionSave();
   }
   
+  function handleOmniSearch(event) {
+    const { query, type, results } = event.detail;
+    
+    // For navigable types, use existing navigation
+    if (type === 'durl' || type === 'name') {
+      navigate();
+    } else if (type === 'hash' || type === 'scid') {
+      // 64-char hex could be SCID - try to navigate
+      navigate();
+    } else if (type === 'block' || type === 'address') {
+      // Switch to Explorer tab with search pre-loaded
+      navigateTo(query);
+    } else if (type === 'key' || type === 'value' || type === 'code') {
+      // For search results, switch to Explorer with search query
+      navigateTo(query);
+    } else if (type === 'class' || type === 'tag') {
+      // For class/tag browsing, switch to Explorer with search query
+      navigateTo(query);
+    } else {
+      // Default: try to navigate (might be a dURL)
+      navigate();
+    }
+  }
+
   function handleKeydown(event) {
     if (event.key === 'Enter') {
       if (showSuggestions && selectedIndex >= 0 && selectedIndex < suggestions.length) {
@@ -2708,32 +2739,13 @@ let addressInput = '';
     <!-- v6.1 URL Bar -->
     <div class="browser-url-container" class:focused={addressBarFocused}>
       <span class="browser-url-protocol">dero://</span>
-          <input
-            type="text"
+          <OmniSearch
             bind:value={addressInput}
-            on:input={handleAddressInput}
-            on:keydown={handleKeydown}
-            on:focus={() => { addressBarFocused = true; handleAddressInput(); }}
-            on:blur={() => { addressBarFocused = false; setTimeout(() => showSuggestions = false, 200); }}
-            placeholder="dURL or SCID..."
-        class="browser-url-input"
+            placeholder="Enter dURL, SCID, or search..."
+            compact={true}
+            on:search={handleOmniSearch}
+            loading={loading}
           />
-          
-      <!-- Go Button -->
-          <button
-            on:click={() => navigate()}
-            disabled={loading}
-        class="browser-go-btn"
-          >
-            {#if loading}
-          <svg width="16" height="16" class="animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-            {:else}
-          →
-            {/if}
-          </button>
       
       <!-- Favorite Button (in address bar) -->
       <button
@@ -2746,34 +2758,6 @@ let addressInput = '';
         <Heart size={14} fill={currentIsFavorited ? 'currentColor' : 'none'} />
       </button>
         </div>
-        
-        <!-- Suggestions Dropdown -->
-        {#if showSuggestions && suggestions.length > 0}
-          <div class="browser-suggestions-dropdown">
-            {#each suggestions as suggestion, i}
-              <button
-                on:click={() => selectSuggestion(suggestion)}
-                on:mouseenter={() => selectedIndex = i}
-                class="browser-suggestion-item"
-                class:selected={i === selectedIndex}
-              >
-                <div class="browser-suggestion-icon">
-                  <Icons name="box" size={18} />
-                </div>
-                <div class="browser-suggestion-info">
-                  <div class="browser-suggestion-name">{suggestion.name}</div>
-                  <div class="browser-suggestion-scid">{suggestion.scid?.substring(0, 20)}...</div>
-                </div>
-                {#if suggestion.avg}
-                  <HoloBadge variant={getRatingBadge(suggestion.avg)}>★ {suggestion.avg}</HoloBadge>
-                {/if}
-              </button>
-            {/each}
-            <div class="browser-suggestions-hint">
-              ↑↓ Navigate • Enter Select • Tab Autocomplete
-            </div>
-          </div>
-        {/if}
       
       <!-- Version History Toggle -->
       <button
