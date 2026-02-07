@@ -739,29 +739,7 @@ func (a *App) SearchApps(query string) map[string]interface{} {
 		}
 	}
 
-	go a.BuildTextIndex()
-
-	ranked := a.SearchTextIndex(query)
-	results := make([]map[string]interface{}, 0)
-
-	if len(ranked) > 0 {
-		appList := a.gnomonClient.GetTELAApps()
-		scidToApp := make(map[string]map[string]interface{}, len(appList))
-		for _, app := range appList {
-			if sc, ok := app["scid"].(string); ok {
-				scidToApp[sc] = app
-			}
-		}
-		for _, sc := range ranked {
-			if app, ok := scidToApp[sc]; ok {
-				results = append(results, app)
-			}
-		}
-	}
-
-	if len(results) == 0 {
-		results = a.gnomonClient.SearchTELApps(query)
-	}
+	results := a.gnomonClient.SearchTELApps(query)
 
 	a.logToConsole(fmt.Sprintf("[...] Search for '%s' returned %d results", query, len(results)))
 

@@ -1,5 +1,5 @@
 // Copyright 2025 HOLOGRAM Project. All rights reserved.
-// Navigation & Bookmarks - Extracted from app.go for organization
+// Navigation & History - Extracted from app.go for organization
 // Session 87: Domain splitting
 
 package main
