@@ -129,15 +129,6 @@ func (a *App) buildNodeArgs(networkMode NetworkMode, fullDataDir string, netConf
 		}
 
 		a.logToConsole(fmt.Sprintf("[NET] Network mode: %s", networkMode))
-
-		// Add mining server flags if enabled
-		if nodeManager.miningEnabled {
-			args = append(args, "--getwork-bind", fmt.Sprintf("127.0.0.1:%d", nodeManager.getworkPort))
-			if nodeManager.integratorAddress != "" {
-				args = append(args, "--integrator-address", nodeManager.integratorAddress)
-			}
-			a.logToConsole(fmt.Sprintf("[MINE] Mining server will be available at 127.0.0.1:%d", nodeManager.getworkPort))
-		}
 	}
 
 	// Add optional flags (not applicable for simulator)

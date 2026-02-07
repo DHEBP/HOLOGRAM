@@ -978,26 +978,3 @@ func (a *App) GetServerInfo(name string) map[string]interface{} {
 	}
 }
 
-// OpenInBrowser opens a server URL in the default browser
-func (a *App) OpenServerInBrowser(name string) map[string]interface{} {
-	serverRegistry.RLock()
-	server, exists := serverRegistry.servers[name]
-	serverRegistry.RUnlock()
-
-	if !exists {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Server not found",
-		}
-	}
-
-	// Note: Wails can handle opening URLs via runtime.BrowserOpenURL
-	// This would be called from the frontend
-
-	return map[string]interface{}{
-		"success": true,
-		"url":     server.URL,
-		"message": "Use runtime.BrowserOpenURL to open in browser",
-	}
-}
-

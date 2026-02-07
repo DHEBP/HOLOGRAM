@@ -31,16 +31,6 @@ func AllPermissions() []XSWDPermission {
 	}
 }
 
-// WalletPermissions returns permissions that require wallet access
-func WalletPermissions() []XSWDPermission {
-	return []XSWDPermission{
-		PermissionViewAddress,
-		PermissionViewBalance,
-		PermissionSignTransaction,
-		PermissionSCInvoke,
-	}
-}
-
 // PermissionInfo provides human-readable info about a permission
 type PermissionInfo struct {
 	ID          XSWDPermission `json:"id"`
@@ -394,12 +384,6 @@ func GetRequiredPermission(method string) XSWDPermission {
 	}
 }
 
-// IsReadOnlyMethod returns true if the method only reads public blockchain data (no wallet needed)
-func IsReadOnlyMethod(method string) bool {
-	perm := GetRequiredPermission(method)
-	return perm == PermissionReadPublicData || perm == ""
-}
-
 // RequiresWallet returns true if the permission requires wallet access
 func RequiresWallet(p XSWDPermission) bool {
 	switch p {
@@ -415,18 +399,6 @@ func RequiresWallet(p XSWDPermission) bool {
 func DefaultRequestedPermissions() []XSWDPermission {
 	return []XSWDPermission{
 		PermissionReadPublicData,
-	}
-}
-
-// FullAccessPermissions returns all permissions including wallet access
-// Used when an app explicitly requests full access
-func FullAccessPermissions() []XSWDPermission {
-	return []XSWDPermission{
-		PermissionReadPublicData,
-		PermissionViewAddress,
-		PermissionViewBalance,
-		PermissionSignTransaction,
-		PermissionSCInvoke,
 	}
 }
 

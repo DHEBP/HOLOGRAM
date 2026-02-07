@@ -16,6 +16,7 @@ type XSWDPendingRequest struct {
 	Method   string
 	Params   map[string]interface{}
 	RespChan chan interface{}
+	Conn     *websocket.Conn // Track which connection owns this request
 }
 
 // Subscription event types
@@ -163,6 +164,28 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		delete(s.clientAppNames, conn)
 		delete(s.clientSubscriptions, conn)
 		s.lock.Unlock()
+		
+		// Clean up any pending signing requests for this connection
+		// This prevents goroutine leaks when a dApp disconnects while a request is pending
+		s.pendingLock.Lock()
+		for reqID, req := range s.pendingRequests {
+			if req.Conn == conn {
+				log.Printf("[XSWD] Cleaning up pending request %s for disconnected client", reqID)
+				// Send error to unblock the waiting goroutine
+				select {
+				case req.RespChan <- fmt.Errorf("dApp disconnected"):
+				default:
+					// Channel already has a value or is closed, skip
+				}
+				delete(s.pendingRequests, reqID)
+				// Notify frontend to dismiss the modal
+				runtime.EventsEmit(s.app.ctx, "xswd:request_cancelled", map[string]interface{}{
+					"id":     reqID,
+					"reason": "dApp disconnected",
+				})
+			}
+		}
+		s.pendingLock.Unlock()
 		
 		// Mark client as inactive
 		if pm := GetPermissionManager(); pm != nil && origin != "" {
@@ -606,12 +629,13 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 		origin = "Websocket"
 	}
 
-	// Store request
+	// Store request with connection reference for cleanup on disconnect
 	s.pendingLock.Lock()
 	s.pendingRequests[reqID] = &XSWDPendingRequest{
 		Method:   req.Method,
 		Params:   paramsMap,
 		RespChan: resChan,
+		Conn:     conn,
 	}
 	s.pendingLock.Unlock()
 
@@ -625,8 +649,24 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 		"origin":  origin,
 	})
 
-	// Wait for response (blocking this goroutine)
-	resp := <-resChan
+	// Wait for response with timeout (prevents goroutine leak if user never responds or frontend crashes)
+	var resp interface{}
+	select {
+	case resp = <-resChan:
+		// Got response from user approval/denial
+	case <-time.After(120 * time.Second):
+		// Timeout — clean up and send error to dApp
+		s.pendingLock.Lock()
+		delete(s.pendingRequests, reqID)
+		s.pendingLock.Unlock()
+		log.Printf("[XSWD] Signing request %s timed out after 120s", reqID)
+		// Notify frontend to dismiss the modal for this request
+		runtime.EventsEmit(s.app.ctx, "xswd:request_timeout", map[string]interface{}{
+			"id": reqID,
+		})
+		s.sendResponse(conn, req.ID, nil, &JSONRPCError{Code: -32000, Message: "Transaction approval timed out. Please try again."})
+		return
+	}
 
 	// Clean up
 	s.pendingLock.Lock()

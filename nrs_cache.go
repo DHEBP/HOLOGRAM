@@ -124,38 +124,6 @@ func (n *NRSCache) GetAddressForName(name string) (string, bool) {
 	return string(addrBytes), true
 }
 
-// LookupAndCache performs a live NRS lookup and caches the result
-func (n *NRSCache) LookupAndCache(name string) (string, error) {
-	if name == "" {
-		return "", fmt.Errorf("name cannot be empty")
-	}
-
-	// Check cache first
-	if addr, found := n.GetAddressForName(name); found {
-		return addr, nil
-	}
-
-	// Do live lookup via app
-	if n.app == nil {
-		return "", fmt.Errorf("app not linked to cache")
-	}
-
-	result := n.app.ResolveDeroName(name)
-	if success, ok := result["success"].(bool); ok && success {
-		if addr, ok := result["address"].(string); ok && addr != "" {
-			// Cache bidirectionally
-			n.CacheNameAddress(name, addr)
-			return addr, nil
-		}
-	}
-
-	if errMsg, ok := result["error"].(string); ok {
-		return "", fmt.Errorf(errMsg)
-	}
-
-	return "", fmt.Errorf("name not found")
-}
-
 // GetCacheStats returns cache statistics
 func (n *NRSCache) GetCacheStats() map[string]interface{} {
 	n.mu.RLock()
@@ -211,45 +179,4 @@ func (n *NRSCache) GetAllCachedNames() map[string]string {
 	return result
 }
 
-// ClearCache removes all cached entries
-func (n *NRSCache) ClearCache() error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	// Reset stats
-	n.cacheHits = 0
-	n.cacheMiss = 0
-
-	// Clear trees by getting fresh snapshot and committing empty trees
-	ss, err := n.store.LoadSnapshot(0)
-	if err != nil {
-		return err
-	}
-
-	nameTree, _ := ss.GetTree("nrs_name_to_addr")
-	addrTree, _ := ss.GetTree("nrs_addr_to_name")
-
-	// Delete all entries from name tree
-	c := nameTree.Cursor()
-	var keysToDelete [][]byte
-	for k, _, err := c.First(); err == nil; k, _, err = c.Next() {
-		keysToDelete = append(keysToDelete, append([]byte{}, k...))
-	}
-	for _, k := range keysToDelete {
-		nameTree.Delete(k)
-	}
-
-	// Delete all entries from addr tree
-	c = addrTree.Cursor()
-	keysToDelete = nil
-	for k, _, err := c.First(); err == nil; k, _, err = c.Next() {
-		keysToDelete = append(keysToDelete, append([]byte{}, k...))
-	}
-	for _, k := range keysToDelete {
-		addrTree.Delete(k)
-	}
-
-	_, err = graviton.Commit(nameTree, addrTree)
-	return err
-}
 

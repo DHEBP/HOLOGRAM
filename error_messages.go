@@ -455,15 +455,6 @@ func ErrorResponse(err error) map[string]interface{} {
 	}
 }
 
-// ErrorResponseString creates an error response from a string
-func ErrorResponseString(errMsg string) map[string]interface{} {
-	return map[string]interface{}{
-		"success":        false,
-		"error":          FriendlyErrorString(errMsg),
-		"technicalError": errMsg,
-	}
-}
-
 // ErrorResponseWithData creates an error response with additional data fields
 func ErrorResponseWithData(err error, data map[string]interface{}) map[string]interface{} {
 	resp := ErrorResponse(err)

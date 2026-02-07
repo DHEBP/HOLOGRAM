@@ -101,43 +101,6 @@ func (a *App) DeleteVar(scid, key string) map[string]interface{} {
 	}
 }
 
-// ExecuteSCFunction executes a smart contract function
-func (a *App) ExecuteSCFunction(scid, functionName, paramsJSON string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("[FAST] Executing function %s on %s", functionName, scid[:16]+"..."))
-
-	// Check wallet
-	wallet := GetWallet()
-	if wallet == nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "No wallet is currently open",
-		}
-	}
-
-	// Parse parameters
-	var params map[string]interface{}
-	if paramsJSON != "" {
-		if err := json.Unmarshal([]byte(paramsJSON), &params); err != nil {
-			return map[string]interface{}{
-				"success":        false,
-				"error":          "Invalid parameters. Please check your input.",
-				"technicalError": err.Error(),
-			}
-		}
-	}
-
-	// Execute function using XSWD or direct transfer
-	// Note: TELA library doesn't have a generic Execute function
-	// Smart contract execution is done via wallet transfers with SC arguments
-	a.logToConsole(fmt.Sprintf("[WARN] Generic SC execution requires XSWD - use CallXSWD instead"))
-	
-	// For now, return a placeholder - users should use CallXSWD for SC execution
-	return map[string]interface{}{
-		"success": false,
-		"error":   "Use CallXSWD for smart contract function execution",
-	}
-}
-
 // ExecuteSCViaXSWD executes a smart contract function via XSWD
 func (a *App) ExecuteSCViaXSWD(scid, functionName, paramsJSON string) map[string]interface{} {
 	a.logToConsole(fmt.Sprintf("[FAST] Executing function %s on %s via XSWD", functionName, scid[:16]+"..."))
@@ -515,12 +478,5 @@ func (a *App) GetSCInteractionHistory(scid string) map[string]interface{} {
 		"count":        len(heights),
 		"showing":      len(interactions),
 	}
-}
-
-// SearchSCByLine searches for smart contracts containing a specific line of code
-// This is now fully implemented using the Gnomon SearchCodeLine method
-func (a *App) SearchSCByLine(line string) map[string]interface{} {
-	// Delegate to the new SearchCodeLine method in app.go
-	return a.SearchCodeLine(line)
 }
 

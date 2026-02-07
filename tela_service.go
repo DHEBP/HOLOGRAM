@@ -1443,14 +1443,6 @@ type Commit struct {
 	Label     string `json:"label"`     // Auto-generated semantic label
 }
 
-// VersionedContent represents content retrieved at a specific commit
-type VersionedContent struct {
-	Files   map[string]string `json:"files"`   // filename -> content
-	DOCs    []string          `json:"docs"`    // DOC SCIDs in this version
-	DURL    string            `json:"durl"`    // dURL at this version
-	Version int               `json:"version"` // Commit number
-}
-
 // FileDiff represents differences in a single file between versions
 type FileDiff struct {
 	FileName  string                   `json:"fileName"`

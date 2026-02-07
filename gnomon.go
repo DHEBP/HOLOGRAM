@@ -1101,11 +1101,6 @@ func (g *GnomonClient) CleanDB(network string) error {
 	return nil
 }
 
-// GetDBPath returns the current database path
-func (g *GnomonClient) GetDBPath() string {
-	return g.dbPath
-}
-
 // GetMyDOCs returns all DOCs owned by the specified wallet address
 // If docType is non-empty, filters by that specific document type
 func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[string]interface{} {

@@ -81,7 +81,7 @@ func (a *App) Reload() map[string]interface{} {
 	return map[string]interface{}{"success": true, "message": "Page reload"}
 }
 
-// History & Bookmarks Functions
+// History Functions
 
 func (a *App) GetHistory() []string {
 	return a.history
@@ -92,25 +92,6 @@ func (a *App) ClearHistory() map[string]interface{} {
 	return map[string]interface{}{
 		"success": true,
 		"message": "History cleared",
-	}
-}
-
-func (a *App) GetBookmarks() []map[string]string {
-	return a.bookmarks
-}
-
-func (a *App) AddBookmark(name, scid string) map[string]interface{} {
-	bookmark := map[string]string{
-		"name": name,
-		"scid": scid,
-	}
-	a.bookmarks = append(a.bookmarks, bookmark)
-
-	log.Printf("[STAR] Bookmark added: %s → %s", name, scid)
-
-	return map[string]interface{}{
-		"success": true,
-		"message": "Bookmark added",
 	}
 }
 

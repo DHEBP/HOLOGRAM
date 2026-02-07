@@ -3,12 +3,8 @@ package main
 import (
     "regexp"
     "sort"
-    "strconv"
     "strings"
 )
-
-// TextIndex is a simple inverted index persisted via graviton
-type TextIndex struct{}
 
 var wordRE = regexp.MustCompile(`[A-Za-z0-9_]+`)
 
@@ -75,7 +71,3 @@ func (a *App) SearchTextIndex(query string) []string {
     for _, p := range arr { out = append(out, p.sc) }
     return out
 }
-
-// helpers for numeric parsing if needed later
-func atoi64(s string) int64 { v, _ := strconv.ParseInt(s, 10, 64); return v }
-

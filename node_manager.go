@@ -79,10 +79,6 @@ type NodeManager struct {
 	// Network mode (mainnet, simulator)
 	networkMode NetworkMode
 	
-	// Mining server configuration
-	miningEnabled      bool   // Whether to start the GetWork server
-	integratorAddress  string // Default reward address for mining server
-	
 	// Advanced node options
 	fastSyncEnabled  bool   // Use --fastsync for quick initial sync
 	pruneHistory     int    // Use --prune-history=N (0 = disabled)
@@ -265,28 +261,6 @@ func (a *App) TestAndConnectEndpoint(endpoint string) map[string]interface{} {
 	}
 }
 
-// IsLANAddress checks if an IP address is on the local network
-func IsLANAddress(ip string) bool {
-	// Check for common LAN ranges
-	lanPrefixes := []string{
-		"192.168.",
-		"10.",
-		"172.16.", "172.17.", "172.18.", "172.19.",
-		"172.20.", "172.21.", "172.22.", "172.23.",
-		"172.24.", "172.25.", "172.26.", "172.27.",
-		"172.28.", "172.29.", "172.30.", "172.31.",
-		"127.",
-		"localhost",
-	}
-
-	for _, prefix := range lanPrefixes {
-		if strings.HasPrefix(ip, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // DetectExistingBlockchain scans common locations for existing blockchain data
 func (a *App) DetectExistingBlockchain() map[string]interface{} {
 	a.logToConsole("[...] Scanning for existing blockchain data...")
@@ -326,20 +300,6 @@ func (a *App) DetectExistingBlockchain() map[string]interface{} {
 		"success":   true,
 		"locations": foundLocations,
 		"count":     len(foundLocations),
-	}
-}
-
-// getDerodBinaryName returns the platform-specific derod binary name
-func getDerodBinaryName() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "derod-darwin"
-	case "windows":
-		return fmt.Sprintf("derod-windows-%s.exe", runtime.GOARCH)
-	case "linux":
-		return fmt.Sprintf("derod-linux-%s", runtime.GOARCH)
-	default:
-		return "derod"
 	}
 }
 
@@ -443,6 +403,19 @@ func GetBinaryPath() string {
 	}
 
 	return ""
+}
+
+// CheckDerodStatus returns the current status of the derod binary.
+// Uses GetBinaryPath() to find the binary via all standard search paths
+// (co-located from Makefile build, system PATH, common locations).
+func (a *App) CheckDerodStatus() map[string]interface{} {
+	path := GetBinaryPath()
+	installed := path != ""
+
+	return map[string]interface{}{
+		"installed": installed,
+		"path":      path,
+	}
 }
 
 // getSimulatorBinaryName returns the platform-specific simulator binary name
@@ -1146,84 +1119,6 @@ func (a *App) monitorNode() {
 	}
 }
 
-// ================== Mining Server Configuration ==================
-
-// SetNodeMiningConfig configures the embedded node's GetWork mining server
-// This must be called BEFORE starting the node
-func (a *App) SetNodeMiningConfig(enabled bool, integratorAddress string, getworkPort int) map[string]interface{} {
-	nodeManager.Lock()
-	defer nodeManager.Unlock()
-
-	if nodeManager.isRunning {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Cannot change mining config while node is running",
-		}
-	}
-
-	nodeManager.miningEnabled = enabled
-	nodeManager.integratorAddress = integratorAddress
-	
-	if getworkPort > 0 && getworkPort < 65536 {
-		nodeManager.getworkPort = getworkPort
-	}
-
-	a.logToConsole(fmt.Sprintf("[MINE] Node mining server config: enabled=%v, port=%d, address=%s", 
-		enabled, nodeManager.getworkPort, integratorAddress[:min(16, len(integratorAddress))]+"..."))
-
-	return map[string]interface{}{
-		"success":           true,
-		"miningEnabled":     nodeManager.miningEnabled,
-		"getworkPort":       nodeManager.getworkPort,
-		"integratorAddress": nodeManager.integratorAddress,
-	}
-}
-
-// GetGetWorkEndpoint returns the GetWork WebSocket endpoint for the embedded node
-// This is used by both the Miner and EPOCH to connect to the node's mining server
-func (a *App) GetGetWorkEndpoint() map[string]interface{} {
-	nodeManager.RLock()
-	defer nodeManager.RUnlock()
-
-	if !nodeManager.isRunning {
-		return map[string]interface{}{
-			"success":   false,
-			"available": false,
-			"error":     "Node is not running",
-		}
-	}
-
-	if !nodeManager.miningEnabled {
-		return map[string]interface{}{
-			"success":   false,
-			"available": false,
-			"error":     "Mining server not enabled on node",
-		}
-	}
-
-	endpoint := fmt.Sprintf("127.0.0.1:%d", nodeManager.getworkPort)
-	
-	return map[string]interface{}{
-		"success":   true,
-		"available": true,
-		"endpoint":  endpoint,
-		"port":      nodeManager.getworkPort,
-	}
-}
-
-// GetNodeMiningConfig returns the current mining server configuration
-func (a *App) GetNodeMiningConfig() map[string]interface{} {
-	nodeManager.RLock()
-	defer nodeManager.RUnlock()
-
-	return map[string]interface{}{
-		"success":           true,
-		"miningEnabled":     nodeManager.miningEnabled,
-		"getworkPort":       nodeManager.getworkPort,
-		"integratorAddress": nodeManager.integratorAddress,
-		"isRunning":         nodeManager.isRunning,
-	}
-}
 
 // SetNodeAdvancedConfig configures advanced node options like fast sync, pruning, and sync node
 // These settings take effect on the next node start
@@ -1277,17 +1172,6 @@ func (a *App) GetNodeAdvancedConfig() map[string]interface{} {
 	}
 }
 
-// StartNodeWithMining is a convenience function that configures mining and starts the node
-func (a *App) StartNodeWithMining(dataDir, integratorAddress string) map[string]interface{} {
-	// Configure mining first
-	configResult := a.SetNodeMiningConfig(true, integratorAddress, 0) // Use default port
-	if !configResult["success"].(bool) {
-		return configResult
-	}
-
-	// Then start the node
-	return a.StartNode(dataDir)
-}
 
 // ================== Network Mode Management ==================
 
@@ -1412,56 +1296,7 @@ func (a *App) GetAvailableNetworks() map[string]interface{} {
 	}
 }
 
-// EnableNodeMining enables the GetWork server on a running node
-// Note: This requires a node restart to take effect
-func (a *App) EnableNodeMining(integratorAddress string) map[string]interface{} {
-	nodeManager.Lock()
-	
-	wasRunning := nodeManager.isRunning
-	nodeManager.miningEnabled = true
-	nodeManager.integratorAddress = integratorAddress
-	
-	nodeManager.Unlock()
 
-	if wasRunning {
-		return map[string]interface{}{
-			"success":        true,
-			"requireRestart": true,
-			"message":        "Mining configuration updated. Restart node to apply changes.",
-		}
-	}
-
-	return map[string]interface{}{
-		"success":        true,
-		"requireRestart": false,
-		"message":        "Mining configuration updated. Start node to enable mining server.",
-	}
-}
-
-// DisableNodeMining disables the GetWork server
-// Note: This requires a node restart to take effect
-func (a *App) DisableNodeMining() map[string]interface{} {
-	nodeManager.Lock()
-	
-	wasRunning := nodeManager.isRunning
-	nodeManager.miningEnabled = false
-	
-	nodeManager.Unlock()
-
-	if wasRunning {
-		return map[string]interface{}{
-			"success":        true,
-			"requireRestart": true,
-			"message":        "Mining server will be disabled on next node restart.",
-		}
-	}
-
-	return map[string]interface{}{
-		"success":        true,
-		"requireRestart": false,
-		"message":        "Mining server disabled.",
-	}
-}
 
 // min helper for older Go versions
 func min(a, b int) int {
@@ -1585,90 +1420,6 @@ func (a *App) GetNetworkStats() map[string]interface{} {
 	return stats
 }
 
-// RewindChain rewinds the blockchain by N blocks (embedded node only)
-func (a *App) RewindChain(blocks int) map[string]interface{} {
-	nodeManager.Lock()
-	defer nodeManager.Unlock()
-
-	if !nodeManager.isRunning {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Cannot rewind chain: embedded node is not running",
-		}
-	}
-
-	if blocks <= 0 {
-		blocks = 50 // Default to 50 blocks like Netrunner
-	}
-
-	if blocks > 1000 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Cannot rewind more than 1000 blocks at once",
-		}
-	}
-
-	// For embedded node, we need to stop and restart with different parameters
-	// This is a placeholder - actual implementation would require blockchain access
-	a.logToConsole(fmt.Sprintf("[WARN] Chain rewind requested: %d blocks (requires node restart)", blocks))
-
-	return map[string]interface{}{
-		"success":        true,
-		"message":        fmt.Sprintf("Chain rewind of %d blocks initiated. Node may need restart.", blocks),
-		"blocksRewound":  blocks,
-		"requireRestart": true,
-	}
-}
-
-// SetMiningAddress sets the integrator/mining reward address
-func (a *App) SetMiningAddress(address string) map[string]interface{} {
-	if address == "" {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Address cannot be empty",
-		}
-	}
-
-	// Basic DERO address validation (starts with dero)
-	if !strings.HasPrefix(strings.ToLower(address), "dero") {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Invalid DERO address format",
-		}
-	}
-
-	if len(address) < 60 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Address appears too short",
-		}
-	}
-
-	nodeManager.Lock()
-	nodeManager.integratorAddress = address
-	wasRunning := nodeManager.isRunning
-	nodeManager.Unlock()
-
-	a.logToConsole(fmt.Sprintf("[MINE] Mining address set: %s...%s", address[:12], address[len(address)-8:]))
-
-	return map[string]interface{}{
-		"success":        true,
-		"address":        address,
-		"requireRestart": wasRunning,
-		"message":        "Mining address updated",
-	}
-}
-
-// GetMiningAddress returns the current mining/integrator address
-func (a *App) GetMiningAddress() map[string]interface{} {
-	nodeManager.RLock()
-	defer nodeManager.RUnlock()
-
-	return map[string]interface{}{
-		"success": true,
-		"address": nodeManager.integratorAddress,
-	}
-}
 
 // GetNodeConfig returns the current node configuration
 func (a *App) GetNodeConfig() map[string]interface{} {
@@ -1690,7 +1441,6 @@ func (a *App) GetNodeConfig() map[string]interface{} {
 		"p2pPort":       nodeManager.p2pPort,
 		"getworkPort":   nodeManager.getworkPort,
 		"network":       string(nodeManager.networkMode),
-		"miningEnabled": nodeManager.miningEnabled,
 		"fastSync":      nodeManager.fastSyncEnabled,
 		"pruneHistory":  nodeManager.pruneHistory,
 		"isRunning":     nodeManager.isRunning,
@@ -1718,9 +1468,6 @@ func (a *App) SetNodeConfig(config map[string]interface{}) map[string]interface{
 	}
 	if v, ok := config["getworkPort"].(float64); ok && v > 1024 && v < 65535 {
 		nodeManager.getworkPort = int(v)
-	}
-	if v, ok := config["miningEnabled"].(bool); ok {
-		nodeManager.miningEnabled = v
 	}
 	if v, ok := config["fastSync"].(bool); ok {
 		nodeManager.fastSyncEnabled = v

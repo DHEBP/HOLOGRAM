@@ -369,15 +369,6 @@ func persistInvertedIndex(a *App, tokDURL, tokName, tokDesc map[string]map[strin
     _, _ = graviton.Commit(tree)
 }
 
-func loadInvertedPosting(a *App, token string) []string {
-    gc, ok := a.cache.(*GravitonCache)
-    if !ok || gc.store == nil { return nil }
-    ss, err := gc.store.LoadSnapshot(0); if err != nil { return nil }
-    tree, _ := ss.GetTree("ftindex"); if tree == nil { return nil }
-    v, _ := tree.Get([]byte("tok::" + token)); if v == nil { return nil }
-    return splitCSV(string(v))
-}
-
 func loadInvertedPostingKind(a *App, token string, kind rune) []string {
     gc, ok := a.cache.(*GravitonCache)
     if !ok || gc.store == nil { return nil }
