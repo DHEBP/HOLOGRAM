@@ -31,8 +31,8 @@ func (a *App) InitializeEpoch() map[string]interface{} {
 
 	daemonEndpoint := ""
 
-	nodeEndpoint := a.GetGetWorkEndpoint()
-	if nodeEndpoint["available"] == true {
+	// Check if embedded node is running and use its RPC port
+	if nodeManager != nil && nodeManager.isRunning {
 		daemonEndpoint = fmt.Sprintf("127.0.0.1:%d", nodeManager.rpcPort)
 		a.logToConsole(fmt.Sprintf("[EPOCH] Using embedded node at %s", daemonEndpoint))
 	} else {
@@ -112,11 +112,6 @@ func (a *App) SetDevSupportEnabled(enabled bool) map[string]interface{} {
 		"enabled": enabled,
 		"message": "Developer support " + map[bool]string{true: "enabled", false: "disabled"}[enabled],
 	}
-}
-
-// GetEpochDeveloperAddress returns the address where EPOCH rewards are sent
-func (a *App) GetEpochDeveloperAddress() string {
-	return DEFAULT_EPOCH_DEVELOPER_ADDRESS
 }
 
 // IsEpochEnabled returns whether EPOCH is enabled in settings

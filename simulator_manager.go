@@ -198,22 +198,7 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 		}
 	}
 
-	// Enable mining server for the simulator with wallet #0 as the reward address
-	// This ensures wallet #0 accumulates mining rewards for deployments
-	wallet0Address := ""
-	if sm.walletManager != nil {
-		wallet0 := sm.walletManager.GetWallet(0)
-		if wallet0 != nil && wallet0.Address != "" {
-			wallet0Address = wallet0.Address
-			sm.app.logToConsole(fmt.Sprintf("[MINE] Mining rewards will go to wallet #0: %s...", wallet0Address[:20]))
-		}
-	}
-	// If we don't have wallet #0 address yet, use the default simulator address
-	if wallet0Address == "" {
-		wallet0Address = "deto1qyvyeyzrcm2fzf6kyq7egkes2ufgny5xn77y6typhfx9s7w3mvyd5qqynr5hx"
-		sm.app.logToConsole("[MINE] Mining rewards will go to default simulator wallet #0")
-	}
-	sm.app.SetNodeMiningConfig(true, wallet0Address, 0)
+	// Note: Simulator binary has built-in auto-mining, no mining config needed
 
 	// Start the node
 	startResult := sm.app.StartNodeWithNetwork(sm.baseDir, "simulator")

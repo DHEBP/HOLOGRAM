@@ -2,7 +2,7 @@
 // Core App Structure - Session 87 refactored into domain files
 //
 // Domain Files:
-//   app_navigation.go  - Navigate, GoBack, GoForward, Reload, History, Bookmarks
+//   app_navigation.go  - Navigate, GoBack, GoForward, Reload, History
 //   app_settings.go    - GetSetting, SetSetting, GetAllSettings
 //   app_console.go     - ConsoleLog, logToConsole, GetConsoleLogs
 //   app_status.go      - StatusBroadcaster, getFullStatus, StartStatusBroadcast
@@ -39,7 +39,6 @@ type App struct {
 	liveStats    *LiveStatsService
 	settings     map[string]interface{}
 	history      []string
-	bookmarks    []map[string]string
 	consoleLogs  []ConsoleLog
 
 	// EPOCH (Developer Support)
@@ -86,7 +85,6 @@ func NewApp() *App {
 			"allow_github_check":   true, // Allow pinging GitHub for derod updates
 		},
 		history:     make([]string, 0),
-		bookmarks:   make([]map[string]string, 0),
 		consoleLogs: make([]ConsoleLog, 0),
 	}
 
