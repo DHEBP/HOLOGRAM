@@ -628,12 +628,14 @@
 
 <div class="omni-search" class:compact class:focused>
   <div class="search-container">
-    <!-- Search Icon -->
+    <!-- Search Icon (hidden in compact/toolbar mode) -->
+    {#if !compact}
     <div class="search-icon">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
         <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
       </svg>
     </div>
+    {/if}
     
     <!-- Input Field -->
     <input
@@ -689,7 +691,8 @@
       </div>
     {/if}
     
-    <!-- Search Button -->
+    <!-- Search Button (hidden in compact/toolbar mode - Enter key suffices) -->
+    {#if !compact}
     <button 
       class="search-btn"
       on:click={handleSearch}
@@ -702,6 +705,7 @@
         Search
       {/if}
     </button>
+    {/if}
   </div>
   
   <!-- Suggestions Dropdown -->
@@ -734,8 +738,8 @@
     </div>
   {/if}
   
-  <!-- Helper Text -->
-  {#if focused && !value && !showSuggestions}
+  <!-- Helper Text (hidden in compact/toolbar mode to avoid layout shift) -->
+  {#if focused && !value && !showSuggestions && !compact}
     <div class="helper-text">
       <span>Block height</span>
       <span class="helper-sep">•</span>
@@ -781,8 +785,16 @@
   }
   
   .omni-search.compact .search-container {
-    padding: 0.4rem 0.6rem;
-    border-radius: 8px;
+    padding: 0;
+    gap: 6px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+  }
+
+  .omni-search.compact.focused .search-container {
+    border: none;
+    box-shadow: none;
   }
   
   .search-icon {
@@ -821,6 +833,7 @@
   
   .omni-search.compact .search-input {
     font-size: 0.85rem;
+    min-width: 0;
   }
   
   .type-badge {

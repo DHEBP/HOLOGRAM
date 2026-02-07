@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { appState } from '../lib/stores/appState.js';
-  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline, GetBlockByHash, GetCoinbaseMiner, GetAddressSCIDReferences, GetBlockchainStats } from '../../wailsjs/go/main/App.js';
+  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline, GetBlockByHash, GetCoinbaseMiner, GetAddressSCIDReferences } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -129,9 +129,6 @@
   // Address SCID cross-references state (2C)
   let addressSCIDRefs = [];
   
-  // Blockchain stats dashboard state (2D)
-  let blockchainStats = null;
-  
   // Landing view state (merged from Search.svelte)
   let recentSearches = [];
   let showHistoryModal = false;
@@ -241,9 +238,6 @@
     // Load recent searches for landing view
     loadRecentSearches();
     
-    // 2D: Load blockchain stats for landing dashboard
-    loadBlockchainStats();
-    
     await loadRecentData(0);
     
     // Start block monitoring
@@ -298,7 +292,7 @@
       console.log('XSWD block subscription not available:', e);
     }
     
-    // Listen for search results from Search landing page
+    // Listen for search results from Search landing page or cross-tab navigation
     const handleSearchResult = (e) => {
       const { type, query, result } = e.detail;
       if (result && result.success) {
@@ -309,6 +303,11 @@
         // Add to nav history
         navHistory = [...navHistory.slice(0, currentNavIndex + 1), { type, query }];
         currentNavIndex = navHistory.length - 1;
+      } else if (query) {
+        // No pre-fetched result (e.g. block/address search from Browser) - run the search
+        searchQuery = query;
+        showLanding = false;
+        performSearch(query, type, true);
       }
     };
     window.addEventListener('search-result', handleSearchResult);
@@ -530,18 +529,6 @@
         addressSCIDRefs = result.references;
       }
     } catch (e) { addressSCIDRefs = []; }
-  }
-  
-  /**
-   * Load blockchain stats for the landing dashboard (2D)
-   */
-  async function loadBlockchainStats() {
-    try {
-      const result = await GetBlockchainStats();
-      if (result.success && result.stats) {
-        blockchainStats = result.stats;
-      }
-    } catch (e) { blockchainStats = null; }
   }
   
   /**
@@ -1458,20 +1445,6 @@
         </div>
       </div>
       
-      <!-- 2D: Blockchain Stats Dashboard -->
-      {#if blockchainStats}
-        <div class="stats-overview">
-          <h3>Blockchain Overview</h3>
-          <div class="stats-grid">
-            {#if blockchainStats.height}<div class="stat-item"><span class="stat-label">Height</span><span class="stat-value">{blockchainStats.height?.toLocaleString()}</span></div>{/if}
-            {#if blockchainStats.topoheight}<div class="stat-item"><span class="stat-label">Topoheight</span><span class="stat-value">{blockchainStats.topoheight?.toLocaleString()}</span></div>{/if}
-            {#if blockchainStats.difficulty}<div class="stat-item"><span class="stat-label">Difficulty</span><span class="stat-value">{blockchainStats.difficulty?.toLocaleString()}</span></div>{/if}
-            {#if blockchainStats.hashrate}<div class="stat-item"><span class="stat-label">Hashrate</span><span class="stat-value">{blockchainStats.hashrate}</span></div>{/if}
-            {#if blockchainStats.avg_block_time}<div class="stat-item"><span class="stat-label">Avg Block Time</span><span class="stat-value">{blockchainStats.avg_block_time}s</span></div>{/if}
-            {#if blockchainStats.supply}<div class="stat-item"><span class="stat-label">Supply</span><span class="stat-value">{blockchainStats.supply}</span></div>{/if}
-          </div>
-        </div>
-      {/if}
     </div>
   </div>
 {:else}
@@ -6425,14 +6398,6 @@
     color: var(--purple-400);
   }
   
-  /* 2D: Blockchain Stats Dashboard */
-  .stats-overview { background: rgba(20, 20, 30, 0.6); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; margin-top: 16px; }
-  .stats-overview h3 { font-size: 0.85rem; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; }
-  .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  .stat-item { display: flex; flex-direction: column; gap: 4px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px; }
-  .stat-label { font-size: 0.7rem; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.5px; }
-  .stat-value { font-size: 1rem; color: #52c8db; font-weight: 600; font-family: var(--font-mono, monospace); }
-
   /* Spin animation for loaders */
   :global(.spin) {
     animation: spin 1s linear infinite;

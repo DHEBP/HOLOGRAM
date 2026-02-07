@@ -2608,21 +2608,17 @@ let addressInput = '';
   function handleOmniSearch(event) {
     const { query, type, results } = event.detail;
     
-    // For navigable types, use existing navigation
+    // For navigable types, use existing Browser navigation
     if (type === 'durl' || type === 'name') {
       navigate();
     } else if (type === 'hash' || type === 'scid') {
-      // 64-char hex could be SCID - try to navigate
+      // 64-char hex could be SCID - try to navigate as TELA app
       navigate();
-    } else if (type === 'block' || type === 'address') {
-      // Switch to Explorer tab with search pre-loaded
-      navigateTo(query);
-    } else if (type === 'key' || type === 'value' || type === 'code') {
-      // For search results, switch to Explorer with search query
-      navigateTo(query);
-    } else if (type === 'class' || type === 'tag') {
-      // For class/tag browsing, switch to Explorer with search query
-      navigateTo(query);
+    } else if (type === 'block' || type === 'address' || type === 'key' || type === 'value' || type === 'code' || type === 'class' || type === 'tag') {
+      // These are Explorer queries - switch to Explorer tab with search pre-loaded
+      window.dispatchEvent(new CustomEvent('search-navigate', {
+        detail: { tab: 'explorer', type, query, result: results }
+      }));
     } else {
       // Default: try to navigate (might be a dURL)
       navigate();
