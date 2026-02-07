@@ -12,7 +12,7 @@
   import Settings from './routes/Settings.svelte';
   // Mining tab removed - Developer Support now in Settings > Developer Support
   // Network tab removed - node controls moved to Settings > Node
-  import { appState, settingsState, updateStatus, addExternalRequest, toast, loadSettings } from './lib/stores/appState.js';
+  import { appState, settingsState, updateStatus, addExternalRequest, dismissWalletRequest, toast, loadSettings } from './lib/stores/appState.js';
   import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions } from '../wailsjs/go/main/App.js';
   import { EventsOn } from '../wailsjs/runtime/runtime.js';
   import { waitForWails } from './lib/utils/wails.js';
@@ -338,6 +338,20 @@
         RespondToXSWDRequest(req.id, false, "");
         toast.warning(`Request denied for ${appName}`, 3000);
       });
+    });
+    
+    // Listen for request timeout (backend timed out waiting for user approval)
+    EventsOn("xswd:request_timeout", (data) => {
+      console.log('XSWD request timed out:', data.id);
+      dismissWalletRequest(data.id, 'timed out');
+      toast.warning('Transaction request timed out. The dApp can retry.', 5000);
+    });
+    
+    // Listen for request cancellation (dApp disconnected while request was pending)
+    EventsOn("xswd:request_cancelled", (data) => {
+      console.log('XSWD request cancelled:', data.id, 'reason:', data.reason);
+      dismissWalletRequest(data.id, data.reason || 'cancelled');
+      toast.info('Transaction request cancelled — dApp disconnected.', 4000);
     });
     
     return () => {

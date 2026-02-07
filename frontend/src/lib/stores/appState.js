@@ -63,7 +63,7 @@ export function pushToHistory(url) {
 
 // ==================== Wallet Request History ====================
 // Persisted log of all wallet approval/denial events (defined early so it can be used by queue functions)
-export const walletRequestHistory = writable(loadRequestHistoryFromStorage());
+const walletRequestHistory = writable(loadRequestHistoryFromStorage());
 
 // Load history from localStorage
 function loadRequestHistoryFromStorage() {
@@ -121,14 +121,6 @@ export function logWalletRequest(request, status, txid = null) {
   return entry;
 }
 
-// Clear request history
-export function clearRequestHistory() {
-  walletRequestHistory.set([]);
-  if (typeof localStorage !== 'undefined') {
-    localStorage.removeItem('walletRequestHistory');
-  }
-}
-
 // ==================== Wallet Request Queue ====================
 export const walletRequests = writable([]);
 export const activeWalletRequest = derived(walletRequests, $requests => $requests.length > 0 ? $requests[0] : null);
@@ -184,6 +176,18 @@ export function denyWalletRequest(id) {
     logWalletRequest(request, 'denied');
     
     request.reject(new Error('User denied request'));
+    walletRequests.update(reqs => reqs.filter(r => r.id !== id));
+  }
+}
+
+// Dismiss a wallet request silently (used when backend already handled the response,
+// e.g. timeout or dApp disconnect). Does not call resolve/reject callbacks.
+export function dismissWalletRequest(id, reason = 'dismissed') {
+  const requests = get(walletRequests);
+  const request = requests.find(r => r.id === id);
+  
+  if (request) {
+    logWalletRequest(request, reason);
     walletRequests.update(reqs => reqs.filter(r => r.id !== id));
   }
 }
@@ -307,19 +311,6 @@ export function clearPendingNavigation() {
 }
 
 // Derived stores
-export const isConnected = derived(
-  appState,
-  ($appState) => $appState.xswdConnected || $appState.nodeConnected
-);
-
-export const syncProgress = derived(
-  appState,
-  ($appState) => {
-    if ($appState.chainHeight === 0) return 0;
-    return ($appState.gnomonIndexedHeight / $appState.chainHeight) * 100;
-  }
-);
-
 export const combinedSyncProgress = derived(
   appState,
   ($appState) => {
@@ -486,11 +477,6 @@ export function dismissToast(id) {
   toastNotifications.update(toasts => toasts.filter(t => t.id !== id));
 }
 
-// Dismiss all toasts
-export function dismissAllToasts() {
-  toastNotifications.set([]);
-}
-
 // Convenience functions for different toast types
 export const toast = {
   info: (message, duration) => showToast(message, 'info', duration),
@@ -535,24 +521,4 @@ export function handleBackendError(result, options = {}) {
   return friendlyError;
 }
 
-/**
- * Wrap an async backend call with standardized error handling
- * @param {Function} fn - Async function that returns a backend response
- * @param {Object} options - Error handling options (same as handleBackendError)
- * @returns {Promise<Object>} - The result, with error field populated if failed
- */
-export async function withErrorHandling(fn, options = {}) {
-  try {
-    const result = await fn();
-    handleBackendError(result, options);
-    return result;
-  } catch (e) {
-    const error = e.message || 'An unexpected error occurred';
-    console.error('[Backend Exception]', e);
-    if (options.showToast !== false) {
-      toast.error(error);
-    }
-    return { success: false, error };
-  }
-}
 

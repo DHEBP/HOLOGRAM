@@ -3,8 +3,8 @@
   import { Check, X, Diamond, AlertTriangle, Zap, Shield, Heart, Gamepad2, Terminal } from 'lucide-svelte';
   import Wordmark from './Wordmark.svelte';
   import { 
-    DetectRunningNode, CheckDerodStatus, GetLatestDerodRelease,
-    DownloadDerodFromGitHub, DetectExistingBlockchain, StartNode,
+    DetectRunningNode, CheckDerodStatus,
+    DetectExistingBlockchain, StartNode,
     StartSimulatorMode, SetDevSupportEnabled, TestAndConnectEndpoint
   } from '../../../wailsjs/go/main/App.js';
   import { waitForWails } from '../utils/wails.js';
@@ -20,11 +20,6 @@
   let existingNode = null;
   let derodInstalled = false;
   let blockchainLocations = [];
-  let latestRelease = null;
-  
-  // Download state
-  let isDownloading = false;
-  let downloadError = '';
   
   // User choices
   let selectedLocation = '';
@@ -84,34 +79,6 @@
     } catch (err) {
       error = err.message || 'Failed to perform initial checks';
       step = 'error';
-    }
-  }
-  
-  async function downloadDerod() {
-    isDownloading = true;
-    downloadError = '';
-    step = 'downloading';
-    
-    try {
-      // Get latest release info first
-      latestRelease = await GetLatestDerodRelease();
-      if (!latestRelease.success) {
-        throw new Error(latestRelease.error || 'Failed to fetch release info');
-      }
-      
-      // Download
-      const result = await DownloadDerodFromGitHub();
-      if (result.success) {
-        derodInstalled = true;
-        step = 'choose_data';
-      } else {
-        throw new Error(result.error || 'Download failed');
-      }
-    } catch (err) {
-      downloadError = err.message || 'Download failed';
-      step = 'download_error';
-    } finally {
-      isDownloading = false;
     }
   }
   
@@ -400,62 +367,9 @@
           <button on:click={runInitialChecks} class="wizard-btn wizard-btn-primary">
             I've Built It - Check Again
           </button>
-          <button on:click={downloadDerod} class="wizard-btn wizard-btn-secondary">
-            Download Pre-built Instead
-          </button>
           <button on:click={() => step = 'no_node'} class="wizard-btn wizard-btn-ghost">
             ← Back
           </button>
-        </div>
-      
-      {:else if step === 'downloading'}
-        <!-- Status Bar -->
-        <div class="wizard-status-bar">
-          <div class="wizard-status-left">
-            <span class="wizard-status-dot cyan"></span>
-            <span class="wizard-status-text">Downloading</span>
-          </div>
-          <span class="wizard-badge live">IN PROGRESS</span>
-        </div>
-        
-        <div class="wizard-center" style="padding-top: var(--s-4);">
-          <div class="wizard-icon wizard-icon-info">
-            <Diamond size={28} strokeWidth={1.5} />
-          </div>
-          <h2 class="wizard-step-title">Fetching DERO Node</h2>
-          <p class="wizard-step-desc">
-            {latestRelease?.tagName ? `Version ${latestRelease.tagName}` : 'Fetching latest release...'}
-          </p>
-          <p class="wizard-step-desc" style="color: var(--text-4);">
-            ~50MB download
-          </p>
-        </div>
-      
-      {:else if step === 'download_error'}
-        <!-- Status Bar -->
-        <div class="wizard-status-bar">
-          <div class="wizard-status-left">
-            <span class="wizard-status-dot err"></span>
-            <span class="wizard-status-text">Error</span>
-          </div>
-          <span class="wizard-badge" style="color: var(--status-err); border-color: rgba(248, 113, 113, 0.4);">FAILED</span>
-        </div>
-        
-        <div class="wizard-center" style="padding-top: var(--s-4);">
-          <div class="wizard-icon wizard-icon-error">
-            <X size={28} strokeWidth={2.5} />
-          </div>
-          <h2 class="wizard-step-title">Download Failed</h2>
-          <p class="wizard-error">{downloadError}</p>
-        </div>
-        
-        <div class="wizard-buttons">
-          <button on:click={downloadDerod} class="wizard-btn wizard-btn-primary">
-              Retry Download
-            </button>
-          <button on:click={chooseExternalNode} class="wizard-btn wizard-btn-secondary">
-              Use External Node
-            </button>
         </div>
       
       {:else if step === 'choose_data'}
@@ -696,7 +610,7 @@
       <button on:click={useSimulatorInstead} class="wizard-skip wizard-skip-simulator">
         <Gamepad2 size={14} /> Use Simulator Instead
       </button>
-    {:else if step === 'checking' || step === 'starting' || step === 'starting_simulator' || step === 'downloading' || step === 'epoch_info' || step === 'build_instructions'}
+    {:else if step === 'checking' || step === 'starting' || step === 'starting_simulator' || step === 'epoch_info' || step === 'build_instructions'}
       <!-- Hide skip on loading/transition states -->
     {:else}
       <button on:click={skipWizard} class="wizard-skip">
