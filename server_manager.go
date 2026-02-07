@@ -205,9 +205,6 @@ func getXSWDBridgeScript() string {
   var OriginalWebSocket = window.WebSocket;
   log('[Bridge] Original WebSocket stored');
   
-  // Store original WebSocket
-  var OriginalWebSocket = window.WebSocket;
-  
   // Request ID for parent communication
   var reqId = 0;
   var pending = {};
