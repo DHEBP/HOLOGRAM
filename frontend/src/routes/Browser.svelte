@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
@@ -690,6 +690,7 @@ let addressInput = '';
     restoreDiscoveryCache();
     
     // Auto-focus address bar when entering Browser section
+    await tick();
     if (addressInputEl) {
       addressInputEl.focus();
     }
@@ -2736,6 +2737,7 @@ let addressInput = '';
     <div class="browser-url-container" class:focused={addressBarFocused}>
       <span class="browser-url-protocol">dero://</span>
           <OmniSearch
+            bind:this={addressInputEl}
             bind:value={addressInput}
             placeholder="Enter dURL, SCID, or search..."
             compact={true}
