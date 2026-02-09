@@ -2,12 +2,11 @@
 # Builds HOLOGRAM along with derod and simulator from derohe source
 #
 # Usage:
-#   make          - Build HOLOGRAM only (uses wails build)
-#   make all      - Build HOLOGRAM + derod + simulator
-#   make derod    - Build derod only
-#   make simulator - Build simulator only
-#   make clean    - Clean build artifacts
-#   make dev      - Run in development mode
+#   make            - Build HOLOGRAM + derod + simulator
+#   make derod      - Build derod only
+#   make simulator  - Build simulator only
+#   make clean      - Clean build artifacts
+#   make dev        - Run in development mode
 #
 # The derod and simulator binaries are built from the derohe dependency
 # and placed alongside the HOLOGRAM executable in build/bin/
@@ -38,7 +37,6 @@ BUILD_DIR = build/bin
 DEROHE_PKG = github.com/deroproject/derohe
 
 # Get derohe module path from go mod
-DEROHE_PATH = $(shell go list -m -f '{{.Dir}}' $(DEROHE_PKG) 2>/dev/null)
 
 # Default target - build derod/simulator FIRST, then hologram
 # This order is important because wails build runs go mod tidy which
