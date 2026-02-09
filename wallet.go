@@ -1870,7 +1870,7 @@ func (a *App) GetTrackedTokens() map[string]interface{} {
 		walletManager.RUnlock()
 
 		result = append(result, map[string]interface{}{
-			"scid":    "0000000000000000000000000000000000000000000000000000000000000000",
+			"scid":    deroSCID,
 			"name":    "DERO",
 			"symbol":  "DERO",
 			"balance": mature,
