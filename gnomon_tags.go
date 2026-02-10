@@ -85,18 +85,19 @@ func (s *SCIDTagStore) ClassifyContract(scid, code string, vars map[string]any, 
 	}
 
 	// Determine class based on code content
+	has := strings.Contains
 	switch {
-	case strings.Contains(code, "docVersion"):
+	case has(code, "docVersion"):
 		meta.Class = "TELA-DOC-1"
-	case strings.Contains(code, "telaVersion"):
+	case has(code, "telaVersion"):
 		meta.Class = "TELA-INDEX-1"
-	case strings.Contains(code, "G45-NFT"):
+	case has(code, "G45-NFT"):
 		meta.Class = "G45-NFT"
-	case strings.Contains(code, "G45-AT"):
+	case has(code, "G45-AT"):
 		meta.Class = "G45-AT"
-	case strings.Contains(code, "G45-FAT"):
+	case has(code, "G45-FAT"):
 		meta.Class = "G45-FAT"
-	case strings.Contains(code, "ART-NFA-MS1"):
+	case has(code, "ART-NFA-MS1"):
 		meta.Class = "NFA"
 	case scid == "0000000000000000000000000000000000000000000000000000000000000001":
 		meta.Class = "NAMESERVICE"
@@ -107,7 +108,7 @@ func (s *SCIDTagStore) ClassifyContract(scid, code string, vars map[string]any, 
 	// Apply tag filters
 	for _, filter := range s.Filters {
 		for _, term := range filter.Terms {
-			if strings.Contains(code, term) {
+			if has(code, term) {
 				// Avoid duplicate tags
 				hasTag := false
 				for _, t := range meta.Tags {
