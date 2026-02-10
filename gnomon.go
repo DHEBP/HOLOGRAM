@@ -347,31 +347,35 @@ func (g *GnomonClient) GetTELAApps() []map[string]any {
 					if s == "" {
 						return false
 					}
-
-					has := strings.Contains
-					lower := strings.ToLower(s)
-					return has(lower, "http") ||
-						has(lower, "://") ||
-						has(lower, ".png") ||
-						has(lower, ".jpg") ||
-						has(lower, ".jpeg") ||
-						has(lower, ".svg") ||
-						has(lower, ".gif") ||
-						has(lower, ".ico") ||
-						has(lower, "/ipfs/") ||
-						has(lower, "/images/") ||
-						has(lower, "/icons/") ||
-						has(lower, "/assets/") ||
-						has(lower, "gateway.") ||
-						has(lower, "blob/") ||
-						has(lower, "i.ibb.") ||
-						has(lower, "bafybeih") ||
-						has(lower, "avatars.") ||
-						has(lower, "raw.github") ||
-						has(lower, ".world/") ||
-						has(lower, ".com/") ||
-						has(lower, ".org/") ||
-						has(lower, ".io/")
+					for _, substr := range []string{
+						"http",
+						"://",
+						".png",
+						".jpg",
+						".jpeg",
+						".svg",
+						".gif",
+						".ico",
+						"/ipfs/",
+						"/images/",
+						"/icons/",
+						"/assets/",
+						"gateway.",
+						"blob/",
+						"i.ibb.",
+						"bafybeih",
+						"avatars.",
+						"raw.github",
+						".world/",
+						".com/",
+						".org/",
+						".io/",
+					} {
+						if strings.Contains(strings.ToLower(s), substr) {
+							return true
+						}
+					}
+					return false
 				}
 
 				// Check both description and name for URLs
