@@ -146,7 +146,7 @@ func TestWSServerTypes(t *testing.T) {
 	req := GnomonWSRequest{
 		ID:     1,
 		Method: "GetSCIDsByTag",
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"tag": "tela",
 		},
 	}

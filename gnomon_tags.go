@@ -73,7 +73,7 @@ func InitSCIDTagStore() *SCIDTagStore {
 }
 
 // ClassifyContract determines class and tags for a smart contract
-func (s *SCIDTagStore) ClassifyContract(scid, code string, vars map[string]interface{}, owner string, deployHeight int64) *SCIDMetadata {
+func (s *SCIDTagStore) ClassifyContract(scid, code string, vars map[string]any, owner string, deployHeight int64) *SCIDMetadata {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -136,7 +136,7 @@ func (s *SCIDTagStore) ClassifyContract(scid, code string, vars map[string]inter
 }
 
 // extractHeaders extracts name;description;iconURL from SC variables
-func extractHeaders(vars map[string]interface{}) string {
+func extractHeaders(vars map[string]any) string {
 	name := getVarString(vars, "nameHdr", "name")
 	desc := getVarString(vars, "descrHdr", "description")
 	icon := getVarString(vars, "iconURLHdr", "icon")
@@ -155,7 +155,7 @@ func extractHeaders(vars map[string]interface{}) string {
 }
 
 // getVarString tries multiple keys to get a string value
-func getVarString(vars map[string]interface{}, keys ...string) string {
+func getVarString(vars map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if val, ok := vars[key]; ok {
 			switch v := val.(type) {
@@ -173,8 +173,8 @@ func getVarString(vars map[string]interface{}, keys ...string) string {
 	return ""
 }
 
-// stringifyValue converts an interface{} to string
-func stringifyValue(val interface{}) string {
+// stringifyValue converts an any to string
+func stringifyValue(val any) string {
 	if val == nil {
 		return ""
 	}
@@ -320,7 +320,7 @@ func (s *SCIDTagStore) GetTagFilters() []TagFilter {
 }
 
 // GetStats returns statistics about the tag store
-func (s *SCIDTagStore) GetStats() map[string]interface{} {
+func (s *SCIDTagStore) GetStats() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -338,11 +338,11 @@ func (s *SCIDTagStore) GetStats() map[string]interface{} {
 		}
 	}
 
-	return map[string]interface{}{
-		"total_scids":   len(s.Metadata),
-		"class_counts":  classCounts,
-		"tag_counts":    tagCounts,
-		"filter_count":  len(s.Filters),
+	return map[string]any{
+		"total_scids":  len(s.Metadata),
+		"class_counts": classCounts,
+		"tag_counts":   tagCounts,
+		"filter_count": len(s.Filters),
 	}
 }
 
@@ -415,7 +415,7 @@ func (s *SCIDTagStore) RebuildFromGnomon(g *GnomonClient, daemonClient Blockchai
 	classified := 0
 	for scid, owner := range scids {
 		// Get SC code from daemon
-		result, err := daemonClient.Call("DERO.GetSC", map[string]interface{}{
+		result, err := daemonClient.Call("DERO.GetSC", map[string]any{
 			"scid": scid,
 			"code": true,
 		})
@@ -424,7 +424,7 @@ func (s *SCIDTagStore) RebuildFromGnomon(g *GnomonClient, daemonClient Blockchai
 		}
 
 		code := ""
-		if resultMap, ok := result.(map[string]interface{}); ok {
+		if resultMap, ok := result.(map[string]any); ok {
 			if c, ok := resultMap["code"].(string); ok {
 				code = c
 			}
@@ -432,7 +432,7 @@ func (s *SCIDTagStore) RebuildFromGnomon(g *GnomonClient, daemonClient Blockchai
 
 		// Get variables from Gnomon
 		vars := g.GetAllSCIDVariableDetails(scid)
-		varMap := make(map[string]interface{})
+		varMap := make(map[string]any)
 		for _, v := range vars {
 			if key, ok := v.Key.(string); ok {
 				varMap[key] = v.Value

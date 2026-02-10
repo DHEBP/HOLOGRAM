@@ -205,9 +205,9 @@ func (g *GnomonClient) IsAppsLoaded() bool { return g.appsLoaded }
 func (g *GnomonClient) IsRunning() bool { return g.running && g.Indexer != nil }
 
 // GetStatus returns the current indexing status
-func (g *GnomonClient) GetStatus() map[string]interface{} {
+func (g *GnomonClient) GetStatus() map[string]any {
 	if !g.IsRunning() {
-		return map[string]interface{}{
+		return map[string]any{
 			"running":        false,
 			"connecting":     false,
 			"indexed_height": 0,
@@ -230,7 +230,7 @@ func (g *GnomonClient) GetStatus() map[string]interface{} {
 		progress = (float64(indexed) / float64(chain)) * 100.0
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"running":        true,
 		"connecting":     connecting,
 		"indexed_height": indexed,
@@ -275,7 +275,7 @@ func (g *GnomonClient) GetAllSCIDVariableDetails(scid string) []*structures.SCID
 }
 
 // GetSCIDValuesByKey returns values for a specific key in a smart contract
-func (g *GnomonClient) GetSCIDValuesByKey(scid string, key interface{}) (valuesstring []string, valuesuint64 []uint64) {
+func (g *GnomonClient) GetSCIDValuesByKey(scid string, key any) (valuesstring []string, valuesuint64 []uint64) {
 	if !g.IsRunning() {
 		return nil, nil
 	}
@@ -291,7 +291,7 @@ func (g *GnomonClient) GetSCIDValuesByKey(scid string, key interface{}) (valuess
 }
 
 // GetSCIDKeysByValue returns keys for a specific value in a smart contract
-func (g *GnomonClient) GetSCIDKeysByValue(scid string, value interface{}) (valuesstring []string, valuesuint64 []uint64) {
+func (g *GnomonClient) GetSCIDKeysByValue(scid string, value any) (valuesstring []string, valuesuint64 []uint64) {
 	if !g.IsRunning() {
 		return nil, nil
 	}
@@ -307,8 +307,8 @@ func (g *GnomonClient) GetSCIDKeysByValue(scid string, value interface{}) (value
 }
 
 // GetTELAApps returns all discovered TELA INDEX applications (filters out DOCs)
-func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
-	apps := make([]map[string]interface{}, 0)
+func (g *GnomonClient) GetTELAApps() []map[string]any {
+	apps := make([]map[string]any, 0)
 
 	if !g.IsRunning() {
 		return apps
@@ -323,7 +323,7 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 			// Get variables for this SCID
 			vars = g.GetAllSCIDVariableDetails(scid)
 
-			data = map[string]interface{}{"scid": scid, "owner": owner, "is_index": false}
+			data = map[string]any{"scid": scid, "owner": owner, "is_index": false}
 
 			// Extract TELA-specific variables
 			app, isIndex, _, _ = allocateData(vars, data)
@@ -427,8 +427,8 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 }
 
 // GetTELALibraries returns all TELA content tagged as libraries (.lib suffix in dURL)
-func (g *GnomonClient) GetTELALibraries() []map[string]interface{} {
-	libs := make([]map[string]interface{}, 0)
+func (g *GnomonClient) GetTELALibraries() []map[string]any {
+	libs := make([]map[string]any, 0)
 
 	if !g.IsRunning() {
 		return libs
@@ -455,11 +455,11 @@ func (g *GnomonClient) GetTELALibraries() []map[string]interface{} {
 }
 
 // SearchTELApps searches for TELA apps by name or description
-func (g *GnomonClient) SearchTELApps(query string) []map[string]interface{} {
+func (g *GnomonClient) SearchTELApps(query string) []map[string]any {
 
 	var (
 		allApps = g.GetTELAApps()
-		results = make([]map[string]interface{}, 0)
+		results = make([]map[string]any, 0)
 		q       = strings.ToLower(query)
 		has     = strings.Contains
 	)
@@ -536,7 +536,7 @@ func (g *GnomonClient) CheckAppSupportsEpoch(scid string) bool {
 }
 
 // GetTELAAppsWithEpochInfo returns all TELA apps with EPOCH support information
-func (g *GnomonClient) GetTELAAppsWithEpochInfo() []map[string]interface{} {
+func (g *GnomonClient) GetTELAAppsWithEpochInfo() []map[string]any {
 	apps := g.GetTELAApps()
 
 	for i, app := range apps {
@@ -751,8 +751,8 @@ func parseUint64Safe(s string) (uint64, error) {
 
 // SearchByKey searches all indexed SCIDs for those containing a specific key store
 // Returns SCIDs with the key's values
-func (g *GnomonClient) SearchByKey(key string) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) SearchByKey(key string) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() {
 		return results
@@ -790,8 +790,8 @@ func (g *GnomonClient) SearchByKey(key string) []map[string]interface{} {
 
 // SearchByValue searches all indexed SCIDs for those containing a specific value store
 // Returns SCIDs with the value's keys
-func (g *GnomonClient) SearchByValue(value interface{}) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) SearchByValue(value any) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() {
 		return results
@@ -831,8 +831,8 @@ func (g *GnomonClient) SearchByValue(value interface{}) []map[string]interface{}
 // SearchCodeLine returns all indexed SCIDs for code searching
 // Note: Code search requires daemon calls - this just returns SCIDs for the caller to check
 // The actual code fetching/searching is done by the App layer which has daemon access
-func (g *GnomonClient) SearchCodeLine(line string) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) SearchCodeLine(line string) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() || line == "" {
 		return results
@@ -894,8 +894,8 @@ func (g *GnomonClient) CleanDB(network string) error {
 
 // GetMyDOCs returns all DOCs owned by the specified wallet address
 // If docType is non-empty, filters by that specific document type
-func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() || walletAddress == "" {
 		return results
@@ -936,8 +936,8 @@ func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[str
 }
 
 // GetMyINDEXes returns all INDEXes owned by the specified wallet address
-func (g *GnomonClient) GetMyINDEXes(walletAddress string) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) GetMyINDEXes(walletAddress string) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() || walletAddress == "" {
 		return results
@@ -955,7 +955,7 @@ func (g *GnomonClient) GetMyINDEXes(walletAddress string) []map[string]interface
 		var (
 			vars = g.GetAllSCIDVariableDetails(scid)
 			// Check if this is an INDEX (has DOC1 or more DOC references)
-			params               = map[string]interface{}{"scid": scid, "owner": owner, "type": "INDEX"}
+			params               = map[string]any{"scid": scid, "owner": owner, "type": "INDEX"}
 			index, isINDEX, _, _ = allocateData(vars, params)
 		)
 
