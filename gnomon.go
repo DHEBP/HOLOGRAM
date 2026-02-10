@@ -326,109 +326,71 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 	scids := g.GetAllOwnersAndSCIDs()
 
 	for scid, owner := range scids {
-		// Get variables for this SCID
-		vars := g.GetAllSCIDVariableDetails(scid)
 
-		app := map[string]interface{}{
-			"scid":     scid,
-			"owner":    owner,
-			"is_index": false,
-		}
+		var (
+			// Get variables for this SCID
+			vars = g.GetAllSCIDVariableDetails(scid)
 
-		// Extract TELA-specific variables
-		hasDocRefs := false
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-			
-			switch key {
-		// V2 headers (TELA standard) - check first
-		case "var_header_name":
-				if v.Value != nil {
-					app["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_description":
-				if v.Value != nil {
-					app["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_icon":
-			if v.Value != nil {
-				app["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		// V1 headers (ART-NFA standard) - fallback if V2 not set
-		case "nameHdr":
-			if v.Value != nil && app["name"] == nil {
-				app["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "descrHdr":
-			if v.Value != nil && app["description"] == nil {
-				app["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "iconURLHdr":
-			if v.Value != nil && app["icon"] == nil {
-				app["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-			case "dURL":
-				if v.Value != nil {
-					du := decodeHexString(fmt.Sprintf("%v", v.Value))
-					app["url"] = du
-					app["durl"] = du
-				}
-			case "DOC1", "DOC2", "DOC3", "DOC4", "DOC5", "DOC6", "DOC7", "DOC8", "DOC9", "DOC10":
-				// Mark as TELA INDEX if it has DOC references
-				hasDocRefs = true
-				app["is_index"] = true
-			}
-		}
+			data = map[string]interface{}{"scid": scid, "owner": owner, "is_index": false}
+
+			// Extract TELA-specific variables
+			app, isIndex, _, _ = allocateData(vars, data)
+		)
 
 		// Only include INDEX contracts (apps with DOC references)
 		// This filters out individual DOC files which can't be rendered standalone
-		if hasDocRefs {
-            // Generate clean display name (prefer dURL when present)
-            displayName := ""
-			
-			// Get fields
-			name, hasName := app["name"].(string)
-			description, hasDesc := app["description"].(string)
-			url, hasURL := app["url"].(string)
-			
-			// Helper function to check if a string is a URL/file path
-			isURLFunc := func(s string) bool {
-				if s == "" {
-					return false
+		if isIndex {
+
+			var (
+				// Generate clean display name (prefer dURL when present)
+				displayName = ""
+
+				// Get fields
+				name, hasName        = app["name"].(string)
+				description, hasDesc = app["description"].(string)
+				url, hasURL          = app["url"].(string)
+
+				// Helper function to check if a string is a URL/file path
+				isURLFunc = func(s string) bool {
+					if s == "" {
+						return false
+					}
+
+					has := strings.Contains
+					lower := strings.ToLower(s)
+					return has(lower, "http") ||
+						has(lower, "://") ||
+						has(lower, ".png") ||
+						has(lower, ".jpg") ||
+						has(lower, ".jpeg") ||
+						has(lower, ".svg") ||
+						has(lower, ".gif") ||
+						has(lower, ".ico") ||
+						has(lower, "/ipfs/") ||
+						has(lower, "/images/") ||
+						has(lower, "/icons/") ||
+						has(lower, "/assets/") ||
+						has(lower, "gateway.") ||
+						has(lower, "blob/") ||
+						has(lower, "i.ibb.") ||
+						has(lower, "bafybeih") ||
+						has(lower, "avatars.") ||
+						has(lower, "raw.github") ||
+						has(lower, ".world/") ||
+						has(lower, ".com/") ||
+						has(lower, ".org/") ||
+						has(lower, ".io/")
 				}
-				lower := strings.ToLower(s)
-				return strings.Contains(lower, "http") ||
-					strings.Contains(lower, "://") ||
-					strings.Contains(lower, ".png") ||
-					strings.Contains(lower, ".jpg") ||
-					strings.Contains(lower, ".jpeg") ||
-					strings.Contains(lower, ".svg") ||
-					strings.Contains(lower, ".gif") ||
-					strings.Contains(lower, ".ico") ||
-					strings.Contains(lower, "/ipfs/") ||
-					strings.Contains(lower, "/images/") ||
-					strings.Contains(lower, "/icons/") ||
-					strings.Contains(lower, "/assets/") ||
-					strings.Contains(lower, "gateway.") ||
-					strings.Contains(lower, "blob/") ||
-					strings.Contains(lower, "i.ibb.") ||
-					strings.Contains(lower, "bafybeih") ||
-					strings.Contains(lower, "avatars.") ||
-					strings.Contains(lower, "raw.github") ||
-					(strings.Contains(lower, ".world/")) ||
-					(strings.Contains(lower, ".com/")) ||
-					(strings.Contains(lower, ".org/")) ||
-					(strings.Contains(lower, ".io/"))
-			}
-			
-			// Check both description and name for URLs
-			isDescURL := hasDesc && isURLFunc(description)
-			isNameURL := hasName && isURLFunc(name)
-			
-            // Decision tree - prefer dURL if present
-            if du, hasDU := app["durl"].(string); hasDU && du != "" {
-                displayName = du
-            } else if hasDesc && description != "" && !isDescURL {
+
+				// Check both description and name for URLs
+				isDescURL = hasDesc && isURLFunc(description)
+				isNameURL = hasName && isURLFunc(name)
+			)
+
+			// Decision tree - prefer dURL if present
+			if du, hasDU := app["durl"].(string); hasDU && du != "" {
+				displayName = du
+			} else if hasDesc && description != "" && !isDescURL {
 				// Use description if it's NOT a URL
 				displayName = description
 			} else if hasName && name != "" && !isNameURL {
@@ -441,13 +403,13 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 				// Nothing usable - generic name
 				displayName = "TELA App"
 			}
-			
+
 			// Limit to 40 characters for uniformity
 			displayName = strings.TrimSpace(displayName)
 			if len(displayName) > 40 {
 				displayName = displayName[:37] + "..."
 			}
-			
+
 			// Final paranoid safety check - if result still looks like URL, replace it
 			if isURLFunc(displayName) {
 				// It's STILL a URL after all that - use generic name
@@ -463,7 +425,7 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 					displayName = "TELA App"
 				}
 			}
-			
+
 			app["display_name"] = displayName
 			apps = append(apps, app)
 		}
@@ -484,84 +446,15 @@ func (g *GnomonClient) GetTELALibraries() []map[string]interface{} {
 	scids := g.GetAllOwnersAndSCIDs()
 
 	for scid, owner := range scids {
-		vars := g.GetAllSCIDVariableDetails(scid)
 
-		lib := map[string]interface{}{
-			"scid":     scid,
-			"owner":    owner,
-			"is_index": false,
-			"doc_count": 0,
-		}
-
-		hasLibTag := false
-		docCount := 0
-
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-
-			switch key {
-		// V2 headers (TELA standard) - check first
-		case "var_header_name":
-				if v.Value != nil {
-					lib["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_description":
-				if v.Value != nil {
-					lib["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_icon":
-			if v.Value != nil {
-				lib["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		// V1 headers (ART-NFA standard) - fallback if V2 not set
-		case "nameHdr":
-			if v.Value != nil && lib["name"] == nil {
-				lib["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "descrHdr":
-			if v.Value != nil && lib["description"] == nil {
-				lib["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "iconURLHdr":
-			if v.Value != nil && lib["icon"] == nil {
-				lib["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-			case "dURL":
-				if v.Value != nil {
-					du := decodeHexString(fmt.Sprintf("%v", v.Value))
-					lib["durl"] = du
-					// Check for .lib suffix
-					if strings.HasSuffix(du, ".lib") {
-						hasLibTag = true
-					}
-				}
-			case "docType":
-				// This is a DOC (single file library)
-				lib["type"] = "DOC"
-			case "DOC1", "DOC2", "DOC3", "DOC4", "DOC5", "DOC6", "DOC7", "DOC8", "DOC9", "DOC10",
-				"DOC11", "DOC12", "DOC13", "DOC14", "DOC15", "DOC16", "DOC17", "DOC18", "DOC19", "DOC20":
-				// Count DOC references in INDEX
-				lib["is_index"] = true
-				lib["type"] = "INDEX"
-				docCount++
-			}
-		}
-
-		lib["doc_count"] = docCount
+		var (
+			vars                 = g.GetAllSCIDVariableDetails(scid)
+			params               = map[string]any{"scid": scid, "owner": owner, "is_index": false, "doc_count": 0}
+			lib, _, _, hasLibTag = allocateData(vars, params)
+		)
 
 		// Only include content tagged as library
 		if hasLibTag {
-			// Generate display name
-			displayName := ""
-			if durl, ok := lib["durl"].(string); ok && durl != "" {
-				displayName = durl
-			} else if name, ok := lib["name"].(string); ok && name != "" {
-				displayName = name
-			} else {
-				displayName = "TELA Library"
-			}
-			lib["display_name"] = displayName
-			
 			libs = append(libs, lib)
 		}
 	}
@@ -870,51 +763,15 @@ func (g *GnomonClient) SearchByKey(key string) []map[string]interface{} {
 	for scid, owner := range scids {
 		// Check if this SCID has the key
 		valuesString, valuesUint64 := g.GetSCIDValuesByKey(scid, key)
-		
+
 		if len(valuesString) > 0 || len(valuesUint64) > 0 {
-			result := map[string]interface{}{
-				"scid":  scid,
-				"owner": owner,
-				"key":   key,
-			}
-			
-			// Get additional info (dURL, name)
-			vars := g.GetAllSCIDVariableDetails(scid)
-			for _, v := range vars {
-				k := fmt.Sprintf("%v", v.Key)
-				switch k {
-				// V2 headers (TELA standard) - check first
-				case "var_header_name":
-					if v.Value != nil {
-						result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				// V1 headers (ART-NFA standard) - fallback if V2 not set
-				case "nameHdr":
-					if v.Value != nil && result["name"] == nil {
-						result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				case "dURL":
-					if v.Value != nil {
-						result["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				case "docType":
-					if v.Value != nil {
-						result["docType"] = fmt.Sprintf("%v", v.Value)
-					}
-				case "DOC1":
-					result["type"] = "INDEX"
-				}
-			}
-			
-			// Set type if not already set
-			if _, hasType := result["type"]; !hasType {
-				if _, hasDocType := result["docType"]; hasDocType {
-					result["type"] = "DOC"
-				} else {
-					result["type"] = "SC"
-				}
-			}
-			
+			var (
+				// Get additional info (dURL, name)
+				vars            = g.GetAllSCIDVariableDetails(scid)
+				params          = map[string]any{"scid": scid, "owner": owner, "key": key}
+				result, _, _, _ = allocateData(vars, params)
+			)
+
 			// Add found values
 			if len(valuesString) > 0 {
 				result["values_string"] = valuesString
@@ -922,7 +779,7 @@ func (g *GnomonClient) SearchByKey(key string) []map[string]interface{} {
 			if len(valuesUint64) > 0 {
 				result["values_uint64"] = valuesUint64
 			}
-			
+
 			results = append(results, result)
 		}
 	}
@@ -945,51 +802,16 @@ func (g *GnomonClient) SearchByValue(value interface{}) []map[string]interface{}
 	for scid, owner := range scids {
 		// Check if this SCID has the value
 		keysString, keysUint64 := g.GetSCIDKeysByValue(scid, value)
-		
+
 		if len(keysString) > 0 || len(keysUint64) > 0 {
-			result := map[string]interface{}{
-				"scid":  scid,
-				"owner": owner,
-				"value": value,
-			}
-			
-			// Get additional info (dURL, name)
-			vars := g.GetAllSCIDVariableDetails(scid)
-			for _, v := range vars {
-				k := fmt.Sprintf("%v", v.Key)
-				switch k {
-				// V2 headers (TELA standard) - check first
-				case "var_header_name":
-					if v.Value != nil {
-						result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				// V1 headers (ART-NFA standard) - fallback if V2 not set
-				case "nameHdr":
-					if v.Value != nil && result["name"] == nil {
-						result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				case "dURL":
-					if v.Value != nil {
-						result["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				case "docType":
-					if v.Value != nil {
-						result["docType"] = fmt.Sprintf("%v", v.Value)
-					}
-				case "DOC1":
-					result["type"] = "INDEX"
-				}
-			}
-			
-			// Set type if not already set
-			if _, hasType := result["type"]; !hasType {
-				if _, hasDocType := result["docType"]; hasDocType {
-					result["type"] = "DOC"
-				} else {
-					result["type"] = "SC"
-				}
-			}
-			
+			var (
+				params = map[string]any{"scid": scid, "owner": owner, "value": value}
+
+				// Get additional info (dURL, name)
+				vars = g.GetAllSCIDVariableDetails(scid)
+
+				result, _, _, _ = allocateData(vars, params)
+			)
 			// Add found keys
 			if len(keysString) > 0 {
 				result["keys_string"] = keysString
@@ -997,7 +819,7 @@ func (g *GnomonClient) SearchByValue(value interface{}) []map[string]interface{}
 			if len(keysUint64) > 0 {
 				result["keys_uint64"] = keysUint64
 			}
-			
+
 			results = append(results, result)
 		}
 	}
@@ -1019,43 +841,11 @@ func (g *GnomonClient) SearchCodeLine(line string) []map[string]interface{} {
 	scids := g.GetAllOwnersAndSCIDs()
 
 	for scid, owner := range scids {
-		vars := g.GetAllSCIDVariableDetails(scid)
-		
-		result := map[string]interface{}{
-			"scid":  scid,
-			"owner": owner,
-		}
-		
-		// Get additional info from indexed variables
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-			switch key {
-			// V2 headers (TELA standard) - check first
-			case "var_header_name":
-				if v.Value != nil {
-					result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			// V1 headers (ART-NFA standard) - fallback if V2 not set
-			case "nameHdr":
-				if v.Value != nil && result["name"] == nil {
-					result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			case "dURL":
-				if v.Value != nil {
-					result["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			case "DOC1":
-				result["type"] = "INDEX"
-			case "docType":
-				result["type"] = "DOC"
-			}
-		}
-		
-		// Default type
-		if _, hasType := result["type"]; !hasType {
-			result["type"] = "SC"
-		}
-		
+		var (
+			vars            = g.GetAllSCIDVariableDetails(scid)
+			params          = map[string]any{"scid": scid, "owner": owner}
+			result, _, _, _ = allocateData(vars, params)
+		)
 		results = append(results, result)
 	}
 
@@ -1118,64 +908,13 @@ func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[str
 		if !strings.EqualFold(owner, walletAddress) {
 			continue
 		}
+		var (
+			vars = g.GetAllSCIDVariableDetails(scid)
 
-		vars := g.GetAllSCIDVariableDetails(scid)
-		
-		// Check if this is a DOC (has docType variable)
-		isDOC := false
-		var scidDocType string
-		doc := map[string]interface{}{
-			"scid":  scid,
-			"owner": owner,
-			"type":  "DOC",
-		}
-
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-
-			switch key {
-			case "docType":
-				isDOC = true
-				if v.Value != nil {
-					scidDocType = fmt.Sprintf("%v", v.Value)
-					doc["docType"] = scidDocType
-				}
-		// V2 headers (TELA standard) - check first
-		case "var_header_name":
-				if v.Value != nil {
-					doc["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_description":
-				if v.Value != nil {
-					doc["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_icon":
-			if v.Value != nil {
-				doc["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		// V1 headers (ART-NFA standard) - fallback if V2 not set
-		case "nameHdr":
-			if v.Value != nil && doc["name"] == nil {
-				doc["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "descrHdr":
-			if v.Value != nil && doc["description"] == nil {
-				doc["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "iconURLHdr":
-			if v.Value != nil && doc["icon"] == nil {
-				doc["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-			case "dURL":
-				if v.Value != nil {
-					doc["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			case "subDir":
-				if v.Value != nil {
-					doc["subDir"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			}
-		}
+			// Check if this is a DOC (has docType variable)
+			params           = map[string]any{"scid": scid, "owner": owner, "type": "DOC"}
+			doc, _, isDOC, _ = allocateData(vars, params)
+		)
 
 		// Skip if not a DOC
 		if !isDOC {
@@ -1183,21 +922,12 @@ func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[str
 		}
 
 		// Filter by docType if specified
-		if docType != "" && !strings.EqualFold(scidDocType, docType) {
+		scidDocType, ok := doc["docType"]
+		if docType != "" && ok && scidDocType == docType {
 			continue
 		}
 
 		// Generate display name
-		displayName := ""
-		if durl, ok := doc["durl"].(string); ok && durl != "" {
-			displayName = durl
-		} else if name, ok := doc["name"].(string); ok && name != "" {
-			displayName = name
-		} else {
-			displayName = "DOC"
-		}
-		doc["display_name"] = displayName
-
 		results = append(results, doc)
 	}
 
@@ -1221,82 +951,17 @@ func (g *GnomonClient) GetMyINDEXes(walletAddress string) []map[string]interface
 			continue
 		}
 
-		vars := g.GetAllSCIDVariableDetails(scid)
-
-		// Check if this is an INDEX (has DOC1 or more DOC references)
-		isINDEX := false
-		docCount := 0
-		docSCIDs := make([]string, 0)
-		index := map[string]interface{}{
-			"scid":  scid,
-			"owner": owner,
-			"type":  "INDEX",
-		}
-
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-
-			switch key {
-		// V2 headers (TELA standard) - check first
-		case "var_header_name":
-				if v.Value != nil {
-					index["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_description":
-				if v.Value != nil {
-					index["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_icon":
-				if v.Value != nil {
-				index["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		// V1 headers (ART-NFA standard) - fallback if V2 not set
-		case "nameHdr":
-			if v.Value != nil && index["name"] == nil {
-				index["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "descrHdr":
-			if v.Value != nil && index["description"] == nil {
-				index["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			case "iconURLHdr":
-			if v.Value != nil && index["icon"] == nil {
-					index["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "dURL":
-			if v.Value != nil {
-				index["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-			default:
-				// Check for DOC references (DOC1, DOC2, ... DOC20)
-				if strings.HasPrefix(key, "DOC") && len(key) <= 5 {
-					isINDEX = true
-					docCount++
-					if v.Value != nil {
-						docSCIDs = append(docSCIDs, fmt.Sprintf("%v", v.Value))
-					}
-				}
-			}
-		}
+		var (
+			vars = g.GetAllSCIDVariableDetails(scid)
+			// Check if this is an INDEX (has DOC1 or more DOC references)
+			params               = map[string]interface{}{"scid": scid, "owner": owner, "type": "INDEX"}
+			index, isINDEX, _, _ = allocateData(vars, params)
+		)
 
 		// Skip if not an INDEX
 		if !isINDEX {
 			continue
 		}
-
-		index["doc_count"] = docCount
-		index["doc_scids"] = docSCIDs
-
-		// Generate display name
-		displayName := ""
-		if durl, ok := index["durl"].(string); ok && durl != "" {
-			displayName = durl
-		} else if name, ok := index["name"].(string); ok && name != "" {
-			displayName = name
-		} else {
-			displayName = "INDEX"
-		}
-		index["display_name"] = displayName
 
 		results = append(results, index)
 	}
@@ -1410,4 +1075,109 @@ func cleanupAppName(name string) string {
 
 func parseVars(v *structures.SCIDVariable) (key string, present bool, val string) {
 	return fmt.Sprintf("%v", v.Key), v.Value != nil, fmt.Sprintf("%v", v.Value)
+}
+
+func allocateData(
+	vars []*structures.SCIDVariable,
+	params map[string]any,
+) (
+	data map[string]any, isIndex, isDOC, hasLibTag bool,
+) {
+
+	data = params
+
+	var (
+		docSCIDs = make([]string, 0)
+		docCount = 0
+	)
+
+	for _, v := range vars {
+		var (
+			key, present, value = parseVars(v)
+			decodedValue        = decodeHexString(value)
+		)
+
+		switch {
+		// V2 headers (TELA standard) - check first
+		case key == "var_header_name":
+			if present {
+				data["name"] = decodedValue
+			}
+		case key == "var_header_description":
+			if present {
+				data["description"] = decodedValue
+			}
+		case key == "var_header_icon":
+			if present {
+				data["icon"] = decodedValue
+			}
+		// V1 headers (ART-NFA standard) - fallback if V2 not set
+		case key == "nameHdr":
+			if present && data["name"] == nil {
+				data["name"] = decodedValue
+			}
+		case key == "descrHdr":
+			if present && data["description"] == nil {
+				data["description"] = decodedValue
+			}
+		case key == "iconURLHdr":
+			if present && data["icon"] == nil {
+				data["icon"] = decodedValue
+			}
+		case key == "dURL":
+			if present {
+				du := decodedValue
+				data["url"] = du
+				data["durl"] = du
+				// Check for .lib suffix
+				if strings.HasSuffix(du, ".lib") {
+					hasLibTag = true
+				}
+			}
+		case key == "docType":
+			// This is a DOC (single file library)
+			data["type"] = "DOC"
+			isDOC = true
+			if present {
+				data["docType"] = value
+			}
+		case strings.HasPrefix(key, "DOC") && len(key) <= 5:
+			// Mark as TELA INDEX if it has DOC references
+			data["is_index"] = true
+			data["type"] = "INDEX"
+			isIndex = true
+			docCount++
+			if docCount > 0 {
+				docSCIDs = append(docSCIDs, value)
+				data["doc_count"] = docCount
+				data["doc_scids"] = docSCIDs
+			}
+		}
+	}
+
+	// Set type if not already set
+	if _, hasType := data["type"]; !hasType {
+		if _, hasDocType := data["docType"]; hasDocType {
+			data["type"] = "DOC"
+		} else {
+			data["type"] = "SC"
+		}
+	}
+
+	displayName := ""
+	if durl, ok := data["durl"].(string); ok && durl != "" {
+		displayName = durl
+	} else if name, ok := data["name"].(string); ok && name != "" {
+		displayName = name
+	} else if isIndex {
+		displayName = "INDEX"
+	} else if isDOC {
+		displayName = "DOC"
+	} else if hasLibTag {
+		displayName = "TELA Library"
+	}
+
+	data["display_name"] = displayName
+
+	return data, isIndex, isDOC, hasLibTag
 }
