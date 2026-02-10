@@ -775,20 +775,20 @@ func (g *GnomonClient) GetRating(scid string) (*RatingResult, error) {
 
 	// Parse variables
 	for _, v := range vars {
-		key := fmt.Sprintf("%v", v.Key)
-		value := fmt.Sprintf("%v", v.Value)
+		var (
+			key, _, value = parseVars(v)
+			decoded       = decodeHexIfNeeded(value)
+		)
 
 		switch key {
 		case "likes":
 			// Parse likes count
-			decoded := decodeHexIfNeeded(value)
 			if val, err := parseUint64Safe(decoded); err == nil {
 				result.Likes = val
 			}
 
 		case "dislikes":
 			// Parse dislikes count
-			decoded := decodeHexIfNeeded(value)
 			if val, err := parseUint64Safe(decoded); err == nil {
 				result.Dislikes = val
 			}
@@ -797,7 +797,7 @@ func (g *GnomonClient) GetRating(scid string) (*RatingResult, error) {
 			// Check if this is a rating (key is a DERO address)
 			if strings.HasPrefix(strings.ToLower(key), "dero") {
 				// Parse rating string (format: "rating_height")
-				decoded := decodeHexIfNeeded(value)
+
 				parts := strings.Split(decoded, "_")
 				if len(parts) < 2 {
 					continue
@@ -1317,9 +1317,12 @@ func (g *GnomonClient) GetAllDOCTypes() []string {
 	for scid := range scids {
 		vars := g.GetAllSCIDVariableDetails(scid)
 		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-			if key == "docType" && v.Value != nil {
-				docType := fmt.Sprintf("%v", v.Value)
+			var (
+				key, present, value = parseVars(v)
+				isDoc               = key == "docType"
+			)
+			if isDoc && present {
+				docType := value
 				if docType != "" {
 					types[docType] = true
 				}
@@ -1405,3 +1408,6 @@ func cleanupAppName(name string) string {
 	return name
 }
 
+func parseVars(v *structures.SCIDVariable) (key string, present bool, val string) {
+	return fmt.Sprintf("%v", v.Key), v.Value != nil, fmt.Sprintf("%v", v.Value)
+}
