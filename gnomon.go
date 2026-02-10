@@ -189,30 +189,20 @@ func (g *GnomonClient) Stop() {
 
 // SetDisableFastsync sets a flag to disable fastsync on the next start
 // This is used after a resync to ensure we index from block 0
-func (g *GnomonClient) SetDisableFastsync(disable bool) {
-	g.disableFastsync = disable
-}
+func (g *GnomonClient) SetDisableFastsync(disable bool) { g.disableFastsync = disable }
 
 // SetStartFromHeight sets a specific height to start indexing from
 // This is useful for resyncing recent contracts without indexing the entire chain
-func (g *GnomonClient) SetStartFromHeight(height int64) {
-	g.startFromHeight = height
-}
+func (g *GnomonClient) SetStartFromHeight(height int64) { g.startFromHeight = height }
 
 // SetAppsLoaded sets the appsLoaded flag (called by App.GetDiscoveredApps)
-func (g *GnomonClient) SetAppsLoaded(loaded bool) {
-	g.appsLoaded = loaded
-}
+func (g *GnomonClient) SetAppsLoaded(loaded bool) { g.appsLoaded = loaded }
 
 // IsAppsLoaded returns whether apps have been loaded at least once
-func (g *GnomonClient) IsAppsLoaded() bool {
-	return g.appsLoaded
-}
+func (g *GnomonClient) IsAppsLoaded() bool { return g.appsLoaded }
 
 // IsRunning returns whether Gnomon is running
-func (g *GnomonClient) IsRunning() bool {
-	return g.running && g.Indexer != nil
-}
+func (g *GnomonClient) IsRunning() bool { return g.running && g.Indexer != nil }
 
 // GetStatus returns the current indexing status
 func (g *GnomonClient) GetStatus() map[string]interface{} {
@@ -226,14 +216,16 @@ func (g *GnomonClient) GetStatus() map[string]interface{} {
 		}
 	}
 
-	indexed := g.Indexer.LastIndexedHeight
-	chain := g.Indexer.ChainHeight
+	var (
+		indexed, chain = g.Indexer.LastIndexedHeight, g.Indexer.ChainHeight
 
-	// If chain height is 0, Gnomon is still trying to connect to the daemon
-	// This happens when the connection loop in StartDaemonMode is retrying
-	connecting := chain == 0
+		// If chain height is 0, Gnomon is still trying to connect to the daemon
+		// This happens when the connection loop in StartDaemonMode is retrying
+		connecting = chain == 0
 
-	progress := 0.0
+		progress = 0.0
+	)
+
 	if chain > 0 {
 		progress = (float64(indexed) / float64(chain)) * 100.0
 	}
@@ -1004,27 +996,30 @@ func (g *GnomonClient) GetAllDOCTypes() []string {
 
 // cleanupAppName cleans up app names for better display
 func cleanupAppName(name string) string {
+	has := strings.Contains
+
 	original := name
-	
+
 	// Remove common URL prefixes
-	name = strings.TrimPrefix(name, "https://")
-	name = strings.TrimPrefix(name, "http://")
-	name = strings.TrimPrefix(name, "www.")
-	
+	trim := strings.TrimPrefix
+	name = trim(name, "https://")
+	name = trim(name, "http://")
+	name = trim(name, "www.")
+
 	// If it looks like a URL or long path, extract domain name only
-	if strings.Contains(name, "/") || strings.Contains(name, ".") {
+	if has(name, "/") || has(name, ".") {
 		parts := strings.Split(name, "/")
-		
+
 		// Get domain (first part before /)
 		domain := parts[0]
-		
+
 		// Extract main domain name (remove subdomains and TLD for cleaner look)
 		domainParts := strings.Split(domain, ".")
 		if len(domainParts) >= 2 {
 			// For things like "gateway.pinata.cloud" -> "Pinata"
 			// For "raw.githubusercontent.com" -> "Github"
 			// For "avatars.githubusercontent.com" -> "Github"
-			
+
 			mainPart := ""
 			if len(domainParts) >= 3 {
 				// Use second-to-last part (before TLD)
@@ -1033,35 +1028,36 @@ func cleanupAppName(name string) string {
 				// Use first part
 				mainPart = domainParts[0]
 			}
-			
+
 			// Special handling for known services
-			if strings.Contains(domain, "github") {
+			switch {
+			case has(domain, "github"):
 				mainPart = "GitHub"
-			} else if strings.Contains(domain, "pinata") {
+			case has(domain, "pinata"):
 				mainPart = "Pinata"
-			} else if strings.Contains(domain, "dero") {
+			case has(domain, "dero"):
 				mainPart = "DERO"
-			} else if strings.Contains(domain, "loc.gov") {
+			case has(domain, "loc.gov"):
 				mainPart = "Library of Congress"
-			} else {
+			default:
 				// Capitalize first letter
 				if len(mainPart) > 0 {
 					mainPart = strings.ToUpper(string(mainPart[0])) + mainPart[1:]
 				}
 			}
-			
+
 			return mainPart
 		}
 	}
-	
+
 	// If not a URL, just clean it up
 	name = strings.TrimSpace(name)
-	
+
 	// Limit length to 40 characters for uniformity
 	if len(name) > 40 {
 		return name[:37] + "..."
 	}
-	
+
 	// If we couldn't clean it up, return first 40 chars of original
 	if name == "" && len(original) > 0 {
 		if len(original) > 40 {
@@ -1069,7 +1065,7 @@ func cleanupAppName(name string) string {
 		}
 		return original
 	}
-	
+
 	return name
 }
 
