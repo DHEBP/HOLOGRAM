@@ -17,9 +17,9 @@ import (
 type SCIDMetadata struct {
 	SCID         string   `json:"scid"`
 	Owner        string   `json:"owner"`
-	Class        string   `json:"class"`        // Primary classification: TELA-DOC-1, TELA-INDEX-1, G45-NFT, NFA, etc.
-	Tags         []string `json:"tags"`         // Multiple tags: ["all", "tela", "g45"]
-	Headers      string   `json:"headers"`      // "name;description;iconURL"
+	Class        string   `json:"class"`   // Primary classification: TELA-DOC-1, TELA-INDEX-1, G45-NFT, NFA, etc.
+	Tags         []string `json:"tags"`    // Multiple tags: ["all", "tela", "g45"]
+	Headers      string   `json:"headers"` // "name;description;iconURL"
 	DeployHeight int64    `json:"deploy_height"`
 }
 
@@ -450,4 +450,3 @@ func (s *SCIDTagStore) RebuildFromGnomon(g *GnomonClient, daemonClient Blockchai
 	log.Printf("[TAGS] Rebuild complete: classified %d SCIDs", classified)
 	return classified
 }
-

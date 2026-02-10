@@ -222,5 +222,3 @@ func TestTagStoreStats(t *testing.T) {
 
 	t.Logf("Tag store stats: %v", stats)
 }
-
-
