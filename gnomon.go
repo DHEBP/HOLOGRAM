@@ -456,10 +456,13 @@ func (g *GnomonClient) GetTELALibraries() []map[string]interface{} {
 
 // SearchTELApps searches for TELA apps by name or description
 func (g *GnomonClient) SearchTELApps(query string) []map[string]interface{} {
-	allApps := g.GetTELAApps()
-	results := make([]map[string]interface{}, 0)
 
-	query = strings.ToLower(query)
+	var (
+		allApps = g.GetTELAApps()
+		results = make([]map[string]interface{}, 0)
+		q       = strings.ToLower(query)
+		has     = strings.Contains
+	)
 
 	for _, app := range allApps {
 		name := ""
@@ -472,7 +475,7 @@ func (g *GnomonClient) SearchTELApps(query string) []map[string]interface{} {
 			description = strings.ToLower(d)
 		}
 
-		if strings.Contains(name, query) || strings.Contains(description, query) {
+		if has(name, q) || has(description, q) {
 			results = append(results, app)
 		}
 	}
