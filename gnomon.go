@@ -15,15 +15,15 @@ import (
 
 // GnomonClient manages the Gnomon indexer for TELA content discovery
 type GnomonClient struct {
-	Indexer          *indexer.Indexer
-	fastsync         bool
-	parallelBlocks   int
-	dbPath           string
-	dbType           string
-	running          bool
-	disableFastsync  bool  // Temporary flag to disable fastsync for next start (used after resync)
-	startFromHeight  int64 // If > 0, start indexing from this height instead of 0 or current
-	appsLoaded       bool  // True when GetDiscoveredApps() has completed at least once
+	Indexer         *indexer.Indexer
+	fastsync        bool
+	parallelBlocks  int
+	dbPath          string
+	dbType          string
+	running         bool
+	disableFastsync bool  // Temporary flag to disable fastsync for next start (used after resync)
+	startFromHeight int64 // If > 0, start indexing from this height instead of 0 or current
+	appsLoaded      bool  // True when GetDiscoveredApps() has completed at least once
 }
 
 const maxParallelBlocks = 10
@@ -114,7 +114,7 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 
 	// Known exclusions (if any)
 	exclusions := []string{"bb43c3eb626ee767c9f305772a6666f7c7300441a0ad8538a0799eb4f12ebcd2"}
-	
+
 	// Search filter for TELA apps
 	filter := []string{gnomonSearchFilter}
 
@@ -128,7 +128,7 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 		useFastsync = false
 		forceFastsync = false
 	}
-	
+
 	// If disableFastsync flag is set (e.g., after a resync), disable fastsync
 	// This ensures we index from the stored height (or 0 if DB was cleaned)
 	if g.disableFastsync {
@@ -136,13 +136,13 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 		forceFastsync = false
 		g.disableFastsync = false // Reset the flag after use
 	}
-	
+
 	// If a specific start height is set, use it instead of the stored height
 	if g.startFromHeight > 0 {
 		height = g.startFromHeight
 		g.startFromHeight = 0 // Reset after use
 	}
-	
+
 	config := &structures.FastSyncConfig{
 		Enabled:           useFastsync,
 		SkipFSRecheck:     false,
@@ -482,69 +482,71 @@ func (g *GnomonClient) SearchTELApps(query string) []map[string]interface{} {
 
 // LatestInteractionHeight returns the most recent interaction height for a SCID
 func (g *GnomonClient) LatestInteractionHeight(scid string) int64 {
-    if !g.IsRunning() {
-        return 0
-    }
-    heights := g.Indexer.GravDBBackend.GetSCIDInteractionHeight(scid)
-    var max int64 = 0
-    for _, h := range heights {
-        if h > max { max = h }
-    }
-    return max
+	if !g.IsRunning() {
+		return 0
+	}
+	heights := g.Indexer.GravDBBackend.GetSCIDInteractionHeight(scid)
+	var max int64 = 0
+	for _, h := range heights {
+		if h > max {
+			max = h
+		}
+	}
+	return max
 }
 
 // CheckAppSupportsEpoch determines if a TELA app supports EPOCH crowd mining
 // Looks for EPOCH-related variables or functions in the smart contract
 func (g *GnomonClient) CheckAppSupportsEpoch(scid string) bool {
-    if !g.IsRunning() {
-        return false
-    }
+	if !g.IsRunning() {
+		return false
+	}
 
-    vars := g.GetAllSCIDVariableDetails(scid)
-    if vars == nil {
-        return false
-    }
+	vars := g.GetAllSCIDVariableDetails(scid)
+	if vars == nil {
+		return false
+	}
 
-    // Check for EPOCH-related variables
-    epochKeywords := []string{
-        "epoch",
-        "EPOCH",
-        "epochEnabled",
-        "epoch_enabled",
-        "epochSupport",
-        "crowd_mining",
-        "crowdMining",
-    }
+	// Check for EPOCH-related variables
+	epochKeywords := []string{
+		"epoch",
+		"EPOCH",
+		"epochEnabled",
+		"epoch_enabled",
+		"epochSupport",
+		"crowd_mining",
+		"crowdMining",
+	}
 
-    for _, v := range vars {
-        key := fmt.Sprintf("%v", v.Key)
-        keyLower := strings.ToLower(key)
-        
-        for _, keyword := range epochKeywords {
-            if strings.Contains(keyLower, strings.ToLower(keyword)) {
-                return true
-            }
-        }
-    }
+	for _, v := range vars {
+		key := fmt.Sprintf("%v", v.Key)
+		keyLower := strings.ToLower(key)
 
-    return false
+		for _, keyword := range epochKeywords {
+			if strings.Contains(keyLower, strings.ToLower(keyword)) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // GetTELAAppsWithEpochInfo returns all TELA apps with EPOCH support information
 func (g *GnomonClient) GetTELAAppsWithEpochInfo() []map[string]interface{} {
-    apps := g.GetTELAApps()
-    
-    for i, app := range apps {
-        if scid, ok := app["scid"].(string); ok {
-            supportsEpoch := g.CheckAppSupportsEpoch(scid)
-            apps[i]["supports_epoch"] = supportsEpoch
-            if supportsEpoch {
-                apps[i]["epoch_badge"] = "EPOCH Enabled"
-            }
-        }
-    }
-    
-    return apps
+	apps := g.GetTELAApps()
+
+	for i, app := range apps {
+		if scid, ok := app["scid"].(string); ok {
+			supportsEpoch := g.CheckAppSupportsEpoch(scid)
+			apps[i]["supports_epoch"] = supportsEpoch
+			if supportsEpoch {
+				apps[i]["epoch_badge"] = "EPOCH Enabled"
+			}
+		}
+	}
+
+	return apps
 }
 
 // ResolveName tries to resolve a human-friendly TELA app name to a SCID using the Gnomon index.
@@ -553,80 +555,84 @@ func (g *GnomonClient) GetTELAAppsWithEpochInfo() []map[string]interface{} {
 // 2) Exact match on name (case-insensitive)
 // 3) Prefix match on display_name/name if unique
 func (g *GnomonClient) ResolveName(name string) (string, bool) {
-    if !g.IsRunning() {
-        return "", false
-    }
+	if !g.IsRunning() {
+		return "", false
+	}
 
-    target := strings.ToLower(strings.TrimSpace(name))
-    if target == "" {
-        return "", false
-    }
+	target := strings.ToLower(strings.TrimSpace(name))
+	if target == "" {
+		return "", false
+	}
 
-    apps := g.GetTELAApps()
+	apps := g.GetTELAApps()
 
-    // exact matches first
-    for _, app := range apps {
-        if dn, ok := app["display_name"].(string); ok && strings.ToLower(dn) == target {
-            if scid, ok := app["scid"].(string); ok && scid != "" {
-                return scid, true
-            }
-        }
-        if n, ok := app["name"].(string); ok && strings.ToLower(n) == target {
-            if scid, ok := app["scid"].(string); ok && scid != "" {
-                return scid, true
-            }
-        }
-    }
+	// exact matches first
+	for _, app := range apps {
+		if dn, ok := app["display_name"].(string); ok && strings.ToLower(dn) == target {
+			if scid, ok := app["scid"].(string); ok && scid != "" {
+				return scid, true
+			}
+		}
+		if n, ok := app["name"].(string); ok && strings.ToLower(n) == target {
+			if scid, ok := app["scid"].(string); ok && scid != "" {
+				return scid, true
+			}
+		}
+	}
 
-    // prefix match (collect candidates)
-    candidates := make([]string, 0)
-    for _, app := range apps {
-        if dn, ok := app["display_name"].(string); ok && strings.HasPrefix(strings.ToLower(dn), target) {
-            if scid, ok := app["scid"].(string); ok && scid != "" {
-                candidates = append(candidates, scid)
-            }
-        } else if n, ok := app["name"].(string); ok && strings.HasPrefix(strings.ToLower(n), target) {
-            if scid, ok := app["scid"].(string); ok && scid != "" {
-                candidates = append(candidates, scid)
-            }
-        }
-    }
-    if len(candidates) == 1 {
-        return candidates[0], true
-    }
-    return "", false
+	// prefix match (collect candidates)
+	candidates := make([]string, 0)
+	for _, app := range apps {
+		if dn, ok := app["display_name"].(string); ok && strings.HasPrefix(strings.ToLower(dn), target) {
+			if scid, ok := app["scid"].(string); ok && scid != "" {
+				candidates = append(candidates, scid)
+			}
+		} else if n, ok := app["name"].(string); ok && strings.HasPrefix(strings.ToLower(n), target) {
+			if scid, ok := app["scid"].(string); ok && scid != "" {
+				candidates = append(candidates, scid)
+			}
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], true
+	}
+	return "", false
 }
 
 // ResolveDURL resolves an exact dURL (case-insensitive) to a SCID, or returns false
 // Handles both with and without "dero://" prefix
 func (g *GnomonClient) ResolveDURL(durl string) (string, bool) {
-    if !g.IsRunning() { return "", false }
-    target := strings.ToLower(strings.TrimSpace(durl))
-    if target == "" { return "", false }
-    
-    // Normalize: remove dero:// prefix if present
-    targetNorm := target
-    if strings.HasPrefix(targetNorm, "dero://") {
-        targetNorm = targetNorm[7:]
-    }
-    
-    apps := g.GetTELAApps()
-    for _, app := range apps {
-        if du, ok := app["durl"].(string); ok {
-            // Normalize stored dURL too
-            duNorm := strings.ToLower(strings.TrimSpace(du))
-            if strings.HasPrefix(duNorm, "dero://") {
-                duNorm = duNorm[7:]
-            }
-            
-            if duNorm == targetNorm {
-                if scid, ok := app["scid"].(string); ok && scid != "" {
-                    return scid, true
-                }
-            }
-        }
-    }
-    return "", false
+	if !g.IsRunning() {
+		return "", false
+	}
+	target := strings.ToLower(strings.TrimSpace(durl))
+	if target == "" {
+		return "", false
+	}
+
+	// Normalize: remove dero:// prefix if present
+	targetNorm := target
+	if strings.HasPrefix(targetNorm, "dero://") {
+		targetNorm = targetNorm[7:]
+	}
+
+	apps := g.GetTELAApps()
+	for _, app := range apps {
+		if du, ok := app["durl"].(string); ok {
+			// Normalize stored dURL too
+			duNorm := strings.ToLower(strings.TrimSpace(du))
+			if strings.HasPrefix(duNorm, "dero://") {
+				duNorm = duNorm[7:]
+			}
+
+			if duNorm == targetNorm {
+				if scid, ok := app["scid"].(string); ok && scid != "" {
+					return scid, true
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 // GetRating fetches rating data for a SCID from Gnomon indexed data
@@ -650,12 +656,12 @@ func (g *GnomonClient) GetRating(scid string) (*RatingResult, error) {
 	}
 
 	result := &RatingResult{
-		SCID:    scid,
-		Ratings: make([]Rating, 0),
-		Likes:   0,
+		SCID:     scid,
+		Ratings:  make([]Rating, 0),
+		Likes:    0,
 		Dislikes: 0,
-		Average: 0.0,
-		Count:   0,
+		Average:  0.0,
+		Count:    0,
 	}
 
 	// Parse variables
