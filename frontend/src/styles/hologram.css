@@ -175,14 +175,17 @@
       z-index: 1;
     }
     
-    /* Noise Texture (subtle) */
+    /* Noise Texture (subtle) - Canvas-generated for cross-platform performance.
+       A 128×128 noise texture is generated once via JS canvas and tiled across the
+       viewport. This replaces the SVG feTurbulence filter which was expensive to
+       composite on Linux/WebKitGTK and caused UI lag during hover transitions. */
     .noise-overlay {
       position: fixed;
       inset: 0;
       opacity: 0.012;
-      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
       pointer-events: none;
       z-index: 10000;
+      image-rendering: pixelated;
     }
     
     /* Scrollbar */

@@ -3198,11 +3198,6 @@ let addressInput = '';
     flex-shrink: 0;
   }
   
-  /* Animate spin utility (used by loading indicator in URL bar) */
-  .animate-spin {
-    animation: browser-spin 1s linear infinite;
-  }
-  
   /* Rate button in app cards */
   .browser-rate-btn {
     display: inline-flex;

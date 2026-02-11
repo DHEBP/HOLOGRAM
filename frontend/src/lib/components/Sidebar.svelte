@@ -3222,10 +3222,6 @@
     background: linear-gradient(90deg, var(--status-err), var(--pink-400));
   }
   
-  .progress-bar-fill.mainnet {
-    background: linear-gradient(90deg, var(--cyan-400), var(--status-ok));
-  }
-  
   .progress-text {
     font-size: 10px;
     font-family: var(--font-mono);

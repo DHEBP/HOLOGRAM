@@ -13,7 +13,7 @@
   // Mining tab removed - Developer Support now in Settings > Developer Support
   // Network tab removed - node controls moved to Settings > Node
   import { appState, settingsState, updateStatus, addExternalRequest, dismissWalletRequest, toast, loadSettings } from './lib/stores/appState.js';
-  import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions } from '../wailsjs/go/main/App.js';
+  import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions, NotifyWizardComplete } from '../wailsjs/go/main/App.js';
   import { EventsOn } from '../wailsjs/runtime/runtime.js';
   import { waitForWails } from './lib/utils/wails.js';
   
@@ -31,6 +31,9 @@
   // Section navigation state for Settings
   let pendingSection = null;
   
+  // Noise overlay element (texture generated once via canvas for WebKitGTK performance)
+  let noiseOverlay;
+  
   const tabs = [
     { id: 'explorer', label: 'Explorer', icon: 'search' },
     { id: 'browser', label: 'Browser', icon: 'globe' },
@@ -43,12 +46,47 @@
     currentTab = tabId;
   }
   
-  function handleWizardComplete() {
+  async function handleWizardComplete() {
     showWizard = false;
+    // Notify the backend so it can start background services
+    // (EPOCH, StatusBroadcaster, block monitoring, etc.)
+    try {
+      await NotifyWizardComplete();
+    } catch (err) {
+      console.error('Failed to notify backend of wizard completion:', err);
+    }
+  }
+
+  // Generate static noise texture as a tiled background (runs once, no per-frame cost).
+  // Replaces SVG feTurbulence which is expensive on Linux/WebKitGTK.
+  function generateNoiseTexture() {
+    if (!noiseOverlay) return;
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const imageData = ctx.createImageData(size, size);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const v = Math.random() * 255;
+      data[i] = v;       // R
+      data[i + 1] = v;   // G
+      data[i + 2] = v;   // B
+      data[i + 3] = 255; // A
+    }
+    ctx.putImageData(imageData, 0, 0);
+    noiseOverlay.style.backgroundImage = `url(${canvas.toDataURL('image/png')})`;
+    noiseOverlay.style.backgroundRepeat = 'repeat';
+    noiseOverlay.style.backgroundSize = `${size}px ${size}px`;
   }
 
   onMount(async () => {
     console.log('Hologram initializing...');
+    
+    // Generate noise texture once (replaces expensive SVG feTurbulence filter)
+    generateNoiseTexture();
     
     // Fix for Wails/WebView scroll focus issue on macOS
     // When the app loses and regains focus, scroll events may not work until
@@ -384,8 +422,8 @@
 <!-- Toast Notifications -->
 <Toast />
 
-<!-- v6.1 Noise Overlay (subtle film grain) -->
-<div class="noise-overlay"></div>
+<!-- v6.1 Noise Overlay (subtle film grain - canvas-generated for WebKitGTK performance) -->
+<div bind:this={noiseOverlay} class="noise-overlay"></div>
 
 <!-- SVG Definitions for gradients -->
 <svg width="0" height="0" style="position: absolute;">

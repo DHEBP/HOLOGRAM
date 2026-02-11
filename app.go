@@ -62,6 +62,14 @@ type App struct {
 	// Status broadcast
 	statusBroadcaster     *StatusBroadcaster
 	statusBroadcasterOnce sync.Once
+
+	// Wizard / startup gating
+	wizardComplete        bool
+	backgroundStarted     bool
+	backgroundStartedOnce sync.Once
+
+	// EPOCH address monitor lifecycle
+	epochMonitorStop chan struct{}
 }
 
 // NewApp creates a new App application struct
@@ -74,15 +82,15 @@ func NewApp() *App {
 		gnomonClient: NewGnomonClient("gravdb"),
 		cache:        NewGravitonCache(),
 		settings: map[string]interface{}{
-			"min_rating":           60,
-			"block_malware":        true,
-			"show_nsfw":            false,
-			"auto_connect_ws":      true,
-			"gnomon_enabled":       false,
-			"daemon_endpoint":      daemonEndpoint,
-			"network":              "mainnet",
-			"integrated_wallet":    true,
-			"allow_github_check":   true, // Allow pinging GitHub for derod updates
+			"min_rating":         60,
+			"block_malware":      true,
+			"show_nsfw":          false,
+			"auto_connect_ws":    true,
+			"gnomon_enabled":     false,
+			"daemon_endpoint":    daemonEndpoint,
+			"network":            "mainnet",
+			"integrated_wallet":  true,
+			"allow_github_check": true, // Allow pinging GitHub for derod updates
 		},
 		history:     make([]string, 0),
 		consoleLogs: make([]ConsoleLog, 0),
@@ -169,90 +177,114 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}()
 
-	// Auto-connect to XSWD
-	if autoConnect, ok := a.settings["auto_connect_ws"].(bool); ok && autoConnect {
-		if integrated, ok := a.settings["integrated_wallet"].(bool); ok && integrated {
-			go a.xswdServer.Start()
-		} else {
-			go func() {
-				a.logToConsole("[XSWD] Auto-connecting to XSWD (external wallet)...")
-				a.ConnectXSWD()
-			}()
-		}
+	// Check if wizard was already completed (returning user)
+	if wizardDone, ok := a.settings["wizard_complete"].(bool); ok && wizardDone {
+		a.wizardComplete = true
+		a.startBackgroundServices()
+	} else {
+		a.logToConsole("[START] First run detected - background services deferred until setup completes")
 	}
+}
 
-	// Initialize Developer Support
-	go func() {
-		time.Sleep(3 * time.Second)
+// NotifyWizardComplete is called by the frontend when the FirstRunWizard finishes.
+// It starts all the background services that were deferred during first run.
+func (a *App) NotifyWizardComplete() {
+	a.wizardComplete = true
+	a.logToConsole("[START] Setup complete - starting background services")
+	a.startBackgroundServices()
+}
 
-		devSupportEnabled := true
-		if savedSetting, ok := a.settings["dev_support_enabled"]; ok {
-			if enabled, ok := savedSetting.(bool); ok {
-				devSupportEnabled = enabled
-			}
-		} else if savedSetting, ok := a.settings["epoch_enabled"]; ok {
-			if enabled, ok := savedSetting.(bool); ok {
-				devSupportEnabled = enabled
-			}
-		}
+// startBackgroundServices starts all background goroutines (XSWD, EPOCH, Gnomon, StatusBroadcaster).
+// Gated behind wizard completion so first-run users don't get hammered by daemon polling.
+func (a *App) startBackgroundServices() {
+	a.backgroundStartedOnce.Do(func() {
+		a.backgroundStarted = true
 
-		a.loadDevSupportStats()
-
-		if a.epochHandler == nil {
-			a.epochHandler = NewEpochHandler(a.logToConsole)
-		}
-		a.epochHandler.SetEnabled(devSupportEnabled)
-
-		if devSupportEnabled {
-			// Option 2: Wait for node sync before starting EPOCH
-			// This helps avoid "unregistered miner" errors by ensuring node is ready
-			if !a.waitForNodeSync(5 * time.Minute) {
-				a.logToConsole("[WARN] EPOCH: Node sync check timeout - starting anyway")
-			}
-
-			a.InitializeEpoch()
-			time.Sleep(2 * time.Second)
-
-			if a.devSupportWorker != nil {
-				a.devSupportWorker.SetEnabled(true)
-				a.devSupportWorker.Start()
-			}
-
-			// Start the address monitor for fair developer support switching
-			a.StartEpochAddressMonitor()
-		} else {
-			a.logToConsole("[EPOCH] Developer Support: Disabled by user preference")
-		}
-	}()
-
-	// Auto-start Gnomon if enabled
-	go func() {
-		time.Sleep(2 * time.Second) // Wait for daemon connection test
-
-		if autostart, ok := a.settings["gnomon_autostart"].(bool); ok && autostart {
-			if err := a.daemonClient.TestConnection(); err == nil {
-				a.logToConsole("[GNOMON] Auto-starting Gnomon indexer (user preference)...")
-				a.StartGnomon()
+		// Auto-connect to XSWD
+		if autoConnect, ok := a.settings["auto_connect_ws"].(bool); ok && autoConnect {
+			if integrated, ok := a.settings["integrated_wallet"].(bool); ok && integrated {
+				go a.xswdServer.Start()
 			} else {
-				a.logToConsole("[GNOMON] Auto-start skipped - daemon not connected")
+				go func() {
+					a.logToConsole("[XSWD] Auto-connecting to XSWD (external wallet)...")
+					a.ConnectXSWD()
+				}()
 			}
 		}
-	}()
 
-	a.StartStatusBroadcast()
+		// Initialize Developer Support
+		go func() {
+			time.Sleep(3 * time.Second)
+
+			devSupportEnabled := true
+			if savedSetting, ok := a.settings["dev_support_enabled"]; ok {
+				if enabled, ok := savedSetting.(bool); ok {
+					devSupportEnabled = enabled
+				}
+			} else if savedSetting, ok := a.settings["epoch_enabled"]; ok {
+				if enabled, ok := savedSetting.(bool); ok {
+					devSupportEnabled = enabled
+				}
+			}
+
+			a.loadDevSupportStats()
+
+			if a.epochHandler == nil {
+				a.epochHandler = NewEpochHandler(a.logToConsole)
+			}
+			a.epochHandler.SetEnabled(devSupportEnabled)
+
+			if devSupportEnabled {
+				// Wait for node sync before starting EPOCH
+				// This helps avoid "unregistered miner" errors by ensuring node is ready
+				if !a.waitForNodeSync(5 * time.Minute) {
+					a.logToConsole("[WARN] EPOCH: Node sync check timeout - starting anyway")
+				}
+
+				a.InitializeEpoch()
+				time.Sleep(2 * time.Second)
+
+				if a.devSupportWorker != nil {
+					a.devSupportWorker.SetEnabled(true)
+					a.devSupportWorker.Start()
+				}
+
+				// Start the address monitor for fair developer support switching
+				a.StartEpochAddressMonitor()
+			} else {
+				a.logToConsole("[EPOCH] Developer Support: Disabled by user preference")
+			}
+		}()
+
+		// Auto-start Gnomon if enabled
+		go func() {
+			time.Sleep(2 * time.Second) // Wait for daemon connection test
+
+			if autostart, ok := a.settings["gnomon_autostart"].(bool); ok && autostart {
+				if err := a.daemonClient.TestConnection(); err == nil {
+					a.logToConsole("[GNOMON] Auto-starting Gnomon indexer (user preference)...")
+					a.StartGnomon()
+				} else {
+					a.logToConsole("[GNOMON] Auto-start skipped - daemon not connected")
+				}
+			}
+		}()
+
+		a.StartStatusBroadcast()
+	})
 }
 
 // waitForNodeSync waits for the node to be synced before proceeding
 // Returns true if node is synced, false if timeout
 func (a *App) waitForNodeSync(maxWait time.Duration) bool {
 	a.logToConsole("[EPOCH] Waiting for node sync before starting developer support...")
-	
+
 	startTime := time.Now()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	
+
 	lastLoggedProgress := -1.0
-	
+
 	for time.Since(startTime) < maxWait {
 		// Check if node is synced
 		syncResult := a.GetSyncProgress()
@@ -260,7 +292,7 @@ func (a *App) waitForNodeSync(maxWait time.Duration) bool {
 			a.logToConsole("[EPOCH] Node is synced - starting developer support")
 			return true
 		}
-		
+
 		// Check if node is even running
 		nodeStatus := a.GetNodeStatus()
 		if isRunning, ok := nodeStatus["isRunning"].(bool); !ok || !isRunning {
@@ -268,19 +300,19 @@ func (a *App) waitForNodeSync(maxWait time.Duration) bool {
 			<-ticker.C
 			continue
 		}
-		
+
 		// Log progress if available (every 10% to avoid spam)
 		if progress, ok := syncResult["progress"].(float64); ok {
-			currentProgress := int(progress / 10) * 10 // Round down to nearest 10%
+			currentProgress := int(progress/10) * 10 // Round down to nearest 10%
 			if currentProgress != int(lastLoggedProgress) && currentProgress >= 0 {
 				a.logToConsole(fmt.Sprintf("[EPOCH] Node sync progress: %.1f%% - waiting...", progress))
 				lastLoggedProgress = float64(currentProgress)
 			}
 		}
-		
+
 		<-ticker.C
 	}
-	
+
 	return false
 }
 
@@ -357,7 +389,7 @@ func (a *App) CallXSWD(methodJSON string) map[string]interface{} {
 	// This matches Engram's behavior
 	if request.Method == "GetDaemon" {
 		endpoint := "127.0.0.1:10102"
-		
+
 		if a.simulatorManager != nil && a.simulatorManager.isInitialized {
 			endpoint = "127.0.0.1:20000"
 		} else {
@@ -410,10 +442,10 @@ func (a *App) GetXSWDStatus() map[string]interface{} {
 	if a.xswdServer != nil && a.xswdServer.IsRunning() {
 		xswdServerRunning = true
 	}
-	
+
 	// Engram connection status (HOLOGRAM as client to external wallet)
 	engramConnected := a.xswdClient.IsConnected()
-	
+
 	// Legacy: any XSWD activity
 	connected := xswdServerRunning || engramConnected
 

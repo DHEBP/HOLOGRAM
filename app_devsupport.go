@@ -379,12 +379,20 @@ func formatDEROAmount(atomicUnits uint64) string {
 // and switches back to default after STICKY_TIMEOUT of inactivity.
 // Called during app startup.
 func (a *App) StartEpochAddressMonitor() {
+	// Stop any existing monitor before starting a new one
+	a.StopEpochAddressMonitor()
+
+	a.epochMonitorStop = make(chan struct{})
+	stopCh := a.epochMonitorStop
+
 	go func() {
 		ticker := time.NewTicker(5 * time.Second) // Check every 5 seconds
 		defer ticker.Stop()
 
 		for {
 			select {
+			case <-stopCh:
+				return
 			case <-ticker.C:
 				a.checkEpochAddressTimeout()
 			}
@@ -392,6 +400,19 @@ func (a *App) StartEpochAddressMonitor() {
 	}()
 
 	a.logToConsole("[EPOCH] Address monitor started - will switch back to default after 30s of app inactivity")
+}
+
+// StopEpochAddressMonitor stops the EPOCH address monitor goroutine
+func (a *App) StopEpochAddressMonitor() {
+	if a.epochMonitorStop != nil {
+		select {
+		case <-a.epochMonitorStop:
+			// Already closed
+		default:
+			close(a.epochMonitorStop)
+		}
+		a.epochMonitorStop = nil
+	}
 }
 
 // checkEpochAddressTimeout checks if we should switch back to the default address
@@ -419,11 +440,11 @@ func (a *App) checkEpochAddressTimeout() {
 // GetEpochAddressInfo returns current EPOCH address switching state
 func (a *App) GetEpochAddressInfo() map[string]interface{} {
 	result := map[string]interface{}{
-		"current_address":       "",
-		"default_address":       DEFAULT_EPOCH_DEVELOPER_ADDRESS,
-		"is_on_app_address":     false,
-		"last_app_request":      time.Time{},
-		"seconds_until_switch":  0,
+		"current_address":      "",
+		"default_address":      DEFAULT_EPOCH_DEVELOPER_ADDRESS,
+		"is_on_app_address":    false,
+		"last_app_request":     time.Time{},
+		"seconds_until_switch": 0,
 	}
 
 	if a.epochHandler == nil {
@@ -446,4 +467,3 @@ func (a *App) GetEpochAddressInfo() map[string]interface{} {
 
 	return result
 }
-

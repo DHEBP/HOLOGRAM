@@ -23,6 +23,9 @@ var persistedSettingKeys = []string{
 	"gnomon_enabled",
 	"integrated_wallet",
 	"allow_github_check",
+	"wizard_complete",
+	"dev_support_enabled",
+	"epoch_enabled",
 }
 
 // Settings Functions
@@ -120,4 +123,3 @@ func (a *App) loadSettings() {
 
 	log.Printf("[Settings] Loaded %d settings from %s", len(loaded), settingsFile)
 }
-

@@ -858,6 +858,10 @@ export function Navigate(arg1) {
   return window['go']['main']['App']['Navigate'](arg1);
 }
 
+export function NotifyWizardComplete() {
+  return window['go']['main']['App']['NotifyWizardComplete']();
+}
+
 export function OmniSearch(arg1) {
   return window['go']['main']['App']['OmniSearch'](arg1);
 }
@@ -1204,6 +1208,10 @@ export function StartStatusBroadcast() {
 
 export function StopBlockMonitoring() {
   return window['go']['main']['App']['StopBlockMonitoring']();
+}
+
+export function StopEpochAddressMonitor() {
+  return window['go']['main']['App']['StopEpochAddressMonitor']();
 }
 
 export function StopGnomon() {
