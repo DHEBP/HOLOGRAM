@@ -1145,6 +1145,10 @@ func allocateData(
 					hasLibTag = true
 				}
 			}
+		case key == "subDir":
+			if present {
+				data["subDir"] = decodedValue
+			}
 		case key == "docType":
 			// This is a DOC (single file library)
 			data["type"] = "DOC"
