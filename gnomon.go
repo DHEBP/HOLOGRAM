@@ -13,6 +13,8 @@ import (
 	"github.com/deroproject/derohe/globals"
 )
 
+const gnomonSCID = "bb43c3eb626ee767c9f305772a6666f7c7300441a0ad8538a0799eb4f12ebcd2"
+
 // GnomonClient manages the Gnomon indexer for TELA content discovery
 type GnomonClient struct {
 	Indexer         *indexer.Indexer
@@ -113,7 +115,7 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 	}
 
 	// Known exclusions (if any)
-	exclusions := []string{"bb43c3eb626ee767c9f305772a6666f7c7300441a0ad8538a0799eb4f12ebcd2"}
+	exclusions := []string{gnomonSCID}
 
 	// Search filter for TELA apps
 	filter := []string{gnomonSearchFilter}

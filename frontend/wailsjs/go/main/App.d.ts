@@ -431,6 +431,8 @@ export function MoveFile(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function Navigate(arg1:string):Promise<Record<string, any>>;
 
+export function NotifyWizardComplete():Promise<void>;
+
 export function OmniSearch(arg1:string):Promise<main.SearchResult>;
 
 export function OpenSimulatorTestWallet(arg1:number):Promise<Record<string, any>>;
@@ -604,6 +606,8 @@ export function StartSimulatorMode():Promise<Record<string, any>>;
 export function StartStatusBroadcast():Promise<void>;
 
 export function StopBlockMonitoring():Promise<void>;
+
+export function StopEpochAddressMonitor():Promise<void>;
 
 export function StopGnomon():Promise<Record<string, any>>;
 
