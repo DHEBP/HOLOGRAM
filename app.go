@@ -29,7 +29,6 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// const deroSCID = "0000000000000000000000000000000000000000000000000000000000000000"
 var deroSCID = crypto.ZEROHASH.String()
 
 // App struct
