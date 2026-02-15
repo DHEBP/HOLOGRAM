@@ -929,8 +929,8 @@ func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[str
 		}
 
 		// Filter by docType if specified
-		scidDocType, ok := doc["docType"]
-		if docType != "" && ok && scidDocType == docType {
+		scidDocType := doc["docType"].(string)
+		if docType != "" && scidDocType != docType {
 			continue
 		}
 
