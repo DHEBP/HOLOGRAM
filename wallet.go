@@ -1487,8 +1487,8 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		balance, lockedBalance := wallet.Get_Balance()
 		
 		// SCID "0000...0000" (zero SCID) represents native DERO
-		zeroScid := "0000000000000000000000000000000000000000000000000000000000000000"
-		
+		zeroScid := deroSCID
+
 		balances := map[string]uint64{
 			zeroScid: balance,
 		}
