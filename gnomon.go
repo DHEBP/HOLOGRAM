@@ -621,18 +621,14 @@ func (g *GnomonClient) ResolveDURL(durl string) (string, bool) {
 
 	// Normalize: remove dero:// prefix if present
 	targetNorm := target
-	if strings.HasPrefix(targetNorm, "dero://") {
-		targetNorm = targetNorm[7:]
-	}
+	targetNorm = strings.TrimPrefix(targetNorm, "dero://")
 
 	apps := g.GetTELAApps()
 	for _, app := range apps {
 		if du, ok := app["durl"].(string); ok {
 			// Normalize stored dURL too
 			duNorm := strings.ToLower(strings.TrimSpace(du))
-			if strings.HasPrefix(duNorm, "dero://") {
-				duNorm = duNorm[7:]
-			}
+			duNorm = strings.TrimPrefix(duNorm, "dero://")
 
 			if duNorm == targetNorm {
 				if scid, ok := app["scid"].(string); ok && scid != "" {
