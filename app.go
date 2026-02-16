@@ -25,8 +25,11 @@ import (
 	"time"
 
 	"github.com/civilware/tela"
+	"github.com/deroproject/derohe/cryptography/crypto"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+var deroSCID = crypto.ZEROHASH.String()
 
 // App struct
 type App struct {
@@ -962,7 +965,7 @@ func (a *App) GetTokenPortfolio() map[string]interface{} {
 					}
 				}
 
-				if scid == "0000000000000000000000000000000000000000000000000000000000000000" {
+				if scid == deroSCID {
 					token["name"] = "DERO"
 					token["symbol"] = "DERO"
 					token["native"] = true
@@ -1271,7 +1274,7 @@ func (a *App) GetBalanceAtHeight(address string, topoheight int64, scid string) 
 		"topoheight": topoheight,
 	}
 
-	if scid != "" && scid != "0000000000000000000000000000000000000000000000000000000000000000" {
+	if scid != "" && scid != deroSCID {
 		params["scid"] = scid
 	}
 
