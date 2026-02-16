@@ -229,6 +229,7 @@ let addressInput = '';
   let unsubscribeConsole;
   let consoleViewport;
   let consoleUserScrolled = false;
+  let previousLogCount = 0;
   
   // App discovery state
   let apps = [];
@@ -1217,6 +1218,8 @@ let addressInput = '';
     try {
       await ClearBackendLogs();
       clearConsoleLogsStore(); // Clear the store (which updates local consoleLogs via subscription)
+      previousLogCount = 0;
+      consoleUserScrolled = false;
     } catch (e) {
       console.error('Failed to clear logs:', e);
     }
@@ -1238,17 +1241,21 @@ let addressInput = '';
   function handleConsoleScroll() {
     if (!consoleViewport) return;
     const { scrollTop, scrollHeight, clientHeight } = consoleViewport;
-    // Consider "at bottom" if within 50px of the bottom
-    consoleUserScrolled = scrollHeight - scrollTop - clientHeight > 50;
+    // Consider "at bottom" if within 100px of the bottom
+    consoleUserScrolled = scrollHeight - scrollTop - clientHeight > 100;
   }
-  
-  // Auto-scroll console to bottom only if user hasn't scrolled up
-  $: if (consoleLogs && consoleViewport && !consoleUserScrolled) {
-    setTimeout(() => {
-      if (consoleViewport && !consoleUserScrolled) {
-        consoleViewport.scrollTop = consoleViewport.scrollHeight;
-      }
-    }, 0);
+
+  // Auto-scroll console to bottom ONLY when new logs arrive AND user is at bottom
+  $: if (consoleLogs && consoleViewport) {
+    const currentLogCount = consoleLogs.length;
+    if (currentLogCount > previousLogCount && !consoleUserScrolled) {
+      requestAnimationFrame(() => {
+        if (consoleViewport && !consoleUserScrolled) {
+          consoleViewport.scrollTop = consoleViewport.scrollHeight;
+        }
+      });
+    }
+    previousLogCount = currentLogCount;
   }
   
   async function navigate(fromHistory = false) {
