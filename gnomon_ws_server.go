@@ -31,16 +31,16 @@ const (
 
 // GnomonWSRequest represents an incoming WebSocket request
 type GnomonWSRequest struct {
-	ID     interface{}            `json:"id"`
-	Method string                 `json:"method"`
-	Params map[string]interface{} `json:"params,omitempty"`
+	ID     any            `json:"id"`
+	Method string         `json:"method"`
+	Params map[string]any `json:"params,omitempty"`
 }
 
 // GnomonWSResponse represents an outgoing WebSocket response
 type GnomonWSResponse struct {
-	ID     interface{} `json:"id"`
-	Result interface{} `json:"result,omitempty"`
-	Error  *WSError    `json:"error,omitempty"`
+	ID     any      `json:"id"`
+	Result any      `json:"result,omitempty"`
+	Error  *WSError `json:"error,omitempty"`
 }
 
 // WSError represents a WebSocket error
@@ -201,7 +201,7 @@ func (s *GnomonWSServer) GetClientCount() int {
 // handleHealth handles health check requests
 func (s *GnomonWSServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]any{
 		"status":  "ok",
 		"gnomon":  s.app.gnomonClient != nil && s.app.gnomonClient.IsRunning(),
 		"clients": s.GetClientCount(),
@@ -264,7 +264,7 @@ func (s *GnomonWSServer) handleWebSocket(w http.ResponseWriter, r *http.Request)
 }
 
 // sendError sends an error response
-func (s *GnomonWSServer) sendError(conn *websocket.Conn, id interface{}, code int, message string) {
+func (s *GnomonWSServer) sendError(conn *websocket.Conn, id any, code int, message string) {
 	response := GnomonWSResponse{
 		ID: id,
 		Error: &WSError{
@@ -290,7 +290,7 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 
 	// Route method
 	method := strings.ToLower(req.Method)
-	var result interface{}
+	var result any
 
 	switch method {
 	// === SCID Queries ===
@@ -321,7 +321,7 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 			return errorResponse(req.ID, -32602, "Missing 'scid' or 'key' parameter")
 		}
 		valStr, valUint := s.app.gnomonClient.GetSCIDValuesByKey(scid, key)
-		result = map[string]interface{}{
+		result = map[string]any{
 			"values_string": valStr,
 			"values_uint64": valUint,
 		}
@@ -333,7 +333,7 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 			return errorResponse(req.ID, -32602, "Missing 'scid' or 'value' parameter")
 		}
 		keyStr, keyUint := s.app.gnomonClient.GetSCIDKeysByValue(scid, value)
-		result = map[string]interface{}{
+		result = map[string]any{
 			"keys_string": keyStr,
 			"keys_uint64": keyUint,
 		}
@@ -352,17 +352,17 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 	case "resolvedurl", "resolve_durl":
 		durl := getStringParam(req.Params, "durl")
 		if scid, ok := s.app.gnomonClient.ResolveDURL(durl); ok {
-			result = map[string]interface{}{"scid": scid, "found": true}
+			result = map[string]any{"scid": scid, "found": true}
 		} else {
-			result = map[string]interface{}{"found": false}
+			result = map[string]any{"found": false}
 		}
 
 	case "resolvename", "resolve_name":
 		name := getStringParam(req.Params, "name")
 		if scid, ok := s.app.gnomonClient.ResolveName(name); ok {
-			result = map[string]interface{}{"scid": scid, "found": true}
+			result = map[string]any{"scid": scid, "found": true}
 		} else {
-			result = map[string]interface{}{"found": false}
+			result = map[string]any{"found": false}
 		}
 
 	// === Tag System ===
@@ -399,7 +399,7 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 
 	case "getindexheight", "get_index_height":
 		status := s.app.gnomonClient.GetStatus()
-		result = map[string]interface{}{
+		result = map[string]any{
 			"indexed_height": status["indexed_height"],
 			"chain_height":   status["chain_height"],
 			"progress":       status["progress"],
@@ -417,7 +417,7 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 
 // Helper functions
 
-func errorResponse(id interface{}, code int, message string) GnomonWSResponse {
+func errorResponse(id any, code int, message string) GnomonWSResponse {
 	return GnomonWSResponse{
 		ID: id,
 		Error: &WSError{
@@ -427,7 +427,7 @@ func errorResponse(id interface{}, code int, message string) GnomonWSResponse {
 	}
 }
 
-func getStringParam(params map[string]interface{}, key string) string {
+func getStringParam(params map[string]any, key string) string {
 	if params == nil {
 		return ""
 	}
@@ -437,7 +437,7 @@ func getStringParam(params map[string]interface{}, key string) string {
 	return ""
 }
 
-func getInt64Param(params map[string]interface{}, key string) int64 {
+func getInt64Param(params map[string]any, key string) int64 {
 	if params == nil {
 		return 0
 	}
@@ -451,4 +451,3 @@ func getInt64Param(params map[string]interface{}, key string) int64 {
 	}
 	return 0
 }
-
