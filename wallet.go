@@ -732,15 +732,39 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string) map[
 		a.logToConsole("[Transfer] Failed: wallet not connected to daemon")
 		return errResp
 	}
-	
-	// Execute transfer with ringsize 16 (standard), no SC arguments
-	tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
-	if err != nil {
-		a.logToConsole(fmt.Sprintf("[Transfer] Failed: %s", err.Error()))
+
+	// Sync wallet with daemon to get fresh nonce and ring members
+	if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Pre-transfer wallet sync failed: %v", syncErr))
+	}
+
+	// Pre-flight: check balance covers the transfer amount
+	mature, _ := wallet.Get_Balance()
+	if mature == 0 || mature < amount {
+		a.logToConsole(fmt.Sprintf("[Transfer] Failed: insufficient balance (%s DERO available, %s DERO required)", formatDEROAmount(mature), formatDEROAmount(amount)))
 		return map[string]interface{}{
 			"success":        false,
-			"error":          FriendlyError(err),
-			"technicalError": err.Error(),
+			"error":          fmt.Sprintf("Insufficient balance. You have %s DERO but this transfer requires %s DERO plus gas fees.", formatDEROAmount(mature), formatDEROAmount(amount)),
+			"technicalError": fmt.Sprintf("mature balance %d < required %d", mature, amount),
+		}
+	}
+
+	// Execute transfer with ringsize 16 (standard), no SC arguments
+	// Retry once on build failure (stale nonce / ring member issue)
+	tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Transfer build failed, retrying after resync: %v", err))
+		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+		}
+		tx, err = wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[Transfer] Failed: %s", err.Error()))
+			return map[string]interface{}{
+				"success":        false,
+				"error":          FriendlyError(err),
+				"technicalError": err.Error(),
+			}
 		}
 	}
 
@@ -1324,17 +1348,47 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		if errResp := checkDaemonConnectivity(wallet); errResp != nil {
 			return errResp
 		}
-		
+
+		// Sync wallet with daemon to get fresh nonce and ring members
+		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Pre-transfer wallet sync failed: %v", syncErr))
+		}
+
+		// Pre-flight: check balance covers at minimum the transfer amount + gas
+		mature, _ := wallet.Get_Balance()
+		var totalTransferAmount uint64
+		for _, t := range transfers {
+			totalTransferAmount += t.Amount + t.Burn
+		}
+		if mature == 0 || (totalTransferAmount > 0 && mature < totalTransferAmount) {
+			return map[string]interface{}{
+				"success":        false,
+				"error":          fmt.Sprintf("Insufficient balance. You have %s DERO but this transaction requires at least %s DERO plus gas fees.", formatDEROAmount(mature), formatDEROAmount(totalTransferAmount)),
+				"technicalError": fmt.Sprintf("mature balance %d < required %d", mature, totalTransferAmount),
+			}
+		}
+
 		// Execute transfer (with optional SC arguments)
+		// Retry once on build failure (stale nonce / ring member issue)
 		tx, err := wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
 		if err != nil {
-			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+			a.logToConsole(fmt.Sprintf("[WARN] Transfer build failed, retrying after resync: %v", err))
+			if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+			}
+			tx, err = wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
+			if err != nil {
+				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+			}
 		}
-		
+
+		txid := tx.GetHash().String()
+		a.logToConsole(fmt.Sprintf("[OK] Transfer TX sent: %s", txid))
 		return map[string]interface{}{
 			"success": true,
-			"txid":    tx.GetHash().String(),
-			"hex":     fmt.Sprintf("%x", tx.Serialize()),
+			"result": map[string]interface{}{
+				"txid": txid,
+			},
 		}
 
 	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
@@ -1465,21 +1519,46 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		if errResp := checkDaemonConnectivity(wallet); errResp != nil {
 			return errResp
 		}
-		
+
+		// Sync wallet with daemon to get fresh nonce and ring members
+		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Pre-scinvoke wallet sync failed: %v", syncErr))
+		}
+
+		// Pre-flight: check balance (every SC invoke requires gas fees)
+		mature, _ := wallet.Get_Balance()
+		if mature == 0 {
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Insufficient balance. Even a smart contract call requires gas fees — please fund your wallet first.",
+				"technicalError": "wallet mature balance is 0",
+			}
+		}
+
 		// Execute SC Invoke via TransferPayload0 with SC args
-		// If we are sending DERO to the SC, we include it in transfers
-		
+		// Retry once on build failure (stale nonce / ring member issue)
 		tx, err := wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
 		if err != nil {
-			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+			a.logToConsole(fmt.Sprintf("[WARN] scinvoke build failed, retrying after resync: %v", err))
+			// Resync and retry once
+			if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+			}
+			tx, err = wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
+			if err != nil {
+				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+			}
 		}
-		
+
+		txid := tx.GetHash().String()
+		a.logToConsole(fmt.Sprintf("[OK] scinvoke TX sent: %s", txid))
 		return map[string]interface{}{
 			"success": true,
-			"txid":    tx.GetHash().String(),
-			"hex":     fmt.Sprintf("%x", tx.Serialize()),
+			"result": map[string]interface{}{
+				"txid": txid,
+			},
 		}
-		
+
 	case "GetTrackedAssets", "gettrackedassets":
 		// Return tracked asset balances
 		// For the internal wallet, we return DERO balance at minimum
