@@ -152,7 +152,8 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 		})
 
 	case "GetAllSCIDVariableDetails":
-		vars := a.gnomonClient.GetAllSCIDVariableDetails(getStr("scid"))
+		scid := getStr("scid")
+		vars := a.gnomonClient.GetAllSCIDVariableDetails(scid)
 		varMaps := make([]map[string]interface{}, 0, len(vars))
 		for _, v := range vars {
 			varMaps = append(varMaps, map[string]interface{}{
@@ -160,6 +161,24 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 				"Value": v.Value,
 			})
 		}
+
+		// Fallback: if Gnomon has no data for this SCID, query the daemon directly
+		// This handles non-TELA SCs (like feed.tela's data contract) that Gnomon doesn't index
+		if len(varMaps) == 0 && a.daemonClient != nil && scid != "" {
+			log.Printf("[GNOMON] Gnomon has no data for %s, falling back to daemon DERO.GetSC", scid[:min(16, len(scid))])
+			if scResult, err := a.daemonClient.GetSC(scid, false, true); err == nil {
+				if stringkeys, ok := scResult["stringkeys"].(map[string]interface{}); ok {
+					for k, v := range stringkeys {
+						varMaps = append(varMaps, map[string]interface{}{
+							"Key":   k,
+							"Value": v,
+						})
+					}
+					log.Printf("[GNOMON] Daemon fallback returned %d variables for %s", len(varMaps), scid[:min(16, len(scid))])
+				}
+			}
+		}
+
 		return xswdSuccess(map[string]interface{}{
 			"allVariables": varMaps,
 		})
