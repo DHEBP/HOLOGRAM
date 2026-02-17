@@ -3603,6 +3603,12 @@
   /* Explorer Search in Header */
   .explorer-search-wrapper {
     min-width: 360px;
+    display: flex;
+    align-items: center;
+    background: var(--void-mid);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-lg);
+    padding: var(--s-1) var(--s-2);
   }
   
   /* Page header wrapper removed - now using flat .content-section-title / .content-section-desc pattern */

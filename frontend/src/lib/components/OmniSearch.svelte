@@ -738,28 +738,6 @@
     </div>
   {/if}
   
-  <!-- Helper Text (hidden in compact/toolbar mode to avoid layout shift) -->
-  {#if focused && !value && !showSuggestions && !compact}
-    <div class="helper-text">
-      <span>Block height</span>
-      <span class="helper-sep">•</span>
-      <span>TX hash</span>
-      <span class="helper-sep">•</span>
-      <span>SCID</span>
-      <span class="helper-sep">•</span>
-      <span>app.tela</span>
-      <span class="helper-sep">•</span>
-      <span>dero1qy...</span>
-      <span class="helper-sep">•</span>
-      <span>key:varname</span>
-      <span class="helper-sep">•</span>
-      <span>code:Function</span>
-      <span class="helper-sep">•</span>
-      <span>class:</span>
-      <span class="helper-sep">•</span>
-      <span>tag:name</span>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -785,16 +763,16 @@
   }
   
   .omni-search.compact .search-container {
-    padding: var(--s-2, 8px) var(--s-3, 12px);
+    padding: 0;
     gap: 6px;
-    background: var(--void-deep, #08080e);
-    border: 1px solid var(--border-dim, rgba(255, 255, 255, 0.06));
-    border-radius: var(--r-md, 8px);
+    background: transparent;
+    border: none;
+    border-radius: 0;
   }
 
   .omni-search.compact.focused .search-container {
-    border-color: var(--cyan-500, #06b6d4);
-    box-shadow: var(--glow-cyan-sm, 0 0 15px rgba(34, 211, 238, 0.1));
+    border: none;
+    box-shadow: none;
   }
   
   .search-icon {
@@ -929,21 +907,6 @@
     border-radius: 6px;
   }
   
-  .helper-text {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--s-2, 8px);
-    margin-top: var(--s-3, 12px);
-    font-size: 12px;
-    color: var(--text-4, #505068);
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  }
-  
-  .helper-sep {
-    color: var(--text-5, #404058);
-    font-size: 8px;
-  }
   
   /* Animation for spinner */
   .animate-spin {
