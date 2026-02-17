@@ -63,6 +63,7 @@
         placeholder="64-character SCID..."
         class="input input-mono"
         maxlength="64"
+        on:keydown={(e) => e.key === 'Enter' && actionsScid.length === 64 && !actionsLoading && loadActionsContent()}
       />
     </div>
     
@@ -187,16 +188,16 @@
   {/if}
   
   <!-- How It Works Info Card -->
-  <div class="content-card use-cases-card" style="margin-top: var(--s-4);">
-    <h4 class="use-cases-title">
-      <GitBranch size={14} style="margin-right: var(--s-2);" />
-      How TELA Version Control Works
-    </h4>
-    <ul class="use-cases-list">
-      <li><strong>Immutable DOCs</strong> — TELA-DOC-1 contracts are immutable once deployed. The code never changes.</li>
-      <li><strong>Mutable INDEXes</strong> — TELA-INDEX-1 contracts (deployed with ringsize 2) can be updated by their owner.</li>
-      <li><strong>Commit History</strong> — Each update creates a new "commit" with a TXID. You can view, compare, or revert to any version.</li>
-      <li><strong>Clone at Version</strong> — Use <code>scid@txid</code> format to clone content at a specific version.</li>
-    </ul>
+  <div class="info-panel" style="margin-top: var(--s-4);">
+    <div class="info-panel-icon">◎</div>
+    <div class="info-panel-content">
+      <p class="info-panel-title">How TELA Version Control Works</p>
+      <ul class="info-list">
+        <li><strong>Immutable DOCs</strong> — TELA-DOC-1 contracts are immutable once deployed. The code never changes.</li>
+        <li><strong>Mutable INDEXes</strong> — TELA-INDEX-1 contracts (deployed with ringsize 2) can be updated by their owner.</li>
+        <li><strong>Commit History</strong> — Each update creates a new "commit" with a TXID. You can view, compare, or revert to any version.</li>
+        <li><strong>Clone at Version</strong> — Use <code>scid@txid</code> format to clone content at a specific version.</li>
+      </ul>
+    </div>
   </div>
 </div>

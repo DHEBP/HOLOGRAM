@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { walletState, settingsState, navigateTo, syncNetworkMode, toast } from '../lib/stores/appState.js';
-  import BatchUpload from '../lib/components/BatchUpload.svelte';
+  import StudioBatchUpload from '../lib/components/studio/StudioBatchUpload.svelte';
   import DiffViewer from '../lib/components/DiffViewer.svelte';
   import ModPickerModal from '../lib/components/ModPickerModal.svelte';
   import VersionHistory from '../lib/components/VersionHistory.svelte';
@@ -210,6 +210,7 @@
       localServerWatcherActive = status.watcherActive || false;
     } catch (e) {
       console.error('Failed to get local server status:', e);
+      toast.error('Failed to check local server status');
     }
   }
   
@@ -663,12 +664,13 @@
   
   async function handleVersionClone(event) {
     const commit = event.detail;
-    // Clone at that specific version
     if (commit.txid) {
       cloneScid = `${versionHistoryScid}@${commit.txid}`;
     } else if (commit.height) {
-      // Need TXID for CloneAtCommit - for now just use the SCID
+      // CloneAtCommit requires a TXID, but this commit only has a block height.
+      // Fall back to cloning the latest version and notify the user.
       cloneScid = versionHistoryScid;
+      toast.warning('TXID unavailable for this commit -- cloning latest version instead');
     }
     activeTab = 'clone';
     showVersionHistory = false;
@@ -801,7 +803,7 @@
           await syncNetworkMode();
         } else {
           console.error('Failed to start simulator:', result.error);
-          alert('Failed to start simulator: ' + result.error);
+          toast.error('Failed to start simulator: ' + result.error);
         }
       } else if (simModalAction === 'stop') {
         await StopSimulatorMode();
@@ -814,7 +816,7 @@
       }
     } catch (e) {
       console.error('Simulator action failed:', e);
-      alert('Simulator action failed: ' + e.message);
+      toast.error('Simulator action failed: ' + e.message);
     }
     
     simIsLoading = false;
@@ -1887,7 +1889,13 @@
         <p class="page-header-desc">Create and deploy TELA applications</p>
       </div>
       <div class="page-header-actions">
-        <span class="badge" class:badge-warn={currentNetConfig.status === 'err'} class:badge-ok={currentNetConfig.status === 'ok'} class:badge-cyan={currentNetConfig.status === 'warn'}>
+        <span 
+          class="badge" 
+          class:badge-warn={currentNetConfig.status === 'err'} 
+          class:badge-ok={currentNetConfig.status === 'ok'} 
+          class:badge-cyan={currentNetConfig.status === 'warn'}
+          title={currentNetConfig.description}
+        >
           {currentNetConfig.warning}
         </span>
         <div class="network-toggle-group">
@@ -1997,69 +2005,18 @@
       />
     
     {:else if activeTab === 'batch-upload'}
-      <div class="content-section">
-        <h2 class="content-section-title">Batch Upload</h2>
-        <p class="content-section-desc">Upload an entire folder to create DOCs + INDEX in one operation.</p>
-        
-        <!-- v6.1 Folder Selection Dropzone -->
-        {#if !batchFolderPath}
-          <div 
-            bind:this={batchDropzoneElement}
-            class="dropzone"
-            class:active={batchDragging}
-            on:dragover|preventDefault={() => batchDragging = true}
-            on:dragleave={() => batchDragging = false}
-            on:drop|preventDefault={() => {
-              // Visual feedback reset - actual path is set by Wails OnFileDrop handler
-              // which provides REAL filesystem paths (browser API only gives virtual paths)
-              batchDragging = false;
-            }}
-            on:click={async () => {
-              const selected = await SelectFolder();
-              if (selected) {
-                batchFolderPath = selected;
-              }
-            }}
-            role="button"
-            tabindex="0"
-          >
-            <div class="dropzone-icon">
-              {#if batchDragging}
-                <FolderDown size={40} strokeWidth={1.5} />
-              {:else}
-                <FolderUp size={40} strokeWidth={1.5} />
-              {/if}
-            </div>
-            <p class="dropzone-title">
-              {batchDragging ? 'Drop folder here' : 'Drag & drop a folder'}
-            </p>
-            <p class="dropzone-hint">
-              Or click to browse. All files will be scanned for batch deployment.
-            </p>
-          </div>
-        {:else}
-          <BatchUpload 
-            folderPath={batchFolderPath} 
-            on:complete={(e) => {
-              // Show success toast notification
-              toast.success(`Deployment complete! INDEX: ${e.detail.indexScid?.substring(0, 16)}...`);
-              // Don't clear batchFolderPath - let user see the success card and SCIDs
-              // They can click "Choose different folder" button to start over
-            }}
-            on:preview={(e) => {
-              // Navigate to browser with the SCID
-              previewInBrowser(e.detail.scid);
-            }}
-          />
-          
-          <button
-            on:click={() => batchFolderPath = ''}
-            class="btn btn-ghost back-link"
-          >
-            ← Choose different folder
-          </button>
-        {/if}
-      </div>
+      <StudioBatchUpload
+        bind:batchFolderPath
+        bind:batchDragging
+        bind:batchDropzoneElement
+        selectFolder={SelectFolder}
+        on:complete={(e) => {
+          toast.success(`Deployment complete! INDEX: ${e.detail.indexScid?.substring(0, 16)}...`);
+        }}
+        on:preview={(e) => {
+          previewInBrowser(e.detail.scid);
+        }}
+      />
     
     {:else if activeTab === 'install-index'}
       <StudioInstallIndex

@@ -28,13 +28,16 @@
     </button>
   </div>
   
-  <div class="content-card use-cases-card">
-    <h4 class="use-cases-title">Use Cases</h4>
-    <ul class="use-cases-list">
-      <li>Compare your local code with deployed SC code</li>
-      <li>Track changes between different versions</li>
-      <li>Review differences before updating an INDEX</li>
-      <li>Verify code integrity after deployment</li>
-    </ul>
+  <div class="info-panel">
+    <div class="info-panel-icon">◎</div>
+    <div class="info-panel-content">
+      <p class="info-panel-title">Use Cases</p>
+      <ul class="info-list">
+        <li>Compare your local code with deployed SC code</li>
+        <li>Track changes between different versions</li>
+        <li>Review differences before updating an INDEX</li>
+        <li>Verify code integrity after deployment</li>
+      </ul>
+    </div>
   </div>
 </div>

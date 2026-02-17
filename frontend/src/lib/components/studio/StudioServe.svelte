@@ -55,15 +55,18 @@
     </div>
     
     <!-- Features Info Card -->
-    <div class="content-card use-cases-card" style="margin-top: var(--s-4);">
-      <h4 class="use-cases-title">Features</h4>
-      <ul class="use-cases-list">
-        <li>Local HTTP server serves your files</li>
-        <li>Hot reload on file changes (HTML, CSS, JS)</li>
-        <li>XSWD works with your connected wallet</li>
-        <li>Test wallet interactions before deploying</li>
-        <li>No blockchain costs during development</li>
-      </ul>
+    <div class="info-panel" style="margin-top: var(--s-4);">
+      <div class="info-panel-icon">◎</div>
+      <div class="info-panel-content">
+        <p class="info-panel-title">Features</p>
+        <ul class="info-list">
+          <li>Local HTTP server serves your files</li>
+          <li>Hot reload on file changes (HTML, CSS, JS)</li>
+          <li>XSWD works with your connected wallet</li>
+          <li>Test wallet interactions before deploying</li>
+          <li>No blockchain costs during development</li>
+        </ul>
+      </div>
     </div>
   {:else}
     <!-- Server Running Card -->
@@ -112,27 +115,33 @@
     
     <!-- File Changes Log -->
     {#if recentChanges.length > 0}
-      <div class="content-card" style="margin-top: var(--s-4);">
-        <h4 class="use-cases-title">Recent Changes (Hot Reload)</h4>
-        <div class="changes-list">
-          {#each recentChanges as change}
-            <div class="change-item">
-              <span class="change-file">{change.file}</span>
-              <span class="change-time">{change.time}</span>
-            </div>
-          {/each}
+      <div class="info-panel" style="margin-top: var(--s-4);">
+        <div class="info-panel-icon">◎</div>
+        <div class="info-panel-content">
+          <p class="info-panel-title">Recent Changes (Hot Reload)</p>
+          <div class="changes-list">
+            {#each recentChanges as change}
+              <div class="change-item">
+                <span class="change-file">{change.file}</span>
+                <span class="change-time">{change.time}</span>
+              </div>
+            {/each}
+          </div>
         </div>
       </div>
     {/if}
     
     <!-- XSWD Info Card -->
-    <div class="content-card" style="margin-top: var(--s-4);">
-      <h4 class="use-cases-title">XSWD Integration</h4>
-      <p class="serve-info-text">
-        XSWD is available for your local TELA app. Your app can call wallet methods 
-        using the standard <code>telaHost</code> bridge. Make sure you have a wallet 
-        connected to test wallet interactions.
-      </p>
+    <div class="info-panel" style="margin-top: var(--s-4);">
+      <div class="info-panel-icon">◎</div>
+      <div class="info-panel-content">
+        <p class="info-panel-title">XSWD Integration</p>
+        <p class="info-panel-text">
+          XSWD is available for your local TELA app. Your app can call wallet methods 
+          using the standard <code>telaHost</code> bridge. Make sure you have a wallet 
+          connected to test wallet interactions.
+        </p>
+      </div>
     </div>
   {/if}
 </div>

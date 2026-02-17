@@ -151,6 +151,9 @@
       </div>
       
       <!-- dURL (Required for INDEX) with tag detection -->
+      <!-- NOTE: dURL uniqueness is not enforced at the protocol level. Multiple INDEXes
+           can share the same dURL. Future work should consider collision detection and
+           disambiguation (e.g., listing all TELA apps using a given dURL). -->
       <div class="form-group">
         <label class="form-label">
           dURL <span class="required">*</span>
@@ -166,6 +169,7 @@
           bind:value={indexDURL}
           placeholder="my-app.tela"
           class="input"
+          title="dURL is not globally unique -- other INDEXes may use the same name"
         />
         {#if indexDurlTag && indexDurlTag.tag !== '.tela'}
           <p class="form-hint durl-tag-hint" class:hint-violet={indexDurlTag.color === 'violet'} class:hint-cyan={indexDurlTag.color === 'cyan'} class:hint-amber={indexDurlTag.color === 'amber'}>
