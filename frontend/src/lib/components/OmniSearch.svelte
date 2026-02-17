@@ -785,16 +785,16 @@
   }
   
   .omni-search.compact .search-container {
-    padding: 0;
+    padding: var(--s-2, 8px) var(--s-3, 12px);
     gap: 6px;
-    background: transparent;
-    border: none;
-    border-radius: 0;
+    background: var(--void-deep, #08080e);
+    border: 1px solid var(--border-dim, rgba(255, 255, 255, 0.06));
+    border-radius: var(--r-md, 8px);
   }
 
   .omni-search.compact.focused .search-container {
-    border: none;
-    box-shadow: none;
+    border-color: var(--cyan-500, #06b6d4);
+    box-shadow: var(--glow-cyan-sm, 0 0 15px rgba(34, 211, 238, 0.1));
   }
   
   .search-icon {
