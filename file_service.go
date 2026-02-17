@@ -458,6 +458,48 @@ func (a *App) SelectFile() string {
 	return selection
 }
 
+// ReadTextFile reads a text file and returns its content.
+// Used by the Deploy SC flow to load .bas files from disk.
+func (a *App) ReadTextFile(filePath string) map[string]interface{} {
+	if filePath == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No file path provided",
+		}
+	}
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "File not found: " + err.Error(),
+		}
+	}
+
+	const maxSize = 1 * 1024 * 1024 // 1MB
+	if info.Size() > maxSize {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("File too large (%d bytes). Maximum is 1MB.", info.Size()),
+		}
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Failed to read file: " + err.Error(),
+		}
+	}
+
+	return map[string]interface{}{
+		"success":  true,
+		"content":  string(data),
+		"size":     len(data),
+		"filename": info.Name(),
+	}
+}
+
 // SelectFiles opens a native multiple file picker dialog for TELA DOC uploads
 func (a *App) SelectFiles() map[string]interface{} {
 	a.logToConsole("[FILE] SelectFiles: Opening native file dialog...")

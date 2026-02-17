@@ -16,12 +16,13 @@
   import StudioInstallDoc from '../lib/components/studio/StudioInstallDoc.svelte';
   import StudioShards from '../lib/components/studio/StudioShards.svelte';
   import StudioActions from '../lib/components/studio/StudioActions.svelte';
+  import StudioDeploySC from '../lib/components/studio/StudioDeploySC.svelte';
   import { 
     SetSetting, GetGasEstimate, InstallDOC, InstallINDEX, GetINDEXInfo, UpdateINDEX, SelectFolder, SelectFile,
     IsInSimulatorMode, GetSimulatorDeploymentInfo, CloneTELA, GetClonePath,
     StartLocalDevServer, StopLocalDevServer, GetLocalDevServerStatus, RefreshLocalDevServer,
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus, SetNetworkMode,
-    ShardFile, ConstructFromShards, InstallSmartContract
+    ShardFile, ConstructFromShards
   } from '../../wailsjs/go/main/App.js';
   import { BrowserOpenURL, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
   import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff } from '../../wailsjs/runtime/runtime.js';
@@ -152,13 +153,8 @@
   let shardError = '';
 
   // =====================================================
-  // Deploy SC state (raw smart contract deployment)
-  // =====================================================
-  let scCode = '';                // DVM-BASIC smart contract code
-  let scAnonymous = false;        // Use ringsize 16+ for anonymous deployment
-  let scDeploying = false;
-  let scDeployResult = null;
-  let scDeployError = '';
+  // Deploy SC state moved to StudioDeploySC.svelte
+  let deploySCRef; // Reference to StudioDeploySC component for confirmation flow
 
   // Dropzone element reference for native drag-and-drop
   let batchDropzoneElement;
@@ -453,52 +449,7 @@
   }
 
   // =====================================================
-  // Deploy SC Functions (raw smart contract deployment)
-  // =====================================================
-  
-  async function deploySmartContract() {
-    if (!scCode.trim()) {
-      scDeployError = 'Please enter smart contract code';
-      return;
-    }
-    
-    // Check if wallet is open
-    if (!$walletState.isOpen && !isSimulator) {
-      scDeployError = 'Please open a wallet first';
-      return;
-    }
-    
-    scDeploying = true;
-    scDeployError = '';
-    scDeployResult = null;
-    
-    try {
-      const result = await InstallSmartContract(scCode, scAnonymous);
-      
-      if (result.success) {
-        scDeployResult = {
-          txid: result.txid,
-          message: result.message
-        };
-        toast.success('Smart contract deployed successfully!');
-      } else {
-        scDeployError = result.error || 'Deployment failed';
-        toast.error(scDeployError);
-      }
-    } catch (e) {
-      scDeployError = e.message || 'Deployment failed';
-      toast.error(scDeployError);
-    } finally {
-      scDeploying = false;
-    }
-  }
-  
-  function resetSCDeploy() {
-    scCode = '';
-    scAnonymous = false;
-    scDeployResult = null;
-    scDeployError = '';
-  }
+  // Deploy SC functions moved to StudioDeploySC.svelte
 
   // =====================================================
   // My Content Functions (matching tela-cli search my docs/indexes)
@@ -1813,6 +1764,8 @@
       await deployBatch();
     } else if (confirmModalType === 'index') {
       await installIndex();
+    } else if (confirmModalType === 'sc') {
+      if (deploySCRef) await deploySCRef.deploySmartContract();
     }
     
     confirmModalType = '';
@@ -2205,126 +2158,13 @@
       />
     
     {:else if activeTab === 'deploy-sc'}
-      <!-- Deploy Smart Contract - Raw DVM-BASIC code deployment -->
-      <div class="content-section">
-        <h2 class="content-section-title">Deploy Smart Contract</h2>
-        <p class="content-section-desc">Deploy a raw DVM-BASIC smart contract directly to the blockchain.</p>
-        
-        <!-- Error Display -->
-        {#if scDeployError}
-          <div class="alert alert-error" style="margin-bottom: var(--s-4);">
-            <AlertTriangle size={16} />
-            <span>{scDeployError}</span>
-          </div>
-        {/if}
-        
-        <!-- Success Display -->
-        {#if scDeployResult}
-          <div class="clone-success-card">
-            <div class="clone-success-header">
-              <CheckCircle size={24} class="clone-success-icon" />
-              <div>
-                <h3 class="clone-success-title">Smart Contract Deployed!</h3>
-                <p class="clone-success-subtitle">Transaction submitted successfully</p>
-              </div>
-            </div>
-            
-            <div class="clone-result-details">
-              <div class="clone-detail-row">
-                <span class="clone-detail-label">Transaction ID</span>
-                <code class="clone-detail-value" style="font-size: 11px;">{scDeployResult.txid}</code>
-              </div>
-              <div class="clone-detail-row">
-                <span class="clone-detail-label">Status</span>
-                <span class="clone-detail-value">Pending confirmation</span>
-              </div>
-            </div>
-            
-            <div class="clone-result-note">
-              <Info size={14} />
-              <span>The SCID will be the same as the TXID once confirmed. Copy the TXID above.</span>
-            </div>
-            
-            <div class="clone-actions">
-              <button class="btn btn-secondary" on:click={() => navigator.clipboard.writeText(scDeployResult.txid)}>
-                <Copy size={14} />
-                Copy TXID
-              </button>
-              <button class="btn btn-ghost" on:click={resetSCDeploy}>
-                Deploy Another
-              </button>
-            </div>
-          </div>
-        {:else}
-          <!-- Deployment Form -->
-          <div class="content-card">
-            <div class="content-card-header">
-              <FileCode size={32} class="content-card-icon" />
-              <p class="content-card-title">DVM-BASIC Code</p>
-              <p class="content-card-text">Enter your smart contract code below. The code will be validated before deployment.</p>
-            </div>
-            
-            <div class="form-group" style="margin-top: var(--s-4);">
-              <label class="form-label">Smart Contract Code <span class="required">*</span></label>
-              <textarea
-                bind:value={scCode}
-                placeholder="Function Initialize() Uint64
-  10 RETURN 0
-End Function"
-                class="textarea sc-code-textarea"
-                rows="15"
-                spellcheck="false"
-              ></textarea>
-              <span class="form-hint">Write or paste your DVM-BASIC smart contract code</span>
-            </div>
-            
-              <div class="form-group" style="margin-top: var(--s-3);">
-                <label class="checkbox-wrap">
-                  <input type="checkbox" bind:checked={scAnonymous} class="checkbox" />
-                  <span class="checkbox-label">Anonymous Deployment (Ring 16+)</span>
-                </label>
-                <span class="form-hint">Use higher ring size for enhanced privacy. Standard deployment uses Ring 2.</span>
-              </div>
-            
-            <!-- Wallet Check -->
-            {#if !$walletState.isOpen && !isSimulator}
-              <div class="alert alert-warning" style="margin-top: var(--s-4);">
-                <AlertTriangle size={16} />
-                <span>Please open a wallet to deploy smart contracts</span>
-              </div>
-            {/if}
-            
-            <button 
-              class="btn btn-primary btn-block" 
-              style="margin-top: var(--s-4);"
-              on:click={deploySmartContract}
-              disabled={scDeploying || !scCode.trim() || (!$walletState.isOpen && !isSimulator)}
-            >
-              {#if scDeploying}
-                <Loader2 size={16} class="spinner" />
-                Deploying...
-              {:else}
-                <Zap size={16} />
-                Deploy Smart Contract
-              {/if}
-            </button>
-          </div>
-          
-          <!-- Info Panel -->
-          <div class="info-panel" style="margin-top: var(--s-4);">
-            <div class="info-panel-icon">◎</div>
-            <div class="info-panel-content">
-              <p class="info-panel-title">About Smart Contract Deployment</p>
-              <ul class="info-list">
-                <li>Smart contracts are written in DVM-BASIC, a BASIC-like language</li>
-                <li>Every SC must have an <code>Initialize()</code> function that returns Uint64</li>
-                <li>The SCID (Smart Contract ID) equals the transaction hash</li>
-                <li>Anonymous mode uses Ring 16+ for enhanced privacy but costs more gas</li>
-              </ul>
-            </div>
-          </div>
-        {/if}
-      </div>
+      <StudioDeploySC
+        bind:this={deploySCRef}
+        {isSimulator}
+        walletIsOpen={$walletState.isOpen}
+        {currentNetwork}
+        {showDeployConfirmation}
+      />
     {/if}
     </div>
   </div>
@@ -2759,6 +2599,8 @@ End Function"
         <div class="sim-modal-icon start">
           {#if confirmModalType === 'doc'}
             <FileText size={28} strokeWidth={1.5} />
+          {:else if confirmModalType === 'sc'}
+            <FileCode size={28} strokeWidth={1.5} />
           {:else}
             <Layers size={28} strokeWidth={1.5} />
           {/if}
@@ -2766,6 +2608,8 @@ End Function"
         <h2 class="sim-modal-title">
           {#if confirmModalType === 'doc'}
             Deploy {confirmModalData?.files?.length || 0} DOC{(confirmModalData?.files?.length || 0) > 1 ? 's' : ''}
+          {:else if confirmModalType === 'sc'}
+            Deploy Smart Contract
           {:else}
             Create INDEX
           {/if}
@@ -2800,11 +2644,32 @@ End Function"
               <span class="confirm-label">DOCs</span>
               <span class="confirm-value">{confirmModalData?.docCount || 0} references</span>
             </div>
+          {:else if confirmModalType === 'sc'}
+            <div class="confirm-row">
+              <span class="confirm-label">Code</span>
+              <span class="confirm-value">{confirmModalData?.lineCount || 0} lines &middot; {confirmModalData?.charCount || 0} chars</span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Functions</span>
+              <span class="confirm-value">{confirmModalData?.functionCount || '?'} exported</span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Ring Size</span>
+              <span class="confirm-value">{confirmModalData?.anonymous ? 'Ring 16 (Anonymous)' : 'Ring 2 (Standard)'}</span>
+            </div>
+            {#if confirmModalData?.hasValidation}
+              <div class="confirm-row">
+                <span class="confirm-label">Validated</span>
+                <span class="confirm-value c-emerald">Yes</span>
+              </div>
+            {/if}
           {/if}
+          {#if confirmModalType !== 'sc'}
           <div class="confirm-row">
             <span class="confirm-label">Est. Cost</span>
             <span class="confirm-value c-emerald">~{formatGas(confirmModalData?.gasEstimate || 0)} gas</span>
           </div>
+          {/if}
           <div class="confirm-row">
             <span class="confirm-label">Network</span>
             <span class="confirm-value">

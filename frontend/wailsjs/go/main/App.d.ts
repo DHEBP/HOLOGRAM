@@ -459,6 +459,8 @@ export function RateTELA(arg1:string,arg2:number):Promise<Record<string, any>>;
 
 export function RateTELAApp(arg1:string,arg2:number):Promise<Record<string, any>>;
 
+export function ReadTextFile(arg1:string):Promise<Record<string, any>>;
+
 export function RebuildTagIndex():Promise<Record<string, any>>;
 
 export function RefreshLocalDevServer():Promise<Record<string, any>>;
@@ -652,6 +654,8 @@ export function UseSimulatorWallet():Promise<Record<string, any>>;
 export function ValidateProof(arg1:string):Promise<Record<string, any>>;
 
 export function ValidateProofFull(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function ValidateSCCode(arg1:string):Promise<Record<string, any>>;
 
 export function ValidateSenderProof(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<Record<string, any>>;
 

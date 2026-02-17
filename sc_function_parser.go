@@ -119,6 +119,87 @@ func (a *App) ParseSCFunctions(scid string) map[string]interface{} {
 	}
 }
 
+// ValidateSCCode parses raw DVM-BASIC code and returns validation result with extracted functions.
+// This allows pre-deploy validation without hitting the daemon or spending DERO.
+func (a *App) ValidateSCCode(code string) map[string]interface{} {
+	if code == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Smart contract code cannot be empty",
+		}
+	}
+
+	sc, _, err := dvm.ParseSmartContract(code)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Parse error: " + err.Error(),
+		}
+	}
+
+	functions := []SCFunction{}
+	hasInitialize := false
+
+	for name, fn := range sc.Functions {
+		runes := []rune(name)
+		if len(runes) == 0 || !unicode.IsUpper(runes[0]) {
+			continue
+		}
+
+		if name == "Initialize" {
+			hasInitialize = true
+		}
+
+		scFn := SCFunction{
+			Name:       name,
+			Params:     []SCParam{},
+			ReturnType: "Uint64",
+		}
+
+		for _, param := range fn.Params {
+			paramType := "String"
+			dataType := "S"
+			if param.Type == dvm.Uint64 {
+				paramType = "Uint64"
+				dataType = "U"
+			}
+			scFn.Params = append(scFn.Params, SCParam{
+				Name:     param.Name,
+				Type:     paramType,
+				DataType: dataType,
+			})
+		}
+
+		for _, line := range fn.Lines {
+			for _, token := range line {
+				switch token {
+				case "DEROVALUE":
+					scFn.UsesDERO = true
+				case "ASSETVALUE":
+					scFn.UsesAsset = true
+				case "SIGNER":
+					scFn.UsesSigner = true
+				}
+			}
+		}
+
+		functions = append(functions, scFn)
+	}
+
+	sort.Slice(functions, func(i, j int) bool {
+		return functions[i].Name < functions[j].Name
+	})
+
+	a.logToConsole(fmt.Sprintf("[SC] Validated code: %d functions, Initialize=%v", len(functions), hasInitialize))
+
+	return map[string]interface{}{
+		"success":       true,
+		"functions":     functions,
+		"count":         len(functions),
+		"hasInitialize": hasInitialize,
+	}
+}
+
 // InvokeSCFunctionParams represents the parameters for invoking an SC function
 type InvokeSCFunctionParams struct {
 	SCID        string                 `json:"scid"`

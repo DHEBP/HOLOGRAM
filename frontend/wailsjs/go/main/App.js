@@ -914,6 +914,10 @@ export function RateTELAApp(arg1, arg2) {
   return window['go']['main']['App']['RateTELAApp'](arg1, arg2);
 }
 
+export function ReadTextFile(arg1) {
+  return window['go']['main']['App']['ReadTextFile'](arg1);
+}
+
 export function RebuildTagIndex() {
   return window['go']['main']['App']['RebuildTagIndex']();
 }
@@ -1300,6 +1304,10 @@ export function ValidateProof(arg1) {
 
 export function ValidateProofFull(arg1, arg2) {
   return window['go']['main']['App']['ValidateProofFull'](arg1, arg2);
+}
+
+export function ValidateSCCode(arg1) {
+  return window['go']['main']['App']['ValidateSCCode'](arg1);
 }
 
 export function ValidateSenderProof(arg1, arg2, arg3, arg4, arg5) {
