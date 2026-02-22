@@ -199,9 +199,13 @@ End Function`;
         </div>
       </div>
 
-      <div class="clone-result-note">
-        <Info size={14} />
-        <span>The SCID will be the same as the TXID once confirmed. Copy the TXID above.</span>
+      <div class="alert alert-info sc-deploy-alert">
+        <span class="alert-icon">
+          <Info size={14} />
+        </span>
+        <div class="alert-content">
+          <div class="alert-text">The SCID will be the same as the TXID once confirmed. Copy the TXID above.</div>
+        </div>
       </div>
 
       <div class="clone-actions">
@@ -470,5 +474,9 @@ End Function`;
   .sc-tag.signer {
     color: var(--violet-400);
     background: rgba(139, 92, 246, 0.12);
+  }
+
+  .sc-deploy-alert {
+    margin-bottom: var(--s-4);
   }
 </style>
