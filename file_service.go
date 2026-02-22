@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -160,61 +162,137 @@ func (a *App) ShardFile(filePath string, compress bool) map[string]interface{} {
 	}
 }
 
+// discoverShardFiles finds DocShard files, parses indices, sorts by index, and returns
+// ordered shard bytes plus recreate filename and compression. Matches tela-cli findDocShardFiles behavior.
+// entrypointPath can be a directory (we find the first shard set) or a shard file (e.g. file-1.go).
+func discoverShardFiles(entrypointPath string) (docShards [][]byte, recreate, compression string, err error) {
+	info, err := os.Stat(entrypointPath)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	shardDir := entrypointPath
+	fileName := ""
+	if !info.IsDir() {
+		shardDir = filepath.Dir(entrypointPath)
+		fileName = filepath.Base(entrypointPath)
+	}
+
+	// If directory, find first file matching name-N.ext or name-N.ext.gz
+	if fileName == "" {
+		entries, e := os.ReadDir(shardDir)
+		if e != nil {
+			return nil, "", "", e
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			parts := strings.Split(strings.TrimSuffix(name, filepath.Ext(name)), "-")
+			if len(parts) >= 2 {
+				if n, pe := strconv.Atoi(parts[len(parts)-1]); pe == nil && n >= 1 {
+					fileName = name
+					break
+				}
+			}
+		}
+		if fileName == "" {
+			return nil, "", "", fmt.Errorf("no shard files found in %s (expected name-1.ext or name-1.ext.gz)", shardDir)
+		}
+	}
+
+	split := strings.Split(fileName, "-")
+	if len(split) < 2 {
+		return nil, "", "", fmt.Errorf("%q is not a DocShard file", entrypointPath)
+	}
+
+	ext := filepath.Ext(fileName) // used for matching (e.g. .gz for compressed)
+	prefix := fmt.Sprintf("%s-", split[0])
+
+	if tela.IsCompressedExt(ext) {
+		compression = ext
+		origExt := filepath.Ext(strings.TrimSuffix(fileName, ext))
+		recreate = fmt.Sprintf("%s%s", split[0], origExt)
+	} else {
+		recreate = fmt.Sprintf("%s%s", split[0], ext)
+	}
+
+	type shardEntry struct {
+		index int
+		data  []byte
+	}
+	var shards []shardEntry
+
+	files, err := os.ReadDir(shardDir)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		shardFileName := file.Name()
+		if !strings.HasPrefix(shardFileName, prefix) || filepath.Ext(shardFileName) != ext {
+			continue
+		}
+
+		baseName := strings.TrimSuffix(shardFileName, ext)
+		if compression != "" {
+			baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
+		}
+		idxParts := strings.Split(baseName, "-")
+		if len(idxParts) < 2 {
+			continue
+		}
+		idx, parseErr := strconv.Atoi(idxParts[len(idxParts)-1])
+		if parseErr != nil {
+			continue
+		}
+
+		data, errr := os.ReadFile(filepath.Join(shardDir, shardFileName))
+		if errr != nil {
+			return nil, "", "", fmt.Errorf("could not read shard file %q: %w", shardFileName, errr)
+		}
+		shards = append(shards, shardEntry{index: idx, data: data})
+	}
+
+	if len(shards) == 0 {
+		return nil, "", "", fmt.Errorf("no shard files found in %s", shardDir)
+	}
+
+	sort.Slice(shards, func(i, j int) bool { return shards[i].index < shards[j].index })
+	for _, s := range shards {
+		docShards = append(docShards, s.data)
+	}
+	return docShards, recreate, compression, nil
+}
+
 // ConstructFromShards reconstructs a file from DocShards
 func (a *App) ConstructFromShards(shardPath string) map[string]interface{} {
 	a.logToConsole(fmt.Sprintf("[Shards] Constructing file from shards: %s", shardPath))
 
-	// Check shard path exists
-	info, err := os.Stat(shardPath)
+	shardFiles, recreate, compression, err := discoverShardFiles(shardPath)
 	if err != nil {
 		return map[string]interface{}{
 			"success":        false,
-			"error":          "Shard path not found. Check the path.",
+			"error":          "Failed to discover shard files",
 			"technicalError": err.Error(),
 		}
 	}
 
-	var shardDir string
-	if info.IsDir() {
-		shardDir = shardPath
-	} else {
+	shardDir := shardPath
+	if info, e := os.Stat(shardPath); e == nil && !info.IsDir() {
 		shardDir = filepath.Dir(shardPath)
 	}
 
-	// Find shard files in directory
-	shardFiles := [][]byte{}
-	err = filepath.Walk(shardDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() && strings.HasSuffix(path, tela.TAG_DOC_SHARD) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			shardFiles = append(shardFiles, data)
-		}
-		return nil
-	})
+	err = tela.ConstructFromShards(shardFiles, recreate, shardDir, compression)
 	if err != nil {
 		return ErrorResponse(err)
 	}
 
-	if len(shardFiles) == 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "No shard files found in directory",
-		}
-	}
-
-	// Reconstruct using tela library
-	outputPath := filepath.Join(shardDir, "reconstructed")
-	err = tela.ConstructFromShards(shardFiles, outputPath, shardDir, "")
-	if err != nil {
-		return ErrorResponse(err)
-	}
-
-	// Get file size
+	outputPath := filepath.Join(shardDir, recreate)
 	outputInfo, _ := os.Stat(outputPath)
 	size := int64(0)
 	if outputInfo != nil {
