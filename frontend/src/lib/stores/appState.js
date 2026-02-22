@@ -369,11 +369,12 @@ export async function updateStatus() {
 }
 
 // Sync network mode from backend to frontend stores
-// This ensures all network indicators stay in sync across the app
+// This ensures all network indicators stay in sync across the app.
+// When effective network differs from persisted (e.g. simulator not running on restart),
+// updates and persists so next launch shows correct network.
 export async function syncNetworkMode() {
   try {
     const networkMode = await GetNetworkMode();
-    const nodeStatus = await GetNodeStatus();
     
     if (networkMode && networkMode.network) {
       const network = networkMode.network;
@@ -398,12 +399,13 @@ export async function syncNetworkMode() {
         currentEndpoint: endpoint,
       }));
       
-      // Also update settingsState for Settings page compatibility
+      // Also update settingsState and persist so restart shows correct network
       settingsState.update(state => ({
         ...state,
         network: network,
         daemonEndpoint: endpoint,
       }));
+      await saveSetting('network', network);
       
       console.log('[Network] Mode synced:', { network, endpoint });
     }

@@ -204,7 +204,12 @@
     simulator: { label: 'Simulator', icon: 'gamepad', dotStatus: 'err' },
   };
   
-  $: currentNetwork = networks[$settingsState.network] || networks.mainnet;
+  // Use effective network from status (actual connection) when node is connected;
+  // otherwise use persisted preference. Prevents "Simulator" + mainnet block height mismatch on restart.
+  $: effectiveNetwork = $appState.nodeConnected && $appState.network
+    ? $appState.network
+    : $settingsState.network;
+  $: currentNetwork = networks[effectiveNetwork] || networks.mainnet;
   
   function selectTab(tabId) {
     dispatch('tabChange', tabId);
@@ -686,7 +691,7 @@
                 <button
                   on:click|stopPropagation={() => switchNetwork(id)}
                   class="network-dropdown-option"
-                  class:active={$settingsState.network === id}
+                  class:active={effectiveNetwork === id}
                   disabled={simulatorStarting && id !== 'simulator'}
                 >
                   <span class="dot-column">
@@ -841,7 +846,7 @@
                 <button
                   on:click|stopPropagation={() => switchNetwork(id)}
                   class="network-dropdown-option"
-                  class:active={$settingsState.network === id}
+                  class:active={effectiveNetwork === id}
                   disabled={simulatorStarting && id !== 'simulator'}
                 >
                   <span class="dot-column">

@@ -96,7 +96,7 @@ func (a *App) getFullStatus() map[string]interface{} {
 	var peerCount int = 0
 	var nodeVersion string = ""
 
-	// Use nodeManager's network mode as the source of truth
+	// Use nodeManager's network mode as default; infer effective network from daemon when connected
 	nodeManager.RLock()
 	networkType := string(nodeManager.networkMode)
 	nodeManager.RUnlock()
@@ -105,6 +105,13 @@ func (a *App) getFullStatus() map[string]interface{} {
 		nodeConnected = true
 		if h, ok := info["height"].(float64); ok {
 			chainHeight = int64(h)
+		}
+		// Reconcile network with actual connection: simulator chains are small (<10k blocks),
+		// mainnet is millions. Prevents "Simulator" label with mainnet block height on restart.
+		if chainHeight > 10000 {
+			networkType = "mainnet"
+		} else if chainHeight > 0 && chainHeight <= 10000 {
+			networkType = "simulator"
 		}
 		if t, ok := info["topoheight"].(float64); ok {
 			topoHeight = int64(t)

@@ -1251,20 +1251,39 @@ func (a *App) SetNetworkMode(network string) map[string]interface{} {
 	}
 }
 
-// GetNetworkMode returns the current network mode
+// GetNetworkMode returns the current network mode.
+// When daemon is connected, infers effective network from chain height (simulator < 10k blocks)
+// to avoid "Simulator" label with mainnet block height on restart.
 func (a *App) GetNetworkMode() map[string]interface{} {
 	nodeManager.RLock()
-	defer nodeManager.RUnlock()
+	mode := nodeManager.networkMode
+	nodeManager.RUnlock()
 
-	netConfig := GetNetworkConfig(nodeManager.networkMode)
+	netConfig := GetNetworkConfig(mode)
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+
+	// Reconcile with actual daemon connection
+	if info, err := a.daemonClient.GetInfo(); err == nil {
+		if h, ok := info["height"].(float64); ok {
+			chainHeight := int64(h)
+			if chainHeight > 10000 {
+				mode = NetworkMainnet
+				netConfig = GetNetworkConfig(NetworkMainnet)
+				endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+			} else if chainHeight > 0 {
+				mode = NetworkSimulator
+				netConfig = GetNetworkConfig(NetworkSimulator)
+				endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+			}
+		}
+	}
 
 	return map[string]interface{}{
 		"success":     true,
-		"network":     string(nodeManager.networkMode),
+		"network":     string(mode),
 		"endpoint":    endpoint,
-		"isSimulator": nodeManager.networkMode == NetworkSimulator,
-		"isMainnet":   nodeManager.networkMode == NetworkMainnet,
+		"isSimulator": mode == NetworkSimulator,
+		"isMainnet":   mode == NetworkMainnet,
 		"rpcPort":     netConfig.RPCPort,
 		"p2pPort":     netConfig.P2PPort,
 		"getworkPort": netConfig.GetWorkPort,
