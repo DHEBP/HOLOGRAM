@@ -270,6 +270,9 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 	// Build transfers
 	transfers := []rpc.Transfer{}
 
+	// Ensure daemon connection before Random_ring_members (needs daemon to fetch decoy outputs)
+	a.ensureWalletDaemonConnectivity(a.getDaemonEndpointForWallet())
+
 	// Get random destination for the transfer
 	randos := wallet.Random_ring_members(crypto.ZEROHASH)
 	if len(randos) == 0 {
@@ -449,6 +452,10 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_INSTALL)},
 		{Name: rpc.SCCODE, DataType: rpc.DataString, Value: code},
 	}
+
+	// Ensure daemon connection before Random_ring_members (needs daemon to fetch decoy outputs).
+	// In simulator mode, walletapi may have been disconnected after wallet setup.
+	a.ensureWalletDaemonConnectivity(a.getDaemonEndpointForWallet())
 
 	// Get random destination for the transfer
 	randos := wallet.Random_ring_members(crypto.ZEROHASH)

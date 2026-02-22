@@ -57,9 +57,24 @@ func normalizeDaemonEndpointForWallet(endpoint string) string {
 	}
 }
 
+// getDaemonEndpointForWallet returns the daemon endpoint for the current network mode.
+// When simulator is active, uses simulator RPC (20000). Otherwise uses mainnet (10102) or settings.
+func (a *App) getDaemonEndpointForWallet() string {
+	if a.simulatorManager != nil && a.simulatorManager.isInitialized {
+		return fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
+	}
+	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+		return normalizeDaemonEndpointForWallet(ep)
+	}
+	return "127.0.0.1:10102"
+}
+
 func (a *App) ensureWalletDaemonConnectivity(endpoint string) {
 	// Ensure walletapi has an active daemon endpoint and is connected.
 	// Keep_Connectivity() will continue to retry and keep the connection alive.
+	if endpoint == "" {
+		endpoint = a.getDaemonEndpointForWallet()
+	}
 	if endpoint == "" {
 		endpoint = "127.0.0.1:10102"
 	}

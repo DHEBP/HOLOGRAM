@@ -676,6 +676,13 @@ func (a *App) StartNodeWithNetwork(dataDir string, network string) map[string]in
 		return ErrorResponse(err)
 	}
 
+	// CRITICAL: Update daemon client to point at the node we just started.
+	// Without this, Explorer/GetSCCode would keep querying the old endpoint (e.g. mainnet)
+	// and return "Smart contract has no code" for simulator-deployed contracts.
+	a.daemonClient = NewDaemonClient(expectedEndpoint)
+	a.settings["daemon_endpoint"] = expectedEndpoint
+	a.logToConsole(fmt.Sprintf("[OK] Daemon client connected to %s node at %s", networkMode, expectedEndpoint))
+
 	return map[string]interface{}{
 		"success":     true,
 		"dataDir":     fullDataDir,

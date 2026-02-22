@@ -782,8 +782,13 @@ func (a *App) OpenSimulatorTestWallet(index int) map[string]interface{} {
 	walletManager.walletPath = fmt.Sprintf("TestWallet_%d (Simulator)", index)
 	walletManager.isOpen = true
 
-	// Connect to daemon
+	// Connect to daemon - CRITICAL: walletapi.Connect must be called before any wallet ops.
+	// RegisterAllWallets calls disconnectWalletAPI() after setup, so we need a fresh connection
+	// for sync and subsequent transactions (deploy SC, invoke, etc).
 	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
+	if err := walletapi.Connect(endpoint); err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
+	}
 	internalWallet.SetDaemonAddress(endpoint)
 	internalWallet.SetOnlineMode()
 

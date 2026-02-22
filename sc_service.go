@@ -404,6 +404,26 @@ func (a *App) GetSCCode(scid string) map[string]interface{} {
 		}
 	}
 
+	// Fallback: when GetSC returns empty (e.g. simulator daemon), extract code from deployment TX.
+	// For SC deployment, SCID = TXID, so we can parse the deployment transaction payload.
+	if code == "" {
+		txResult, err := a.daemonClient.Call("DERO.GetTransaction", map[string]interface{}{
+			"txs_hashes": []string{scid},
+		})
+		if err == nil {
+			if txMap, ok := txResult.(map[string]interface{}); ok {
+				if txsHex, ok := txMap["txs_as_hex"].([]interface{}); ok && len(txsHex) > 0 {
+					if hexStr, ok := txsHex[0].(string); ok {
+						code = ExtractSCCodeFromDeploymentTx(hexStr)
+						if code != "" {
+							a.logToConsole(fmt.Sprintf("[SC] Extracted code from deployment TX (%d chars)", len(code)))
+						}
+					}
+				}
+			}
+		}
+	}
+
 	return map[string]interface{}{
 		"success": true,
 		"scid":    scid,
