@@ -214,9 +214,9 @@
   
   // Send validation
   $: availableBalance = $walletState.balance / 100000;
-  $: sendAmountAtomic = Math.floor(parseFloat(sendAmount || '0') * 100000);
+  $: sendAmountAtomic = Math.round(parseFloat(sendAmount || '0') * 100000);
   $: isValidSendAmount = !isNaN(sendAmountAtomic) && sendAmountAtomic > 0 && sendAmountAtomic <= $walletState.balance;
-  $: isValidSendAddress = sendDest.startsWith('dero1') || sendDest.startsWith('deto1');
+  $: isValidSendAddress = sendDest.startsWith('dero1') || sendDest.startsWith('deroi1') || sendDest.startsWith('deto1') || sendDest.startsWith('detoi1');
   $: canSend = isValidSendAmount && isValidSendAddress;
   
   // Reactive display address for Receive section
@@ -224,7 +224,7 @@
 
   // Payment URI
   $: paymentUri = requestAmount && parseFloat(requestAmount) > 0
-    ? `dero://${$walletState.address}?amount=${parseFloat(requestAmount) * 100000}${requestDesc ? '&desc=' + encodeURIComponent(requestDesc) : ''}`
+    ? `dero://${$walletState.address}?amount=${Math.round(parseFloat(requestAmount) * 100000)}${requestDesc ? '&desc=' + encodeURIComponent(requestDesc) : ''}`
     : '';
   
   // Filtered history
