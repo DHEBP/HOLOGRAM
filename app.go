@@ -114,6 +114,12 @@ func (a *App) startup(ctx context.Context) {
 	// This ensures user-configured endpoints survive app restarts
 	a.loadSettings()
 
+	// Reconcile daemon_endpoint with the actual network after loading persisted settings.
+	// Bug #39 fix: persisted settings may contain a stale endpoint (e.g. simulator :20000)
+	// from a previous session while the user is now on mainnet. We need to update both
+	// the daemonClient and the settings before any services start using them.
+	a.reconcileDaemonEndpoint()
+
 	// Ensure datashards are writable before any TELA operations
 	// CRITICAL: This MUST succeed or TELA apps will fail with "read-only file system" errors
 	dataDir := getHologramDataDir()

@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -122,4 +123,83 @@ func (a *App) loadSettings() {
 	}
 
 	log.Printf("[Settings] Loaded %d settings from %s", len(loaded), settingsFile)
+}
+
+// reconcileDaemonEndpoint ensures daemon_endpoint, daemonClient, and network are
+// consistent after loading persisted settings. This handles the case where a user
+// was previously on simulator (port 20000) but is now restarting on mainnet — the
+// persisted daemon_endpoint would be stale and cause Gnomon/wallet/EPOCH to fail.
+func (a *App) reconcileDaemonEndpoint() {
+	loadedEndpoint, _ := a.settings["daemon_endpoint"].(string)
+	loadedNetwork, _ := a.settings["network"].(string)
+
+	// Step 1: Sync daemonClient with the loaded endpoint so the connection test
+	// hits whatever the user had configured (not the hardcoded default).
+	if loadedEndpoint != "" {
+		a.daemonClient.SetEndpoint(loadedEndpoint)
+	}
+
+	// Step 2: Try to reach the daemon at the loaded endpoint.
+	// If it responds, check chain height to infer the actual network.
+	if err := a.daemonClient.TestConnection(); err == nil {
+		info, infoErr := a.daemonClient.GetInfo()
+		if infoErr == nil {
+			if h, ok := info["height"].(float64); ok {
+				chainHeight := int64(h)
+				var inferredNetwork string
+				if chainHeight > 10000 {
+					inferredNetwork = "mainnet"
+				} else if chainHeight > 0 {
+					inferredNetwork = "simulator"
+				}
+
+				if inferredNetwork != "" && inferredNetwork != loadedNetwork {
+					netConfig := GetNetworkConfig(NetworkMode(inferredNetwork))
+					correctEndpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+
+					log.Printf("[Settings] Network reconciliation: persisted=%s, detected=%s — correcting endpoint %s → %s",
+						loadedNetwork, inferredNetwork, loadedEndpoint, correctEndpoint)
+
+					a.settings["network"] = inferredNetwork
+					a.settings["daemon_endpoint"] = correctEndpoint
+					a.daemonClient.SetEndpoint(correctEndpoint)
+
+					nodeManager.Lock()
+					nodeManager.networkMode = NetworkMode(inferredNetwork)
+					nodeManager.rpcPort = netConfig.RPCPort
+					nodeManager.p2pPort = netConfig.P2PPort
+					nodeManager.getworkPort = netConfig.GetWorkPort
+					nodeManager.Unlock()
+
+					a.saveSettings()
+					return
+				}
+			}
+		}
+	}
+
+	// Step 3: Loaded endpoint is unreachable. If the persisted network doesn't match
+	// the endpoint's port, correct the endpoint to match the persisted network.
+	// This way at least the settings are internally consistent.
+	if loadedNetwork != "" {
+		netConfig := GetNetworkConfig(NetworkMode(loadedNetwork))
+		expectedEndpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+
+		if loadedEndpoint != expectedEndpoint {
+			log.Printf("[Settings] Endpoint/network mismatch: endpoint=%s but network=%s (expected %s) — correcting",
+				loadedEndpoint, loadedNetwork, expectedEndpoint)
+
+			a.settings["daemon_endpoint"] = expectedEndpoint
+			a.daemonClient.SetEndpoint(expectedEndpoint)
+
+			nodeManager.Lock()
+			nodeManager.networkMode = NetworkMode(loadedNetwork)
+			nodeManager.rpcPort = netConfig.RPCPort
+			nodeManager.p2pPort = netConfig.P2PPort
+			nodeManager.getworkPort = netConfig.GetWorkPort
+			nodeManager.Unlock()
+
+			a.saveSettings()
+		}
+	}
 }
