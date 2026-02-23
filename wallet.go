@@ -97,6 +97,29 @@ func (a *App) ensureWalletDaemonConnectivity(endpoint string) {
 	})
 }
 
+// recoverWalletFromBackup attempts to restore a wallet from the .bak copy
+// that the DERO walletapi creates on every save. Returns true if recovery succeeded.
+func recoverWalletFromBackup(filePath string, a *App) bool {
+	bakPath := filePath + ".bak"
+	fi, err := os.Stat(bakPath)
+	if err != nil || fi.Size() == 0 {
+		return false
+	}
+
+	data, err := os.ReadFile(bakPath)
+	if err != nil || len(data) == 0 {
+		return false
+	}
+
+	if err := os.WriteFile(filePath, data, 0600); err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Failed to restore wallet from backup: %v", err))
+		return false
+	}
+
+	a.logToConsole(fmt.Sprintf("[RECOVERED] Wallet restored from backup (%d bytes): %s", len(data), bakPath))
+	return true
+}
+
 // OpenWallet opens a DERO wallet file
 func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	walletManager.Lock()
@@ -122,12 +145,27 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[WALLET] Opening wallet: %s (network: %s)", filePath, currentNetwork))
 
-	// Check if file exists
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		a.logToConsole(fmt.Sprintf("[ERR] Wallet file not found: %s", filePath))
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet file not found",
+	// Check if file exists and is not empty
+	fi, statErr := os.Stat(filePath)
+	if os.IsNotExist(statErr) {
+		// Primary file missing — try .bak before giving up
+		if recovered := recoverWalletFromBackup(filePath, a); recovered {
+			fi, statErr = os.Stat(filePath)
+		} else {
+			a.logToConsole(fmt.Sprintf("[ERR] Wallet file not found: %s", filePath))
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet file not found",
+			}
+		}
+	}
+	if statErr == nil && fi.Size() == 0 {
+		a.logToConsole(fmt.Sprintf("[WARN] Wallet file is 0 bytes (corrupt): %s — attempting recovery from backup", filePath))
+		if recovered := recoverWalletFromBackup(filePath, a); !recovered {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet file is corrupt (0 bytes) and no backup (.bak) was found. If you have your seed phrase you can restore the wallet.",
+			}
 		}
 	}
 
@@ -487,20 +525,14 @@ func (a *App) GetSeedPhrase(password string) map[string]interface{} {
 		}
 	}
 
-	// Verify password by attempting to re-open the wallet
-	// This is a security check to ensure the user has the correct password
-	tempWallet, err := walletapi.Open_Encrypted_Wallet(walletManager.walletPath, password)
-	if err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] Failed to verify password for seed phrase: %v", err))
+	if !walletManager.wallet.Check_Password(password) {
+		a.logToConsole("[ERR] Failed to verify password for seed phrase")
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Invalid password",
 		}
 	}
-	// Close the temporary wallet immediately after verification
-	tempWallet.Close_Encrypted_Wallet()
 
-	// Get the seed phrase from the currently open wallet
 	seed := walletManager.wallet.GetSeed()
 
 	a.logToConsole("[OK] Seed phrase retrieved (password verified)")
@@ -524,19 +556,14 @@ func (a *App) GetWalletKeys(password string) map[string]interface{} {
 		}
 	}
 
-	// Verify password by attempting to re-open the wallet
-	tempWallet, err := walletapi.Open_Encrypted_Wallet(walletManager.walletPath, password)
-	if err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] Failed to verify password for wallet keys: %v", err))
+	if !walletManager.wallet.Check_Password(password) {
+		a.logToConsole("[ERR] Failed to verify password for wallet keys")
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Invalid password",
 		}
 	}
-	// Close the temporary wallet immediately after verification
-	tempWallet.Close_Encrypted_Wallet()
 
-	// Get the keys from the currently open wallet
 	keys := walletManager.wallet.Get_Keys()
 
 	// Format secret key (64 hex characters, matching Engram/dero-wallet-cli format)
@@ -1650,11 +1677,24 @@ func (a *App) SwitchWallet(filePath, password string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[SYNC] Switching wallet to: %s", filepath.Base(filePath)))
 
-	// Check if file exists
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet file not found",
+	// Check if file exists and is not empty; try .bak recovery if needed
+	fi, statErr := os.Stat(filePath)
+	if os.IsNotExist(statErr) {
+		if recovered := recoverWalletFromBackup(filePath, a); !recovered {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet file not found",
+			}
+		}
+		fi, _ = os.Stat(filePath)
+	}
+	if fi != nil && fi.Size() == 0 {
+		a.logToConsole(fmt.Sprintf("[WARN] Wallet file is 0 bytes (corrupt): %s — attempting recovery", filePath))
+		if recovered := recoverWalletFromBackup(filePath, a); !recovered {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet file is corrupt (0 bytes) and no backup (.bak) was found.",
+			}
 		}
 	}
 
@@ -2113,14 +2153,14 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
 			}
 			walletManager.isOpen = true
-			endpoint := "127.0.0.1:10102"
+			walletManager.wallet.SetNetwork(!a.IsInSimulatorMode())
+			endpointRaw := "127.0.0.1:10102"
 			if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-				endpoint = ep
-				if len(endpoint) > 7 && endpoint[:7] == "http://" {
-					endpoint = endpoint[7:]
-				}
+				endpointRaw = ep
 			}
-			walletManager.wallet.SetDaemonAddress(endpoint)
+			walletManager.wallet.SetDaemonAddress(normalizeDaemonEndpointForWallet(endpointRaw))
+			a.ensureWalletDaemonConnectivity(endpointRaw)
+			walletManager.wallet.SetOnlineMode()
 		} else {
 			return map[string]interface{}{"success": false, "error": "Please open a wallet first."}
 		}
@@ -2392,20 +2432,15 @@ func (a *App) ChangeWalletPassword(currentPassword, newPassword string) map[stri
 		}
 	}
 
-	// Verify current password by attempting to re-open the wallet
-	tempWallet, err := walletapi.Open_Encrypted_Wallet(walletManager.walletPath, currentPassword)
-	if err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] Password verification failed: %v", err))
+	if !walletManager.wallet.Check_Password(currentPassword) {
+		a.logToConsole("[ERR] Password verification failed")
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Current password is incorrect",
 		}
 	}
-	// Close the temporary wallet immediately after verification
-	tempWallet.Close_Encrypted_Wallet()
 
-	// Change the password on the currently open wallet
-	err = walletManager.wallet.Set_Encrypted_Wallet_Password(newPassword)
+	err := walletManager.wallet.Set_Encrypted_Wallet_Password(newPassword)
 	if err != nil {
 		a.logToConsole(fmt.Sprintf("[ERR] Failed to change password: %v", err))
 		return ErrorResponse(err)
