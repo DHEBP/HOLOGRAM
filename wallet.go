@@ -289,7 +289,6 @@ func (a *App) CloseWallet() map[string]interface{} {
 	walletManager.wallet.Close_Encrypted_Wallet()
 	walletManager.wallet = nil
 	walletManager.isOpen = false
-	walletManager.walletPath = ""
 
 	a.logToConsole("[OK] Wallet closed successfully")
 
