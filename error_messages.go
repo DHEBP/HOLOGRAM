@@ -335,6 +335,8 @@ var UserFriendlyErrors = map[string]string{
 	"daemon crashed":               "Simulator daemon crashed. Please restart simulator mode.",
 	"daemon endpoint is invalid":   "Simulator not properly configured. Please restart simulator mode.",
 	"could not be built":           "Transaction build failed. Wallet may be out of sync — please try again.",
+	"more than you have":           "Amount plus network fees exceeds your balance. Try reducing the amount slightly.",
+	"TX verification failed":       "Amount plus network fees exceeds your balance. Try reducing the amount slightly.",
 	"simulator daemon not responding": "Simulator daemon not responding. Please restart simulator mode.",
 	"websocket: close":             "Connection closed unexpectedly. Retrying...",
 	"abnormal closure":             "Connection interrupted. The operation will be retried.",

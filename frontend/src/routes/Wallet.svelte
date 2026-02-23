@@ -853,7 +853,10 @@
   // SEND FUNCTIONS
   // ============================================
   function setMaxAmount() {
-    const maxAmount = Math.max(0, ($walletState.balance - 100) / 100000);
+    // Reserve 0.01 DERO (1000 atomic) for network fees — a standard ringsize-16
+    // transfer costs ~60-80 atomic but the wallet needs headroom for proof construction.
+    const feeReserve = 1000;
+    const maxAmount = Math.max(0, ($walletState.balance - feeReserve) / 100000);
     sendAmount = maxAmount.toFixed(5);
   }
   
