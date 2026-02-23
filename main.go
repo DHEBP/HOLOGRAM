@@ -42,6 +42,7 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 12, G: 12, B: 20, A: 1}, // --void-base: #0c0c14
 		OnStartup:        app.startup,
+		OnShutdown:        app.shutdown,
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,
 			DisableWebViewDrop: false, // Allow webview for visual feedback, Wails OnFileDrop provides real paths

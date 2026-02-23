@@ -105,6 +105,23 @@ func NewApp() *App {
 	return app
 }
 
+// shutdown is called when the app is closing. Ensures open wallets are
+// flushed to disk so a hard exit / reboot cannot leave 0-byte wallet files.
+func (a *App) shutdown(ctx context.Context) {
+	a.logToConsole("[SHUTDOWN] HOLOGRAM shutting down — closing wallet...")
+
+	walletManager.Lock()
+	if walletManager.isOpen && walletManager.wallet != nil {
+		walletManager.wallet.Close_Encrypted_Wallet()
+		walletManager.wallet = nil
+		walletManager.isOpen = false
+		walletManager.walletPath = ""
+	}
+	walletManager.Unlock()
+
+	a.logToConsole("[SHUTDOWN] Wallet closed. Goodbye.")
+}
+
 // startup is called when the app starts
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
