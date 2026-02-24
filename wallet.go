@@ -809,6 +809,15 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string) map[
 		}
 	}
 
+	if err := wallet.SendTransaction(tx); err != nil {
+		a.logToConsole(fmt.Sprintf("[Transfer] Broadcast failed: %s", err.Error()))
+		return map[string]interface{}{
+			"success":        false,
+			"error":          fmt.Sprintf("Transaction built but failed to broadcast: %s", FriendlyError(err)),
+			"technicalError": err.Error(),
+		}
+	}
+
 	txid := tx.GetHash().String()
 	a.logToConsole(fmt.Sprintf("[Transfer] Success! TXID: %s", txid))
 
@@ -1423,6 +1432,11 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			}
 		}
 
+		if err := wallet.SendTransaction(tx); err != nil {
+			a.logToConsole(fmt.Sprintf("[ERR] Transfer broadcast failed: %s", err.Error()))
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Transaction built but failed to broadcast: %s", FriendlyError(err)), "technicalError": err.Error()}
+		}
+
 		txid := tx.GetHash().String()
 		a.logToConsole(fmt.Sprintf("[OK] Transfer TX sent: %s", txid))
 		return map[string]interface{}{
@@ -1589,6 +1603,11 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			if err != nil {
 				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
 			}
+		}
+
+		if err := wallet.SendTransaction(tx); err != nil {
+			a.logToConsole(fmt.Sprintf("[ERR] scinvoke broadcast failed: %s", err.Error()))
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("SC call built but failed to broadcast: %s", FriendlyError(err)), "technicalError": err.Error()}
 		}
 
 		txid := tx.GetHash().String()
@@ -2184,6 +2203,15 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 	tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
 	if err != nil {
 		return ErrorResponse(err)
+	}
+
+	if err := wallet.SendTransaction(tx); err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Token transfer broadcast failed: %s", err.Error()))
+		return map[string]interface{}{
+			"success":        false,
+			"error":          fmt.Sprintf("Token transfer built but failed to broadcast: %s", FriendlyError(err)),
+			"technicalError": err.Error(),
+		}
 	}
 
 	a.logToConsole(fmt.Sprintf("[OK] Token transfer successful! TXID: %s", tx.GetHash().String()))

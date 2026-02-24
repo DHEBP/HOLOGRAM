@@ -892,7 +892,7 @@
       const result = await InternalWalletCall('transfer', params, sendPassword);
       
       if (result.success) {
-        sendTxid = result.txid;
+        sendTxid = result.result?.txid || result.txid;
         sendStep = 3;
         toast.success('Transaction sent successfully!');
         await refreshBalance();
