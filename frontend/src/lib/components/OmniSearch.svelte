@@ -19,12 +19,14 @@
   let selectedIndex = -1;
   let showSuggestions = false;
   let debounceTimer;
+  let mountedAt = 0;
   
   // Input type detection
   $: detectedType = detectInputType(value);
   
   // Load recent searches from localStorage
   onMount(() => {
+    mountedAt = Date.now();
     loadRecentSearches();
   });
   
@@ -589,6 +591,8 @@
    */
   function handleFocus() {
     focused = true;
+    // Skip auto-dropdown on initial mount (autofocus or page navigation)
+    if (Date.now() - mountedAt < 300) return;
     // Show recent searches when focused and empty
     if (!value.trim()) {
       fetchSuggestions('');

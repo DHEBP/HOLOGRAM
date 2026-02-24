@@ -714,7 +714,7 @@
             on:click|stopPropagation={(e) => handleStatusClick('block', e)}
           >
             <span class="info-label">BLOCK</span>
-            <span class="info-value value-cyan">
+            <span class="info-value value-ok">
               {formatBlockHeight($appState.chainHeight)}
             </span>
           </button>
@@ -867,10 +867,10 @@
             class="unified-indicator collapsed"
             on:click|stopPropagation={(e) => handleStatusClick('block', e)}
           >
-            <span class="unified-dot dot-cyan"></span>
+            <span class="unified-dot dot-ok"></span>
             <div class="rail-tooltip">
               <span class="rail-tooltip-label">Block</span>
-              <span class="rail-tooltip-value tt-cyan">
+              <span class="rail-tooltip-value tt-ok">
                 {formatBlockHeight($appState.chainHeight)}
               </span>
             </div>

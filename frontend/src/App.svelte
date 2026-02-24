@@ -468,7 +468,7 @@
       {:else if currentTab === 'studio'}
         <Studio />
       {:else if currentTab === 'settings'}
-        <Settings key={pendingSection || 'settings'} />
+        <Settings initialSection={pendingSection || ''} />
       {/if}
       {/key}
     </main>

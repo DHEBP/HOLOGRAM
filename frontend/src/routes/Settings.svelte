@@ -30,7 +30,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   import ServerManager from '../lib/components/ServerManager.svelte';
   import { Settings as SettingsIcon } from 'lucide-svelte';
 
-  let activeSection = 'general';
+  export let initialSection = '';
+  let activeSection = initialSection || 'general';
   
   const sections = [
     { id: 'general', label: 'General', iconName: 'settings' },
@@ -186,6 +187,16 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   let advancedNodeLoading = false;
   
   onMount(async () => {
+    // Register event listener immediately so it's ready before any async work
+    const handleNavigateSection = (e) => {
+      const { section } = e.detail;
+      if (section && sections.find(s => s.id === section)) {
+        activeSection = section;
+      }
+    };
+    window.addEventListener('navigate-section', handleNavigateSection);
+    window._settingsNavigateHandler = handleNavigateSection;
+    
     // Sync network mode from backend first
     await syncNetworkMode();
     await refreshNodeStatus();
@@ -217,18 +228,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     await initEpochPanel();
     await loadAdvancedNodeConfig();
     await loadAppInfo();
-    
-    // Listen for section navigation from status indicators
-    const handleNavigateSection = (e) => {
-      const { section } = e.detail;
-      if (section && sections.find(s => s.id === section)) {
-        activeSection = section;
-      }
-    };
-    window.addEventListener('navigate-section', handleNavigateSection);
-    
-    // Store handler for cleanup in onDestroy
-    window._settingsNavigateHandler = handleNavigateSection;
   });
   
   // Load app version info
