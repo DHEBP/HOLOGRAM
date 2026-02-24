@@ -344,6 +344,16 @@
         await loadTestWallets();
       });
       
+      // Listen for background sync warnings (daemon connectivity / initial sync timeout)
+      EventsOn('wallet:sync_warning', (data) => {
+        if (data?.message) {
+          toast.warning(data.message);
+        }
+      });
+      EventsOn('wallet:daemon_connection_warning', (data) => {
+        console.warn('[WALLET] Daemon connection warning:', data);
+      });
+
       // Listen for network mode changes
       EventsOn('network-mode-changed', async () => {
         console.log('[WALLET] Network mode changed, checking for test wallets...');
@@ -376,6 +386,8 @@
     stopPolling();
     EventsOff('simulator:complete');
     EventsOff('network-mode-changed');
+    EventsOff('wallet:sync_warning');
+    EventsOff('wallet:daemon_connection_warning');
     UnsubscribeFromEvents();
     // Clean up section navigation listener
     if (window._walletNavigateHandler) {

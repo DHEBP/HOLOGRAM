@@ -226,25 +226,6 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	// Set network mode (mainnet vs simulator) - MUST be called before GetAddress()
 	wallet.SetNetwork(currentNetwork == "mainnet")
 
-	// Get daemon endpoint from settings
-	endpointRaw := "127.0.0.1:10102"
-	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-		endpointRaw = ep
-	}
-	endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
-
-	// Connect wallet to daemon
-	wallet.SetDaemonAddress(endpoint)
-	a.ensureWalletDaemonConnectivity(endpointRaw)
-	wallet.SetOnlineMode()
-	
-	// Track sync status for user feedback
-	var syncWarning string
-	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v - wallet may show outdated balance", err))
-		syncWarning = "Initial sync failed. Balance may be outdated until sync completes."
-	}
-
 	// Get wallet info (now with correct network prefix)
 	address := wallet.GetAddress().String()
 
@@ -253,20 +234,65 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[OK] Wallet opened successfully: %s", address[:16]+"..."))
 
+	// Daemon connectivity and initial sync run in the background so we don't
+	// block the UI.  walletapi.Connect() does a WebSocket dial with no timeout
+	// and Sync_Wallet_Memory_With_Daemon makes an RPC call with
+	// context.Background(), either of which can hang for minutes if the daemon
+	// is unreachable.
+	go func() {
+		endpointRaw := "127.0.0.1:10102"
+		if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+			endpointRaw = ep
+		}
+		endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
+
+		wallet.SetDaemonAddress(endpoint)
+
+		a.logToConsole(fmt.Sprintf("[NET] Connecting wallet to daemon at %s ...", endpoint))
+
+		connectDone := make(chan struct{}, 1)
+		go func() {
+			a.ensureWalletDaemonConnectivity(endpointRaw)
+			connectDone <- struct{}{}
+		}()
+		select {
+		case <-connectDone:
+			a.logToConsole("[NET] Wallet daemon connection attempt finished")
+		case <-time.After(15 * time.Second):
+			a.logToConsole("[WARN] Wallet daemon connection timed out (15s) — will keep retrying in background")
+		}
+
+		wallet.SetOnlineMode()
+
+		syncDone := make(chan error, 1)
+		go func() {
+			syncDone <- wallet.Sync_Wallet_Memory_With_Daemon()
+		}()
+		select {
+		case err := <-syncDone:
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v — balance may be outdated until sync completes", err))
+				if a.ctx != nil {
+					runtime.EventsEmit(a.ctx, "wallet:sync_warning", map[string]interface{}{
+						"message": "Initial sync failed. Balance may be outdated until sync completes.",
+					})
+				}
+			} else {
+				a.logToConsole("[OK] Initial wallet sync completed")
+			}
+		case <-time.After(10 * time.Second):
+			a.logToConsole("[WARN] Initial wallet sync timed out (10s) — will continue syncing in background")
+		}
+	}()
+
 	result := map[string]interface{}{
 		"success": true,
 		"address": address,
 		"message": "Wallet opened successfully",
 	}
 
-	// Include network warning if applicable
 	if networkWarning != "" {
 		result["networkWarning"] = networkWarning
-	}
-	
-	// Include sync warning if applicable
-	if syncWarning != "" {
-		result["syncWarning"] = syncWarning
 	}
 
 	return result
@@ -1113,6 +1139,15 @@ func (a *App) RestoreWallet(filePath, password, seed string) map[string]interfac
 		return ErrorResponse(err)
 	}
 
+	// Set network before GetAddress() so the address prefix is correct
+	// (dero1 for mainnet, deto1 for testnet/simulator)
+	isMainnet := true
+	simArg := globals.Arguments["--simulator"]
+	if simArg == true || simArg == "true" || fmt.Sprintf("%v", simArg) == "true" {
+		isMainnet = false
+	}
+	wallet.SetNetwork(isMainnet)
+
 	address := wallet.GetAddress().String()
 	wallet.Close_Encrypted_Wallet()
 
@@ -1658,8 +1693,13 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 
 // SelectWalletFile opens a file dialog to select a wallet file
 func (a *App) SelectWalletFile() string {
+	walletsDir := filepath.Join(getDatashardsDir(), "wallets")
+	os.MkdirAll(walletsDir, 0700)
+
 	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "Select Wallet File",
+		DefaultDirectory: walletsDir,
+		Title:            "Select Wallet File",
+		ShowHiddenFiles:  true,
 		Filters: []runtime.FileFilter{
 			{
 				DisplayName: "DERO Wallet (*.db)",
@@ -1738,21 +1778,6 @@ func (a *App) SwitchWallet(filePath, password string) map[string]interface{} {
 	// Set network mode (mainnet vs simulator) - MUST be called before GetAddress()
 	wallet.SetNetwork(!a.IsInSimulatorMode())
 
-	// Get daemon endpoint from settings
-	endpointRaw := "127.0.0.1:10102"
-	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-		endpointRaw = ep
-	}
-	endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
-
-	// Connect wallet to daemon
-	wallet.SetDaemonAddress(endpoint)
-	a.ensureWalletDaemonConnectivity(endpointRaw)
-	wallet.SetOnlineMode()
-	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v", err))
-	}
-
 	// Add to recent wallets with updated timestamp (now with correct network prefix)
 	addToRecentWalletsWithInfo(filePath, wallet.GetAddress().String())
 
@@ -1760,6 +1785,43 @@ func (a *App) SwitchWallet(filePath, password string) map[string]interface{} {
 	mature, locked := wallet.Get_Balance()
 
 	a.logToConsole(fmt.Sprintf("[OK] Switched to wallet: %s", address[:16]+"..."))
+
+	// Background daemon connectivity and sync (same pattern as OpenWallet)
+	go func() {
+		endpointRaw := "127.0.0.1:10102"
+		if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+			endpointRaw = ep
+		}
+		endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
+
+		wallet.SetDaemonAddress(endpoint)
+
+		connectDone := make(chan struct{}, 1)
+		go func() {
+			a.ensureWalletDaemonConnectivity(endpointRaw)
+			connectDone <- struct{}{}
+		}()
+		select {
+		case <-connectDone:
+		case <-time.After(15 * time.Second):
+			a.logToConsole("[WARN] Wallet daemon connection timed out (15s) during switch")
+		}
+
+		wallet.SetOnlineMode()
+
+		syncDone := make(chan error, 1)
+		go func() {
+			syncDone <- wallet.Sync_Wallet_Memory_With_Daemon()
+		}()
+		select {
+		case err := <-syncDone:
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed after switch: %v", err))
+			}
+		case <-time.After(10 * time.Second):
+			a.logToConsole("[WARN] Initial wallet sync timed out (10s) after switch")
+		}
+	}()
 
 	return map[string]interface{}{
 		"success":       true,
