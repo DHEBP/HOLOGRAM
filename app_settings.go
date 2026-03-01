@@ -178,9 +178,38 @@ func (a *App) reconcileDaemonEndpoint() {
 		}
 	}
 
-	// Step 3: Loaded endpoint is unreachable. If the persisted network doesn't match
-	// the endpoint's port, correct the endpoint to match the persisted network.
-	// This way at least the settings are internally consistent.
+	// Step 3: Loaded endpoint is unreachable.
+	// If persisted network is simulator, the daemon was likely a child process
+	// from a previous session that is no longer running. Try falling back to
+	// mainnet so the user isn't stuck on a dead endpoint.
+	if loadedNetwork == "simulator" {
+		mainnetConfig := GetNetworkConfig(NetworkMainnet)
+		mainnetEndpoint := fmt.Sprintf("http://127.0.0.1:%d", mainnetConfig.RPCPort)
+
+		a.daemonClient.SetEndpoint(mainnetEndpoint)
+		if err := a.daemonClient.TestConnection(); err == nil {
+			log.Printf("[Settings] Simulator unreachable — falling back to mainnet at %s", mainnetEndpoint)
+
+			a.settings["network"] = "mainnet"
+			a.settings["daemon_endpoint"] = mainnetEndpoint
+
+			nodeManager.Lock()
+			nodeManager.networkMode = NetworkMainnet
+			nodeManager.rpcPort = mainnetConfig.RPCPort
+			nodeManager.p2pPort = mainnetConfig.P2PPort
+			nodeManager.getworkPort = mainnetConfig.GetWorkPort
+			nodeManager.Unlock()
+
+			a.saveSettings()
+			return
+		}
+		// Neither simulator nor mainnet reachable — restore the loaded endpoint
+		// so settings stay internally consistent.
+		a.daemonClient.SetEndpoint(loadedEndpoint)
+	}
+
+	// For any network: if the endpoint doesn't match the persisted network's
+	// expected port, correct the endpoint.
 	if loadedNetwork != "" {
 		netConfig := GetNetworkConfig(NetworkMode(loadedNetwork))
 		expectedEndpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
