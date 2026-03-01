@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 	"unicode"
 
 	"github.com/deroproject/derohe/cryptography/crypto"
 	"github.com/deroproject/derohe/dvm"
 	"github.com/deroproject/derohe/rpc"
+	"github.com/deroproject/derohe/walletapi"
 )
 
 // SCFunction represents a parsed smart contract function
@@ -417,20 +419,35 @@ func (a *App) invokeSCViaXSWD(params InvokeSCFunctionParams) map[string]interfac
 	}
 }
 
-// InstallSmartContract deploys a new smart contract to mainnet
 func (a *App) InstallSmartContract(code string, anonymous bool) map[string]interface{} {
 	a.logToConsole("[SC] Installing smart contract...")
 
-	// Check wallet
-	wallet := GetWallet()
+	isSimulator := a.simulatorManager != nil && a.simulatorManager.isInitialized
+
+	// In simulator mode, use the simulator wallet manager's primary wallet
+	// (same as TELA deployment) rather than the user-facing walletManager.
+	// GetWallet() returns the wallet opened via the UI, but it may not have
+	// a properly synced encrypted balance in simulator mode.
+	var wallet *walletapi.Wallet_Disk
+	if isSimulator {
+		if a.simulatorManager != nil && a.simulatorManager.walletManager != nil {
+			wallet = a.simulatorManager.walletManager.GetPrimaryWallet()
+		}
+	} else {
+		wallet = GetWallet()
+	}
+
 	if wallet == nil {
+		errMsg := "No wallet available. Open a wallet first."
+		if isSimulator {
+			errMsg = "Simulator wallet not available. Restart simulator mode."
+		}
 		return map[string]interface{}{
 			"success": false,
-			"error":   "No wallet available. Open a wallet first.",
+			"error":   errMsg,
 		}
 	}
 
-	// Validate the code
 	if code == "" {
 		return map[string]interface{}{
 			"success": false,
@@ -438,7 +455,6 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		}
 	}
 
-	// Parse to validate
 	_, _, err := dvm.ParseSmartContract(code)
 	if err != nil {
 		return map[string]interface{}{
@@ -447,17 +463,105 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		}
 	}
 
-	// Build SC install arguments
 	scArgs := rpc.Arguments{
 		{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_INSTALL)},
 		{Name: rpc.SCCODE, DataType: rpc.DataString, Value: code},
 	}
 
-	// Ensure daemon connection before Random_ring_members (needs daemon to fetch decoy outputs).
-	// In simulator mode, walletapi may have been disconnected after wallet setup.
-	a.ensureWalletDaemonConnectivity(a.getDaemonEndpointForWallet())
+	ringsize := uint64(2)
+	if anonymous {
+		ringsize = 16
+	}
 
-	// Get random destination for the transfer
+	endpoint := a.getDaemonEndpointForWallet()
+
+	if isSimulator {
+		// SIMULATOR MODE: The simulator daemon can only handle ONE WebSocket at a
+		// time. We must ensure ALL WebSocket connections are closed before opening
+		// our own, then resume them after we disconnect.
+		a.logToConsole("[SC] Using simulator-safe connect/disconnect pattern")
+
+		// Step 1: Close any lingering walletapi WebSocket (e.g. from OpenSimulatorTestWallet)
+		// BEFORE pausing Gnomon, so the daemon isn't juggling multiple connections.
+		a.disconnectWalletAPI()
+
+		// Step 2: Pause Gnomon (closes its persistent WebSocket)
+		gnomonWasRunning := a.pauseGnomonForSimulator()
+
+		// Extra settle time to let the daemon fully release all connections
+		time.Sleep(300 * time.Millisecond)
+
+		if err := walletapi.Connect(endpoint); err != nil {
+			if gnomonWasRunning {
+				a.resumeGnomonForSimulator()
+			}
+			return map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("Failed to connect to simulator daemon: %v", err),
+			}
+		}
+
+		// Sync multiple times to ensure encrypted balance is available
+		for i := 0; i < 3; i++ {
+			if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Sync attempt %d failed: %v", i+1, err))
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		senderAddr := wallet.GetAddress().String()
+		destAddr := a.getSimulatorTransferDestination(senderAddr)
+		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
+
+		tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, 0, false)
+		if err != nil {
+			a.disconnectWalletAPI()
+			if gnomonWasRunning {
+				a.resumeGnomonForSimulator()
+			}
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Transaction failed: " + err.Error(),
+			}
+		}
+
+		if err := wallet.SendTransaction(tx); err != nil {
+			a.disconnectWalletAPI()
+			if gnomonWasRunning {
+				a.resumeGnomonForSimulator()
+			}
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Failed to send transaction: " + err.Error(),
+			}
+		}
+
+		txid := tx.GetHash().String()
+
+		// Disconnect to free the daemon's single WebSocket slot
+		a.disconnectWalletAPI()
+		a.logToConsole(fmt.Sprintf("[OK] SC installed! TXID: %s (simulator, disconnected)", txid[:16]))
+
+		// Wait for the daemon to fully process the transaction and stabilize
+		// before allowing Gnomon to reconnect. The simulator needs time to
+		// mine the block containing the SC install transaction.
+		time.Sleep(2 * time.Second)
+
+		// Resume Gnomon now that the WebSocket is free and the block is mined
+		if gnomonWasRunning {
+			a.resumeGnomonForSimulator()
+		}
+
+		return map[string]interface{}{
+			"success": true,
+			"txid":    txid,
+			"message": "Smart contract installed successfully. The SCID will be available once the transaction is confirmed.",
+		}
+	}
+
+	// NON-SIMULATOR (MAINNET): Use persistent connection with Keep_Connectivity
+	a.ensureWalletDaemonConnectivity(endpoint)
+
 	randos := wallet.Random_ring_members(crypto.ZEROHASH)
 	if len(randos) == 0 {
 		return map[string]interface{}{
@@ -470,21 +574,8 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		destination = randos[1]
 	}
 
-	// Build transfer
-	transfers := []rpc.Transfer{
-		{
-			Destination: destination,
-			Amount:      0,
-		},
-	}
+	transfers := []rpc.Transfer{{Destination: destination, Amount: 0}}
 
-	// Set ringsize
-	ringsize := uint64(2)
-	if anonymous {
-		ringsize = 16
-	}
-
-	// Build and send transaction
 	tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, 0, false)
 	if err != nil {
 		return map[string]interface{}{
