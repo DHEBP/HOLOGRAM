@@ -711,13 +711,15 @@ func extractDOCsSCIDs(indexData map[string]interface{}) []string {
 	return scids
 }
 
-// decodeHexString decodes a hex string, returns original if decode fails
+// decodeHexString decodes a hex string, returns original if decode fails.
+// Trailing null bytes and whitespace are stripped -- DERO SC storage
+// sometimes pads values with \x00 that breaks key lookups.
 func decodeHexString(hexStr string) string {
 	decoded, err := hex.DecodeString(hexStr)
 	if err != nil {
 		return hexStr
 	}
-	return string(decoded)
+	return strings.TrimRight(string(decoded), "\x00 \t\n\r")
 }
 
 // processDOC processes a DOC contract and extracts its content
