@@ -20,6 +20,7 @@
   let showSuggestions = false;
   let debounceTimer;
   let mountedAt = 0;
+  let initialFocusSkipped = false;
   
   // Input type detection
   $: detectedType = detectInputType(value);
@@ -591,11 +592,28 @@
    */
   function handleFocus() {
     focused = true;
-    // Skip auto-dropdown on initial mount (autofocus or page navigation)
-    if (Date.now() - mountedAt < 300) return;
+    
+    // If this component was set to autofocus, skip showing the dropdown on the VERY FIRST focus event
+    if (autofocus && !initialFocusSkipped) {
+      initialFocusSkipped = true;
+      return;
+    }
+    
+    // Skip auto-dropdown on initial mount (for programmatic focus)
+    if (Date.now() - mountedAt < 500) return;
+    
     // Show recent searches when focused and empty
     if (!value.trim()) {
       fetchSuggestions('');
+    }
+  }
+  
+  /**
+   * Handle click on input (to show recent searches if already focused)
+   */
+  function handleClick() {
+    if (focused && !showSuggestions) {
+      fetchSuggestions(value);
     }
   }
   
@@ -651,6 +669,7 @@
       on:keydown={handleKeydown}
       on:focus={handleFocus}
       on:blur={handleBlur}
+      on:click={handleClick}
       disabled={loading}
       class="search-input"
       class:has-type={currentTypeConfig}
