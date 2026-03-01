@@ -922,23 +922,30 @@ let addressInput = '';
             // Wallet methods that require authorization
             const walletMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
                                    'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
-                                   'SplitIntegratedAddress', 'QueryKey', 'transfer', 'Transfer',
+                                   'SplitIntegratedAddress', 'QueryKey', 'SignData', 'CheckSignature',
+                                   'transfer', 'Transfer', 'transfer_split',
                                    'scinvoke', 'SC_Invoke', 'Login'];
             
+            const walletMethodsLower = walletMethods.map(m => m.toLowerCase());
+
             // Check authorization for wallet methods
             // Accept both 'accepted' and 'ok' for backward compatibility
-            if (walletMethods.includes(normalizedMethod) && authState !== 'accepted' && authState !== 'ok') {
+            if (walletMethodsLower.includes(methodLower) && authState !== 'accepted' && authState !== 'ok') {
               throw new Error('Wallet not authorized');
             }
             
             // Handle special methods
-            if (normalizedMethod === 'Ping') {
+            if (methodLower === 'ping') {
               result = 'Pong';
-            } else if (normalizedMethod === 'Echo') {
+            } else if (methodLower === 'echo') {
               result = params;
-            } else if (normalizedMethod === 'Login') {
+            } else if (methodLower === 'login') {
               result = 'Logged in';
-            } else if (normalizedMethod === 'GetDaemon') {
+            } else if (methodLower === 'hasmethod') {
+              const knownMethods = [...walletMethods, 'Ping', 'Echo', 'GetDaemon', 'Subscribe', 'Unsubscribe', 'HasMethod',
+                                    'AttemptEPOCH', 'AttemptEPOCHWithAddr', 'GetMaxHashesEPOCH', 'GetSessionEPOCH', 'GetAddressEPOCH'];
+              result = knownMethods.map(m => m.toLowerCase()).includes((params?.name || '').toLowerCase());
+            } else if (methodLower === 'getdaemon') {
               // GetDaemon - returns daemon endpoint for direct node communication
               // Always route through CallXSWD since it's handled specially in app.go
               addConsoleLog(`[Browser] GetDaemon requested - routing to backend`);
@@ -954,13 +961,12 @@ let addressInput = '';
               }
             } else {
               // Route through XSWD/wallet
-              const signingMethods = ['transfer', 'scinvoke', 'sign', 'Transfer', 'SC_Invoke'];
+              const signingMethods = ['transfer', 'scinvoke', 'sign', 'Transfer', 'SC_Invoke', 'transfer_split', 'SignData'];
               const readMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
                                    'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
-                                   'SplitIntegratedAddress', 'QueryKey'];
+                                   'SplitIntegratedAddress', 'QueryKey', 'CheckSignature'];
               
-              // Check if this is a wallet method (read or write)
-              const isWalletMethod = walletMethods.includes(normalizedMethod);
+              const isWalletMethod = walletMethodsLower.includes(methodLower);
               const isSigningMethod = signingMethods.map(m => m.toLowerCase()).includes(methodLower);
               
               if (callSettings.integratedWallet && isWalletMethod) {
@@ -2129,7 +2135,7 @@ let addressInput = '';
         call: async (method, params = {}) => {
           try {
             const settings = get(settingsState);
-            const signingMethods = ['transfer', 'scinvoke', 'sign'];
+            const signingMethods = ['transfer', 'scinvoke', 'sign', 'transfer_split', 'signdata'];
             const methodLower = method.toLowerCase().replace('dero.', '');
             
             if (settings.integratedWallet && signingMethods.includes(methodLower)) {
