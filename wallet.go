@@ -763,7 +763,7 @@ func (a *App) ListRecentWallets() []string {
 }
 
 // Transfer sends DERO to another address
-func (a *App) Transfer(destination string, amount uint64, paymentID string) map[string]interface{} {
+func (a *App) Transfer(destination string, amount uint64, paymentID string, ringsize uint64) map[string]interface{} {
 	walletManager.Lock()
 	defer walletManager.Unlock()
 
@@ -835,15 +835,16 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string) map[
 		}
 	}
 
-	// Execute transfer with ringsize 16 (standard), no SC arguments
-	// Retry once on build failure (stale nonce / ring member issue)
-	tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
+	if ringsize < 2 {
+		ringsize = 16
+	}
+	tx, err := wallet.TransferPayload0(transfers, ringsize, false, rpc.Arguments{}, 0, false)
 	if err != nil {
 		a.logToConsole(fmt.Sprintf("[WARN] Transfer build failed, retrying after resync: %v", err))
 		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
 		}
-		tx, err = wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
+		tx, err = wallet.TransferPayload0(transfers, ringsize, false, rpc.Arguments{}, 0, false)
 		if err != nil {
 			a.logToConsole(fmt.Sprintf("[Transfer] Failed: %s", err.Error()))
 			return map[string]interface{}{
@@ -1361,31 +1362,28 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 
 	// Handle methods
 	switch method {
-	case "GetAddress", "DERO.GetAddress":
-		// Return the wallet address
+	case "GetAddress", "DERO.GetAddress", "getaddress":
 		address := wallet.GetAddress().String()
 		return map[string]interface{}{
 			"success": true,
 			"result":  map[string]string{"address": address},
 		}
 		
-	case "GetBalance", "DERO.GetBalance":
-		// Return wallet balance
+	case "GetBalance", "DERO.GetBalance", "getbalance":
 		balance, lockedBalance := wallet.Get_Balance()
 		return map[string]interface{}{
 			"success": true,
 			"result":  map[string]uint64{"balance": balance, "unlocked_balance": balance - lockedBalance, "locked_balance": lockedBalance},
 		}
 		
-	case "GetHeight", "DERO.GetHeight":
-		// Return wallet height
+	case "GetHeight", "DERO.GetHeight", "getheight":
 		height := wallet.Get_Height()
 		return map[string]interface{}{
 			"success": true,
 			"result":  map[string]uint64{"height": height},
 		}
 		
-	case "transfer", "Transfer", "DERO.Transfer":
+	case "transfer", "Transfer", "DERO.Transfer", "transfer_split":
 		// Check for SC deployment: dApps can send "sc" param to deploy a new contract.
 		// This matches Engram/TELA CLI behavior where transfer with "sc" deploys a contract.
 		if scCode, ok := params["sc"].(string); ok && scCode != "" {
@@ -1639,6 +1637,125 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			"result": map[string]interface{}{
 				"txid": txid,
 			},
+		}
+
+	case "GetTransfers", "get_transfers":
+		coinbase, in, out := true, true, true
+		if v, ok := params["coinbase"].(bool); ok { coinbase = v }
+		if v, ok := params["in"].(bool); ok { in = v }
+		if v, ok := params["out"].(bool); ok { out = v }
+		minH := uint64(0)
+		maxH := uint64(0)
+		if v, ok := params["min_height"].(float64); ok { minH = uint64(v) }
+		if v, ok := params["max_height"].(float64); ok { maxH = uint64(v) }
+		var scid crypto.Hash
+		entries := wallet.Show_Transfers(scid, coinbase, in, out, minH, maxH, "", "", 0, 0)
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"entries": entries},
+		}
+
+	case "GetTransferbyTXID", "get_transfer_by_txid":
+		txid, _ := params["txid"].(string)
+		if len(txid) != 64 {
+			return map[string]interface{}{"success": false, "error": "txid must be 64 hex characters"}
+		}
+		var scid crypto.Hash
+		foundSCID, entry := wallet.Get_Payments_TXID(scid, txid)
+		if entry.Height == 0 {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Transaction not found: %s", txid)}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"entry": entry, "scid": foundSCID.String()},
+		}
+
+	case "MakeIntegratedAddress", "make_integrated_address":
+		addr := wallet.GetAddress()
+		addrCopy := addr.Clone()
+		var payload rpc.Arguments
+		if payloadRaw, ok := params["payload_rpc"].([]interface{}); ok {
+			for _, item := range payloadRaw {
+				if a, ok := item.(map[string]interface{}); ok {
+					name, _ := a["name"].(string)
+					dtype, _ := a["datatype"].(string)
+					val := a["value"]
+					if name == "" { continue }
+					switch dtype {
+					case "S":
+						if v, ok := val.(string); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "S", Value: v}) }
+					case "U":
+						if v, ok := val.(float64); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)}) }
+					case "H":
+						if v, ok := val.(string); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)}) }
+					}
+				}
+			}
+		}
+		addrCopy.Arguments = payload
+		if _, err := addrCopy.MarshalText(); err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Failed to create integrated address: %v", err)}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"integrated_address": addrCopy.String(), "payload_rpc": payload},
+		}
+
+	case "SplitIntegratedAddress", "split_integrated_address":
+		intAddr, _ := params["integrated_address"].(string)
+		if intAddr == "" {
+			return map[string]interface{}{"success": false, "error": "integrated_address parameter required"}
+		}
+		addr, err := rpc.NewAddress(intAddr)
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Invalid address: %v", err)}
+		}
+		if !addr.IsIntegratedAddress() {
+			return map[string]interface{}{"success": false, "error": "Address is not an integrated address"}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"address": addr.BaseAddress().String(), "payload_rpc": addr.Arguments},
+		}
+
+	case "QueryKey", "query_key":
+		keyType, _ := params["key_type"].(string)
+		switch strings.ToLower(keyType) {
+		case "mnemonic":
+			return map[string]interface{}{
+				"success": true,
+				"result":  map[string]interface{}{"key": wallet.GetSeed()},
+			}
+		default:
+			return map[string]interface{}{"success": false, "error": "Invalid key type, must be mnemonic"}
+		}
+
+	case "SignData":
+		data, _ := params["data"].(string)
+		if data == "" {
+			return map[string]interface{}{"success": false, "error": "data parameter required"}
+		}
+		signature := wallet.SignData([]byte(data))
+		if len(signature) == 0 {
+			return map[string]interface{}{"success": false, "error": "Failed to sign data"}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"signature": string(signature)},
+		}
+
+	case "CheckSignature":
+		signedData, _ := params["signed_data"].(string)
+		if signedData == "" {
+			return map[string]interface{}{"success": false, "error": "signed_data parameter required"}
+		}
+		signer, message, err := wallet.CheckSignature([]byte(signedData))
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Verification failed: %v", err)}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"signer": signer.String(), "message": strings.TrimSpace(string(message))},
 		}
 
 	case "GetTrackedAssets", "gettrackedassets":
@@ -2207,7 +2324,7 @@ func (a *App) RemoveTrackedToken(scid string) map[string]interface{} {
 }
 
 // TransferToken sends a token (non-native asset) to another address
-func (a *App) TransferToken(scid, destination string, amount uint64, password string) map[string]interface{} {
+func (a *App) TransferToken(scid, destination string, amount uint64, password string, ringsize uint64) map[string]interface{} {
 	walletManager.Lock()
 	defer walletManager.Unlock()
 
@@ -2248,8 +2365,10 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 		},
 	}
 
-	// Execute transfer
-	tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
+	if ringsize < 2 {
+		ringsize = 16
+	}
+	tx, err := wallet.TransferPayload0(transfers, ringsize, false, rpc.Arguments{}, 0, false)
 	if err != nil {
 		return ErrorResponse(err)
 	}
@@ -2263,7 +2382,7 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("[OK] Token transfer successful! TXID: %s", tx.GetHash().String()))
+	a.logToConsole(fmt.Sprintf("[OK] Token transfer successful! TXID: %s (ringsize=%d)", tx.GetHash().String(), ringsize))
 
 	return map[string]interface{}{
 		"success": true,

@@ -171,7 +171,7 @@ func TestTransfer_NoWallet(t *testing.T) {
 
 	app := &App{consoleLogs: make([]ConsoleLog, 0)}
 
-	result := app.Transfer("dero1dest...", 1000000, "")
+	result := app.Transfer("dero1dest...", 1000000, "", 16)
 
 	if result["success"] != false {
 		t.Error("Transfer should return success=false when no wallet is open")
