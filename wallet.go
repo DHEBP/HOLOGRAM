@@ -361,8 +361,27 @@ func (a *App) GetBalance() map[string]interface{} {
 
 	wallet := walletManager.wallet
 
-	// Get mature (spendable) and locked balance
-	mature, locked := wallet.Get_Balance()
+	var mature, locked uint64
+
+	// In simulator mode, NEVER open a new WebSocket connection for balance queries.
+	// The simulator can only handle ONE WebSocket at a time -- opening one here
+	// would conflict with Gnomon or an in-progress SC deploy and crash the daemon.
+	// Instead: try GetDecryptedBalanceAtTopoHeight which only works if a WS is
+	// already open (it won't create one), then fall back to the in-memory balance
+	// which was populated by the most recent Sync_Wallet_Memory_With_Daemon call
+	// (done in OpenSimulatorTestWallet).
+	if a.simulatorManager != nil && a.simulatorManager.isInitialized {
+		var zerohash [32]byte
+		addr := wallet.GetAddress().String()
+		if bal, _, err := wallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, addr); err == nil {
+			mature = bal
+		} else {
+			// No active connection -- use cached in-memory balance.
+			mature, locked = wallet.Get_Balance()
+		}
+	} else {
+		mature, locked = wallet.Get_Balance()
+	}
 
 	return map[string]interface{}{
 		"success":       true,
@@ -1216,6 +1235,94 @@ func checkDaemonConnectivity(wallet *walletapi.Wallet_Disk) map[string]interface
 	return nil
 }
 
+// sanitizeSCID strips trailing null bytes, whitespace, and quotes from an SCID string.
+// DERO SC storage and some dApp frontends occasionally pad values with \x00.
+func sanitizeSCID(s string) string {
+	return strings.TrimRight(s, "\x00 \t\n\r\"")
+}
+
+// parseXSWDScArgs builds an rpc.Arguments slice from a dApp's XSWD params,
+// prepending SCACTION + SCID and hoisting the entrypoint.
+// Supported datatypes: U (uint64), S (string), H (hash/SCID), I (int64).
+func parseXSWDScArgs(params map[string]interface{}, scid string) rpc.Arguments {
+	scArgs := rpc.Arguments{}
+	hasEntrypointInScRpc := false
+	entrypointFromScRpc := ""
+
+	if args, ok := params["sc_rpc"].([]interface{}); ok {
+		for _, arg := range args {
+			a, ok := arg.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			name, _ := a["name"].(string)
+			dtype, _ := a["datatype"].(string)
+			val := a["value"]
+			if name == "" {
+				continue
+			}
+			if name == "entrypoint" {
+				hasEntrypointInScRpc = true
+				if ep, ok := val.(string); ok {
+					entrypointFromScRpc = ep
+				}
+			}
+			switch dtype {
+			case "U":
+				if v, ok := val.(float64); ok {
+					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+				}
+			case "I":
+				if v, ok := val.(float64); ok {
+					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: int64(v)})
+				}
+			case "S":
+				if v, ok := val.(string); ok {
+					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
+				}
+			case "H":
+				if v, ok := val.(string); ok {
+					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
+				}
+			}
+		}
+	}
+
+	entrypoint := entrypointFromScRpc
+	if entrypoint == "" {
+		if ep, ok := params["entrypoint"].(string); ok {
+			entrypoint = ep
+		}
+	}
+
+	if entrypoint == "" && !hasEntrypointInScRpc {
+		return scArgs
+	}
+
+	hasSCACTION := false
+	hasSCID := false
+	for _, arg := range scArgs {
+		if arg.Name == rpc.SCACTION {
+			hasSCACTION = true
+		}
+		if arg.Name == rpc.SCID {
+			hasSCID = true
+		}
+	}
+
+	prefix := rpc.Arguments{}
+	if !hasSCACTION {
+		prefix = append(prefix, rpc.Argument{Name: rpc.SCACTION, DataType: "U", Value: uint64(rpc.SC_CALL)})
+	}
+	if !hasSCID {
+		prefix = append(prefix, rpc.Argument{Name: rpc.SCID, DataType: "H", Value: crypto.HashHexToHash(scid)})
+	}
+	if entrypoint != "" && !hasEntrypointInScRpc {
+		prefix = append(prefix, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
+	}
+	return append(prefix, scArgs...)
+}
+
 // InternalWalletCall executes a wallet method directly using the embedded wallet
 func (a *App) InternalWalletCall(method string, params map[string]interface{}, password string) map[string]interface{} {
 	walletManager.Lock()
@@ -1279,7 +1386,25 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		}
 		
 	case "transfer", "Transfer", "DERO.Transfer":
-		// Parse transfers (with burn support for dev donations)
+		// Check for SC deployment: dApps can send "sc" param to deploy a new contract.
+		// This matches Engram/TELA CLI behavior where transfer with "sc" deploys a contract.
+		if scCode, ok := params["sc"].(string); ok && scCode != "" {
+			a.logToConsole("[XSWD] SC deployment via transfer detected")
+			ringsize := uint64(2)
+			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
+				ringsize = uint64(rs)
+			}
+			deployResult := a.InstallSmartContract(scCode, ringsize >= 16)
+			if success, ok := deployResult["success"].(bool); ok && success {
+				return map[string]interface{}{
+					"success": true,
+					"result":  map[string]interface{}{"txid": deployResult["txid"]},
+				}
+			}
+			return map[string]interface{}{"success": false, "error": deployResult["error"]}
+		}
+
+		// Parse transfers array -- each entry may carry a token SCID for non-DERO assets.
 		var transfers []rpc.Transfer
 		if t, ok := params["transfers"].([]interface{}); ok {
 			for _, item := range t {
@@ -1288,29 +1413,29 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 					if a, ok := tf["amount"].(float64); ok {
 						amount = uint64(a)
 					}
-					
 					burn := uint64(0)
 					if b, ok := tf["burn"].(float64); ok {
 						burn = uint64(b)
 					}
-					
 					dest := ""
 					if d, ok := tf["destination"].(string); ok {
 						dest = d
 					}
-					
-					// Include transfer if it has destination, amount, or burn
+					var tokenSCID crypto.Hash
+					if s, ok := tf["scid"].(string); ok && s != "" {
+						tokenSCID = crypto.HashHexToHash(sanitizeSCID(s))
+					}
 					if dest != "" || amount > 0 || burn > 0 {
 						transfers = append(transfers, rpc.Transfer{
 							Destination: dest,
 							Amount:      amount,
 							Burn:        burn,
+							SCID:        tokenSCID,
 						})
 					}
 				}
 			}
 		} else {
-			// Try single destination/amount if provided at top level
 			amount := uint64(0)
 			if a, ok := params["amount"].(float64); ok {
 				amount = uint64(a)
@@ -1319,127 +1444,40 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			if d, ok := params["destination"].(string); ok {
 				dest = d
 			}
-			
 			if dest != "" {
-				transfers = append(transfers, rpc.Transfer{
-					Destination: dest,
-					Amount:      amount,
-				})
+				transfers = append(transfers, rpc.Transfer{Destination: dest, Amount: amount})
 			}
 		}
-		
-		// Check if this transfer includes SC call parameters (scid + sc_rpc)
-		// Some dApps (like Villager) send SC calls via the transfer method
+
+		// Check if this transfer also carries an SC call (scid + sc_rpc).
+		// Some dApps (e.g. Villager) send SC invocations via the transfer method.
 		scArgs := rpc.Arguments{}
 		scid := ""
 		if s, ok := params["scid"].(string); ok {
-			scid = s
+			scid = sanitizeSCID(s)
 		}
-		
-		// If scid and sc_rpc are present, parse SC arguments
 		if scid != "" {
-			if args, ok := params["sc_rpc"].([]interface{}); ok && len(args) > 0 {
-				hasEntrypointInScRpc := false
-				entrypointFromScRpc := ""
-				
-				for _, arg := range args {
-					if a, ok := arg.(map[string]interface{}); ok {
-						name, _ := a["name"].(string)
-						type_, _ := a["datatype"].(string)
-						val := a["value"]
-						
-						if name != "" {
-							// Track if entrypoint is in sc_rpc
-							if name == "entrypoint" {
-								hasEntrypointInScRpc = true
-								if ep, ok := val.(string); ok {
-									entrypointFromScRpc = ep
-								}
-							}
-							
-							switch type_ {
-							case "U":
-								if v, ok := val.(float64); ok {
-									scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
-								}
-							case "S":
-								if v, ok := val.(string); ok {
-									scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
-								}
-							case "H":
-								// Handle hash type (SCID)
-								if v, ok := val.(string); ok {
-									scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
-								}
-							}
-						}
-					}
-				}
-				
-				// Determine entrypoint: check sc_rpc first, then separate param
-				entrypoint := entrypointFromScRpc
-				if entrypoint == "" {
-					if ep, ok := params["entrypoint"].(string); ok {
-						entrypoint = ep
-					}
-				}
-				
-				// For SC invocation, SCACTION and SCID must be prepended if entrypoint exists
-				if entrypoint != "" || hasEntrypointInScRpc {
-					// Check if SCACTION and SCID are already in scArgs (avoid duplicates)
-					hasSCACTION := false
-					hasSCID := false
-					for _, arg := range scArgs {
-						if arg.Name == rpc.SCACTION {
-							hasSCACTION = true
-						}
-						if arg.Name == rpc.SCID {
-							hasSCID = true
-						}
-					}
-					
-					// Prepend SCACTION and SCID if not already present
-					newArgs := rpc.Arguments{}
-					if !hasSCACTION {
-						newArgs = append(newArgs, rpc.Argument{Name: rpc.SCACTION, DataType: "U", Value: uint64(rpc.SC_CALL)})
-					}
-					if !hasSCID {
-						newArgs = append(newArgs, rpc.Argument{Name: rpc.SCID, DataType: "H", Value: crypto.HashHexToHash(scid)})
-					}
-					
-					// Add entrypoint if it was specified as a separate param (not in sc_rpc)
-					if entrypoint != "" && !hasEntrypointInScRpc {
-						newArgs = append(newArgs, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
-					}
-					
-					// Prepend new args to existing scArgs
-					scArgs = append(newArgs, scArgs...)
-				}
-				
+			scArgs = parseXSWDScArgs(params, scid)
+			if len(scArgs) > 0 {
 				scidPreview := scid
 				if len(scid) > 16 {
 					scidPreview = scid[:16] + "..."
 				}
-				a.logToConsole(fmt.Sprintf("[XSWD] Transfer with SC call detected: scid=%s, entrypoint=%s", scidPreview, entrypoint))
+				a.logToConsole(fmt.Sprintf("[XSWD] Transfer with SC call: scid=%s", scidPreview))
 			}
 		}
-		
-		// For pure transfers (no SC), we still need at least one transfer
+
 		if len(transfers) == 0 && len(scArgs) == 0 {
 			return map[string]interface{}{"success": false, "error": "Please specify a transfer amount and destination, or a smart contract call."}
 		}
-		
-		// Pre-flight: verify daemon connectivity before attempting transaction
+
 		if errResp := checkDaemonConnectivity(wallet); errResp != nil {
 			return errResp
 		}
-
-		// Sync wallet with daemon to get fresh nonce and ring members
 		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] Pre-transfer wallet sync failed: %v", syncErr))
 		}
 
-		// Pre-flight: check balance covers at minimum the transfer amount + gas
 		mature, _ := wallet.Get_Balance()
 		var totalTransferAmount uint64
 		for _, t := range transfers {
@@ -1453,15 +1491,24 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			}
 		}
 
-		// Execute transfer (with optional SC arguments)
-		// Retry once on build failure (stale nonce / ring member issue)
-		tx, err := wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
+		ringsize := uint64(2)
+		if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
+			ringsize = uint64(rs)
+		}
+		// dApp-requested fee (0 = let daemon pick)
+		fees := uint64(0)
+		if f, ok := params["fees"].(float64); ok && f > 0 {
+			fees = uint64(f)
+		}
+		a.logToConsole(fmt.Sprintf("[XSWD] Building transfer TX with ringsize=%d fees=%d", ringsize, fees))
+
+		tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
 		if err != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] Transfer build failed, retrying after resync: %v", err))
 			if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
 			}
-			tx, err = wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
+			tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
 			if err != nil {
 				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
 			}
@@ -1473,107 +1520,41 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		}
 
 		txid := tx.GetHash().String()
-		a.logToConsole(fmt.Sprintf("[OK] Transfer TX sent: %s", txid))
+		a.logToConsole(fmt.Sprintf("[OK] Transfer TX sent: %s (ringsize=%d)", txid, ringsize))
 		return map[string]interface{}{
 			"success": true,
-			"result": map[string]interface{}{
-				"txid": txid,
-			},
+			"result":  map[string]interface{}{"txid": txid},
 		}
 
 	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
 		scid := ""
 		if s, ok := params["scid"].(string); ok {
-			scid = s
+			scid = sanitizeSCID(s)
 		}
-		
 		if scid == "" {
 			return map[string]interface{}{"success": false, "error": "Smart Contract ID (SCID) is required for this operation."}
 		}
-		
-		// Parse SC arguments and track if entrypoint is in sc_rpc
-		scArgs := rpc.Arguments{}
-		hasEntrypointInScRpc := false
-		entrypointFromScRpc := ""
-		
-		if args, ok := params["sc_rpc"].([]interface{}); ok {
-			for _, arg := range args {
-				if a, ok := arg.(map[string]interface{}); ok {
-					name, _ := a["name"].(string)
-					type_, _ := a["datatype"].(string)
-					val := a["value"]
-					
-					if name != "" {
-						// Track if entrypoint is in sc_rpc (feed.tela sends it this way)
-						if name == "entrypoint" {
-							hasEntrypointInScRpc = true
-							if ep, ok := val.(string); ok {
-								entrypointFromScRpc = ep
-							}
-						}
-						
-						switch type_ {
-						case "U":
-							if v, ok := val.(float64); ok {
-								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
-							}
-						case "S":
-							if v, ok := val.(string); ok {
-								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
-							}
-						case "H":
-							// Handle hash type (SCID)
-							if v, ok := val.(string); ok {
-								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
-							}
-						}
-					}
-				}
-			}
+
+		// Parse SC arguments (shared helper handles all datatypes including I, U, S, H)
+		scArgs := parseXSWDScArgs(params, scid)
+
+		// sc_dero_deposit / sc_token_deposit -- amount attached to the SC call.
+		// These are top-level params distinct from the transfers array.
+		var scDeposit []rpc.Transfer
+		if deroDeposit, ok := params["sc_dero_deposit"].(float64); ok && deroDeposit > 0 {
+			scDeposit = append(scDeposit, rpc.Transfer{Amount: uint64(deroDeposit)})
 		}
-		
-		// Determine entrypoint: check sc_rpc first, then separate param
-		entrypoint := entrypointFromScRpc
-		if entrypoint == "" {
-			if ep, ok := params["entrypoint"].(string); ok {
-				entrypoint = ep
+		if tokenDeposit, ok := params["sc_token_deposit"].(float64); ok && tokenDeposit > 0 {
+			tokenSCIDStr, _ := params["sc_token_deposit_scid"].(string)
+			var tokenSCID crypto.Hash
+			if tokenSCIDStr != "" {
+				tokenSCID = crypto.HashHexToHash(tokenSCIDStr)
 			}
+			scDeposit = append(scDeposit, rpc.Transfer{Amount: uint64(tokenDeposit), SCID: tokenSCID})
 		}
-		
-		// For SC invocation, SCACTION and SCID must be prepended if entrypoint exists
-		// This is required regardless of where entrypoint was specified
-		if entrypoint != "" || hasEntrypointInScRpc {
-			// Check if SCACTION and SCID are already in scArgs (avoid duplicates)
-			hasSCACTION := false
-			hasSCID := false
-			for _, arg := range scArgs {
-				if arg.Name == rpc.SCACTION {
-					hasSCACTION = true
-				}
-				if arg.Name == rpc.SCID {
-					hasSCID = true
-				}
-			}
-			
-			// Prepend SCACTION and SCID if not already present
-			newArgs := rpc.Arguments{}
-			if !hasSCACTION {
-				newArgs = append(newArgs, rpc.Argument{Name: rpc.SCACTION, DataType: "U", Value: uint64(rpc.SC_CALL)})
-			}
-			if !hasSCID {
-				newArgs = append(newArgs, rpc.Argument{Name: rpc.SCID, DataType: "H", Value: crypto.HashHexToHash(scid)})
-			}
-			
-			// Add entrypoint if it was specified as a separate param (not in sc_rpc)
-			if entrypoint != "" && !hasEntrypointInScRpc {
-				newArgs = append(newArgs, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
-			}
-			
-			// Prepend new args to existing scArgs
-			scArgs = append(newArgs, scArgs...)
-		}
-		
-		// Check for transfers attached to SC call (including burns for dev donations)
+
+		// Transfers attached to the SC call (burns for dev donations, etc.)
+		// Each entry may carry a per-transfer token SCID.
 		var transfers []rpc.Transfer
 		if t, ok := params["transfers"].([]interface{}); ok {
 			for _, item := range t {
@@ -1582,40 +1563,39 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 					if a, ok := tf["amount"].(float64); ok {
 						amt = uint64(a)
 					}
-					
 					burn := uint64(0)
 					if b, ok := tf["burn"].(float64); ok {
 						burn = uint64(b)
 					}
-					
 					dest := ""
 					if d, ok := tf["destination"].(string); ok {
 						dest = d
 					}
-					
-					// Include transfer if it has amount OR burn (burn is used for dev donations)
+					var tokenSCID crypto.Hash
+					if s, ok := tf["scid"].(string); ok && s != "" {
+						tokenSCID = crypto.HashHexToHash(sanitizeSCID(s))
+					}
 					if amt > 0 || burn > 0 {
 						transfers = append(transfers, rpc.Transfer{
 							Destination: dest,
 							Amount:      amt,
 							Burn:        burn,
+							SCID:        tokenSCID,
 						})
 					}
 				}
 			}
 		}
+		// Merge deposit entries in front of any explicit transfers
+		transfers = append(scDeposit, transfers...)
 
-		// Pre-flight: verify daemon connectivity before attempting SC invoke
 		if errResp := checkDaemonConnectivity(wallet); errResp != nil {
 			return errResp
 		}
-
-		// Sync wallet with daemon to get fresh nonce and ring members
 		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] Pre-scinvoke wallet sync failed: %v", syncErr))
 		}
 
-		// Pre-flight: check balance (every SC invoke requires gas fees)
 		mature, _ := wallet.Get_Balance()
 		if mature == 0 {
 			return map[string]interface{}{
@@ -1625,16 +1605,23 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			}
 		}
 
-		// Execute SC Invoke via TransferPayload0 with SC args
-		// Retry once on build failure (stale nonce / ring member issue)
-		tx, err := wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
+		ringsize := uint64(2)
+		if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
+			ringsize = uint64(rs)
+		}
+		fees := uint64(0)
+		if f, ok := params["fees"].(float64); ok && f > 0 {
+			fees = uint64(f)
+		}
+		a.logToConsole(fmt.Sprintf("[XSWD] Building scinvoke TX with ringsize=%d fees=%d", ringsize, fees))
+
+		tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
 		if err != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] scinvoke build failed, retrying after resync: %v", err))
-			// Resync and retry once
 			if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
 			}
-			tx, err = wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
+			tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
 			if err != nil {
 				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
 			}
@@ -1646,7 +1633,7 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		}
 
 		txid := tx.GetHash().String()
-		a.logToConsole(fmt.Sprintf("[OK] scinvoke TX sent: %s", txid))
+		a.logToConsole(fmt.Sprintf("[OK] scinvoke TX sent: %s (ringsize=%d)", txid, ringsize))
 		return map[string]interface{}{
 			"success": true,
 			"result": map[string]interface{}{
