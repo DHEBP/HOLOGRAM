@@ -247,7 +247,13 @@ func (a *App) searchSmartContract(query string) SearchResult {
 	if code != "" {
 		a.logToConsole(fmt.Sprintf("[SC] Code length: %d chars", len(code)))
 	} else {
-		a.logToConsole("[WARN] SC code not found or not a string")
+		a.logToConsole("[WARN] SC code not found or not a string (likely a normal TX)")
+		return SearchResult{
+			Success: false,
+			Type:    "sc",
+			Query:   query,
+			Error:   "Not a valid smart contract (no code found)",
+		}
 	}
 
 	return SearchResult{
