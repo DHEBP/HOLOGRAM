@@ -289,7 +289,7 @@ func (a *App) DetectExistingBlockchain() map[string]interface{} {
 					"network": "mainnet",
 					"exists":  true,
 				})
-				a.logToConsole(fmt.Sprintf("  ✓ Found blockchain at %s", loc))
+				a.logToConsole(fmt.Sprintf("  OK Found blockchain at %s", loc))
 			}
 		}
 	}

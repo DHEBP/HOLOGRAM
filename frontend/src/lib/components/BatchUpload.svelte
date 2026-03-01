@@ -4,7 +4,7 @@
   import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
   import { BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
-  import { Copy, Eye } from 'lucide-svelte';
+  import { Copy, Eye, AlertTriangle, Search, Clock, Check, X, Puzzle } from 'lucide-svelte';
   
   export let folderPath = '';
   
@@ -79,7 +79,7 @@
                 data.status === 'waiting_confirmation' ? `Waiting for block confirmation...` :
                 data.status === 'waiting_for_docs' ? 'Waiting for DOC confirmations...' :
                 data.status === 'verifying' ? `Verifying ${data.fileName}...` :
-                data.status === 'verify_warning' ? `⚠️ ${data.fileName} may need re-deploy` :
+                data.status === 'verify_warning' ? `[WARN] ${data.fileName} may need re-deploy` :
                 data.status === 'creating_index' ? 'Creating INDEX...' : data.status,
         fileName: data.fileName,
         phase: data.status,
@@ -250,7 +250,7 @@
   // dURL Tag Detection
   const DURL_TAGS = {
     '.lib': { name: 'Library', icon: 'lib', description: 'A collection of reusable DOCs', color: 'violet' },
-    '.shard': { name: 'DocShard', icon: '🧩', description: 'A shard DOC (part of a larger file)', color: 'cyan' },
+    '.shard': { name: 'DocShard', icon: 'shard', description: 'A shard DOC (part of a larger file)', color: 'cyan' },
     '.shards': { name: 'DocShards', icon: 'shards', description: 'DocShards INDEX that requires reconstruction', color: 'cyan' },
     '.bootstrap': { name: 'Bootstrap', icon: 'bootstrap', description: 'A collection of TELA apps for bootstrapping', color: 'amber' }
   };
@@ -443,9 +443,9 @@
       case 'deploying': return '◎';
       case 'completed': return '✓';
       case 'failed': return '✗';
-      case 'waiting': return '⏳';
-      case 'verifying': return '🔍';
-      case 'warning': return '⚠️';
+      case 'waiting': return '●';
+      case 'verifying': return '◎';
+      case 'warning': return '⚠';
       default: return '○';
     }
   }

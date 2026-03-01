@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
-  import { Search } from 'lucide-svelte';
+  import { Search, Inbox, Pin, Clock } from 'lucide-svelte';
   
   const dispatch = createEventDispatcher();
   
@@ -162,7 +162,7 @@
       <div class="modal-body">
         {#if filteredSearches.length === 0}
           <div class="empty-state">
-            <span class="empty-icon">📭</span>
+            <span class="empty-icon"><Inbox size={24} /></span>
             <p>{filter ? 'No matching searches found' : 'No search history yet'}</p>
             <p class="empty-hint">Your searches will appear here</p>
           </div>
@@ -171,7 +171,11 @@
             {#each filteredSearches as search}
               <div class="search-item" class:pinned={isPinned(search.query)}>
                 <button class="pin-btn" on:click={() => togglePin(search)} title={isPinned(search.query) ? 'Unpin' : 'Pin'}>
-                  {isPinned(search.query) ? '📌' : '📍'}
+                  {#if isPinned(search.query)}
+                    <Pin size={14} fill="currentColor" />
+                  {:else}
+                    <Clock size={14} />
+                  {/if}
                 </button>
                 
                 <button class="search-content" on:click={() => selectSearch(search)}>

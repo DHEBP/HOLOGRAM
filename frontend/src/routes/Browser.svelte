@@ -1123,7 +1123,7 @@ let addressInput = '';
         
         if (cssResponse.ok) {
           let fetchedCSS = await cssResponse.text();
-          addConsoleLog(`📄 CSS fetched: ${fetchedCSS.length} bytes`);
+          addConsoleLog(`[CSS] Fetched: ${fetchedCSS.length} bytes`);
           
           // Rewrite url() references in CSS to be absolute
           fetchedCSS = fetchedCSS.replace(/url\(['"]?(?!http|https|data:|\/\/)([^'")]+)['"]?\)/gi, 
@@ -1431,7 +1431,7 @@ let addressInput = '';
     }
     
     addConsoleLog(`[Server] Loading from local dev server: ${serverInfo.url}`);
-    addConsoleLog(`📂 Directory: ${directory}`);
+    addConsoleLog(`[Dir] Directory: ${directory}`);
     
     try {
       // Add cache-busting to ensure fresh content
@@ -1444,7 +1444,7 @@ let addressInput = '';
       }
       
       let html = await response.text();
-      addConsoleLog(`📄 Fetched HTML (${html.length} bytes)`);
+      addConsoleLog(`[HTML] Fetched HTML (${html.length} bytes)`);
       
       // Inline CSS to avoid cross-origin issues
       html = await inlineLocalDevCSS(html, serverInfo.url);
@@ -1589,7 +1589,7 @@ let addressInput = '';
       
       // Fetch HTML from local server and inject XSWD bridge
       addConsoleLog(`[Server] Loading local dev server: ${status.url}`);
-      addConsoleLog(`📂 Server directory: ${status.directory}`);
+      addConsoleLog(`[Dir] Server directory: ${status.directory}`);
       
       try {
         // Add cache-busting to ensure fresh content
@@ -1603,7 +1603,7 @@ let addressInput = '';
         }
         
         let html = await response.text();
-        addConsoleLog(`📄 Fetched HTML (${html.length} bytes)`);
+        addConsoleLog(`[HTML] Fetched HTML (${html.length} bytes)`);
         
         // Inline CSS to avoid cross-origin issues with doc.write()
         html = await inlineLocalDevCSS(html, status.url);
@@ -2065,11 +2065,11 @@ let addressInput = '';
   
   // Monitor what happens after page loads
   window.addEventListener('DOMContentLoaded', function() {
-    log('📄 [DOM] DOMContentLoaded');
+    log('[DOM] DOMContentLoaded');
     setTimeout(function() {
       var root = document.getElementById('root');
-      log('📄 [DOM] #root innerHTML length: ' + (root ? root.innerHTML.length : 'no root'));
-      log('📄 [DOM] #root children: ' + (root ? root.children.length : 0));
+      log('[DOM] #root innerHTML length: ' + (root ? root.innerHTML.length : 'no root'));
+      log('[DOM] #root children: ' + (root ? root.children.length : 0));
     }, 1000);
   });
 })();

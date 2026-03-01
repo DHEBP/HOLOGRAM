@@ -137,7 +137,7 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 			continue
 		}
 		docDataList[r.index] = r.data
-		a.logToConsole(fmt.Sprintf("  ✓ Fetched DOC %d/%d: %s...", r.index+1, len(docSCIDs), r.scid[:16]))
+		a.logToConsole(fmt.Sprintf("  OK Fetched DOC %d/%d: %s...", r.index+1, len(docSCIDs), r.scid[:16]))
 	}
 
 	// Process DOCs in order, with retry for failed ones
@@ -371,7 +371,7 @@ code { color: #34d399; }
 </style>
 </head><body>
 <div class="header">
-<h1>📄 %s</h1>
+<h1>[File] %s</h1>
 <div class="meta">Type: CSS Stylesheet</div>
 <div class="meta">SCID: <span class="scid">%s</span></div>
 </div>
@@ -666,7 +666,7 @@ func extractDOCsSCIDs(indexData map[string]interface{}) []string {
 					if docNum > maxDoc {
 						maxDoc = docNum
 					}
-					log.Printf("  ✓ Found %s (from code): %s...", key, scid[:16])
+					log.Printf("  OK Found %s (from code): %s...", key, scid[:16])
 				}
 			}
 		}
@@ -701,7 +701,7 @@ func extractDOCsSCIDs(indexData map[string]interface{}) []string {
 			scid := decodeHexString(hexSCID)
 			if len(scid) == 64 { // Valid SCID length
 				scids = append(scids, scid)
-				log.Printf("  ✓ Found %s (from stringkeys): %s...", key, scid[:16])
+				log.Printf("  OK Found %s (from stringkeys): %s...", key, scid[:16])
 			}
 		} else {
 			break // No more DOCs
@@ -772,7 +772,7 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 
 	// Check if file is gzip-compressed (ends with .gz)
 	if strings.HasSuffix(fileName, ".gz") {
-		a.logToConsole(fmt.Sprintf("  ✓ Extracted %s (%d bytes, compressed)", fileName, len(fileContent)))
+		a.logToConsole(fmt.Sprintf("  OK Extracted %s (%d bytes, compressed)", fileName, len(fileContent)))
 		
 		// Decompress the content
 		decompressed, err := decompressGzip(fileContent)
@@ -783,10 +783,10 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 			fileContent = decompressed
 			// Remove .gz from filename for proper type detection
 			fileName = strings.TrimSuffix(fileName, ".gz")
-			a.logToConsole(fmt.Sprintf("  ✓ Decompressed to %s (%d bytes)", fileName, len(fileContent)))
+			a.logToConsole(fmt.Sprintf("  OK Decompressed to %s (%d bytes)", fileName, len(fileContent)))
 		}
 	} else {
-		a.logToConsole(fmt.Sprintf("  ✓ Extracted %s (%d bytes)", fileName, len(fileContent)))
+		a.logToConsole(fmt.Sprintf("  OK Extracted %s (%d bytes)", fileName, len(fileContent)))
 	}
 
 	// Get SCID for tracking - with nil check
@@ -929,13 +929,13 @@ func (a *App) assembleFinalHTML(content *TELAContent) error {
 				// Try to find the CSS content by filename (with and without path)
 				filename := filepath.Base(href)
 				if cssContent, ok := content.CSSByName[filename]; ok {
-					a.logToConsole(fmt.Sprintf("  ✓ Inlined CSS: %s", filename))
+					a.logToConsole(fmt.Sprintf("  OK Inlined CSS: %s", filename))
 					inlinedCSS[filename] = true
 					return "<style>\n" + cssContent + "\n</style>"
 				}
 				// Also try with full path
 				if cssContent, ok := content.CSSByName[href]; ok {
-					a.logToConsole(fmt.Sprintf("  ✓ Inlined CSS: %s", href))
+					a.logToConsole(fmt.Sprintf("  OK Inlined CSS: %s", href))
 					inlinedCSS[href] = true
 					return "<style>\n" + cssContent + "\n</style>"
 				}
@@ -955,13 +955,13 @@ func (a *App) assembleFinalHTML(content *TELAContent) error {
 				// Try to find the JS content by filename (with and without path)
 				filename := filepath.Base(src)
 				if jsContent, ok := content.JSByName[filename]; ok {
-					a.logToConsole(fmt.Sprintf("  ✓ Inlined JS: %s", filename))
+					a.logToConsole(fmt.Sprintf("  OK Inlined JS: %s", filename))
 					inlinedJS[filename] = true
 					return "<script>\n" + jsContent + "\n</script>"
 				}
 				// Also try with full path
 				if jsContent, ok := content.JSByName[src]; ok {
-					a.logToConsole(fmt.Sprintf("  ✓ Inlined JS: %s", src))
+					a.logToConsole(fmt.Sprintf("  OK Inlined JS: %s", src))
 					inlinedJS[src] = true
 					return "<script>\n" + jsContent + "\n</script>"
 				}
@@ -990,7 +990,7 @@ func (a *App) assembleFinalHTML(content *TELAContent) error {
 		} else {
 			content.HTML = cssBlock + "\n" + content.HTML
 		}
-		a.logToConsole(fmt.Sprintf("  ✓ Injected %d additional CSS files", len(remainingCSS)))
+		a.logToConsole(fmt.Sprintf("  OK Injected %d additional CSS files", len(remainingCSS)))
 	}
 
 	// Inject remaining JS that wasn't referenced externally
@@ -1013,7 +1013,7 @@ func (a *App) assembleFinalHTML(content *TELAContent) error {
 		} else {
 			content.HTML = content.HTML + "\n" + jsBlock
 		}
-		a.logToConsole(fmt.Sprintf("  ✓ Injected %d additional JS files", len(remainingJS)))
+		a.logToConsole(fmt.Sprintf("  OK Injected %d additional JS files", len(remainingJS)))
 	}
 
 	// Replace static file references (images, SVGs) with inline content or data URIs
@@ -1050,13 +1050,13 @@ func (a *App) assembleFinalHTML(content *TELAContent) error {
 					if ext == ".svg" {
 						// SVG can be inlined directly as data URI
 						dataURI := "data:" + mimeType + "," + url.PathEscape(staticContent)
-						a.logToConsole(fmt.Sprintf("  ✓ Inlined static: %s (SVG)", filename))
+						a.logToConsole(fmt.Sprintf("  OK Inlined static: %s (SVG)", filename))
 						return strings.Replace(match, src, dataURI, 1)
 					} else {
 						// Binary images would need base64 encoding
 						// For now, just inline as data URI if small enough
 						dataURI := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString([]byte(staticContent))
-						a.logToConsole(fmt.Sprintf("  ✓ Inlined static: %s (base64)", filename))
+						a.logToConsole(fmt.Sprintf("  OK Inlined static: %s (base64)", filename))
 						return strings.Replace(match, src, dataURI, 1)
 					}
 				}

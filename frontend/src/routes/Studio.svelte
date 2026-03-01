@@ -1645,7 +1645,7 @@
     },
     '.shard': {
       name: 'DocShard',
-      icon: '🧩',
+      icon: 'shard',
       description: 'A shard DOC (part of a larger file split across multiple contracts)',
       color: 'cyan'
     },

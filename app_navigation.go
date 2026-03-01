@@ -21,7 +21,7 @@ func (a *App) Navigate(scid string) map[string]interface{} {
 		name := input[7:]
 		if cached, ok := a.getCachedDURLMapping(name); ok {
 			resolved = cached
-			a.logToConsole(fmt.Sprintf("🔎 Resolved dero://%s → %s (cache)", name, cached))
+			a.logToConsole(fmt.Sprintf("[Search] Resolved dero://%s → %s (cache)", name, cached))
 
 			// Refresh mapping in the background when possible
 			if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
@@ -40,11 +40,11 @@ func (a *App) Navigate(scid string) map[string]interface{} {
 			if sc, ok := a.gnomonClient.ResolveDURL(name); ok {
 				resolved = sc
 				a.cacheDURLMapping(name, sc)
-				a.logToConsole(fmt.Sprintf("🔎 Resolved dero://%s → %s", name, sc))
+				a.logToConsole(fmt.Sprintf("[Search] Resolved dero://%s → %s", name, sc))
 			} else if sc, ok := a.gnomonClient.ResolveName(name); ok {
 				resolved = sc
 				a.cacheDURLMapping(name, sc)
-				a.logToConsole(fmt.Sprintf("🔎 Resolved name dero://%s → %s", name, sc))
+				a.logToConsole(fmt.Sprintf("[Search] Resolved name dero://%s → %s", name, sc))
 			} else {
 				a.logToConsole(fmt.Sprintf("[WARN]  Could not resolve dero://%s via Gnomon (name or dURL)", name))
 			}
@@ -72,7 +72,7 @@ func (a *App) GoBack() map[string]interface{} {
 }
 
 func (a *App) GoForward() map[string]interface{} {
-	log.Println("➡️ Go forward")
+	log.Println("[Nav] Go forward")
 	return map[string]interface{}{"success": true, "message": "Forward navigation"}
 }
 

@@ -139,7 +139,7 @@ func (a *App) buildNodeArgs(networkMode NetworkMode, fullDataDir string, netConf
 		}
 		if nodeManager.pruneHistory > 0 {
 			args = append(args, "--prune-history", fmt.Sprintf("%d", nodeManager.pruneHistory))
-			a.logToConsole(fmt.Sprintf("🧹 Pruning history older than %d blocks", nodeManager.pruneHistory))
+			a.logToConsole(fmt.Sprintf("[Node] Pruning history older than %d blocks", nodeManager.pruneHistory))
 		}
 		if nodeManager.syncNodeEndpoint != "" {
 			args = append(args, "--sync-node", nodeManager.syncNodeEndpoint)

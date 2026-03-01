@@ -296,7 +296,7 @@
     const handleSearchResult = (e) => {
       const { type, query, result } = e.detail;
       if (result && result.success) {
-        console.log('📍 Explorer received search result:', { type, query });
+        console.log('[Explorer] Received search result:', { type, query });
         searchQuery = query;
         searchResult = result;
         

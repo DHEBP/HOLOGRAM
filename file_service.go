@@ -100,7 +100,7 @@ func (a *App) GetFileInfo(filePath string) map[string]interface{} {
 
 // ShardFile splits a file into DocShards for TELA deployment
 func (a *App) ShardFile(filePath string, compress bool) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("🔪 Sharding file: %s (compress: %v)", filePath, compress))
+	a.logToConsole(fmt.Sprintf("[File] Sharding file: %s (compress: %v)", filePath, compress))
 
 	// Check file exists
 	info, err := os.Stat(filePath)
@@ -432,7 +432,7 @@ func (a *App) MoveFile(source, destination string) map[string]interface{} {
 
 // RemoveFile removes a file or directory (only from datashards/clone)
 func (a *App) RemoveFile(path string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("🗑️ Removing: %s", path))
+	a.logToConsole(fmt.Sprintf("[File] Removing: %s", path))
 
 	// Security check: only allow removal from datashards directory
 	absPath, _ := filepath.Abs(path)

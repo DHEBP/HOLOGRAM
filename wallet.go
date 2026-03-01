@@ -2285,7 +2285,7 @@ func (a *App) AddTrackedToken(scid, name, symbol string) map[string]interface{} 
 	tokens = append(tokens, newToken)
 	saveTrackedTokens(tokens)
 
-	a.logToConsole(fmt.Sprintf("📌 Added tracked token: %s (%s)", name, scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[Wallet] Added tracked token: %s (%s)", name, scid[:16]+"..."))
 
 	return map[string]interface{}{
 		"success": true,
@@ -2493,7 +2493,7 @@ func (a *App) AddContact(label, address, notes string) map[string]interface{} {
 	contacts = append(contacts, newContact)
 	saveAddressBook(contacts)
 
-	a.logToConsole(fmt.Sprintf("📒 Added contact: %s", label))
+	a.logToConsole(fmt.Sprintf("[AddressBook] Added contact: %s", label))
 
 	return map[string]interface{}{
 		"success": true,
@@ -2848,7 +2848,7 @@ func (a *App) SignMessage(message string) map[string]interface{} {
 
 	address := wallet.GetAddress().String()
 
-	a.logToConsole("✍️ Message signed successfully")
+	a.logToConsole("[Wallet] Message signed successfully")
 
 	return map[string]interface{}{
 		"success":   true,
@@ -2890,7 +2890,7 @@ func (a *App) VerifySignature(signedData string) map[string]interface{} {
 		}
 	}
 
-	a.logToConsole("✓ Signature verified successfully")
+	a.logToConsole("OK Signature verified successfully")
 
 	return map[string]interface{}{
 		"success": true,

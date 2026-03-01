@@ -58,7 +58,7 @@ func (a *App) SetVar(scid, key, value string) map[string]interface{} {
 
 // DeleteVar deletes a key/value store on a SCID (owner only)
 func (a *App) DeleteVar(scid, key string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("🗑️ Deleting variable on %s: %s", scid[:16]+"...", key))
+	a.logToConsole(fmt.Sprintf("[SC] Deleting variable on %s: %s", scid[:16]+"...", key))
 
 	// Check wallet
 	wallet := GetWallet()
@@ -179,7 +179,7 @@ func (a *App) GetMODsList() map[string]interface{} {
 
 // GetMODInfo returns detailed information about a specific MOD
 func (a *App) GetMODInfo(tag string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("📖 Getting MOD info: %s", tag))
+	a.logToConsole(fmt.Sprintf("[TELA] Getting MOD info: %s", tag))
 
 	// Get MOD by tag using tela.Mods.GetMod()
 	mod := tela.Mods.GetMod(tag)

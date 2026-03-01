@@ -432,7 +432,7 @@ func (a *App) SearchCodeLine(line string) map[string]interface{} {
 
 // CleanGnomonDB deletes the Gnomon database for a specific network
 func (a *App) CleanGnomonDB(network string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("🗑️ Cleaning Gnomon DB for network: %s", network))
+	a.logToConsole(fmt.Sprintf("[Gnomon] Cleaning DB for network: %s", network))
 
 	if a.gnomonClient.IsRunning() {
 		return map[string]interface{}{

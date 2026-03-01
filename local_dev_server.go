@@ -528,7 +528,7 @@ func (lds *LocalDevServer) startWatcher() error {
 	// Start watching goroutine
 	go lds.watchLoop()
 
-	lds.app.logToConsole(fmt.Sprintf("👀 File watcher active - watching %d directories", watchCount))
+	lds.app.logToConsole(fmt.Sprintf("[Dev] File watcher active - watching %d directories", watchCount))
 	return nil
 }
 

@@ -787,7 +787,7 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 
 // GetINDEXInfo retrieves information about a TELA INDEX
 func (a *App) GetINDEXInfo(scid string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("📖 Getting INDEX info: %s", scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[TELA] Getting INDEX info: %s", scid[:16]+"..."))
 
 	// Get daemon endpoint
 	isSimulator := a.IsInSimulatorMode()
