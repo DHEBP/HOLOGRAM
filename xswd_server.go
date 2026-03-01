@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -315,29 +316,17 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.handleSigningRequest(conn, req)
 
 	// EPOCH Methods - Developer Support (no permission required, always allowed if enabled)
-	case "AttemptEPOCH":
-		// Get app SCID from params if available
+	case "AttemptEPOCH", "AttemptEPOCHWithAddr":
 		var params map[string]interface{}
 		json.Unmarshal(req.Params, &params)
-		hashes := 100 // default
-		if h, ok := params["hashes"].(float64); ok {
-			hashes = int(h)
-		}
-		appSCID := origin
-		if scid, ok := params["scid"].(string); ok && scid != "" {
-			appSCID = scid
-		}
-		
-		epochResult := s.app.HandleEpochRequest(hashes, appSCID)
-		if epochResult["success"] == true {
-			result = map[string]interface{}{
-				"epochHashes":        epochResult["hashes"],
-				"epochSubmitted":     epochResult["submitted"],
-				"epochDuration":      epochResult["duration_ms"],
-				"epochHashPerSecond": epochResult["hash_per_sec"],
-			}
+
+		// Delegate to the router which handles both variants correctly,
+		// including the address-switch logic for AttemptEPOCHWithAddr.
+		epochResp := s.app.routeEpochCall(req.Method, params)
+		if errMsg, ok := epochResp["error"].(string); ok && errMsg != "" {
+			errRes = &JSONRPCError{Code: -32000, Message: errMsg}
 		} else {
-			errRes = &JSONRPCError{Code: -32000, Message: fmt.Sprintf("%v", epochResult["error"])}
+			result = epochResp["result"]
 		}
 		s.sendResponse(conn, req.ID, result, errRes)
 
@@ -457,9 +446,32 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, nil)
 
 	default:
-		log.Printf("[ERR] XSWD Method not found: %s", req.Method)
-		errRes = &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Unknown method: %s. Check XSWD documentation for supported methods.", req.Method)}
-		s.sendResponse(conn, req.ID, nil, errRes)
+		// Route daemon RPC (DERO.*) and Gnomon (Gnomon.*) methods through the router
+		// so external WebSocket dApps can call them (e.g. DERO.GetSC, DERO.GetInfo, Gnomon.GetSCIDValuesByKey).
+		var params map[string]interface{}
+		json.Unmarshal(req.Params, &params)
+
+		if strings.HasPrefix(req.Method, "DERO.") {
+			resp := s.app.routeDaemonCall(req.Method, params)
+			if errMsg, ok := resp["error"].(string); ok && errMsg != "" {
+				errRes = &JSONRPCError{Code: -32000, Message: errMsg}
+			} else {
+				result = resp["result"]
+			}
+			s.sendResponse(conn, req.ID, result, errRes)
+		} else if strings.HasPrefix(req.Method, "Gnomon.") {
+			resp := s.app.routeGnomonCall(req.Method, params)
+			if errMsg, ok := resp["error"].(string); ok && errMsg != "" {
+				errRes = &JSONRPCError{Code: -32000, Message: errMsg}
+			} else {
+				result = resp["result"]
+			}
+			s.sendResponse(conn, req.ID, result, errRes)
+		} else {
+			log.Printf("[ERR] XSWD Method not found: %s", req.Method)
+			errRes = &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Unknown method: %s. Check XSWD documentation for supported methods.", req.Method)}
+			s.sendResponse(conn, req.ID, nil, errRes)
+		}
 	}
 }
 
