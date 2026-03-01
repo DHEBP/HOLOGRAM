@@ -95,6 +95,7 @@
   let sendStep = 1; // 1: Enter, 2: Review, 3: Success
   let sendDest = '';
   let sendAmount = '';
+  let sendRingsize = 16;
   let sendPassword = '';
   let sendError = null;
   let sendTxid = null;
@@ -876,6 +877,7 @@
     sendStep = 1;
     sendDest = '';
     sendAmount = '';
+    sendRingsize = 16;
     sendPassword = '';
     sendError = null;
     sendTxid = null;
@@ -898,7 +900,8 @@
         transfers: [{
           destination: sendDest,
           amount: sendAmountAtomic
-        }]
+        }],
+        ringsize: sendRingsize
       };
       
       const result = await InternalWalletCall('transfer', params, sendPassword);
@@ -1750,6 +1753,18 @@
                   {/if}
                 </div>
                 
+                <div class="form-group">
+                  <label class="form-label">Ring Size</label>
+                  <select class="select" bind:value={sendRingsize}>
+                    <option value={2}>2 (Non-anonymous, SIGNER visible)</option>
+                    <option value={16}>16 (Standard)</option>
+                    <option value={32}>32</option>
+                    <option value={64}>64</option>
+                    <option value={128}>128</option>
+                  </select>
+                  <span class="form-hint">Ring size 2 is required for smart contracts that use SIGNER(). Higher values increase anonymity.</span>
+                </div>
+
                 <div class="form-actions">
                   <button class="btn btn-primary" disabled={!canSend} on:click={() => sendStep = 2}>
                     Review Transaction
@@ -1776,8 +1791,8 @@
                     </button>
                   </div>
                   <div class="confirm-row">
-                    <span class="confirm-label">Network Fee</span>
-                    <span class="confirm-value confirm-value-fee">Standard (ringsize 16)</span>
+                    <span class="confirm-label">Ring Size</span>
+                    <span class="confirm-value">{sendRingsize}{sendRingsize === 2 ? ' (non-anonymous)' : ''}</span>
                   </div>
                 </div>
                 
@@ -4655,9 +4670,6 @@
   .contact-picker-label { font-size: 12px; color: var(--text-1); font-weight: 500; }
   .contact-picker-addr { font-size: 11px; color: var(--text-4); font-family: var(--font-mono); }
   .contact-picker-empty { padding: var(--s-3); text-align: center; font-size: 12px; color: var(--text-4); }
-
-  /* Send Confirm Fee */
-  .confirm-value-fee { font-size: 12px; color: var(--text-3); }
 
   /* Send Confirm Full Address */
   .confirm-address-full {
