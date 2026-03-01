@@ -359,14 +359,20 @@ func (pm *PermissionManager) GetActiveClients() []string {
 // GetRequiredPermission returns the permission required for a given XSWD method
 func GetRequiredPermission(method string) XSWDPermission {
 	switch method {
-	case "GetAddress", "DERO.GetAddress":
+	case "GetAddress", "DERO.GetAddress",
+		"MakeIntegratedAddress", "SplitIntegratedAddress",
+		"GetDaemon", "DERO.GetDaemon":
 		return PermissionViewAddress
-	case "GetBalance", "DERO.GetBalance":
+	case "GetBalance", "DERO.GetBalance",
+		"GetHeight", "DERO.GetHeight",
+		"GetTransfers", "GetTransferbyTXID":
 		return PermissionViewBalance
 	case "transfer", "Transfer", "DERO.Transfer":
 		return PermissionSignTransaction
 	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
 		return PermissionSCInvoke
+	case "QueryKey", "SignData":
+		return PermissionSignTransaction
 	// Read-only daemon methods - no wallet needed
 	case "DERO.GetInfo", "GetInfo",
 		"DERO.GetBlock", "GetBlock",

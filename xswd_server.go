@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/deroproject/derohe/cryptography/crypto"
+	"github.com/deroproject/derohe/rpc"
 	"github.com/gorilla/websocket"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -238,20 +240,56 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		return
 	}
 
-	// Auto-Login
-	if req.Method == "Login" || req.Method == "DERO.Login" {
+	// Normalize method to canonical form for the switch statement.
+	// The official derohe WalletHandler registers both CamelCase and lowercase aliases.
+	method := req.Method
+	switch method {
+	case "login":
+		method = "Login"
+	case "ping":
+		method = "Ping"
+	case "echo":
+		method = "Echo"
+	case "getaddress":
+		method = "GetAddress"
+	case "getbalance":
+		method = "GetBalance"
+	case "getheight":
+		method = "GetHeight"
+	case "get_transfers":
+		method = "GetTransfers"
+	case "get_transfer_by_txid":
+		method = "GetTransferbyTXID"
+	case "make_integrated_address":
+		method = "MakeIntegratedAddress"
+	case "split_integrated_address":
+		method = "SplitIntegratedAddress"
+	case "query_key":
+		method = "QueryKey"
+	case "transfer_split":
+		method = "Transfer"
+	case "getdaemon":
+		method = "GetDaemon"
+	case "subscribe":
+		method = "Subscribe"
+	case "unsubscribe":
+		method = "Unsubscribe"
+	case "gettrackedassets":
+		method = "GetTrackedAssets"
+	}
+
+	if method == "Login" || method == "DERO.Login" {
 		result = "Logged in"
 		s.sendResponse(conn, req.ID, result, nil)
 		return
 	}
 
-	// Ping / Echo - always allowed
-	if req.Method == "Ping" || req.Method == "DERO.Ping" {
+	if method == "Ping" || method == "DERO.Ping" {
 		result = "Pong"
 		s.sendResponse(conn, req.ID, result, nil)
 		return
 	}
-	if req.Method == "Echo" || req.Method == "DERO.Echo" {
+	if method == "Echo" || method == "DERO.Echo" {
 		params := []interface{}{}
 		json.Unmarshal(req.Params, &params)
 		result = params
@@ -266,10 +304,10 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 
 	// Check permissions for methods that require them
 	pm := GetPermissionManager()
-	requiredPerm := GetRequiredPermission(req.Method)
+	requiredPerm := GetRequiredPermission(method)
 
 	// Handle permission-gated methods
-	switch req.Method {
+	switch method {
 	case "GetAddress", "DERO.GetAddress":
 		// Check if permission granted
 		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
@@ -302,6 +340,208 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		}
 		s.sendResponse(conn, req.ID, result, errRes)
 		
+	case "GetHeight", "DERO.GetHeight":
+		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+		if !walletManager.isOpen {
+			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
+		} else {
+			result = map[string]uint64{"height": walletManager.wallet.Get_Height()}
+		}
+		s.sendResponse(conn, req.ID, result, errRes)
+
+	case "GetTransfers":
+		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+		if !walletManager.isOpen {
+			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
+		} else {
+			var params map[string]interface{}
+			json.Unmarshal(req.Params, &params)
+			coinbase, _ := params["coinbase"].(bool)
+			in, _ := params["in"].(bool)
+			out, _ := params["out"].(bool)
+			if !coinbase && !in && !out {
+				coinbase, in, out = true, true, true
+			}
+			minH := uint64(0)
+			maxH := uint64(0)
+			if v, ok := params["min_height"].(float64); ok { minH = uint64(v) }
+			if v, ok := params["max_height"].(float64); ok { maxH = uint64(v) }
+			var scid crypto.Hash
+			entries := walletManager.wallet.Show_Transfers(scid, coinbase, in, out, minH, maxH, "", "", 0, 0)
+			result = map[string]interface{}{"entries": entries}
+		}
+		s.sendResponse(conn, req.ID, result, errRes)
+
+	case "GetTransferbyTXID":
+		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+		if !walletManager.isOpen {
+			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
+		} else {
+			var params map[string]interface{}
+			json.Unmarshal(req.Params, &params)
+			txid, _ := params["txid"].(string)
+			if len(txid) != 64 {
+				errRes = &JSONRPCError{Code: -32602, Message: "txid must be 64 hex characters"}
+			} else {
+				var scid crypto.Hash
+				foundSCID, entry := walletManager.wallet.Get_Payments_TXID(scid, txid)
+				if entry.Height == 0 {
+					errRes = &JSONRPCError{Code: -32000, Message: fmt.Sprintf("Transaction not found: %s", txid)}
+				} else {
+					result = map[string]interface{}{"entry": entry, "scid": foundSCID.String()}
+				}
+			}
+		}
+		s.sendResponse(conn, req.ID, result, errRes)
+
+	case "MakeIntegratedAddress":
+		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+		if !walletManager.isOpen {
+			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
+		} else {
+			var params map[string]interface{}
+			json.Unmarshal(req.Params, &params)
+			addr := walletManager.wallet.GetAddress()
+			addrCopy := addr.Clone()
+			var payload rpc.Arguments
+			if payloadRaw, ok := params["payload_rpc"].([]interface{}); ok {
+				for _, item := range payloadRaw {
+					if a, ok := item.(map[string]interface{}); ok {
+						name, _ := a["name"].(string)
+						dtype, _ := a["datatype"].(string)
+						val := a["value"]
+						if name == "" { continue }
+						switch dtype {
+						case "S":
+							if v, ok := val.(string); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "S", Value: v}) }
+						case "U":
+							if v, ok := val.(float64); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)}) }
+						case "H":
+							if v, ok := val.(string); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)}) }
+						}
+					}
+				}
+			}
+			addrCopy.Arguments = payload
+			if _, err := addrCopy.MarshalText(); err != nil {
+				errRes = &JSONRPCError{Code: -32000, Message: fmt.Sprintf("Failed to create integrated address: %v", err)}
+			} else {
+				result = map[string]interface{}{"integrated_address": addrCopy.String(), "payload_rpc": payload}
+			}
+		}
+		s.sendResponse(conn, req.ID, result, errRes)
+
+	case "SplitIntegratedAddress":
+		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+		var params map[string]interface{}
+		json.Unmarshal(req.Params, &params)
+		intAddr, _ := params["integrated_address"].(string)
+		if intAddr == "" {
+			errRes = &JSONRPCError{Code: -32602, Message: "integrated_address parameter required"}
+		} else {
+			addr, err := rpc.NewAddress(intAddr)
+			if err != nil {
+				errRes = &JSONRPCError{Code: -32000, Message: fmt.Sprintf("Invalid address: %v", err)}
+			} else if !addr.IsIntegratedAddress() {
+				errRes = &JSONRPCError{Code: -32000, Message: "Address is not an integrated address"}
+			} else {
+				result = map[string]interface{}{"address": addr.BaseAddress().String(), "payload_rpc": addr.Arguments}
+			}
+		}
+		s.sendResponse(conn, req.ID, result, errRes)
+
+	case "QueryKey":
+		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionSignTransaction) {
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: Sign Transaction permission not granted"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+		if !walletManager.isOpen {
+			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
+		} else {
+			var params map[string]interface{}
+			json.Unmarshal(req.Params, &params)
+			keyType, _ := params["key_type"].(string)
+			switch strings.ToLower(keyType) {
+			case "mnemonic":
+				result = map[string]interface{}{"key": walletManager.wallet.GetSeed()}
+			default:
+				errRes = &JSONRPCError{Code: -32602, Message: "Invalid key type, must be mnemonic"}
+			}
+		}
+		s.sendResponse(conn, req.ID, result, errRes)
+
+	case "SignData":
+		// Check if base permission granted (still requires per-TX approval)
+		if pm != nil && origin != "" {
+			if !pm.HasPermission(origin, requiredPerm) {
+				permInfo := GetPermissionInfo(requiredPerm)
+				errRes = &JSONRPCError{Code: -32003, Message: fmt.Sprintf("Permission denied: %s permission not granted", permInfo.Name)}
+				s.sendResponse(conn, req.ID, nil, errRes)
+				return
+			}
+		}
+		s.handleSigningRequest(conn, req)
+
+	case "CheckSignature":
+		if !walletManager.isOpen {
+			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
+		} else {
+			var rawData []byte
+			json.Unmarshal(req.Params, &rawData)
+			if len(rawData) == 0 {
+				var strData string
+				json.Unmarshal(req.Params, &strData)
+				rawData = []byte(strData)
+			}
+			if len(rawData) == 0 {
+				errRes = &JSONRPCError{Code: -32602, Message: "Signature data required"}
+			} else {
+				signer, message, err := walletManager.wallet.CheckSignature(rawData)
+				if err != nil {
+					errRes = &JSONRPCError{Code: -32000, Message: fmt.Sprintf("Verification failed: %v", err)}
+				} else {
+					result = map[string]interface{}{"signer": signer.String(), "message": strings.TrimSpace(string(message))}
+				}
+			}
+		}
+		s.sendResponse(conn, req.ID, result, errRes)
+
+	case "HasMethod":
+		var params map[string]interface{}
+		json.Unmarshal(req.Params, &params)
+		name, _ := params["name"].(string)
+		known := map[string]bool{
+			"GetAddress": true, "GetBalance": true, "GetHeight": true,
+			"Transfer": true, "transfer": true, "scinvoke": true, "SC_Invoke": true,
+			"GetTransfers": true, "GetTransferbyTXID": true, "MakeIntegratedAddress": true,
+			"SplitIntegratedAddress": true, "QueryKey": true, "SignData": true,
+			"CheckSignature": true, "Subscribe": true, "Unsubscribe": true,
+			"GetDaemon": true, "HasMethod": true, "Echo": true, "Ping": true,
+		}
+		result = known[name]
+		s.sendResponse(conn, req.ID, result, errRes)
+
 	case "transfer", "Transfer", "DERO.Transfer", "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
 		// Check if base permission granted (still requires per-TX approval)
 		if pm != nil && origin != "" {
@@ -322,7 +562,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 
 		// Delegate to the router which handles both variants correctly,
 		// including the address-switch logic for AttemptEPOCHWithAddr.
-		epochResp := s.app.routeEpochCall(req.Method, params)
+		epochResp := s.app.routeEpochCall(method, params)
 		if errMsg, ok := epochResp["error"].(string); ok && errMsg != "" {
 			errRes = &JSONRPCError{Code: -32000, Message: errMsg}
 		} else {
@@ -405,10 +645,37 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		}
 		s.sendResponse(conn, req.ID, result, nil)
 
-	// GetDaemon - Returns daemon endpoint for direct node communication
-	// dApps use this to connect directly to the node for read operations (GetSC, tx tracking, etc.)
-	// Returns just host:port - dApps are expected to add protocol prefix and /ws path themselves
-	// This matches Engram's behavior
+	case "Unsubscribe":
+		var params map[string]interface{}
+		json.Unmarshal(req.Params, &params)
+
+		eventType, _ := params["event"].(string)
+		if eventType == "" {
+			errRes = &JSONRPCError{Code: -32602, Message: "Subscription event type is required"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+
+		s.lock.Lock()
+		subs := s.clientSubscriptions[conn]
+		if subs != nil {
+			switch SubscriptionType(eventType) {
+			case SubNewTopoheight:
+				subs.NewTopoheight = false
+			case SubNewBalance:
+				subs.NewBalance = false
+			case SubNewEntry:
+				subs.NewEntry = false
+			}
+		}
+		s.lock.Unlock()
+
+		result = map[string]interface{}{
+			"event":        eventType,
+			"unsubscribed": true,
+		}
+		s.sendResponse(conn, req.ID, result, nil)
+
 	case "GetDaemon", "DERO.GetDaemon":
 		// Check if permission granted (requires view_address like other read methods)
 		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
@@ -451,16 +718,16 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		var params map[string]interface{}
 		json.Unmarshal(req.Params, &params)
 
-		if strings.HasPrefix(req.Method, "DERO.") {
-			resp := s.app.routeDaemonCall(req.Method, params)
+		if strings.HasPrefix(method, "DERO.") {
+			resp := s.app.routeDaemonCall(method, params)
 			if errMsg, ok := resp["error"].(string); ok && errMsg != "" {
 				errRes = &JSONRPCError{Code: -32000, Message: errMsg}
 			} else {
 				result = resp["result"]
 			}
 			s.sendResponse(conn, req.ID, result, errRes)
-		} else if strings.HasPrefix(req.Method, "Gnomon.") {
-			resp := s.app.routeGnomonCall(req.Method, params)
+		} else if strings.HasPrefix(method, "Gnomon.") {
+			resp := s.app.routeGnomonCall(method, params)
 			if errMsg, ok := resp["error"].(string); ok && errMsg != "" {
 				errRes = &JSONRPCError{Code: -32000, Message: errMsg}
 			} else {
@@ -468,8 +735,8 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			}
 			s.sendResponse(conn, req.ID, result, errRes)
 		} else {
-			log.Printf("[ERR] XSWD Method not found: %s", req.Method)
-			errRes = &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Unknown method: %s. Check XSWD documentation for supported methods.", req.Method)}
+			log.Printf("[ERR] XSWD Method not found: %s", method)
+			errRes = &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Unknown method: %s. Check XSWD documentation for supported methods.", method)}
 			s.sendResponse(conn, req.ID, nil, errRes)
 		}
 	}
