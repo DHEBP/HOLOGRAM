@@ -326,6 +326,33 @@ func (a *App) disconnectWalletAPI() {
 	time.Sleep(100 * time.Millisecond)
 }
 
+// pauseGnomonForSimulator stops Gnomon if it is running in simulator mode.
+// The simulator daemon can only handle ONE WebSocket connection at a time.
+// Gnomon holds a persistent WebSocket, so it must be stopped before any
+// wallet WebSocket operation (deploy, invoke, etc.) and restarted after.
+// Returns true if Gnomon was running and was stopped (caller must resume).
+func (a *App) pauseGnomonForSimulator() bool {
+	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
+		return false
+	}
+	a.logToConsole("[SIM] Pausing Gnomon to free simulator WebSocket slot...")
+	a.gnomonClient.Stop()
+	time.Sleep(200 * time.Millisecond)
+	return true
+}
+
+// resumeGnomonForSimulator restarts Gnomon after a simulator WebSocket operation.
+func (a *App) resumeGnomonForSimulator() {
+	if a.gnomonClient == nil {
+		return
+	}
+	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
+	a.logToConsole("[SIM] Resuming Gnomon indexer...")
+	if err := a.gnomonClient.Start(endpoint, "simulator"); err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Failed to restart Gnomon after deploy: %v", err))
+	}
+}
+
 // SimulatorGasFee is the gas fee per transaction in simulator mode
 // Each DOC deployment costs this amount from the wallet balance
 const SimulatorGasFee = uint64(100000)

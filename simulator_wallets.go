@@ -633,8 +633,25 @@ func (swm *SimulatorWalletManager) CloseAll() {
 
 // ================== App API Functions ==================
 
-// GetSimulatorTestWallets returns all pre-seeded test wallets
+// GetSimulatorTestWallets returns all pre-seeded test wallets.
+// If the app restarted with network=simulator but the SimulatorManager was
+// never re-initialized (daemon still running from previous session), this
+// will transparently reconnect before returning wallets.
 func (a *App) GetSimulatorTestWallets() map[string]interface{} {
+	// Auto-reconnect: network is simulator but manager not initialized yet
+	if (a.simulatorManager == nil || !a.simulatorManager.isInitialized) {
+		if net, _ := a.settings["network"].(string); net == "simulator" {
+			if err := a.daemonClient.TestConnection(); err == nil {
+				if a.simulatorManager == nil {
+					a.simulatorManager = NewSimulatorManager(a)
+				}
+				if err := a.simulatorManager.ReconnectSimulatorMode(); err != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Simulator reconnect failed: %v", err))
+				}
+			}
+		}
+	}
+
 	if a.simulatorManager == nil || a.simulatorManager.walletManager == nil {
 		return map[string]interface{}{
 			"success": false,
@@ -782,10 +799,13 @@ func (a *App) OpenSimulatorTestWallet(index int) map[string]interface{} {
 	walletManager.walletPath = fmt.Sprintf("TestWallet_%d (Simulator)", index)
 	walletManager.isOpen = true
 
-	// Connect to daemon - CRITICAL: walletapi.Connect must be called before any wallet ops.
-	// RegisterAllWallets calls disconnectWalletAPI() after setup, so we need a fresh connection
-	// for sync and subsequent transactions (deploy SC, invoke, etc).
+	// Connect to daemon temporarily for sync and balance query.
+	// CRITICAL: In simulator mode, the daemon can only handle ONE WebSocket at a time.
+	// Gnomon holds a persistent WebSocket, so we must pause it, do our work, then resume.
 	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
+
+	gnomonWasRunning := a.pauseGnomonForSimulator()
+
 	if err := walletapi.Connect(endpoint); err != nil {
 		a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
 	}
@@ -797,10 +817,27 @@ func (a *App) OpenSimulatorTestWallet(index int) map[string]interface{} {
 		a.logToConsole(fmt.Sprintf("[WARN] Failed to sync test wallet: %v", err))
 	}
 
-	// Get updated balance
-	mature, locked := internalWallet.Get_Balance()
+	// wallet.Get_Balance() returns stale data in simulator mode because the
+	// in-memory wallet hasn't scanned genesis/funding blocks.  Use the direct
+	// daemon query (same as syncBalancesUnlocked) for an accurate balance.
+	var mature, locked uint64
+	var zerohash [32]byte
+	if bal, _, err := internalWallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, walletInfo.Address); err == nil {
+		mature = bal
+	} else {
+		mature, locked = internalWallet.Get_Balance()
+	}
 
-	a.logToConsole(fmt.Sprintf("[OK] Opened test wallet #%d: %s", index, walletInfo.Address[:20]+"..."))
+	// CRITICAL: Disconnect immediately after sync/balance query to free the
+	// simulator's single WebSocket slot. Leaving this open causes the daemon
+	// to crash when any other component (Gnomon, SC deploy, etc.) connects.
+	a.disconnectWalletAPI()
+
+	if gnomonWasRunning {
+		a.resumeGnomonForSimulator()
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] Opened test wallet #%d: %s (balance: %d)", index, walletInfo.Address[:20]+"...", mature))
 
 	return map[string]interface{}{
 		"success": true,
