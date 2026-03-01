@@ -13,6 +13,7 @@
   let step = 1; // 1: Enter, 2: Review, 3: Success
   let destination = '';
   let amount = '';
+  let ringsize = 16;
   let password = '';
   let showPassword = false;
   let loading = false;
@@ -39,6 +40,7 @@
     step = 1;
     destination = '';
     amount = '';
+    ringsize = 16;
     password = '';
     error = null;
     txid = null;
@@ -68,7 +70,7 @@
     error = null;
     
     try {
-      const result = await TransferToken(token.scid, destination, amountAtomic, password);
+      const result = await TransferToken(token.scid, destination, amountAtomic, password, ringsize);
       
       if (result.success) {
         txid = result.txid;
@@ -161,6 +163,17 @@
               </span>
             {/if}
           </div>
+
+          <div class="form-group">
+            <label class="form-label">Ring Size</label>
+            <select class="select" bind:value={ringsize}>
+              <option value={2}>2 (Non-anonymous)</option>
+              <option value={16}>16 (Standard)</option>
+              <option value={32}>32</option>
+              <option value={64}>64</option>
+              <option value={128}>128</option>
+            </select>
+          </div>
           
         {:else if step === 2}
           <!-- STEP 2: Review & Confirm -->
@@ -176,6 +189,10 @@
             <div class="confirm-row">
               <span class="confirm-label">To</span>
               <span class="confirm-value confirm-value-address">{formatAddress(destination)}</span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Ring Size</span>
+              <span class="confirm-value">{ringsize}{ringsize === 2 ? ' (non-anonymous)' : ''}</span>
             </div>
           </div>
           
