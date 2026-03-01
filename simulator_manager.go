@@ -365,6 +365,49 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 	}
 }
 
+// ReconnectSimulatorMode re-initializes the wallet manager against an
+// already-running simulator daemon.  Called on app restart when the persisted
+// network setting is "simulator" and the daemon at :20000 is reachable.
+func (sm *SimulatorManager) ReconnectSimulatorMode() error {
+	sm.Lock()
+	if sm.isInitialized {
+		sm.Unlock()
+		return nil
+	}
+	sm.isStarting = true
+	sm.Unlock()
+
+	defer func() {
+		sm.Lock()
+		sm.isStarting = false
+		sm.Unlock()
+	}()
+
+	sm.app.logToConsole("[SIM] Reconnecting to existing simulator daemon...")
+
+	globals.Arguments["--simulator"] = true
+	globals.Arguments["--testnet"] = true
+	globals.InitNetwork()
+
+	// Setup wallets from deterministic seeds (idempotent)
+	if err := sm.walletManager.SetupWallets(sm.baseDir); err != nil {
+		return fmt.Errorf("wallet setup failed: %w", err)
+	}
+
+	// Register (will be no-ops if already registered) and sync balances
+	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
+	if err := sm.walletManager.RegisterAllWallets(endpoint); err != nil {
+		sm.app.logToConsole(fmt.Sprintf("[WARN] Failed to register test wallets: %v", err))
+	}
+
+	sm.Lock()
+	sm.isInitialized = true
+	sm.Unlock()
+
+	sm.app.logToConsole(fmt.Sprintf("[OK] Reconnected to simulator — %d test wallets ready", sm.walletManager.Count()))
+	return nil
+}
+
 // StopSimulatorMode stops all simulator services
 func (sm *SimulatorManager) StopSimulatorMode() map[string]interface{} {
 	sm.Lock()
