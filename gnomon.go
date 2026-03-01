@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/civilware/Gnomon/indexer"
 	"github.com/civilware/Gnomon/storage"
@@ -111,6 +117,30 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 		height, err = gravDB.GetLastIndexHeight()
 		if err != nil {
 			height = 0
+		}
+	}
+
+	// Sanity check: if the stored height is beyond the daemon's chain height
+	// the chain was reset (e.g. simulator restart).  Clean the DB and start
+	// from 0 so Gnomon doesn't sit idle waiting for blocks that will never come.
+	if height > 0 {
+		if chainHeight := queryDaemonHeight(endpoint); chainHeight >= 0 && height > chainHeight {
+			g.log(fmt.Sprintf("[Gnomon] Stored height %d exceeds chain height %d — resetting DB", height, chainHeight))
+			g.cleanDBPath(basePath)
+			height = 0
+			// Re-open storage after clean
+			switch g.dbType {
+			case "boltdb":
+				boltDB, boltErr = storage.NewBBoltDB(basePath, "gnomon")
+				if boltErr != nil {
+					return fmt.Errorf("[NewBBoltDB] %s", boltErr)
+				}
+			default:
+				gravDB, gravErr = storage.NewGravDB(basePath, "25ms")
+				if gravErr != nil {
+					return fmt.Errorf("[NewGravDB] %s", gravErr)
+				}
+			}
 		}
 	}
 
@@ -857,6 +887,42 @@ func (g *GnomonClient) SearchCodeLine(line string) []map[string]any {
 
 // CleanDB deletes the Gnomon database for a specific network
 // Must stop Gnomon first before calling this
+// queryDaemonHeight does a quick JSON-RPC call to get the daemon's chain height.
+// The endpoint is in "host:port" form (no scheme).  Returns -1 on any error.
+func queryDaemonHeight(endpoint string) int64 {
+	url := fmt.Sprintf("http://%s/json_rpc", endpoint)
+	body := []byte(`{"jsonrpc":"2.0","id":"1","method":"DERO.GetInfo"}`)
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return -1
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Result struct {
+			TopoHeight int64 `json:"topoheight"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(data, &result) != nil {
+		return -1
+	}
+	return result.Result.TopoHeight
+}
+
+// cleanDBPath removes all files in a gnomon DB directory.
+func (g *GnomonClient) cleanDBPath(dbPath string) {
+	if err := os.RemoveAll(dbPath); err != nil {
+		log.Printf("[Gnomon] Failed to clean DB at %s: %v", dbPath, err)
+	}
+	os.MkdirAll(dbPath, 0755)
+}
+
+// log prints a message to the standard logger with a [Gnomon] prefix.
+func (g *GnomonClient) log(msg string) {
+	log.Println(msg)
+}
+
 func (g *GnomonClient) CleanDB(network string) error {
 	if g.IsRunning() {
 		return fmt.Errorf("gnomon must be stopped before cleaning database")
