@@ -92,7 +92,7 @@ func (a *App) routeEpochCall(method string, params map[string]interface{}) XSWDR
 	case "GetMaxHashesEPOCH":
 		stats := a.GetEpochStats()
 		return xswdSuccess(map[string]interface{}{
-			"maxHashes": stats["maxHashes"],
+			"maxHashes": stats["max_hashes"],
 		})
 
 	default:
