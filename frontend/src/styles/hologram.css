@@ -7505,11 +7505,14 @@
       margin-top: 2px;
     }
     
-    /* Modal Section Title */
+    /* Modal Section Title — matches the mono/uppercase label pattern */
     .modal-section-title {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text-2);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      color: var(--text-4);
       margin-bottom: var(--s-3);
     }
     

@@ -725,17 +725,29 @@
   
   /* Info Note */
   .wallet-info-note {
-    margin-top: var(--s-3);
+    margin-top: var(--s-4);
     font-size: 12px;
     color: var(--text-4);
     display: flex;
-    align-items: center;
-    gap: var(--s-1);
+    align-items: flex-start;
+    gap: var(--s-2);
+    line-height: 1.5;
   }
   
   .wallet-info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--r-full);
+    background: rgba(34, 211, 238, 0.15);
     color: var(--cyan-400);
+    font-size: 10px;
     font-weight: 700;
+    line-height: 1;
+    margin-top: 1px;
   }
   
   /* Fallback Permissions */
@@ -754,14 +766,35 @@
     gap: var(--s-2);
     font-size: 13px;
     color: var(--text-3);
+    line-height: 1.5;
   }
   
   .wallet-check-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--r-full);
+    background: rgba(52, 211, 153, 0.15);
     color: var(--status-ok);
+    font-size: 10px;
+    line-height: 1;
   }
   
   .wallet-denied-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--r-full);
+    background: rgba(255, 255, 255, 0.05);
     color: var(--text-5);
+    font-size: 10px;
+    line-height: 1;
   }
   
   /* Read-Only Badge */
@@ -801,10 +834,11 @@
   
   .wallet-readonly-item {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: var(--s-2);
     font-size: 13px;
     color: var(--text-3);
+    line-height: 1.4;
   }
   
   .wallet-readonly-item-denied {

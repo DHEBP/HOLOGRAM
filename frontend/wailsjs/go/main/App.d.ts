@@ -635,9 +635,9 @@ export function SyncWallet():Promise<Record<string, any>>;
 
 export function TestAndConnectEndpoint(arg1:string):Promise<Record<string, any>>;
 
-export function Transfer(arg1:string,arg2:number,arg3:string):Promise<Record<string, any>>;
+export function Transfer(arg1:string,arg2:number,arg3:string,arg4:number):Promise<Record<string, any>>;
 
-export function TransferToken(arg1:string,arg2:string,arg3:number,arg4:string):Promise<Record<string, any>>;
+export function TransferToken(arg1:string,arg2:string,arg3:number,arg4:string,arg5:number):Promise<Record<string, any>>;
 
 export function UnsubscribeFromEvents():Promise<void>;
 

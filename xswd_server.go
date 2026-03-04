@@ -86,6 +86,8 @@ func NewXSWDServer(app *App) *XSWDServer {
 func (s *XSWDServer) Start() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/xswd", s.handleWebSocket)
+	mux.HandleFunc("/auth", s.handleAuthPage)
+	mux.HandleFunc("/auth/complete", s.handleAuthComplete)
 
 	s.server = &http.Server{
 		Addr:    "127.0.0.1:44326",
@@ -1219,3 +1221,268 @@ func (s *XSWDServer) GetActiveConnections() []map[string]interface{} {
 	
 	return connections
 }
+
+// ==================== HTTP Auth Endpoint (DeroAuth OAuth-style redirect flow) ====================
+//
+// Flow (like OAuth / SAML):
+// 1. Website redirects browser to http://localhost:44326/auth?callback=<url>&nonce=<nonce>&domain=<domain>
+// 2. HOLOGRAM shows its native wallet approval modal
+// 3. User approves → HOLOGRAM constructs a challenge message, signs it
+// 4. Browser redirects back to callback URL with signature + nonce in query params
+// 5. Website verifies the signature server-side, creates session
+
+// handleAuthPage serves the redirect auth waiting page.
+// The page calls /auth/complete, then redirects back to the callback URL.
+func (s *XSWDServer) handleAuthPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	callback := r.URL.Query().Get("callback")
+	nonce := r.URL.Query().Get("nonce")
+	domain := r.URL.Query().Get("domain")
+
+	if callback == "" || nonce == "" || domain == "" {
+		http.Error(w, "Missing required parameters: callback, nonce, domain", http.StatusBadRequest)
+		return
+	}
+
+	authData := map[string]interface{}{
+		"callback": callback,
+		"nonce":    nonce,
+		"domain":   domain,
+	}
+	authDataJSON, _ := json.Marshal(authData)
+
+	html := strings.Replace(authPageHTML, "__AUTH_DATA__", string(authDataJSON), 1)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(html))
+
+	log.Printf("[AUTH] Served auth page for domain=%s nonce=%s", domain, nonce)
+}
+
+// handleAuthComplete triggers HOLOGRAM's wallet modal, constructs the challenge
+// message, signs it, and returns everything in a single request.
+// Called by the auth page JS after loading.
+func (s *XSWDServer) handleAuthComplete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Nonce  string `json:"nonce"`
+		Domain string `json:"domain"`
+		URI    string `json:"uri"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	if body.Nonce == "" || body.Domain == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "nonce and domain are required"})
+		return
+	}
+
+	resChan := make(chan interface{})
+	reqID := fmt.Sprintf("auth-%d", time.Now().UnixNano())
+
+	s.pendingLock.Lock()
+	s.pendingRequests[reqID] = &XSWDPendingRequest{
+		Method:   "handshake",
+		RespChan: resChan,
+		Conn:     nil,
+	}
+	s.pendingLock.Unlock()
+
+	if !s.IsWalletOpen() {
+		runtime.EventsEmit(s.app.ctx, "toast:show", map[string]interface{}{
+			"type":    "warning",
+			"message": "Open a wallet to approve sign-in from " + body.Domain,
+		})
+	}
+
+	runtime.EventsEmit(s.app.ctx, "xswd:request", map[string]interface{}{
+		"id":                   reqID,
+		"type":                 "connect",
+		"appName":              "Sign In with DERO",
+		"origin":               body.Domain,
+		"description":          body.Domain + " wants to verify your identity",
+		"requestedPermissions": []map[string]interface{}{},
+		"existingPermissions":  map[string]bool{},
+		"isReadOnly":           false,
+	})
+
+	log.Printf("[AUTH] Emitted xswd:request for auth, reqID=%s domain=%s", reqID, body.Domain)
+
+	resp := <-resChan
+
+	s.pendingLock.Lock()
+	delete(s.pendingRequests, reqID)
+	s.pendingLock.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err, ok := resp.(error); ok {
+		log.Printf("[AUTH] Denied for domain=%s: %v", body.Domain, err)
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	walletManager.RLock()
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		walletManager.RUnlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "No wallet open"})
+		return
+	}
+
+	address := walletManager.wallet.GetAddress().String()
+
+	now := time.Now().UTC()
+	expiry := now.Add(5 * time.Minute)
+	uri := body.URI
+	if uri == "" {
+		uri = "https://" + body.Domain
+	}
+
+	challengeText := fmt.Sprintf("%s wants you to sign in with your DERO wallet:\n%s\n\nSign in to %s\n\nURI: %s\nVersion: 1\nChain ID: dero-mainnet\nNonce: %s\nIssued At: %s\nExpiration Time: %s",
+		body.Domain,
+		address,
+		body.Domain,
+		uri,
+		body.Nonce,
+		now.Format(time.RFC3339),
+		expiry.Format(time.RFC3339),
+	)
+
+	signature := walletManager.wallet.SignData([]byte(challengeText))
+	walletManager.RUnlock()
+
+	if len(signature) == 0 {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to sign data"})
+		return
+	}
+
+	log.Printf("[AUTH] Signed auth challenge for address=%s domain=%s", address, body.Domain)
+	json.NewEncoder(w).Encode(map[string]string{
+		"signature": string(signature),
+		"address":   address,
+		"nonce":     body.Nonce,
+	})
+}
+
+// authPageHTML is the redirect auth waiting page.
+// Calls /auth/complete (which triggers HOLOGRAM's wallet modal), then redirects
+// back to the callback URL with signature and nonce in the query string.
+// Uses the Void Hierarchy design system (#000/#0c0c14/#1e1e2a, cyan #22d3ee).
+const authPageHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HOLOGRAM — Sign In</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.card{background:#0c0c14;border:1px solid #1e1e2a;border-radius:12px;padding:32px;max-width:420px;width:100%}
+.hdr{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+h1{font-size:18px;font-weight:600;color:#fff}
+.domain-box{background:#1e1e2a;border-radius:8px;padding:12px 16px;margin-bottom:20px;font-size:14px;color:#22d3ee;word-break:break-all}
+.status-area{text-align:center;padding:32px 0;color:#888}
+.status-area .spinner{display:inline-block;width:24px;height:24px;border:2px solid #1e1e2a;border-top-color:#22d3ee;border-radius:50%;animation:spin 0.8s linear infinite;margin-bottom:16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.status-msg{font-size:14px;line-height:1.5}
+.status-sub{font-size:12px;color:#666;margin-top:8px}
+.err-state{text-align:center;color:#f87171;padding:20px 0}
+.success-state{text-align:center;color:#22d3ee;padding:20px 0}
+.btns{display:flex;gap:12px;margin-top:20px}
+.btn{flex:1;padding:12px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all 0.2s}
+.btn:hover{opacity:0.85}
+.cancel{background:#1e1e2a;color:#e0e0e0;border:1px solid #2a2a3a}
+</style>
+</head>
+<body>
+<div class="card" id="card"></div>
+<script>
+var D = __AUTH_DATA__;
+
+function esc(t){var d=document.createElement('div');d.textContent=t;return d.innerHTML}
+
+function iconSvg(){
+  return '<svg width="36" height="36" viewBox="0 0 36 36" fill="none">'+
+    '<circle cx="18" cy="18" r="16" stroke="#22d3ee" stroke-width="1.5" opacity="0.6"/>'+
+    '<path d="M18 6l8 12-8 12-8-12z" stroke="#22d3ee" stroke-width="1.5" fill="none"/>'+
+    '<path d="M18 10l5 8-5 8-5-8z" fill="#22d3ee" opacity="0.15"/></svg>';
+}
+
+function showStatus(msg,sub){
+  var c=document.getElementById('card');
+  c.innerHTML='<div class="hdr">'+iconSvg()+'<h1>Sign In with DERO</h1></div>'+
+    '<div class="domain-box">'+esc(D.domain)+'</div>'+
+    '<div class="status-area"><div class="spinner"></div>'+
+    '<p class="status-msg">'+esc(msg)+'</p>'+
+    (sub?'<p class="status-sub">'+esc(sub)+'</p>':'')+
+    '</div>';
+}
+
+function showError(msg){
+  var c=document.getElementById('card');
+  c.innerHTML='<div class="hdr">'+iconSvg()+'<h1>Sign In with DERO</h1></div>'+
+    '<div class="domain-box">'+esc(D.domain)+'</div>'+
+    '<div class="err-state"><p>'+esc(msg)+'</p></div>'+
+    '<div class="btns"><button class="btn cancel" onclick="goBack()">Go Back</button></div>';
+}
+
+function showSuccess(){
+  var c=document.getElementById('card');
+  c.innerHTML='<div class="hdr">'+iconSvg()+'<h1>Sign In with DERO</h1></div>'+
+    '<div class="domain-box">'+esc(D.domain)+'</div>'+
+    '<div class="success-state"><p>Approved! Redirecting...</p></div>';
+}
+
+function goBack(){
+  var base=D.callback.split('?')[0].replace(/\/api\/auth\/callback\/?$/,'').replace(/\/$/,'');
+  window.location.href=base||D.callback;
+}
+
+async function startAuth(){
+  showStatus('Approve in HOLOGRAM','Switch to HOLOGRAM to approve this sign-in request');
+
+  try{
+    var res=await fetch('/auth/complete',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({nonce:D.nonce,domain:D.domain,uri:D.callback.split('/api/')[0]||('https://'+D.domain)})
+    });
+    var data=await res.json();
+
+    if(data.error){
+      showError(data.error);
+      return;
+    }
+
+    showSuccess();
+
+    var sep=D.callback.indexOf('?')>=0?'&':'?';
+    var url=D.callback+sep+'signature='+encodeURIComponent(data.signature)+'&nonce='+encodeURIComponent(data.nonce);
+    setTimeout(function(){window.location.href=url},400);
+
+  }catch(e){
+    showError('Connection failed: '+e.message);
+  }
+}
+
+startAuth();
+</script>
+</body>
+</html>`
