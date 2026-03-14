@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/deroproject/derohe/cryptography/bn256"
 	"github.com/deroproject/derohe/cryptography/crypto"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
@@ -418,8 +421,8 @@ func (a *App) SyncWallet() map[string]interface{} {
 	// Force an immediate sync pass (otherwise height may never advance)
 	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
 		return map[string]interface{}{
-			"success": false,
-			"error":   "Unable to sync wallet. Check your connection to the daemon.",
+			"success":        false,
+			"error":          "Unable to sync wallet. Check your connection to the daemon.",
 			"technicalError": err.Error(),
 		}
 	}
@@ -455,14 +458,14 @@ func (a *App) SyncWallet() map[string]interface{} {
 
 	// Wallet is behind - wait for it to sync (up to 10 seconds)
 	a.logToConsole("[SYNC] Wallet is behind daemon, waiting for sync...")
-	
+
 	maxWait := 10 * time.Second
 	pollInterval := 500 * time.Millisecond
 	startTime := time.Now()
-	
+
 	for time.Since(startTime) < maxWait {
 		time.Sleep(pollInterval)
-		
+
 		walletManager.RLock()
 		if walletManager.wallet == nil {
 			walletManager.RUnlock()
@@ -473,7 +476,7 @@ func (a *App) SyncWallet() map[string]interface{} {
 		}
 		newHeight := walletManager.wallet.Get_Height()
 		walletManager.RUnlock()
-		
+
 		if newHeight >= daemonHeight {
 			a.logToConsole(fmt.Sprintf("[SYNC] Wallet synced to height %d", newHeight))
 			return map[string]interface{}{
@@ -485,21 +488,21 @@ func (a *App) SyncWallet() map[string]interface{} {
 				"message":      "Wallet synced successfully",
 			}
 		}
-		
+
 		// Log progress
 		if newHeight > walletHeight {
 			a.logToConsole(fmt.Sprintf("[SYNC] Progress: %d / %d", newHeight, daemonHeight))
 			walletHeight = newHeight
 		}
 	}
-	
+
 	// Timeout - still syncing
 	walletManager.RLock()
 	finalHeight := wallet.Get_Height()
 	walletManager.RUnlock()
-	
+
 	a.logToConsole(fmt.Sprintf("[SYNC] Sync timeout, wallet at %d / %d", finalHeight, daemonHeight))
-	
+
 	return map[string]interface{}{
 		"success":      true,
 		"synced":       false,
@@ -525,7 +528,7 @@ func (a *App) GetWalletSyncStatus() map[string]interface{} {
 	wallet := walletManager.wallet
 	walletHeight := wallet.Get_Height()
 	daemonHeight := wallet.Get_Daemon_Height()
-	
+
 	synced := daemonHeight > 0 && walletHeight >= daemonHeight
 
 	return map[string]interface{}{
@@ -622,10 +625,10 @@ func (a *App) GetWalletKeys(password string) map[string]interface{} {
 	a.logToConsole("[OK] Wallet keys retrieved (password verified)")
 
 	return map[string]interface{}{
-		"success":    true,
-		"secretKey":  secretKey,
-		"publicKey":  publicKey,
-		"message":    "Wallet keys retrieved successfully",
+		"success":   true,
+		"secretKey": secretKey,
+		"publicKey": publicKey,
+		"message":   "Wallet keys retrieved successfully",
 	}
 }
 
@@ -994,13 +997,13 @@ func (a *App) GetWalletMiningEarnings(limit int) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"success":       true,
-		"earnings":      earnings,
-		"count":         len(earnings),
-		"total_amount":  totalAmount,
-		"formatted":     formatDEROAmount(totalAmount),
-		"blocks_count":  blocksCount,
-		"minis_count":   minisCount,
+		"success":      true,
+		"earnings":     earnings,
+		"count":        len(earnings),
+		"total_amount": totalAmount,
+		"formatted":    formatDEROAmount(totalAmount),
+		"blocks_count": blocksCount,
+		"minis_count":  minisCount,
 	}
 }
 
@@ -1339,10 +1342,10 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			if err != nil {
 				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
 			}
-			
+
 			walletManager.isOpen = true
 			walletManager.wallet.SetNetwork(!a.IsInSimulatorMode())
-			
+
 			// Set daemon endpoint
 			endpointRaw := "127.0.0.1:10102"
 			if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
@@ -1368,21 +1371,21 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			"success": true,
 			"result":  map[string]string{"address": address},
 		}
-		
+
 	case "GetBalance", "DERO.GetBalance", "getbalance":
 		balance, lockedBalance := wallet.Get_Balance()
 		return map[string]interface{}{
 			"success": true,
 			"result":  map[string]uint64{"balance": balance, "unlocked_balance": balance - lockedBalance, "locked_balance": lockedBalance},
 		}
-		
+
 	case "GetHeight", "DERO.GetHeight", "getheight":
 		height := wallet.Get_Height()
 		return map[string]interface{}{
 			"success": true,
 			"result":  map[string]uint64{"height": height},
 		}
-		
+
 	case "transfer", "Transfer", "DERO.Transfer", "transfer_split":
 		// Check for SC deployment: dApps can send "sc" param to deploy a new contract.
 		// This matches Engram/TELA CLI behavior where transfer with "sc" deploys a contract.
@@ -1641,13 +1644,23 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 
 	case "GetTransfers", "get_transfers":
 		coinbase, in, out := true, true, true
-		if v, ok := params["coinbase"].(bool); ok { coinbase = v }
-		if v, ok := params["in"].(bool); ok { in = v }
-		if v, ok := params["out"].(bool); ok { out = v }
+		if v, ok := params["coinbase"].(bool); ok {
+			coinbase = v
+		}
+		if v, ok := params["in"].(bool); ok {
+			in = v
+		}
+		if v, ok := params["out"].(bool); ok {
+			out = v
+		}
 		minH := uint64(0)
 		maxH := uint64(0)
-		if v, ok := params["min_height"].(float64); ok { minH = uint64(v) }
-		if v, ok := params["max_height"].(float64); ok { maxH = uint64(v) }
+		if v, ok := params["min_height"].(float64); ok {
+			minH = uint64(v)
+		}
+		if v, ok := params["max_height"].(float64); ok {
+			maxH = uint64(v)
+		}
 		var scid crypto.Hash
 		entries := wallet.Show_Transfers(scid, coinbase, in, out, minH, maxH, "", "", 0, 0)
 		return map[string]interface{}{
@@ -1680,14 +1693,22 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 					name, _ := a["name"].(string)
 					dtype, _ := a["datatype"].(string)
 					val := a["value"]
-					if name == "" { continue }
+					if name == "" {
+						continue
+					}
 					switch dtype {
 					case "S":
-						if v, ok := val.(string); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "S", Value: v}) }
+						if v, ok := val.(string); ok {
+							payload = append(payload, rpc.Argument{Name: name, DataType: "S", Value: v})
+						}
 					case "U":
-						if v, ok := val.(float64); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)}) }
+						if v, ok := val.(float64); ok {
+							payload = append(payload, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+						}
 					case "H":
-						if v, ok := val.(string); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)}) }
+						if v, ok := val.(string); ok {
+							payload = append(payload, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
+						}
 					}
 				}
 			}
@@ -1730,6 +1751,17 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			return map[string]interface{}{"success": false, "error": "Invalid key type, must be mnemonic"}
 		}
 
+	// GetPublicKey returns the wallet's bn256 G1 public key as a 66-char compressed hex
+	// string. This is pure public data — the cryptographic counterpart to GetAddress.
+	// It is needed by any service that wants to encrypt data to this wallet using ECDH
+	// (e.g. Dead Drop document delivery) without requiring the user to hold a session.
+	case "GetPublicKey":
+		keys := wallet.Get_Keys()
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"public_key": keys.Public.StringHex()},
+		}
+
 	case "SignData":
 		data, _ := params["data"].(string)
 		if data == "" {
@@ -1758,38 +1790,98 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			"result":  map[string]interface{}{"signer": signer.String(), "message": strings.TrimSpace(string(message))},
 		}
 
+	// DecryptPayload decrypts a Dead Drop document ciphertext encrypted to this
+	// wallet's public key via ECDH + XChaCha20.
+	//
+	// Encryption scheme (server-side, matching this decryption):
+	//   1. Parse recipient's wallet address → extract bn256 G1 public key
+	//   2. Generate ephemeral keypair: ephemeral_secret (random scalar), ephemeral_pub = ephemeral_secret × G
+	//   3. Shared secret = GenerateSharedSecret(ephemeral_secret, recipient_pubkey)
+	//      → shared_key = Keccak256(EncodeCompressed(ephemeral_secret × recipient_pubkey))
+	//   4. Encrypt plaintext with EncryptDecryptUserData(shared_key, plaintext)
+	//   5. Wire format: hex(EncodeCompressed(ephemeral_pub)) + ":" + hex(ciphertext)
+	//
+	// Decryption (here):
+	//   1. Split ciphertext on ":" → ephemeral_pub_hex, ciphertext_hex
+	//   2. Decode ephemeral_pub_hex → bn256.G1 point
+	//   3. Shared secret = GenerateSharedSecret(wallet.Secret, ephemeral_pub)
+	//      → mathematically identical: secret × ephemeral_secret × G = ephemeral_secret × secret × G
+	//   4. XOR-decrypt ciphertext with shared_key
+	//   5. Return base64-encoded plaintext (caller decodes as needed)
+	case "DecryptPayload":
+		ciphertext, _ := params["ciphertext"].(string)
+		if ciphertext == "" {
+			return map[string]interface{}{"success": false, "error": "ciphertext parameter required"}
+		}
+
+		// Split wire format: "<ephemeral_pub_hex>:<ciphertext_hex>"
+		parts := strings.SplitN(ciphertext, ":", 2)
+		if len(parts) != 2 {
+			return map[string]interface{}{"success": false, "error": "invalid ciphertext format: expected '<ephemeral_pub_hex>:<ciphertext_hex>'"}
+		}
+
+		ephemeralPubBytes, err := hex.DecodeString(parts[0])
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("invalid ephemeral public key hex: %v", err)}
+		}
+		ciphertextBytes, err := hex.DecodeString(parts[1])
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("invalid ciphertext hex: %v", err)}
+		}
+
+		// Decode the ephemeral public key (33-byte compressed bn256 G1 point)
+		ephemeralPub := new(bn256.G1)
+		if err := ephemeralPub.DecodeCompressed(ephemeralPubBytes); err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("failed to decode ephemeral public key: %v", err)}
+		}
+
+		// Derive the shared secret using this wallet's private scalar
+		keys := wallet.Get_Keys()
+		sharedKey := crypto.GenerateSharedSecret(keys.Secret.BigInt(), ephemeralPub)
+
+		// Decrypt in-place (XChaCha20 XOR — symmetric operation)
+		plaintext := make([]byte, len(ciphertextBytes))
+		copy(plaintext, ciphertextBytes)
+		crypto.EncryptDecryptUserData(sharedKey, plaintext)
+
+		a.logToConsole("[DecryptPayload] Document decrypted successfully")
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"plaintext": base64.StdEncoding.EncodeToString(plaintext)},
+		}
+
 	case "GetTrackedAssets", "gettrackedassets":
 		// Return tracked asset balances
 		// For the internal wallet, we return DERO balance at minimum
 		// The wallet's Balance map is private, so we access what we can
 		balance, lockedBalance := wallet.Get_Balance()
-		
+
 		// SCID "0000...0000" (zero SCID) represents native DERO
 		zeroScid := deroSCID
 
 		balances := map[string]uint64{
 			zeroScid: balance,
 		}
-		
+
 		// Check for only_positive_balances param
 		onlyPositive := true // default
 		if opb, ok := params["only_positive_balances"].(bool); ok {
 			onlyPositive = opb
 		}
-		
+
 		// Filter zero balances if only_positive_balances is true
 		if onlyPositive && balance == 0 {
 			balances = map[string]uint64{}
 		}
-		
+
 		return map[string]interface{}{
 			"success": true,
 			"result": map[string]interface{}{
-				"balances":        balances,
-				"locked_balance":  lockedBalance,
+				"balances":       balances,
+				"locked_balance": lockedBalance,
 			},
 		}
-		
+
 	default:
 		return map[string]interface{}{"success": false, "error": fmt.Sprintf("Method '%s' is not available. Use XSWD for this operation.", method)}
 	}
@@ -2359,8 +2451,8 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 	transfers := []rpc.Transfer{
 		{
 			Destination: destination,
-			Amount:      0,         // DERO amount (0 for pure token transfer)
-			Burn:        amount,    // Token amount to transfer
+			Amount:      0,      // DERO amount (0 for pure token transfer)
+			Burn:        amount, // Token amount to transfer
 			SCID:        crypto.HashHexToHash(scid),
 		},
 	}
@@ -2899,4 +2991,3 @@ func (a *App) VerifySignature(signedData string) map[string]interface{} {
 		"message": string(message),
 	}
 }
-

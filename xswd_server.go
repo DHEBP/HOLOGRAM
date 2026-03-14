@@ -44,25 +44,25 @@ type XSWDServer struct {
 	upgrader websocket.Upgrader
 	clients  map[*websocket.Conn]bool
 	lock     sync.RWMutex
-	
+
 	pendingRequests map[string]*XSWDPendingRequest
 	pendingLock     sync.Mutex
-	
+
 	// Track client origins for permission checking
 	clientOrigins map[*websocket.Conn]string
-	
+
 	// Track client app names for display in wallet modal
 	clientAppNames map[*websocket.Conn]string
-	
+
 	// Track subscriptions per client
 	clientSubscriptions map[*websocket.Conn]*ClientSubscriptions
-	
+
 	// Track last known values for change detection
 	lastTopoheight int64
 	lastBalance    uint64
-	
+
 	// Subscription event pusher
-	stopPusher chan struct{}
+	stopPusher    chan struct{}
 	pusherRunning bool
 }
 
@@ -107,7 +107,7 @@ func (s *XSWDServer) Start() {
 			}
 		}
 	}()
-	
+
 	// Start subscription event pusher
 	go s.startSubscriptionPusher()
 }
@@ -118,7 +118,7 @@ func (s *XSWDServer) Stop() {
 		close(s.stopPusher)
 		s.pusherRunning = false
 	}
-	
+
 	if s.server != nil {
 		s.server.Close()
 		s.server = nil
@@ -137,10 +137,10 @@ type JSONRPCRequest struct {
 }
 
 type JSONRPCResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	Result  interface{} `json:"result,omitempty"`
+	JSONRPC string        `json:"jsonrpc"`
+	Result  interface{}   `json:"result,omitempty"`
 	Error   *JSONRPCError `json:"error,omitempty"`
-	ID      interface{} `json:"id"`
+	ID      interface{}   `json:"id"`
 }
 
 type JSONRPCError struct {
@@ -169,7 +169,7 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		delete(s.clientAppNames, conn)
 		delete(s.clientSubscriptions, conn)
 		s.lock.Unlock()
-		
+
 		// Clean up any pending signing requests for this connection
 		// This prevents goroutine leaks when a dApp disconnects while a request is pending
 		s.pendingLock.Lock()
@@ -191,7 +191,7 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.pendingLock.Unlock()
-		
+
 		// Mark client as inactive
 		if pm := GetPermissionManager(); pm != nil && origin != "" {
 			pm.SetActiveClient(origin, false)
@@ -317,12 +317,30 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
-		
+
 		if !walletManager.isOpen {
 			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
 		} else {
 			addr := walletManager.wallet.GetAddress().String()
 			result = map[string]string{"address": addr}
+		}
+		s.sendResponse(conn, req.ID, result, errRes)
+
+	// GetPublicKey returns the wallet's compressed bn256 G1 public key as hex.
+	// Required permission: view_address (same as GetAddress — this is public data).
+	// Primary use case: server-side encryption of Dead Drop documents before storage,
+	// so only the wallet holder can decrypt them via DecryptPayload.
+	case "GetPublicKey":
+		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
+			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+		if !walletManager.isOpen {
+			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
+		} else {
+			keys := walletManager.wallet.Get_Keys()
+			result = map[string]string{"public_key": keys.Public.StringHex()}
 		}
 		s.sendResponse(conn, req.ID, result, errRes)
 
@@ -333,7 +351,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
-		
+
 		if !walletManager.isOpen {
 			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
 		} else {
@@ -341,7 +359,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			result = map[string]uint64{"balance": m, "locked_balance": l}
 		}
 		s.sendResponse(conn, req.ID, result, errRes)
-		
+
 	case "GetHeight", "DERO.GetHeight":
 		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
 			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
@@ -374,8 +392,12 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			}
 			minH := uint64(0)
 			maxH := uint64(0)
-			if v, ok := params["min_height"].(float64); ok { minH = uint64(v) }
-			if v, ok := params["max_height"].(float64); ok { maxH = uint64(v) }
+			if v, ok := params["min_height"].(float64); ok {
+				minH = uint64(v)
+			}
+			if v, ok := params["max_height"].(float64); ok {
+				maxH = uint64(v)
+			}
 			var scid crypto.Hash
 			entries := walletManager.wallet.Show_Transfers(scid, coinbase, in, out, minH, maxH, "", "", 0, 0)
 			result = map[string]interface{}{"entries": entries}
@@ -428,14 +450,22 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 						name, _ := a["name"].(string)
 						dtype, _ := a["datatype"].(string)
 						val := a["value"]
-						if name == "" { continue }
+						if name == "" {
+							continue
+						}
 						switch dtype {
 						case "S":
-							if v, ok := val.(string); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "S", Value: v}) }
+							if v, ok := val.(string); ok {
+								payload = append(payload, rpc.Argument{Name: name, DataType: "S", Value: v})
+							}
 						case "U":
-							if v, ok := val.(float64); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)}) }
+							if v, ok := val.(float64); ok {
+								payload = append(payload, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+							}
 						case "H":
-							if v, ok := val.(string); ok { payload = append(payload, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)}) }
+							if v, ok := val.(string); ok {
+								payload = append(payload, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
+							}
 						}
 					}
 				}
@@ -493,8 +523,8 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		}
 		s.sendResponse(conn, req.ID, result, errRes)
 
-	case "SignData":
-		// Check if base permission granted (still requires per-TX approval)
+	case "SignData", "DecryptPayload":
+		// Check if base permission granted (still requires per-request approval)
 		if pm != nil && origin != "" {
 			if !pm.HasPermission(origin, requiredPerm) {
 				permInfo := GetPermissionInfo(requiredPerm)
@@ -535,10 +565,11 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		name, _ := params["name"].(string)
 		known := map[string]bool{
 			"GetAddress": true, "GetBalance": true, "GetHeight": true,
-			"Transfer": true, "transfer": true, "scinvoke": true, "SC_Invoke": true,
+			"GetPublicKey": true,
+			"Transfer":     true, "transfer": true, "scinvoke": true, "SC_Invoke": true,
 			"GetTransfers": true, "GetTransferbyTXID": true, "MakeIntegratedAddress": true,
 			"SplitIntegratedAddress": true, "QueryKey": true, "SignData": true,
-			"CheckSignature": true, "Subscribe": true, "Unsubscribe": true,
+			"CheckSignature": true, "DecryptPayload": true, "Subscribe": true, "Unsubscribe": true,
 			"GetDaemon": true, "HasMethod": true, "Echo": true, "Ping": true,
 		}
 		result = known[name]
@@ -607,21 +638,21 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	case "Subscribe":
 		var params map[string]interface{}
 		json.Unmarshal(req.Params, &params)
-		
+
 		eventType, _ := params["event"].(string)
 		if eventType == "" {
 			errRes = &JSONRPCError{Code: -32602, Message: "Subscription event type is required. Valid types: new_topoheight, new_balance, new_entry"}
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
-		
+
 		// Initialize subscriptions for this client if not exists
 		s.lock.Lock()
 		if s.clientSubscriptions[conn] == nil {
 			s.clientSubscriptions[conn] = &ClientSubscriptions{}
 		}
 		subs := s.clientSubscriptions[conn]
-		
+
 		switch SubscriptionType(eventType) {
 		case SubNewTopoheight:
 			subs.NewTopoheight = true
@@ -639,7 +670,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			return
 		}
 		s.lock.Unlock()
-		
+
 		// Return success
 		result = map[string]interface{}{
 			"event":      eventType,
@@ -686,12 +717,12 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
-		
+
 		// Determine endpoint based on mode:
 		// 1. If simulator mode is active, use simulator daemon (port 20000)
 		// 2. Otherwise, use configured daemon endpoint or default mainnet (port 10102)
 		var endpoint string
-		
+
 		if s.app != nil && s.app.simulatorManager != nil && s.app.simulatorManager.isInitialized {
 			// Simulator mode active - use simulator daemon endpoint
 			endpoint = "127.0.0.1:20000"
@@ -704,7 +735,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 				}
 			}
 		}
-		
+
 		// Strip http:// or https:// prefix if present - return just host:port
 		if len(endpoint) > 7 && endpoint[:7] == "http://" {
 			endpoint = endpoint[7:]
@@ -768,7 +799,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 	appName, _ := info["name"].(string)
 	origin, _ := info["url"].(string)
 	description, _ := info["description"].(string)
-	
+
 	// Parse requested permissions from handshake (if provided by dApp)
 	// Format: {"permissions": ["view_address", "view_balance", ...]}
 	requestedPerms := DefaultRequestedPermissions()
@@ -780,7 +811,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 			}
 		}
 	}
-	
+
 	// Build permission info for frontend display
 	permInfos := make([]map[string]interface{}, 0, len(requestedPerms))
 	for _, p := range requestedPerms {
@@ -807,7 +838,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 
 	// Check if this is a read-only request (no wallet permissions needed)
 	isReadOnly := !HasAnyWalletPermission(requestedPerms)
-	
+
 	// Emit toast warning if no wallet is open AND app needs wallet access
 	if !walletManager.isOpen && !isReadOnly {
 		runtime.EventsEmit(s.app.ctx, "toast:show", map[string]interface{}{
@@ -843,7 +874,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 
 	message := "Wallet connection approved"
 	var grantedPerms []XSWDPermission
-	
+
 	if respMap, ok := resp.(map[string]interface{}); ok {
 		if msg, ok2 := respMap["message"].(string); ok2 {
 			message = msg
@@ -857,18 +888,18 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 			}
 		}
 	}
-	
+
 	// If no permissions explicitly granted, use requested permissions (backward compat)
 	if len(grantedPerms) == 0 {
 		grantedPerms = requestedPerms
 	}
-	
+
 	// Store granted permissions
 	if pm != nil && origin != "" {
 		pm.GrantPermissions(origin, appName, description, grantedPerms)
 		pm.SetActiveClient(origin, true)
 	}
-	
+
 	// Store origin and app name for this connection
 	s.lock.Lock()
 	s.clientOrigins[conn] = origin
@@ -887,22 +918,22 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 	reqID := fmt.Sprintf("%v", req.ID) // Use ID from request as key (simplification)
 	if req.ID == nil {
 		// Notification? Skip
-		return 
+		return
 	}
-	
+
 	// Parse params
 	var paramsMap map[string]interface{}
 	if err := json.Unmarshal(req.Params, &paramsMap); err != nil {
 		s.sendResponse(conn, req.ID, nil, &JSONRPCError{Code: -32700, Message: "Failed to parse request parameters. Check JSON format."})
 		return
 	}
-	
+
 	// Get app name and origin for this connection
 	s.lock.RLock()
 	appName := s.clientAppNames[conn]
 	origin := s.clientOrigins[conn]
 	s.lock.RUnlock()
-	
+
 	if appName == "" {
 		appName = "External dApp"
 	}
@@ -1071,9 +1102,9 @@ func (s *XSWDServer) startSubscriptionPusher() {
 	s.pusherRunning = true
 	ticker := time.NewTicker(2 * time.Second) // Check every 2 seconds
 	defer ticker.Stop()
-	
+
 	log.Println("[NET] Starting XSWD subscription pusher")
-	
+
 	for {
 		select {
 		case <-s.stopPusher:
@@ -1090,11 +1121,11 @@ func (s *XSWDServer) checkAndPushEvents() {
 	s.lock.RLock()
 	clientCount := len(s.clients)
 	s.lock.RUnlock()
-	
+
 	if clientCount == 0 {
 		return // No clients connected
 	}
-	
+
 	// Check for new_topoheight (block height change)
 	if s.app != nil {
 		currentHeight := s.getCurrentTopoheight()
@@ -1105,7 +1136,7 @@ func (s *XSWDServer) checkAndPushEvents() {
 			})
 		}
 	}
-	
+
 	// Check for new_balance (wallet balance change)
 	if walletManager.isOpen && walletManager.wallet != nil {
 		currentBalance, _ := walletManager.wallet.Get_Balance()
@@ -1116,7 +1147,7 @@ func (s *XSWDServer) checkAndPushEvents() {
 			})
 		}
 	}
-	
+
 	// Note: new_entry would require tracking transaction history
 	// This is more complex and would need wallet tx monitoring
 }
@@ -1126,13 +1157,13 @@ func (s *XSWDServer) getCurrentTopoheight() int64 {
 	if s.app == nil {
 		return 0
 	}
-	
+
 	// Try to get from cached stats first
 	stats := s.app.GetLiveStats()
 	if stats == nil {
 		return 0
 	}
-	
+
 	if height, ok := stats["topoheight"].(int64); ok {
 		return height
 	}
@@ -1146,12 +1177,12 @@ func (s *XSWDServer) getCurrentTopoheight() int64 {
 func (s *XSWDServer) pushEvent(eventType SubscriptionType, data map[string]interface{}) {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
-	
+
 	for conn, subs := range s.clientSubscriptions {
 		if subs == nil {
 			continue
 		}
-		
+
 		shouldPush := false
 		switch eventType {
 		case SubNewTopoheight:
@@ -1161,7 +1192,7 @@ func (s *XSWDServer) pushEvent(eventType SubscriptionType, data map[string]inter
 		case SubNewEntry:
 			shouldPush = subs.NewEntry
 		}
-		
+
 		if shouldPush {
 			// Send event as JSON-RPC notification (no id)
 			notification := map[string]interface{}{
@@ -1169,12 +1200,12 @@ func (s *XSWDServer) pushEvent(eventType SubscriptionType, data map[string]inter
 				"method":  string(eventType),
 				"params":  data,
 			}
-			
+
 			notifBytes, err := json.Marshal(notification)
 			if err != nil {
 				continue
 			}
-			
+
 			// Don't hold the read lock while writing
 			go func(c *websocket.Conn, msg []byte) {
 				s.lock.Lock()
@@ -1189,16 +1220,16 @@ func (s *XSWDServer) pushEvent(eventType SubscriptionType, data map[string]inter
 func (s *XSWDServer) GetActiveConnections() []map[string]interface{} {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
-	
+
 	connections := []map[string]interface{}{}
 	pm := GetPermissionManager()
-	
+
 	for conn, origin := range s.clientOrigins {
 		connInfo := map[string]interface{}{
 			"origin": origin,
 			"active": true,
 		}
-		
+
 		// Add subscription info
 		if subs := s.clientSubscriptions[conn]; subs != nil {
 			connInfo["subscriptions"] = map[string]bool{
@@ -1207,7 +1238,7 @@ func (s *XSWDServer) GetActiveConnections() []map[string]interface{} {
 				"new_entry":      subs.NewEntry,
 			}
 		}
-		
+
 		// Add permission info from permission manager
 		if pm != nil && origin != "" {
 			if app := pm.GetApp(origin); app != nil {
@@ -1215,10 +1246,10 @@ func (s *XSWDServer) GetActiveConnections() []map[string]interface{} {
 				connInfo["permissions"] = app.Permissions
 			}
 		}
-		
+
 		connections = append(connections, connInfo)
 	}
-	
+
 	return connections
 }
 
