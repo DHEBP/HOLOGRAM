@@ -83,6 +83,27 @@
   let varType = 'string';  // 'string' or 'uint64'
   let varLoading = false;
   
+  // Hex toggle: tracks which string var keys are currently showing raw hex instead of decoded text
+  let hexViewKeys = {};
+  function toggleHexView(key) { hexViewKeys[key] = !hexViewKeys[key]; hexViewKeys = hexViewKeys; }
+  function tryHexDecode(hex) {
+    if (typeof hex !== 'string') return String(hex);
+    try {
+      const bytes = hex.match(/.{1,2}/g);
+      if (!bytes) return hex;
+      const decoded = new TextDecoder('utf-8', { fatal: true }).decode(
+        new Uint8Array(bytes.map(b => parseInt(b, 16)))
+      );
+      return decoded.replace(/\0+$/, '');
+    } catch { return hex; }
+  }
+  function isHexEncoded(str) {
+    if (typeof str !== 'string' || str.length === 0 || str.length % 2 !== 0) return false;
+    if (!/^[0-9a-fA-F]+$/.test(str)) return false;
+    const decoded = tryHexDecode(str);
+    return decoded !== str;
+  }
+  
   // SC Discovery state
   let showSCDiscoveryModal = false;
   let discoveredSCs = [];
@@ -2211,10 +2232,26 @@
                 </div>
                 <div class="cmd-vars-list">
                   {#each Object.entries(searchResult.data.stringkeys) as [key, value]}
+                    {@const strVal = String(value)}
+                    {@const decodedKey = isHexEncoded(key) ? tryHexDecode(key) : key}
+                    {@const decodedVal = isHexEncoded(strVal) ? tryHexDecode(strVal) : strVal}
+                    {@const keyWasDecoded = decodedKey !== key}
+                    {@const valWasDecoded = decodedVal !== strVal}
+                    {@const showingRaw = hexViewKeys[key]}
                     <div class="cmd-var-row">
-                      <span class="cmd-var-key string">{key}</span>
+                      <span class="cmd-var-key string">{showingRaw ? key : decodedKey}</span>
                       <div class="cmd-var-value-row">
-                        <span class="cmd-var-value" title={value}>{value}</span>
+                        <span class="cmd-var-value" class:cmd-var-hex={showingRaw} title={showingRaw ? strVal : decodedVal}>
+                          {showingRaw ? strVal : decodedVal}
+                        </span>
+                        {#if keyWasDecoded || valWasDecoded}
+                          <button
+                            class="cmd-hex-toggle"
+                            class:active={showingRaw}
+                            on:click={() => toggleHexView(key)}
+                            title={showingRaw ? 'Show decoded value' : 'Show raw hex (on-chain storage)'}
+                          >hex</button>
+                        {/if}
                         {#if showVarEditor}
                           <button
                             on:click={() => handleDeleteVar(key)}
@@ -4668,6 +4705,39 @@
   .cmd-var-delete:hover {
     background: rgba(248, 113, 113, 0.2);
     border-color: rgba(248, 113, 113, 0.5);
+  }
+  
+  .cmd-hex-toggle {
+    padding: 1px 5px;
+    background: rgba(34, 211, 238, 0.08);
+    border: 1px solid rgba(34, 211, 238, 0.2);
+    border-radius: var(--r-xs);
+    color: var(--text-4);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 100ms ease;
+    flex-shrink: 0;
+  }
+  
+  .cmd-hex-toggle:hover {
+    background: rgba(34, 211, 238, 0.15);
+    border-color: rgba(34, 211, 238, 0.4);
+    color: var(--cyan-400);
+  }
+  
+  .cmd-hex-toggle.active {
+    background: rgba(34, 211, 238, 0.2);
+    border-color: rgba(34, 211, 238, 0.5);
+    color: var(--cyan-400);
+  }
+  
+  .cmd-var-hex {
+    color: var(--text-4);
+    font-size: 11px;
   }
   
   /* v6.1 Address icon */
