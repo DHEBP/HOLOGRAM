@@ -256,6 +256,9 @@ let addressInput = '';
   // Gnomon auto-start preference
   let enableAutostart = false;
   
+  // True while Browser.svelte is attempting to auto-start Gnomon on mount
+  let gnomonStarting = false;
+  
   // Local Dev Mode state
   let isLocalDevMode = false;
   let localDevUrl = '';
@@ -689,6 +692,21 @@ let addressInput = '';
   onMount(async () => {
     restoreBrowserSession();
     restoreDiscoveryCache();
+    
+    // Auto-start Gnomon when the Browser page opens — no reason to make the user
+    // stare at a blank page and manually click "Start". EnsureGnomonRunning is
+    // idempotent: it returns immediately if already running.
+    if (!get(appState).gnomonRunning) {
+      gnomonStarting = true;
+      try {
+        await EnsureGnomonRunning();
+        await updateStatus();
+      } catch (err) {
+        console.error('[Browser] Auto-start Gnomon failed:', err);
+      } finally {
+        gnomonStarting = false;
+      }
+    }
     
     // Auto-focus address bar when entering Browser section
     await tick();
@@ -2942,19 +2960,25 @@ let addressInput = '';
       <!-- Content -->
       <div class="browser-discover-content">
         <div class="browser-discover-content-inner">
-          {#if !$appState.gnomonRunning}
+          {#if gnomonStarting}
+            <div class="browser-empty-state">
+              <div class="browser-loading-spinner"></div>
+              <h2 class="browser-empty-title">Starting Gnomon Indexer...</h2>
+              <p class="browser-empty-text">Connecting to blockchain index to discover applications</p>
+            </div>
+          {:else if !$appState.gnomonRunning}
             <div class="browser-empty-state">
               <div class="browser-empty-icon">
                 <Icons name="wifi" size={48} />
               </div>
-              <h2 class="browser-empty-title">Gnomon Indexer Not Running</h2>
-              <p class="browser-empty-text">Start the Gnomon indexer to discover applications</p>
+              <h2 class="browser-empty-title">Could Not Connect to Gnomon</h2>
+              <p class="browser-empty-text">The Gnomon indexer failed to start. Make sure the DERO daemon is running and try again.</p>
               <button on:click={startIndexer} class="btn btn-primary">
-                Start Gnomon Indexer
+                Retry
               </button>
               <label class="gnomon-autostart-option checkbox-wrap">
                 <input type="checkbox" class="checkbox" bind:checked={enableAutostart} />
-                <span class="checkbox-label">Always start automatically</span>
+                <span class="checkbox-label">Start at app launch (before opening Browser)</span>
               </label>
             </div>
           {:else if $appState.gnomonProgress < 95 && filteredApps.length === 0}
