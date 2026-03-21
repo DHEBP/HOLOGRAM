@@ -205,7 +205,14 @@ func discoverShardFiles(entrypointPath string) (docShards [][]byte, recreate, co
 				continue
 			}
 			name := e.Name()
-			parts := strings.Split(strings.TrimSuffix(name, filepath.Ext(name)), "-")
+			base := name
+			// Strip compression extension first (e.g. .gz), then the original extension
+			// so that name-1.js.gz correctly yields "name-1" for the numeric check.
+			if tela.IsCompressedExt(filepath.Ext(base)) {
+				base = strings.TrimSuffix(base, filepath.Ext(base))
+			}
+			base = strings.TrimSuffix(base, filepath.Ext(base))
+			parts := strings.Split(base, "-")
 			if len(parts) >= 2 {
 				if n, pe := strconv.Atoi(parts[len(parts)-1]); pe == nil && n >= 1 {
 					fileName = name
