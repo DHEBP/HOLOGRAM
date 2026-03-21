@@ -2140,6 +2140,87 @@ let addressInput = '';
       log('[DOM] #root children: ' + (root ? root.children.length : 0));
     }, 1000);
   });
+
+  // ── Blob download interceptor ─────────────────────────────────────────────
+  // Apps (e.g. Villager) call URL.revokeObjectURL() synchronously immediately
+  // after a.click(), so we must cache the Blob at createObjectURL() time rather
+  // than fetching it asynchronously later.
+  (function() {
+    var _blobCache = {};
+
+    var _origCreate = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = function(obj) {
+      var url = _origCreate(obj);
+      if (obj && typeof obj === 'object') _blobCache[url] = obj;
+      return url;
+    };
+
+    var _origRevoke = URL.revokeObjectURL.bind(URL);
+    URL.revokeObjectURL = function(url) {
+      delete _blobCache[url];
+      return _origRevoke(url);
+    };
+
+    function _saveBlobDownload(href, filename, cachedBlob) {
+      var blob = cachedBlob || _blobCache[href];
+      if (!blob) {
+        fetch(href).then(function(r) { return r.blob(); }).then(function(b) {
+          _saveBlobDownload(href, filename, b);
+        }).catch(function(e) {
+          log('[Download] Blob unavailable: ' + e.message);
+        });
+        return;
+      }
+      var reader = new FileReader();
+      reader.onloadend = function() {
+        request('saveFile', {
+          filename: filename,
+          base64: reader.result,
+          mimeType: blob.type || 'application/octet-stream'
+        }).then(function(result) {
+          if (result && result.success) {
+            log('[OK] File saved: ' + (result.path || filename));
+          } else if (result && result.cancelled) {
+            log('[Info] Download cancelled');
+          } else {
+            log('[Download] Save failed: ' + (result && result.error));
+          }
+        }).catch(function(e) {
+          log('[Download] Save request error: ' + e.message);
+        });
+      };
+      reader.readAsDataURL(blob);
+    }
+
+    var _origAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function() {
+      if (this.hasAttribute('download') && this.href && this.href.indexOf('blob:') === 0) {
+        var href = this.href;
+        var filename = this.download || 'download';
+        var cached = _blobCache[href];
+        log('[Download] Intercepting: ' + filename);
+        _saveBlobDownload(href, filename, cached);
+        return;
+      }
+      return _origAnchorClick.call(this);
+    };
+
+    document.addEventListener('click', function(e) {
+      var el = e.target;
+      while (el && el.tagName !== 'A') el = el.parentElement;
+      if (!el || !el.hasAttribute('download')) return;
+      var href = el.href;
+      if (!href || href.indexOf('blob:') !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var filename = el.download || 'download';
+      var cached = _blobCache[href];
+      log('[Download] Intercepting click: ' + filename);
+      _saveBlobDownload(href, filename, cached);
+    }, true);
+
+    log('[Bridge] Download interceptor installed');
+  })();
 })();
 <\/script>`;
   }
