@@ -2372,120 +2372,113 @@ let addressInput = '';
     if (!iframeWindow || !iframeWindow.document) return;
     
     try {
-      // Skip if already injected
       if (iframeWindow.__hologramDownloadInterceptor) return;
       iframeWindow.__hologramDownloadInterceptor = true;
-      
-      // Store original createElement to intercept anchor creation
-      const originalCreateElement = iframeWindow.document.createElement.bind(iframeWindow.document);
-      
-      // Intercept document-level click events for download links
-      iframeWindow.document.addEventListener('click', async (e) => {
-        // Find the anchor element (might be the target or a parent)
-        let anchor = e.target;
-        while (anchor && anchor.tagName !== 'A') {
-          anchor = anchor.parentElement;
-        }
-        
-        if (!anchor || !anchor.hasAttribute('download')) return;
-        
-        const href = anchor.href;
-        const filename = anchor.download || 'download';
-        
-        // Only intercept blob: URLs (the problematic ones in WebView)
-        if (!href || !href.startsWith('blob:')) return;
-        
-        // Prevent default download behavior
-        e.preventDefault();
-        e.stopPropagation();
-        
-        addConsoleLog(`[Download] Intercepting blob download: ${filename}`);
-        
-        try {
-          // Fetch the blob
-          const response = await iframeWindow.fetch(href);
-          const blob = await response.blob();
-          
-          // Convert blob to base64
-          const base64 = await new Promise((resolve, reject) => {
-            const reader = new iframeWindow.FileReader();
-            reader.onloadend = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
-          
-          // Use telaHost.saveFile to save via native dialog
-          if (iframeWindow.telaHost && iframeWindow.telaHost.saveFile) {
-            const result = await iframeWindow.telaHost.saveFile({
-              filename: filename,
-              base64: base64,
-              mimeType: blob.type || 'application/octet-stream'
-            });
-            
-            if (result.success) {
-              addConsoleLog(`[OK] File saved: ${result.path}`);
-            } else if (result.cancelled) {
-              addConsoleLog(`[Info] Download cancelled by user`);
-            } else {
-              addConsoleLog(`[ERR] Save failed: ${result.error}`, 'error');
-            }
-          } else {
-            addConsoleLog(`[ERR] telaHost.saveFile not available`, 'error');
-          }
-        } catch (err) {
-          addConsoleLog(`[ERR] Download intercept failed: ${err.message}`, 'error');
-        }
-      }, true); // Use capture phase to intercept before app handlers
-      
-      // Also intercept programmatic clicks on dynamically created anchors
-      // Override the click method on anchor elements
-      const originalHTMLAnchorClick = iframeWindow.HTMLAnchorElement.prototype.click;
-      iframeWindow.HTMLAnchorElement.prototype.click = async function() {
-        if (this.hasAttribute('download') && this.href && this.href.startsWith('blob:')) {
-          const filename = this.download || 'download';
-          const href = this.href;
-          
-          addConsoleLog(`[Download] Intercepting programmatic blob download: ${filename}`);
-          
+
+      // ── Blob cache ──────────────────────────────────────────────────────────
+      // Many dApps (e.g. Villager) call URL.revokeObjectURL() immediately after
+      // a.click(), before any async handler can fetch the blob. By caching the
+      // Blob object at createObjectURL() time we have it in hand regardless of
+      // when revokeObjectURL() fires.
+      const blobCache = new Map();
+
+      const origCreateObjectURL = iframeWindow.URL.createObjectURL.bind(iframeWindow.URL);
+      iframeWindow.URL.createObjectURL = function(obj) {
+        const url = origCreateObjectURL(obj);
+        if (obj instanceof iframeWindow.Blob) blobCache.set(url, obj);
+        return url;
+      };
+
+      const origRevokeObjectURL = iframeWindow.URL.revokeObjectURL.bind(iframeWindow.URL);
+      iframeWindow.URL.revokeObjectURL = function(url) {
+        blobCache.delete(url);
+        return origRevokeObjectURL(url);
+      };
+
+      // ── Shared save helper ───────────────────────────────────────────────────
+      async function saveBlob(href, filename, cachedBlob) {
+        // Prefer the synchronously-captured blob; fall back to fetch for URLs
+        // that were created before our interceptor was injected.
+        let blob = cachedBlob || blobCache.get(href);
+        if (!blob) {
           try {
-            const response = await iframeWindow.fetch(href);
-            const blob = await response.blob();
-            
-            const base64 = await new Promise((resolve, reject) => {
-              const reader = new iframeWindow.FileReader();
-              reader.onloadend = () => resolve(reader.result);
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-            
-            if (iframeWindow.telaHost && iframeWindow.telaHost.saveFile) {
-              const result = await iframeWindow.telaHost.saveFile({
-                filename: filename,
-                base64: base64,
-                mimeType: blob.type || 'application/octet-stream'
-              });
-              
-              if (result.success) {
-                addConsoleLog(`[OK] File saved: ${result.path}`);
-              } else if (result.cancelled) {
-                addConsoleLog(`[Info] Download cancelled by user`);
-              }
-            }
-          } catch (err) {
-            addConsoleLog(`[ERR] Programmatic download failed: ${err.message}`, 'error');
-            // Fall back to original behavior
-            return originalHTMLAnchorClick.call(this);
+            const resp = await iframeWindow.fetch(href);
+            blob = await resp.blob();
+          } catch (fetchErr) {
+            addConsoleLog(`[ERR] Download: could not read blob — ${fetchErr.message}`);
+            return;
           }
+        }
+
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new iframeWindow.FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+        if (!iframeWindow.telaHost || !iframeWindow.telaHost.saveFile) {
+          addConsoleLog('[ERR] Download: telaHost.saveFile not available');
           return;
         }
-        
-        // For non-blob downloads, use original behavior
-        return originalHTMLAnchorClick.call(this);
+
+        const result = await iframeWindow.telaHost.saveFile({
+          filename,
+          base64,
+          mimeType: blob.type || 'application/octet-stream'
+        });
+
+        if (result.success) {
+          addConsoleLog(`[OK] File saved to: ${result.path}`);
+        } else if (result.cancelled) {
+          addConsoleLog('[Info] Download cancelled by user');
+        } else {
+          addConsoleLog(`[ERR] Save failed: ${result.error}`);
+        }
+      }
+
+      // ── Programmatic .click() override ──────────────────────────────────────
+      // Intercept anchor.click() calls (Villager pattern).
+      // Must NOT be async itself — we grab the cached blob synchronously before
+      // the caller can call revokeObjectURL(), then fire async work in the bg.
+      const origAnchorClick = iframeWindow.HTMLAnchorElement.prototype.click;
+      iframeWindow.HTMLAnchorElement.prototype.click = function() {
+        if (this.hasAttribute('download') && this.href && this.href.startsWith('blob:')) {
+          const href = this.href;
+          const filename = this.download || 'download';
+          // Capture blob NOW (synchronously) before the caller revokes the URL
+          const cachedBlob = blobCache.get(href);
+          addConsoleLog(`[Download] Intercepting: ${filename}`);
+          saveBlob(href, filename, cachedBlob).catch(err =>
+            addConsoleLog(`[ERR] Download failed: ${err.message}`)
+          );
+          return; // do not call original — native WebView can't download anyway
+        }
+        return origAnchorClick.call(this);
       };
-      
-      addConsoleLog('[OK] Download interceptor installed');
+
+      // ── Declarative click events (<a download> in markup) ───────────────────
+      iframeWindow.document.addEventListener('click', (e) => {
+        let anchor = e.target;
+        while (anchor && anchor.tagName !== 'A') anchor = anchor.parentElement;
+        if (!anchor || !anchor.hasAttribute('download')) return;
+        const href = anchor.href;
+        if (!href || !href.startsWith('blob:')) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const filename = anchor.download || 'download';
+        const cachedBlob = blobCache.get(href);
+        addConsoleLog(`[Download] Intercepting click: ${filename}`);
+        saveBlob(href, filename, cachedBlob).catch(err =>
+          addConsoleLog(`[ERR] Download failed: ${err.message}`)
+        );
+      }, true);
+
+      addConsoleLog('[OK] Download interceptor installed (with blob cache)');
     } catch (error) {
-      // Silently fail for cross-origin iframes
+      // Silently fail — cross-origin iframes will throw here
     }
   }
   
