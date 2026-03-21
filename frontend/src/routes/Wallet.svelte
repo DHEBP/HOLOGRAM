@@ -3065,7 +3065,7 @@
                 <div class="form-group">
                   <label class="form-label">Wallet File</label>
                   <div class="input-row">
-                    <input type="text" bind:value={walletPath} placeholder="~/path/to/wallet.db" class="input" />
+                    <input type="text" bind:value={walletPath} placeholder="/path/to/wallet.db" class="input" />
                     <button on:click={selectWalletFile} class="btn btn-secondary">Browse</button>
                   </div>
                 </div>
