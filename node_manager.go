@@ -239,8 +239,9 @@ func (a *App) TestAndConnectEndpoint(endpoint string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[OK] Connected to %s (v%s, %s, height: %d)", endpoint, version, network, height))
 
-	// Save the endpoint to settings
+	// Save the endpoint to settings and persist to disk immediately
 	a.settings["daemon_endpoint"] = endpoint
+	a.saveSettings()
 	a.logToConsole(fmt.Sprintf("[OK] Saved endpoint: %s", endpoint))
 
 	// Update the daemon client to use this endpoint

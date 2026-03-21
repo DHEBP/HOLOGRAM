@@ -202,6 +202,13 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     await refreshNodeStatus();
     nodeDataDir = $settingsState.nodeDataDir || '';
     
+    // Pre-fill the endpoint input with the stored value so users can see
+    // and verify what HOLOGRAM is currently configured to connect to.
+    // Only initialize if the user hasn't typed anything yet.
+    if (!customEndpoint && $settingsState.daemonEndpoint) {
+      customEndpoint = $settingsState.daemonEndpoint;
+    }
+    
     // Subscribe to network mode changes
     EventsOn('network-mode-changed', async () => {
       await syncNetworkMode();
@@ -2067,7 +2074,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               <input
                 type="text"
                 bind:value={customEndpoint}
-                placeholder={$settingsState.daemonEndpoint || 'http://127.0.0.1:10102'}
+                placeholder="http://127.0.0.1:10102"
                 class="input endpoint-input"
                 on:keydown={(e) => e.key === 'Enter' && testAndConnect()}
               />
@@ -2087,7 +2094,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
             
             <p class="form-hint settings-hint-top-sm">
-              Power users: Enter your LAN node address (e.g., http://192.168.1.100:10102)
+              Enter your node address and click <strong>Test &amp; Connect</strong>. Works for local (127.0.0.1), LAN (192.168.x.x), or remote nodes. Your endpoint is saved automatically on successful connection.
             </p>
             
             <!-- Connection test result -->
