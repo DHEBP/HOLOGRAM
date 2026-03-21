@@ -137,18 +137,34 @@ func (a *App) ShardFile(filePath string, compress bool) map[string]interface{} {
 
 	// Set shard path and create shards using tela library
 	tela.SetShardPath(outputDir)
-	
+
 	compression := ""
 	if compress {
 		compression = tela.COMPRESSION_GZIP
+		// Compress BEFORE sharding: tela.Compress returns a base64-encoded gzip string.
+		// If we pass raw data with compression set, CreateShardFiles checks content != nil
+		// and skips its own compression step — the output would be named .gz but contain
+		// uncompressed bytes, causing ConstructFromShards to fail with "unexpected EOF"
+		// when it tries to base64-decode raw content. We compress here so each shard
+		// file is a fragment of the base64 gzip stream, exactly what ConstructFromShards
+		// expects when it concatenates and decompresses.
+		compressed, compErr := tela.Compress(data, compression)
+		if compErr != nil {
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Failed to compress file before sharding",
+				"technicalError": compErr.Error(),
+			}
+		}
+		data = []byte(compressed)
 	}
-	
+
 	err = tela.CreateShardFiles(filePath, compression, data)
 	if err != nil {
 		return ErrorResponse(err)
 	}
 
-	// Count shard files created
+	// Count shard files created using the (possibly compressed) data size
 	totalShards, _ := tela.GetTotalShards(data)
 
 	a.logToConsole(fmt.Sprintf("[OK] Created shard files in %s", outputDir))
