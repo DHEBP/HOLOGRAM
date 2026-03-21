@@ -399,11 +399,13 @@ export async function syncNetworkMode() {
         currentEndpoint: endpoint,
       }));
       
-      // Also update settingsState and persist so restart shows correct network
+      // Update settingsState network label and persist.
+      // Do NOT touch daemonEndpoint here — it is loaded from disk by loadSettings()
+      // and updated only by TestAndConnectEndpoint. Overwriting it here would replace
+      // a user-configured remote endpoint with a constructed 127.0.0.1 URL.
       settingsState.update(state => ({
         ...state,
         network: network,
-        daemonEndpoint: endpoint,
       }));
       await saveSetting('network', network);
       

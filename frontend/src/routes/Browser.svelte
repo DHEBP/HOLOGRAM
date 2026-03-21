@@ -1064,6 +1064,24 @@ let addressInput = '';
             }
             break;
             
+          case 'saveFile': {
+            // Download request from bridge script (works for cross-origin HTTP-served apps)
+            const { filename, base64, mimeType } = payload;
+            const ext = (filename || '').split('.').pop().toLowerCase();
+            const filterMap = {
+              png: ['PNG Image', '*.png'],
+              jpg: ['JPEG Image', '*.jpg'],
+              jpeg: ['JPEG Image', '*.jpeg'],
+              gif: ['GIF Image', '*.gif'],
+              svg: ['SVG Image', '*.svg'],
+              json: ['JSON File', '*.json'],
+              txt: ['Text File', '*.txt'],
+            };
+            const [filterName, filterPattern] = filterMap[ext] || ['All Files', '*.*'];
+            result = await SaveBinaryFileWithDialog(filename || 'download', base64, filterName, filterPattern);
+            break;
+          }
+
           default:
             throw new Error('Unknown action: ' + action);
         }

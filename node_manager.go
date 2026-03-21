@@ -1262,7 +1262,13 @@ func (a *App) GetNetworkMode() map[string]interface{} {
 	nodeManager.RUnlock()
 
 	netConfig := GetNetworkConfig(mode)
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+
+	// Use the actual stored endpoint as the base — not a constructed localhost URL.
+	// This ensures remote/LAN endpoints survive the round-trip to the frontend.
+	endpoint, _ := a.settings["daemon_endpoint"].(string)
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+	}
 
 	// Reconcile with actual daemon connection
 	if info, err := a.daemonClient.GetInfo(); err == nil {
@@ -1278,7 +1284,11 @@ func (a *App) GetNetworkMode() map[string]interface{} {
 			if inferred != "" && inferred != mode {
 				mode = inferred
 				netConfig = GetNetworkConfig(inferred)
-				endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+				// For localhost endpoints only, correct the port to match the
+				// detected network. Remote endpoints are left untouched.
+				if isLocalhostEndpoint(endpoint) {
+					endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+				}
 
 				nodeManager.Lock()
 				nodeManager.networkMode = inferred
@@ -1293,7 +1303,6 @@ func (a *App) GetNetworkMode() map[string]interface{} {
 				a.saveSettings()
 			} else if inferred != "" {
 				netConfig = GetNetworkConfig(inferred)
-				endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
 			}
 		}
 	}

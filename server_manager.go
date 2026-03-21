@@ -543,6 +543,96 @@ func getXSWDBridgeScript() string {
   // 2. If we inject an incomplete telaHost here, dApps find it but can't use it, causing silent failures
   // 3. By not providing telaHost, dApps will fall back to WebSocket, which our bridge intercepts
   // 4. Once the real telaHost is injected, dApps can use it if they prefer
+
+  // ── Blob download interceptor ────────────────────────────────────────────
+  // HTTP-served TELA apps run cross-origin from the parent Wails window, so the
+  // parent cannot inject JavaScript into this iframe's context directly.  The
+  // bridge script runs here (in the iframe's own origin) and is therefore the
+  // right place to intercept downloads and forward them via postMessage so the
+  // parent can open a native save-file dialog.
+  (function() {
+    // Cache blobs at createObjectURL time so we still have the data even after
+    // the app calls revokeObjectURL synchronously (e.g. Villager does this
+    // immediately after a.click(), which races against any async fetch).
+    var _blobCache = {};
+
+    var _origCreate = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = function(obj) {
+      var url = _origCreate(obj);
+      if (obj && typeof obj === 'object') _blobCache[url] = obj;
+      return url;
+    };
+
+    var _origRevoke = URL.revokeObjectURL.bind(URL);
+    URL.revokeObjectURL = function(url) {
+      delete _blobCache[url];
+      return _origRevoke(url);
+    };
+
+    function _saveBlobDownload(href, filename, cachedBlob) {
+      var blob = cachedBlob || _blobCache[href];
+      if (!blob) {
+        // Last-resort fetch (may fail if already revoked, but worth trying)
+        fetch(href).then(function(r) { return r.blob(); }).then(function(b) {
+          _saveBlobDownload(href, filename, b);
+        }).catch(function(e) {
+          log('[Download] Blob unavailable: ' + e.message);
+        });
+        return;
+      }
+      var reader = new FileReader();
+      reader.onloadend = function() {
+        request('saveFile', {
+          filename: filename,
+          base64: reader.result,
+          mimeType: blob.type || 'application/octet-stream'
+        }).then(function(result) {
+          if (result && result.success) {
+            log('[OK] File saved: ' + (result.path || filename));
+          } else if (result && result.cancelled) {
+            log('[Info] Download cancelled');
+          } else {
+            log('[Download] Save failed: ' + (result && result.error));
+          }
+        }).catch(function(e) {
+          log('[Download] Save request error: ' + e.message);
+        });
+      };
+      reader.readAsDataURL(blob);
+    }
+
+    // Intercept programmatic .click() on <a download blob:...> elements.
+    // Must be synchronous so the blob reference is captured before revokeObjectURL fires.
+    var _origAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function() {
+      if (this.hasAttribute('download') && this.href && this.href.indexOf('blob:') === 0) {
+        var href = this.href;
+        var filename = this.download || 'download';
+        var cached = _blobCache[href]; // capture sync
+        log('[Download] Intercepting: ' + filename);
+        _saveBlobDownload(href, filename, cached);
+        return;
+      }
+      return _origAnchorClick.call(this);
+    };
+
+    // Intercept declarative clicks on <a download> in markup.
+    document.addEventListener('click', function(e) {
+      var el = e.target;
+      while (el && el.tagName !== 'A') el = el.parentElement;
+      if (!el || !el.hasAttribute('download')) return;
+      var href = el.href;
+      if (!href || href.indexOf('blob:') !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var filename = el.download || 'download';
+      var cached = _blobCache[href];
+      log('[Download] Intercepting click: ' + filename);
+      _saveBlobDownload(href, filename, cached);
+    }, true);
+
+    log('[Bridge] Download interceptor installed');
+  })();
 })();
 </script>`
 }
