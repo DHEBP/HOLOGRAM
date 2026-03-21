@@ -1388,9 +1388,27 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 
 	case "GetHeight", "DERO.GetHeight", "getheight":
 		height := wallet.Get_Height()
+		result := map[string]interface{}{
+			"height": height,
+		}
+		// Many dApps (e.g. vault.tela) use stableheight as a trigger to fetch SC data.
+		// The raw wallet only knows the current height; stableheight and topoheight come
+		// from the daemon's DERO.GetHeight response, so we augment the result here.
+		if a.daemonClient != nil {
+			if raw, err := a.daemonClient.Call("DERO.GetHeight", nil); err == nil {
+				if daemonResult, ok := raw.(map[string]interface{}); ok {
+					if sh, ok := daemonResult["stableheight"]; ok {
+						result["stableheight"] = sh
+					}
+					if th, ok := daemonResult["topoheight"]; ok {
+						result["topoheight"] = th
+					}
+				}
+			}
+		}
 		return map[string]interface{}{
 			"success": true,
-			"result":  map[string]uint64{"height": height},
+			"result":  result,
 		}
 
 	case "transfer", "Transfer", "DERO.Transfer", "transfer_split":

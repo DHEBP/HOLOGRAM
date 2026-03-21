@@ -153,24 +153,15 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 
 	case "GetAllSCIDVariableDetails":
 		scid := getStr("scid")
-		vars := a.gnomonClient.GetAllSCIDVariableDetails(scid)
-		varMaps := make([]map[string]interface{}, 0, len(vars))
-		for _, v := range vars {
-			value := v.Value
-			if strVal, ok := value.(string); ok {
-				value = decodeHexString(strVal)
-			}
-			varMaps = append(varMaps, map[string]interface{}{
-				"Key":   v.Key,
-				"Value": value,
-			})
-		}
+		varMaps := make([]map[string]interface{}, 0)
 
-		// Fallback: if Gnomon has no data for this SCID, query the daemon directly
-		// This handles non-TELA SCs (like feed.tela's data contract) that Gnomon doesn't index.
-		// The daemon returns string values as hex — decode them so TELA apps receive plain strings.
-		if len(varMaps) == 0 && a.daemonClient != nil && scid != "" {
-			log.Printf("[GNOMON] Gnomon has no data for %s, falling back to daemon DERO.GetSC", scid[:min(16, len(scid))])
+		// Primary: query the daemon — it always reflects the live blockchain state.
+		// Gnomon can be stale (e.g. a SC that gained new entries since Gnomon last indexed it
+		// would return a partial list from Gnomon, silently missing the newer entries).
+		// The daemon returns string values hex-encoded; decode them before passing to the app.
+		// Both stringkeys (string-keyed vars) and uint64keys (integer-keyed vars) are included
+		// to match the full dataset returned by telaHost.getSmartContract in Engram.
+		if a.daemonClient != nil && scid != "" {
 			if scResult, err := a.daemonClient.GetSC(scid, false, true); err == nil {
 				if stringkeys, ok := scResult["stringkeys"].(map[string]interface{}); ok {
 					for k, v := range stringkeys {
@@ -183,8 +174,40 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 							"Value": value,
 						})
 					}
-					log.Printf("[GNOMON] Daemon fallback returned %d variables for %s", len(varMaps), scid[:min(16, len(scid))])
 				}
+				// uint64keys holds variables indexed by an integer key (e.g. NFT token IDs).
+				// The daemon JSON encodes these keys as strings (map[string]interface{}) after
+				// the JSON round-trip. String values inside are hex-encoded; numerics pass as-is.
+				if uint64keys, ok := scResult["uint64keys"].(map[string]interface{}); ok {
+					for k, v := range uint64keys {
+						value := v
+						if strVal, ok := v.(string); ok {
+							value = decodeHexString(strVal)
+						}
+						varMaps = append(varMaps, map[string]interface{}{
+							"Key":   k,
+							"Value": value,
+						})
+					}
+				}
+				log.Printf("[GNOMON] Daemon returned %d variables for %s", len(varMaps), scid[:min(16, len(scid))])
+			}
+		}
+
+		// Fallback: if the daemon query failed or returned nothing, try Gnomon.
+		// Gnomon already hex-decodes all string values during indexing
+		// (see gnomon/indexer/indexer.go VariableStringKeys loop), so do NOT
+		// call decodeHexString here — it would double-decode SCID strings.
+		if len(varMaps) == 0 {
+			vars := a.gnomonClient.GetAllSCIDVariableDetails(scid)
+			for _, v := range vars {
+				varMaps = append(varMaps, map[string]interface{}{
+					"Key":   v.Key,
+					"Value": v.Value,
+				})
+			}
+			if len(varMaps) > 0 {
+				log.Printf("[GNOMON] Daemon unavailable, returned %d variables from Gnomon for %s", len(varMaps), scid[:min(16, len(scid))])
 			}
 		}
 
