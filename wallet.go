@@ -128,6 +128,13 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	walletManager.Lock()
 	defer walletManager.Unlock()
 
+	// Expand leading ~ so users can type ~/path/to/wallet.db as well as absolute paths
+	if strings.HasPrefix(filePath, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			filePath = filepath.Join(home, filePath[2:])
+		}
+	}
+
 	// If just a name is provided (no path separators), construct full path
 	// This matches the behavior of CreateWallet for consistency
 	if !strings.Contains(filePath, string(filepath.Separator)) && !strings.Contains(filePath, "/") {
@@ -346,7 +353,7 @@ func (a *App) GetWalletStatus() map[string]interface{} {
 		"success": true,
 		"isOpen":  true,
 		"address": address,
-		"path":    walletManager.walletPath,
+		"path":    tildeShorten(walletManager.walletPath),
 	}
 }
 
@@ -1887,6 +1894,15 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 	}
 }
 
+// tildeShorten replaces the user's home directory prefix with ~ for display.
+// The reverse (expanding ~) is handled at the top of OpenWallet.
+func tildeShorten(path string) string {
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, home) {
+		return "~" + path[len(home):]
+	}
+	return path
+}
+
 // SelectWalletFile opens a file dialog to select a wallet file
 func (a *App) SelectWalletFile() string {
 	walletsDir := filepath.Join(getDatashardsDir(), "wallets")
@@ -1911,7 +1927,7 @@ func (a *App) SelectWalletFile() string {
 		log.Printf("Error opening file dialog: %v", err)
 		return ""
 	}
-	return selection
+	return tildeShorten(selection)
 }
 
 // WalletInfo represents information about a wallet for the frontend
