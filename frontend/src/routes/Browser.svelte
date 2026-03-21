@@ -264,6 +264,11 @@ let addressInput = '';
   let localDevUrl = '';
   let hotReloadInProgress = false; // Flag to auto-approve XSWD during hot reload
   
+  // Session approval tracking - prevents double-modal when stale content reloads via HTTP
+  let sessionApprovedScid = null;
+  let sessionApprovedAppName = null;
+  let sessionApprovalTime = 0;
+  
   // Favorites
   let showAllFavorites = false;
   
@@ -855,45 +860,62 @@ let addressInput = '';
                   addConsoleLog(`[Browser] Auto-approve result: ${JSON.stringify(approveResult)}`);
                   result = true;
                 } else {
-                  addConsoleLog('[Browser] Requesting wallet approval via modal...');
-                  // Check if app requests specific permissions in handshake
-                  const requestedPerms = payload.appInfo?.permissions || [];
-                  const hasWalletPerms = requestedPerms.some(p => 
-                    ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
-                  );
-                  // Default to read-only unless app explicitly requests wallet permissions
-                  const isReadOnly = !hasWalletPerms;
-                  // Flag if wallet is not open but app likely needs it
-                  const walletNotOpen = !currentWalletState.isOpen;
+                  // Check if this app was already approved in this session (prevents double-modal
+                  // when stale cached content loads in srcdoc then switches to HTTP server)
+                  const connectingAppName = payload.appInfo?.name || '';
+                  const timeSinceApproval = Date.now() - sessionApprovalTime;
+                  const sameScid = sessionApprovedScid != null && currentMeta?.scid && sessionApprovedScid === currentMeta.scid;
+                  const sameName = sessionApprovedAppName != null && connectingAppName && sessionApprovedAppName === connectingAppName;
                   
-                  const approval = await requestWalletApproval({
-                    type: 'connect',
-                    appName: payload.appInfo?.name || currentMeta.name || 'App',
-                    origin: addressInput,
-                    description: payload.appInfo?.description || '',
-                    isReadOnly: isReadOnly,
-                    walletNotOpen: walletNotOpen,
-                    requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
-                      id: p,
-                      name: getPermissionName(p),
-                      description: getPermissionDescription(p),
-                      alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(p)
-                    })) : [{ 
-                      id: 'read_public_data', 
-                      name: 'Read Public Blockchain Data',
-                      description: 'Can read public blockchain info (blocks, transactions, network stats)',
-                      alwaysAsk: false
-                    }]
-                  });
-                  addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
-                  if (approval && approval.approved) {
-                    addConsoleLog('[Browser] Calling ApproveWalletConnection...');
+                  if ((sameScid || sameName) && timeSinceApproval < 30000) {
+                    addConsoleLog(`[Browser] Auto-approving reconnect for: ${connectingAppName} (already approved in this session)`);
                     const approveResult = await ApproveWalletConnection();
-                    addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
-                    result = true;
+                    result = approveResult?.success === true;
                   } else {
-                    addConsoleLog('[Browser] User denied connection');
-                    result = false;
+                    addConsoleLog('[Browser] Requesting wallet approval via modal...');
+                    // Check if app requests specific permissions in handshake
+                    const requestedPerms = payload.appInfo?.permissions || [];
+                    const hasWalletPerms = requestedPerms.some(p => 
+                      ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
+                    );
+                    // Default to read-only unless app explicitly requests wallet permissions
+                    const isReadOnly = !hasWalletPerms;
+                    // Flag if wallet is not open but app likely needs it
+                    const walletNotOpen = !currentWalletState.isOpen;
+                    
+                    const approval = await requestWalletApproval({
+                      type: 'connect',
+                      appName: payload.appInfo?.name || currentMeta.name || 'App',
+                      origin: addressInput,
+                      description: payload.appInfo?.description || '',
+                      isReadOnly: isReadOnly,
+                      walletNotOpen: walletNotOpen,
+                      requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
+                        id: p,
+                        name: getPermissionName(p),
+                        description: getPermissionDescription(p),
+                        alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(p)
+                      })) : [{ 
+                        id: 'read_public_data', 
+                        name: 'Read Public Blockchain Data',
+                        description: 'Can read public blockchain info (blocks, transactions, network stats)',
+                        alwaysAsk: false
+                      }]
+                    });
+                    addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
+                    if (approval && approval.approved) {
+                      addConsoleLog('[Browser] Calling ApproveWalletConnection...');
+                      const approveResult = await ApproveWalletConnection();
+                      addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
+                      // Record this approval for reconnect deduplication
+                      sessionApprovedScid = currentMeta?.scid || null;
+                      sessionApprovedAppName = connectingAppName;
+                      sessionApprovalTime = Date.now();
+                      result = true;
+                    } else {
+                      addConsoleLog('[Browser] User denied connection');
+                      result = false;
+                    }
                   }
                 }
               } catch (e) {
@@ -1289,6 +1311,10 @@ let addressInput = '';
     showWelcome = false;
     hasNavigated = false;
     resetXSWDSubscriptions();
+    // Reset session approval so new app navigations always show the approval modal
+    sessionApprovedScid = null;
+    sessionApprovedAppName = null;
+    sessionApprovalTime = 0;
     
     // Strip any existing dero:// prefix from input (badge provides it visually)
     let cleanInput = addressInput.trim();
@@ -1370,6 +1396,9 @@ let addressInput = '';
   // This enables developers to test dApps locally with full telaHost API access
   async function navigateToLocalFile(filePath, fromHistory = false) {
     resetXSWDSubscriptions();
+    sessionApprovedScid = null;
+    sessionApprovedAppName = null;
+    sessionApprovalTime = 0;
     
     // Clean up the file path
     let cleanPath = filePath.trim();
@@ -1558,6 +1587,9 @@ let addressInput = '';
   async function navigateToLocalDev(url, fromHistory = false) {
     const directory = url.slice(8); // Remove 'local://'
     resetXSWDSubscriptions();
+    sessionApprovedScid = null;
+    sessionApprovedAppName = null;
+    sessionApprovalTime = 0;
     
     try {
       // Check if Local Dev Server is running
