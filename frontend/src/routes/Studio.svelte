@@ -158,6 +158,8 @@
 
   // Dropzone element reference for native drag-and-drop
   let batchDropzoneElement;
+  let shardDropzoneElement;
+  let shardDragging = false;
   
   // Check local server status on mount
   onMount(async () => {
@@ -169,22 +171,45 @@
     // Set up Wails native drag-and-drop handler for REAL filesystem paths
     // (Browser drag-and-drop API only provides virtual paths for security)
     OnFileDrop((x, y, paths) => {
-      // Only handle if we're on the batch-upload tab and no folder is selected yet
-      if (activeTab !== 'batch-upload') {
-        return;
-      }
-      if (batchFolderPath) {
+      // Handle batch-upload tab (folder drops)
+      if (activeTab === 'batch-upload' && !batchFolderPath) {
+        if (batchDropzoneElement) {
+          const rect = batchDropzoneElement.getBoundingClientRect();
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            if (paths && paths.length > 0) {
+              batchFolderPath = paths[0];
+              batchDragging = false;
+            }
+          }
+        }
         return;
       }
       
-      // Check if drop is within the dropzone element bounds
-      if (batchDropzoneElement) {
-        const rect = batchDropzoneElement.getBoundingClientRect();
-        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-          // Use the first dropped path (should be a folder)
-          if (paths && paths.length > 0) {
-            batchFolderPath = paths[0];
-            batchDragging = false;
+      // Handle shards tab (file drops for sharding)
+      if (activeTab === 'shards' && shardMode === 'shard' && !shardFilePath) {
+        if (shardDropzoneElement) {
+          const rect = shardDropzoneElement.getBoundingClientRect();
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            if (paths && paths.length > 0) {
+              shardFilePath = paths[0];
+              shardDragging = false;
+              shardError = '';
+            }
+          }
+        }
+        return;
+      }
+      
+      // Handle shards tab reconstruct mode (folder drops)
+      if (activeTab === 'shards' && shardMode === 'reconstruct' && !shardFolderPath) {
+        if (shardDropzoneElement) {
+          const rect = shardDropzoneElement.getBoundingClientRect();
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            if (paths && paths.length > 0) {
+              shardFolderPath = paths[0];
+              shardDragging = false;
+              shardError = '';
+            }
           }
         }
       }
@@ -2146,6 +2171,8 @@
         bind:shardFilePath
         bind:shardFolderPath
         bind:shardCompress
+        bind:shardDropzoneElement
+        bind:shardDragging
         {shardError}
         {shardResult}
         {shardLoading}

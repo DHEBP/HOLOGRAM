@@ -115,6 +115,18 @@
       }, 50);
     };
     window.addEventListener('focus', handleWindowFocus);
+
+    // Secondary defense against webview navigating to dropped files.
+    // Primary fix is DisableWebViewDrop: true in main.go (Go/native level).
+    // This JS layer catches any edge cases the native flag might miss.
+    const preventFileDrop = (e) => {
+      if (e.dataTransfer && e.dataTransfer.types.includes('Files')) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener('dragover', preventFileDrop, true);
+    window.addEventListener('drop', preventFileDrop, true);
     
     // Minimum splash duration (allows animation to complete)
     const splashMinTime = new Promise(resolve => setTimeout(resolve, 3500));

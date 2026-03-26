@@ -125,18 +125,10 @@ func (a *App) ShardFile(filePath string, compress bool) map[string]interface{} {
 		return ErrorResponse(err)
 	}
 
-	// Create output directory
-	outputDir := filepath.Join(".", "datashards", "shards", filepath.Base(filePath))
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return map[string]interface{}{
-			"success":        false,
-			"error":          "Failed to create output directory",
-			"technicalError": err.Error(),
-		}
-	}
-
-	// Set shard path and create shards using tela library
-	tela.SetShardPath(outputDir)
+	// tela.CreateShardFiles writes output files into filepath.Dir(filePath) — the
+	// source file's own directory. Report this as the actual outputDir so the UI
+	// shows the real location instead of a phantom relative path.
+	outputDir := filepath.Dir(filePath)
 
 	compression := ""
 	if compress {
@@ -1105,5 +1097,49 @@ func (a *App) SaveFileWithDialog(defaultFilename string, content string, filterN
 		"success": true,
 		"path":    savePath,
 	}
+}
+
+// GetMetadataFiles reads metadata files from a folder for auto-inference of TELA app properties.
+// Returns content of package.json, index.html, and README.md (if they exist) for frontend parsing.
+func (a *App) GetMetadataFiles(folderPath string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[META] Reading metadata files from: %s", folderPath))
+
+	result := map[string]interface{}{
+		"success":     true,
+		"folderPath":  folderPath,
+		"packageJson": "",
+		"indexHtml":   "",
+		"readme":      "",
+	}
+
+	// Read package.json if it exists
+	packagePath := filepath.Join(folderPath, "package.json")
+	if data, err := os.ReadFile(packagePath); err == nil {
+		result["packageJson"] = string(data)
+		a.logToConsole("[META] Found package.json")
+	}
+
+	// Read index.html if it exists
+	indexPath := filepath.Join(folderPath, "index.html")
+	if data, err := os.ReadFile(indexPath); err == nil {
+		result["indexHtml"] = string(data)
+		a.logToConsole("[META] Found index.html")
+	}
+
+	// Read README.md or README.txt if they exist (try .md first)
+	readmePath := filepath.Join(folderPath, "README.md")
+	if data, err := os.ReadFile(readmePath); err == nil {
+		result["readme"] = string(data)
+		a.logToConsole("[META] Found README.md")
+	} else {
+		// Fallback to README.txt
+		readmePath = filepath.Join(folderPath, "README.txt")
+		if data, err := os.ReadFile(readmePath); err == nil {
+			result["readme"] = string(data)
+			a.logToConsole("[META] Found README.txt")
+		}
+	}
+
+	return result
 }
 

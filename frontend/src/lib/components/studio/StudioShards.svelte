@@ -2,7 +2,9 @@
   import {
     AlertTriangle,
     CheckCircle,
+    FolderDown,
     FolderOpen,
+    FileDown,
     Layers,
     Loader2,
     Scissors
@@ -15,6 +17,8 @@
   export let shardFolderPath = '';
   export let shardCompress = false;
   export let shardLoading = false;
+  export let shardDropzoneElement = null;
+  export let shardDragging = false;
   export let formatShardBytes = () => '';
   export let resetShard = () => {};
   export let selectShardFile = () => {};
@@ -105,94 +109,153 @@
     </div>
     
     {#if shardMode === 'shard'}
-      <!-- Shard File Card -->
-      <div class="content-card">
-        <div class="content-card-header">
-          <Scissors size={32} class="content-card-icon" />
-          <p class="content-card-title">Shard File</p>
-          <p class="content-card-text">Split a large file into smaller DocShard pieces for deployment as multiple TELA-DOC contracts. Useful for files exceeding single-contract size limits.</p>
-        </div>
-        
-        <div class="form-group" style="margin-top: var(--s-4);">
-          <label class="form-label">File to Shard</label>
-          <div class="shard-input-row">
-            <input
-              type="text"
-              bind:value={shardFilePath}
-              placeholder="Select file to split into shards..."
-              class="input input-mono"
-              readonly
-            />
-            <button class="btn btn-secondary" on:click={selectShardFile}>
-              Browse
-            </button>
-          </div>
-        </div>
-        
-        <div class="form-group" style="margin-top: var(--s-3);">
-          <label class="checkbox-wrap">
-            <input type="checkbox" bind:checked={shardCompress} class="checkbox" />
-            <span class="checkbox-label">Enable GZIP Compression</span>
-          </label>
-          <span class="form-hint">Reduces shard sizes but requires decompression on reconstruction</span>
-        </div>
-        
-        <button 
-          class="btn btn-primary btn-block" 
-          style="margin-top: var(--s-4);"
-          on:click={performShard}
-          disabled={shardLoading || !shardFilePath}
+      {#if !shardFilePath}
+        <!-- Dropzone for file selection -->
+        <div 
+          bind:this={shardDropzoneElement}
+          class="dropzone"
+          class:active={shardDragging}
+          on:dragover|preventDefault={() => shardDragging = true}
+          on:dragleave={() => shardDragging = false}
+          on:drop|preventDefault={() => shardDragging = false}
+          on:click={selectShardFile}
+          role="button"
+          tabindex="0"
+          on:keydown={(e) => e.key === 'Enter' && selectShardFile()}
         >
-          {#if shardLoading}
-            <Loader2 size={16} class="spinner" />
-            Sharding...
-          {:else}
-            <Scissors size={16} />
-            Shard File
-          {/if}
-        </button>
-      </div>
+          <div class="dropzone-icon">
+            {#if shardDragging}
+              <FileDown size={40} strokeWidth={1.5} />
+            {:else}
+              <Scissors size={40} strokeWidth={1.5} />
+            {/if}
+          </div>
+          <p class="dropzone-title">
+            {shardDragging ? 'Drop file here' : 'Drag & drop a large file'}
+          </p>
+          <p class="dropzone-hint">
+            Or click to browse. Files exceeding 18KB will be split into deployable shards.
+          </p>
+        </div>
+      {:else}
+        <!-- Shard File Card (file selected) -->
+        <div class="content-card">
+          <div class="content-card-header">
+            <Scissors size={32} class="content-card-icon" />
+            <p class="content-card-title">Shard File</p>
+            <p class="content-card-text">Split a large file into smaller DocShard pieces for deployment as multiple TELA-DOC contracts.</p>
+          </div>
+          
+          <div class="form-group" style="margin-top: var(--s-4);">
+            <label class="form-label">File to Shard</label>
+            <div class="shard-input-row">
+              <input
+                type="text"
+                bind:value={shardFilePath}
+                placeholder="Select file to split into shards..."
+                class="input input-mono"
+                readonly
+              />
+              <button class="btn btn-secondary" on:click={() => { shardFilePath = ''; shardError = ''; }}>
+                Clear
+              </button>
+            </div>
+          </div>
+          
+          <div class="form-group" style="margin-top: var(--s-3);">
+            <label class="checkbox-wrap">
+              <input type="checkbox" bind:checked={shardCompress} class="checkbox" />
+              <span class="checkbox-label">Enable GZIP Compression</span>
+            </label>
+            <span class="form-hint">Reduces shard sizes but requires decompression on reconstruction</span>
+          </div>
+          
+          <button 
+            class="btn btn-primary btn-block" 
+            style="margin-top: var(--s-4);"
+            on:click={performShard}
+            disabled={shardLoading || !shardFilePath}
+          >
+            {#if shardLoading}
+              <Loader2 size={16} class="spinner" />
+              Sharding...
+            {:else}
+              <Scissors size={16} />
+              Shard File
+            {/if}
+          </button>
+        </div>
+      {/if}
     {:else}
-      <!-- Reconstruct Card -->
-      <div class="content-card">
-        <div class="content-card-header">
-          <Layers size={32} class="content-card-icon" />
-          <p class="content-card-title">Reconstruct File</p>
-          <p class="content-card-text">Reconstruct an original file from its DocShard pieces. Select a folder containing the shard files.</p>
-        </div>
-        
-        <div class="form-group" style="margin-top: var(--s-4);">
-          <label class="form-label">Shard Folder</label>
-          <div class="shard-input-row">
-            <input
-              type="text"
-              bind:value={shardFolderPath}
-              placeholder="Select folder containing shard files..."
-              class="input input-mono"
-              readonly
-            />
-            <button class="btn btn-secondary" on:click={selectShardFolder}>
-              <FolderOpen size={14} />
-              Browse
-            </button>
-          </div>
-        </div>
-        
-        <button 
-          class="btn btn-primary btn-block" 
-          style="margin-top: var(--s-4);"
-          on:click={performReconstruct}
-          disabled={shardLoading || !shardFolderPath}
+      {#if !shardFolderPath}
+        <!-- Dropzone for folder selection -->
+        <div 
+          bind:this={shardDropzoneElement}
+          class="dropzone"
+          class:active={shardDragging}
+          on:dragover|preventDefault={() => shardDragging = true}
+          on:dragleave={() => shardDragging = false}
+          on:drop|preventDefault={() => shardDragging = false}
+          on:click={selectShardFolder}
+          role="button"
+          tabindex="0"
+          on:keydown={(e) => e.key === 'Enter' && selectShardFolder()}
         >
-          {#if shardLoading}
-            <Loader2 size={16} class="spinner" />
-            Reconstructing...
-          {:else}
-            <Layers size={16} />
-            Reconstruct File
-          {/if}
-        </button>
-      </div>
+          <div class="dropzone-icon">
+            {#if shardDragging}
+              <FolderDown size={40} strokeWidth={1.5} />
+            {:else}
+              <Layers size={40} strokeWidth={1.5} />
+            {/if}
+          </div>
+          <p class="dropzone-title">
+            {shardDragging ? 'Drop folder here' : 'Drag & drop a shard folder'}
+          </p>
+          <p class="dropzone-hint">
+            Or click to browse. Select a folder containing shard files to reconstruct the original.
+          </p>
+        </div>
+      {:else}
+        <!-- Reconstruct Card (folder selected) -->
+        <div class="content-card">
+          <div class="content-card-header">
+            <Layers size={32} class="content-card-icon" />
+            <p class="content-card-title">Reconstruct File</p>
+            <p class="content-card-text">Reconstruct an original file from its DocShard pieces.</p>
+          </div>
+          
+          <div class="form-group" style="margin-top: var(--s-4);">
+            <label class="form-label">Shard Folder</label>
+            <div class="shard-input-row">
+              <input
+                type="text"
+                bind:value={shardFolderPath}
+                placeholder="Select folder containing shard files..."
+                class="input input-mono"
+                readonly
+              />
+              <button class="btn btn-secondary" on:click={() => { shardFolderPath = ''; shardError = ''; }}>
+                Clear
+              </button>
+            </div>
+          </div>
+          
+          <button 
+            class="btn btn-primary btn-block" 
+            style="margin-top: var(--s-4);"
+            on:click={performReconstruct}
+            disabled={shardLoading || !shardFolderPath}
+          >
+            {#if shardLoading}
+              <Loader2 size={16} class="spinner" />
+              Reconstructing...
+            {:else}
+              <Layers size={16} />
+              Reconstruct File
+            {/if}
+          </button>
+        </div>
+      {/if}
     {/if}
     
     <!-- Info Panel -->

@@ -249,6 +249,8 @@ export function GetMempoolStats():Promise<Record<string, any>>;
 
 export function GetMempoolTransactions():Promise<Record<string, any>>;
 
+export function GetMetadataFiles(arg1:string):Promise<Record<string, any>>;
+
 export function GetMiningEarningsSummary():Promise<Record<string, any>>;
 
 export function GetNRSCacheStats():Promise<Record<string, any>>;

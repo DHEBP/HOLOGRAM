@@ -494,6 +494,10 @@ export function GetMempoolTransactions() {
   return window['go']['main']['App']['GetMempoolTransactions']();
 }
 
+export function GetMetadataFiles(arg1) {
+  return window['go']['main']['App']['GetMetadataFiles'](arg1);
+}
+
 export function GetMiningEarningsSummary() {
   return window['go']['main']['App']['GetMiningEarningsSummary']();
 }

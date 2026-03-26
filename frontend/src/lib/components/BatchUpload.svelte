@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { walletState, settingsState, toast } from '../stores/appState.js';
-  import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList } from '../../../wailsjs/go/main/App.js';
+  import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList, GetMetadataFiles } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
   import { BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
   import { Copy, Eye, AlertTriangle, Search, Clock, Check, X, Puzzle } from 'lucide-svelte';
@@ -286,6 +286,159 @@
     return 'Shard folder detected — dURL should end with .tela.shards for reconstruction to work';
   })();
 
+  // =====================================================
+  // Metadata Auto-Inference (from tela-dragdrop-autoshard-plugin)
+  // =====================================================
+  
+  const GENERIC_HTML_TITLES = new Set(['app', 'index', 'untitled', 'vite app', 'react app', 'document']);
+
+  function extractHtmlTitle(content) {
+    const match = String(content || '').match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    return match ? match[1].replace(/\s+/g, ' ').trim() : '';
+  }
+
+  function extractHtmlMetaDescription(content) {
+    const match = String(content || '').match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["'][^>]*>/i)
+        || String(content || '').match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["'][^>]*>/i);
+    return match ? match[1].trim() : '';
+  }
+
+  function extractHtmlIcon(content) {
+    const matches = String(content || '').matchAll(/<link[^>]+rel=["'][^"']*icon[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>/gi);
+    for (const match of matches) {
+      const value = String(match[1] || '').trim();
+      if (value && (value.startsWith('http') || /^[0-9a-fA-F]{64}$/.test(value))) {
+        return value;
+      }
+    }
+    return '';
+  }
+
+  function firstMarkdownHeading(content) {
+    const match = String(content || '').match(/^\s*#\s+(.+)$/m);
+    return match ? match[1].trim() : '';
+  }
+
+  function parseJsonSafe(content) {
+    try {
+      return JSON.parse(String(content || ''));
+    } catch {
+      return null;
+    }
+  }
+
+  function humanizeImportName(value) {
+    const normalized = String(value || '')
+      .replace(/^@[^/]+\//, '')
+      .split('/')
+      .at(-1) || '';
+    return normalized.replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim() || 'imported-app';
+  }
+
+  function defaultDurl(name) {
+    const slug = String(name || 'tela-app')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'tela-app';
+    return `${slug}.tela`;
+  }
+
+  async function inferMetadataFromFolder() {
+    if (!folderPath) return;
+    
+    try {
+      const meta = await GetMetadataFiles(folderPath);
+      if (!meta.success) return;
+
+      let inferredName = '';
+      let inferredDescription = '';
+      let inferredIcon = '';
+
+      // 1. Parse package.json
+      const packageJson = parseJsonSafe(meta.packageJson);
+      if (packageJson && typeof packageJson === 'object') {
+        if (typeof packageJson.displayName === 'string' && packageJson.displayName.trim()) {
+          inferredName = packageJson.displayName.trim();
+        } else if (typeof packageJson.name === 'string' && packageJson.name.trim()) {
+          inferredName = humanizeImportName(packageJson.name);
+        }
+        if (typeof packageJson.description === 'string' && packageJson.description.trim()) {
+          inferredDescription = packageJson.description.trim();
+        }
+        if (typeof packageJson.icon === 'string') {
+          const iconVal = packageJson.icon.trim();
+          if (iconVal.startsWith('http') || /^[0-9a-fA-F]{64}$/.test(iconVal)) {
+            inferredIcon = iconVal;
+          }
+        }
+      }
+
+      // 2. Parse index.html (can override name if better)
+      const htmlContent = meta.indexHtml || '';
+      const htmlTitle = extractHtmlTitle(htmlContent);
+      if (htmlTitle && !GENERIC_HTML_TITLES.has(htmlTitle.toLowerCase())) {
+        inferredName = htmlTitle;
+      }
+      if (!inferredDescription) {
+        inferredDescription = extractHtmlMetaDescription(htmlContent);
+      }
+      if (!inferredIcon) {
+        inferredIcon = extractHtmlIcon(htmlContent);
+      }
+
+      // 3. Parse README for description fallback
+      if (!inferredDescription && meta.readme) {
+        inferredDescription = firstMarkdownHeading(meta.readme);
+      }
+
+      // Apply inferred values (only if fields are currently empty)
+      if (inferredName && !indexName) {
+        indexName = inferredName;
+      }
+      if (!indexDURL && indexName) {
+        indexDURL = defaultDurl(indexName);
+      }
+      if (inferredDescription && !indexDescription) {
+        indexDescription = inferredDescription;
+      }
+      if (inferredIcon && !indexIcon) {
+        indexIcon = inferredIcon;
+      }
+
+    } catch (e) {
+      console.warn('[BatchUpload] Metadata inference failed:', e);
+    }
+  }
+
+  // =====================================================
+  // Preflight Analysis (inspired by tela-dragdrop-autoshard-plugin)
+  // =====================================================
+  
+  const MAX_DOC_SIZE_KB = 18; // Files larger than this would need sharding
+  const MAX_DOC_SIZE_BYTES = MAX_DOC_SIZE_KB * 1024;
+
+  $: preflightStats = (() => {
+    if (!files || files.length === 0) {
+      return { sourceFiles: 0, deployDocs: 0, oversizedFiles: [], hasOversized: false };
+    }
+    
+    const oversizedFiles = files.filter(f => f.size > MAX_DOC_SIZE_BYTES);
+    let deployDocs = files.length;
+    
+    // Each oversized file would become multiple shards
+    for (const file of oversizedFiles) {
+      const shardCount = Math.ceil(file.size / MAX_DOC_SIZE_BYTES);
+      deployDocs += (shardCount - 1); // -1 because original file is already counted
+    }
+    
+    return {
+      sourceFiles: files.length,
+      deployDocs,
+      oversizedFiles,
+      hasOversized: oversizedFiles.length > 0
+    };
+  })();
+
   // Watch for MODs toggle to load MODs and force ringsize
   $: if (enableMods) {
     if (allMods.length === 0 && !modsLoading) {
@@ -315,10 +468,18 @@
         totalGas = result.totalGas || 0;
         estimatedGas = result.estimatedGas || result.totalGas || 0;
         
-        // Auto-populate index name from folder name
+        // Auto-infer metadata from package.json, index.html, README
+        // This will set indexName, indexDURL, indexDescription, indexIcon if found
+        await inferMetadataFromFolder();
+        
+        // Fallback: if metadata inference didn't find a name, use folder name
         if (!indexName) {
           const parts = folderPath.split(/[/\\]/);
           indexName = parts[parts.length - 1] || 'My TELA App';
+          // Also generate dURL from folder name as fallback
+          if (!indexDURL) {
+            indexDURL = defaultDurl(indexName);
+          }
         }
       } else {
         error = result.error;
@@ -652,6 +813,41 @@
           <span class="files-free-badge" title="Gas is free in simulator mode">FREE</span>
         {/if}
       </div>
+      
+      <!-- Preflight Summary Panel -->
+      {#if !deploying && !deploymentResult}
+        <div class="preflight-summary">
+          <div class="preflight-stats">
+            <div class="preflight-stat">
+              <span class="preflight-stat-value">{preflightStats.sourceFiles}</span>
+              <span class="preflight-stat-label">Source Files</span>
+            </div>
+            <div class="preflight-stat-arrow">→</div>
+            <div class="preflight-stat">
+              <span class="preflight-stat-value">{preflightStats.deployDocs}</span>
+              <span class="preflight-stat-label">DOC Contracts</span>
+            </div>
+            <div class="preflight-stat-plus">+</div>
+            <div class="preflight-stat">
+              <span class="preflight-stat-value">1</span>
+              <span class="preflight-stat-label">INDEX Contract</span>
+            </div>
+          </div>
+          
+          {#if preflightStats.hasOversized}
+            <div class="preflight-warning">
+              <AlertTriangle size={14} />
+              <span>
+                {preflightStats.oversizedFiles.length} file{preflightStats.oversizedFiles.length > 1 ? 's' : ''} exceed{preflightStats.oversizedFiles.length === 1 ? 's' : ''} 18KB limit:
+                {preflightStats.oversizedFiles.map(f => f.name).join(', ')}
+              </span>
+            </div>
+            <div class="preflight-hint">
+              Large files will fail deployment. Use DocShard Manager in Studio to split them first, or enable auto-sharding (coming soon).
+            </div>
+          {/if}
+        </div>
+      {/if}
       
       <div class="files-list">
         {#each files as file, i}
@@ -2721,6 +2917,77 @@
 
   .durl-hint.hint-warning {
     color: var(--status-warn, #fbbf24);
+  }
+
+  /* Preflight Summary Panel */
+  .preflight-summary {
+    background: var(--surface-1, #14141a);
+    border: 1px solid var(--border-1, #2a2a35);
+    border-radius: var(--radius-2, 8px);
+    padding: var(--s-3, 12px);
+    margin-bottom: var(--s-3, 12px);
+  }
+
+  .preflight-stats {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-3, 12px);
+    padding: var(--s-2, 8px) 0;
+  }
+
+  .preflight-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .preflight-stat-value {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--cyan-400, #22d3ee);
+  }
+
+  .preflight-stat-label {
+    font-size: 11px;
+    color: var(--text-4, #505068);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .preflight-stat-arrow,
+  .preflight-stat-plus {
+    font-size: 16px;
+    color: var(--text-4, #505068);
+    opacity: 0.6;
+  }
+
+  .preflight-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    border-radius: var(--radius-1, 6px);
+    margin-top: var(--s-3, 12px);
+    color: var(--status-warn, #fbbf24);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .preflight-warning :global(svg) {
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .preflight-hint {
+    font-size: 11px;
+    color: var(--text-4, #505068);
+    margin-top: var(--s-2, 8px);
+    padding: 0 var(--s-3, 12px);
+    line-height: 1.4;
   }
 </style>
 

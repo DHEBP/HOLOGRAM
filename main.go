@@ -45,7 +45,7 @@ func main() {
 		OnShutdown:        app.shutdown,
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,
-			DisableWebViewDrop: false, // Allow webview for visual feedback, Wails OnFileDrop provides real paths
+			DisableWebViewDrop: true, // Prevent WebKit from natively handling drops (causes image preview navigation); Wails OnFileDrop provides real paths
 		},
 		Mac: &mac.Options{
 			TitleBar: &mac.TitleBar{
