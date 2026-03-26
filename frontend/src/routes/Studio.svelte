@@ -1628,34 +1628,34 @@
   $: indexIconValidation = validateIconURL(indexIconURL);
   
   // =====================================================
-  // dURL Tag Detection (matching tela-cli conventions)
+  // dURL Tag Detection (must match backend conventions in blockchain.go)
   // =====================================================
   // Special dURL suffixes indicate content type:
-  // - .lib     = Library (collection of reusable DOCs)
-  // - .shard   = DocShard DOC
-  // - .shards  = DocShards INDEX (requires reconstruction)
-  // - .bootstrap = Bootstrap INDEX (collection of apps)
+  // - .tela.lib       = Library (collection of reusable DOCs)
+  // - .tela.shard     = DocShard DOC
+  // - .tela.shards    = DocShards INDEX (requires reconstruction)
+  // - .tela.bootstrap = Bootstrap INDEX (collection of apps)
   
   const DURL_TAGS = {
-    '.lib': {
+    '.tela.lib': {
       name: 'Library',
       icon: 'lib',
       description: 'A collection of reusable DOCs that can be embedded in other apps',
       color: 'violet'
     },
-    '.shard': {
+    '.tela.shard': {
       name: 'DocShard',
       icon: 'shard',
       description: 'A shard DOC (part of a larger file split across multiple contracts)',
       color: 'cyan'
     },
-    '.shards': {
+    '.tela.shards': {
       name: 'DocShards',
       icon: 'shards',
       description: 'An INDEX containing DocShards that require reconstruction',
       color: 'cyan'
     },
-    '.bootstrap': {
+    '.tela.bootstrap': {
       name: 'Bootstrap',
       icon: 'bootstrap',
       description: 'A collection of TELA apps/content for bootstrapping',

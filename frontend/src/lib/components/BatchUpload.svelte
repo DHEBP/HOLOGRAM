@@ -247,12 +247,12 @@
   // Reactive icon validation
   $: iconValidation = validateIconURL(indexIcon);
   
-  // dURL Tag Detection
+  // dURL Tag Detection (suffixes must match backend conventions in blockchain.go)
   const DURL_TAGS = {
-    '.lib': { name: 'Library', icon: 'lib', description: 'A collection of reusable DOCs', color: 'violet' },
-    '.shard': { name: 'DocShard', icon: 'shard', description: 'A shard DOC (part of a larger file)', color: 'cyan' },
-    '.shards': { name: 'DocShards', icon: 'shards', description: 'DocShards INDEX that requires reconstruction', color: 'cyan' },
-    '.bootstrap': { name: 'Bootstrap', icon: 'bootstrap', description: 'A collection of TELA apps for bootstrapping', color: 'amber' }
+    '.tela.lib': { name: 'Library', icon: 'lib', description: 'A collection of reusable DOCs', color: 'violet' },
+    '.tela.shard': { name: 'DocShard', icon: 'shard', description: 'A shard DOC (part of a larger file)', color: 'cyan' },
+    '.tela.shards': { name: 'DocShards', icon: 'shards', description: 'DocShards INDEX that requires reconstruction', color: 'cyan' },
+    '.tela.bootstrap': { name: 'Bootstrap', icon: 'bootstrap', description: 'A collection of TELA apps for bootstrapping', color: 'amber' }
   };
   
   function detectDurlTag(durl) {
@@ -268,7 +268,24 @@
   }
   
   $: durlTag = detectDurlTag(indexDURL);
-  
+
+  // Detect shard folder and warn if dURL suffix is wrong
+  $: isShardFolder = (() => {
+    if (!folderPath) return false;
+    const parts = folderPath.split(/[/\\]/);
+    const folderName = (parts[parts.length - 1] || '').toLowerCase();
+    return folderName.endsWith('.shards') || folderName.endsWith('.shard');
+  })();
+  $: shardDurlWarning = (() => {
+    if (!isShardFolder) return null;
+    const d = (indexDURL || '').trim().toLowerCase();
+    if (!d) return 'Shard folder detected — dURL should end with .tela.shards for reconstruction to work';
+    if (d.endsWith('.tela.shards')) return null;
+    if (d.endsWith('.shards') || d.endsWith('.shard'))
+      return 'dURL needs full .tela.shards suffix for shard reconstruction (not just .' + d.split('.').pop() + ')';
+    return 'Shard folder detected — dURL should end with .tela.shards for reconstruction to work';
+  })();
+
   // Watch for MODs toggle to load MODs and force ringsize
   $: if (enableMods) {
     if (allMods.length === 0 && !modsLoading) {
@@ -785,6 +802,11 @@
           {#if durlTag && durlTag.tag !== '.tela'}
             <p class="durl-hint" class:hint-violet={durlTag.color === 'violet'} class:hint-cyan={durlTag.color === 'cyan'} class:hint-amber={durlTag.color === 'amber'}>
               {durlTag.description}
+            </p>
+          {/if}
+          {#if shardDurlWarning}
+            <p class="durl-hint hint-warning">
+              ⚠ {shardDurlWarning}
             </p>
           {/if}
         </div>
@@ -2694,6 +2716,10 @@
   }
   
   .durl-hint.hint-amber {
+    color: var(--status-warn, #fbbf24);
+  }
+
+  .durl-hint.hint-warning {
     color: var(--status-warn, #fbbf24);
   }
 </style>
