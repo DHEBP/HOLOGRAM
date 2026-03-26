@@ -1,5 +1,5 @@
 <script>
-  import { walletState, appState, settingsState, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
+  import { walletState, appState, settingsState, saveSetting, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
   import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
@@ -8,7 +8,7 @@
     Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe,
     LayoutDashboard, QrCode, History, Coins, Users, FileSignature, RefreshCw,
     Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield,
-    Key, User
+    Key, User, Eye, EyeOff
   } from 'lucide-svelte';
   
   import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
@@ -1568,18 +1568,52 @@
             {/if}
             <div class="wallet-balance-display">
               <div class="balance-main">
-                <span class="balance-value">{formatBalance($walletState.balance)}</span>
-                <span class="balance-unit">DERO</span>
+                <div class="balance-main-left">
+                  <span class="balance-value">
+                    {$settingsState.hideBalance ? '••••••••' : formatBalance($walletState.balance)}
+                  </span>
+                  <span class="balance-unit">DERO</span>
+                </div>
+                <button
+                  class="hide-toggle-btn fixed-right"
+                  class:active={$settingsState.hideBalance}
+                  on:click={() => saveSetting('hideBalance', !$settingsState.hideBalance)}
+                  title={$settingsState.hideBalance ? 'Show balance' : 'Hide balance'}
+                >
+                  {#if $settingsState.hideBalance}
+                    <EyeOff size={13} />
+                  {:else}
+                    <Eye size={13} />
+                  {/if}
+                </button>
               </div>
-              {#if $walletState.lockedBalance > 0}
+              {#if $walletState.lockedBalance > 0 && !$settingsState.hideBalance}
                 <div class="balance-locked">
                   + {formatBalance($walletState.lockedBalance)} locked
                 </div>
               {/if}
               <div class="wallet-address-row">
-                <span class="address-text">{formatAddress($walletState.address)}</span>
-                <button class="btn-icon-sm" on:click={copyAddress} title="Copy address">
-                  <Copy size={12} />
+                <div class="address-row-content">
+                  <span class="address-text">
+                    {$settingsState.hideAddress ? '••••••••••••••••' : formatAddress($walletState.address)}
+                  </span>
+                  {#if !$settingsState.hideAddress}
+                    <button class="btn-icon-sm" on:click={copyAddress} title="Copy address">
+                      <Copy size={12} />
+                    </button>
+                  {/if}
+                </div>
+                <button
+                  class="hide-toggle-btn fixed-right"
+                  class:active={$settingsState.hideAddress}
+                  on:click={() => saveSetting('hideAddress', !$settingsState.hideAddress)}
+                  title={$settingsState.hideAddress ? 'Show address' : 'Hide address'}
+                >
+                  {#if $settingsState.hideAddress}
+                    <EyeOff size={13} />
+                  {:else}
+                    <Eye size={13} />
+                  {/if}
                 </button>
               </div>
               {#if currentWalletPath}
@@ -1644,7 +1678,7 @@
                     </div>
                   </div>
                   <span class="tx-amt" class:tx-amt-in={tx.incoming || tx.coinbase} class:tx-amt-out={!tx.incoming && !tx.coinbase}>
-                    {tx.incoming || tx.coinbase ? '+' : '-'}{formatBalance(tx.amount)} DERO
+                    {$settingsState.hideBalance ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
                   </span>
                   {#if tx.label}
                     <span class="tx-label">{tx.label}</span>
@@ -2167,7 +2201,7 @@
                     </div>
                     <div class="tx-meta">
                       <span class="tx-amount" class:positive={tx.incoming || tx.coinbase} class:negative={!tx.incoming && !tx.coinbase}>
-                        {tx.incoming || tx.coinbase ? '+' : '-'}{formatBalance(tx.amount)} DERO
+                        {$settingsState.hideBalance ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
                       </span>
                       <span class="tx-timestamp">{formatTime(tx.time)}</span>
                     </div>
@@ -2193,12 +2227,12 @@
                       </div>
                       <div class="tx-detail-row">
                         <span class="tx-detail-label">Amount</span>
-                        <span class="tx-detail-value">{formatBalance(tx.amount)} DERO</span>
+                        <span class="tx-detail-value">{$settingsState.hideBalance ? '••••••' : `${formatBalance(tx.amount)} DERO`}</span>
                       </div>
                       {#if tx.fees}
                         <div class="tx-detail-row">
                           <span class="tx-detail-label">Fee</span>
-                          <span class="tx-detail-value">{formatBalance(tx.fees)} DERO</span>
+                          <span class="tx-detail-value">{$settingsState.hideBalance ? '••••••' : `${formatBalance(tx.fees)} DERO`}</span>
                         </div>
                       {/if}
                       {#if tx.height}
@@ -3631,9 +3665,10 @@
   
   .balance-main {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: center;
     gap: var(--s-2);
+    position: relative;
   }
   
   .balance-value {
@@ -3653,6 +3688,51 @@
     color: var(--text-4);
     margin-top: var(--s-2);
   }
+
+  .balance-main-left {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+  }
+
+  .address-row-content {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+
+  .hide-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: 1px solid var(--border-1, #2a2a3a);
+    border-radius: var(--r-1);
+    color: var(--text-4);
+    cursor: pointer;
+    padding: 0;
+    transition: border-color 0.15s, color 0.15s;
+    flex-shrink: 0;
+  }
+
+  .hide-toggle-btn:hover {
+    border-color: var(--cyan-400);
+    color: var(--cyan-400);
+  }
+
+  .hide-toggle-btn.active {
+    border-color: var(--cyan-400);
+    color: var(--cyan-400);
+  }
+
+  .hide-toggle-btn.fixed-right {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+  }
   
   .wallet-address-row {
     display: flex;
@@ -3663,6 +3743,7 @@
     padding: var(--s-2) var(--s-3);
     background: var(--void-deep);
     border-radius: var(--r-sm);
+    position: relative;
   }
   
   .address-text {

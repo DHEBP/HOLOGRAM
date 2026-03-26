@@ -24,6 +24,8 @@ const settingsKeyMap = {
   // Developer Support (EPOCH)
   'dev_support_enabled': 'epochEnabled',
   'epoch_enabled': 'epochEnabled',
+  'hide_balance': 'hideBalance',
+  'hide_address': 'hideAddress',
 };
 
 // Reverse map for saving (frontend → backend)
@@ -246,6 +248,8 @@ export const settingsState = writable({
   cypherpunkMode: false,
   integratedWallet: true,
   lastWalletPath: '', // Store the last used wallet path for quick connection
+  hideBalance: false,
+  hideAddress: false,
 });
 
 // Load settings from backend and sync to frontend store

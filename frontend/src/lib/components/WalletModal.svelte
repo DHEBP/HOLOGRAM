@@ -522,7 +522,9 @@
           <div class="modal-wallet-current-row">
             <div>
               <p class="modal-wallet-label">CURRENT WALLET</p>
-              <p class="modal-wallet-address">{$walletState.address?.slice(0, 16)}...</p>
+              <p class="modal-wallet-address">
+                {$settingsState.hideAddress ? '••••••••••••••••' : `${$walletState.address?.slice(0, 16)}...`}
+              </p>
             </div>
             <button
               on:click={() => { showWalletSwitcher = !showWalletSwitcher; loadRecentWallets(); }}

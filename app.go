@@ -94,6 +94,8 @@ func NewApp() *App {
 			"network":            "mainnet",
 			"integrated_wallet":  true,
 			"allow_github_check": true, // Allow pinging GitHub for derod updates
+			"hide_balance":       false,
+			"hide_address":       false,
 		},
 		history:     make([]string, 0),
 		consoleLogs: make([]ConsoleLog, 0),

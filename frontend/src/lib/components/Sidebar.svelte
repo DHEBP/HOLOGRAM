@@ -936,7 +936,7 @@
           <span class="rail-tooltip-label">Wallet</span>
           {#if walletMode === 'integrated'}
             <span class="rail-tooltip-value tt-ok">
-              {formatAddressForDisplay(walletDisplayAddress)}
+              {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
             </span>
             <span class="rail-tooltip-value tt-dim">Wallet Ready</span>
             {#if connectedApps.length > 0}
@@ -972,7 +972,7 @@
         <div class="wallet-anchor-content">
           <span class="wallet-anchor-address" class:disconnected={!walletIsConnected} class:xswd-only={xswdReadyNoWallet}>
             {#if walletIsConnected}
-              {formatAddressForDisplay(walletDisplayAddress)}
+              {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
             {:else}
               Connect Wallet
             {/if}
@@ -1010,7 +1010,7 @@
           <p class="wallet-menu-label">CURRENT WALLET</p>
           <p class="wallet-menu-address">
             {#if $walletState.address}
-              {$walletState.address.slice(0, 12)}...{$walletState.address.slice(-8)}
+              {$settingsState.hideAddress ? '••••••••••••••' : `${$walletState.address.slice(0, 12)}...${$walletState.address.slice(-8)}`}
             {:else if $appState.engramConnected}
               Engram Wallet (External)
             {:else if xswdReadyNoWallet}
@@ -1020,7 +1020,9 @@
             {/if}
           </p>
           {#if $walletState.balance !== undefined && $walletState.isOpen}
-            <p class="wallet-menu-balance">{($walletState.balance / 100000).toFixed(5)} DERO</p>
+            <p class="wallet-menu-balance">
+              {$settingsState.hideBalance ? '••••••••' : `${($walletState.balance / 100000).toFixed(5)} DERO`}
+            </p>
           {/if}
         </div>
         

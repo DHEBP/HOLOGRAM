@@ -28,6 +28,8 @@ var persistedSettingKeys = []string{
 	"wizard_complete",
 	"dev_support_enabled",
 	"epoch_enabled",
+	"hide_balance",
+	"hide_address",
 }
 
 // Settings Functions
