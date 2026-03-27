@@ -2205,26 +2205,23 @@ func (a *App) getWalletForDeployment(isSimulator bool) *walletapi.Wallet_Disk {
 }
 
 func estimateGasCost(sizeBytes int) uint64 {
-	// Gas estimation aligned with tela-cli's DERO.GetGasEstimate behavior
-	// The daemon calculates GasStorage based on SC code/data storage costs
-	// Real-world fees from tela-cli examples: 90-320 gas for typical operations
-	//
-	// Formula: base cost + logarithmic scaling for larger files
-	// This provides a reasonable estimate without requiring daemon connection
-	const minGas = uint64(100) // Matches tela.MINIMUM_GAS_FEE
+	// UI display estimate only — real gas is from tela.GetGasEstimate() at deploy time.
+	// Linear scaling: baseCost(100) + 0.1 gas per byte. Deliberately calibrated down from
+	// an earlier logarithmic formula that produced estimates far too high.
+	// Do not change without verifying against real GetGasEstimate outputs.
+	// See docs/proposals/AUTO-SHARD-DURING-DEPLOY.md §12.14 for the full calibration table.
+	const minGas = uint64(100)
 	const baseCost = uint64(100)
-	
+
 	if sizeBytes <= 0 {
 		return minGas
 	}
-	
-	// Logarithmic scaling: larger files don't cost linearly more
-	// ~200 gas for 1KB, ~300 gas for 10KB, ~400 gas for 100KB
+
 	sizeCost := uint64(float64(sizeBytes) * 0.1)
 	if sizeCost < 50 {
 		sizeCost = 50
 	}
-	
+
 	total := baseCost + sizeCost
 	if total < minGas {
 		return minGas
