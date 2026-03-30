@@ -1,4 +1,4 @@
-// Copyright 2025 HOLOGRAM Project. All rights reserved.
+// Copyright 2026 HOLOGRAM Project. All rights reserved.
 // Unit tests for file_service.go — shard infrastructure.
 //
 // Tier 1: all tests in this file run against existing code and require no
