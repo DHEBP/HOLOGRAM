@@ -416,21 +416,31 @@
   
   const MAX_DOC_SIZE_KB = 18; // Files larger than this would need sharding
   const MAX_DOC_SIZE_BYTES = MAX_DOC_SIZE_KB * 1024;
+  // Conservative estimate: GZIP typically achieves ~45% reduction on text/code assets.
+  // Using 0.55 as the compression factor avoids false-positive "too large" warnings
+  // for files that will compress below the limit. Binary/already-compressed files
+  // compress poorly, so this heuristic errs on the side of letting them through too —
+  // the backend enforces the hard limit at deploy time regardless.
+  const GZIP_COMPRESSION_FACTOR = 0.55;
 
   $: preflightStats = (() => {
     if (!files || files.length === 0) {
       return { sourceFiles: 0, deployDocs: 0, oversizedFiles: [], hasOversized: false };
     }
-    
-    const oversizedFiles = files.filter(f => f.size > MAX_DOC_SIZE_BYTES);
+
+    const effectiveMax = enableCompression
+      ? MAX_DOC_SIZE_BYTES / GZIP_COMPRESSION_FACTOR
+      : MAX_DOC_SIZE_BYTES;
+
+    const oversizedFiles = files.filter(f => f.size > effectiveMax);
     let deployDocs = files.length;
-    
+
     // Each oversized file would become multiple shards
     for (const file of oversizedFiles) {
-      const shardCount = Math.ceil(file.size / MAX_DOC_SIZE_BYTES);
+      const shardCount = Math.ceil(file.size / effectiveMax);
       deployDocs += (shardCount - 1); // -1 because original file is already counted
     }
-    
+
     return {
       sourceFiles: files.length,
       deployDocs,

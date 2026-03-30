@@ -3,6 +3,7 @@
 #
 # Usage:
 #   make            - Build HOLOGRAM + derod + simulator
+#   make release    - Distribution build (clean + trimpath + build metadata)
 #   make derod      - Build derod only
 #   make simulator  - Build simulator only
 #   make clean      - Clean build artifacts
@@ -11,7 +12,13 @@
 # The derod and simulator binaries are built from the derohe dependency
 # and placed alongside the HOLOGRAM executable in build/bin/
 
-.PHONY: all hologram derod simulator clean dev help
+.PHONY: all hologram release derod simulator mtp-anchor clean dev test-mtp test-mtp-integration help
+
+# Build metadata - injected into the binary via ldflags
+VERSION  := $(shell grep 'AppVersion' version.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+DATE     := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS  := -X main.AppVersion=$(VERSION) -X main.BuildDate=$(DATE) -X main.GitCommit=$(COMMIT)
 
 # Detect OS and architecture
 GOOS ?= $(shell go env GOOS)
@@ -54,11 +61,17 @@ else
 	@echo "Run with: ./$(BUILD_DIR)/$(HOLOGRAM_BIN)"
 endif
 
-# Build HOLOGRAM using wails
+# Build HOLOGRAM using wails (dev/local build with metadata)
 hologram:
-	@echo "🔨 Building HOLOGRAM..."
-	wails build
+	@echo "🔨 Building HOLOGRAM ($(VERSION), $(COMMIT))..."
+	wails build -ldflags "$(LDFLAGS)"
 	@echo "✅ HOLOGRAM built"
+
+# Release build — clean, trimpath, metadata injected (use this for distribution)
+release: derod simulator
+	@echo "🚀 Building HOLOGRAM release ($(VERSION), $(COMMIT))..."
+	wails build -ldflags "$(LDFLAGS)" -clean -trimpath
+	@echo "✅ Release build complete: $(BUILD_DIR)/$(HOLOGRAM_BIN)"
 
 # Build derod from derohe source
 # Note: We build from HOLOGRAM's module context so dependencies resolve correctly
@@ -84,6 +97,31 @@ check-derohe:
 	@go get $(DEROHE_PKG)/cmd/derod@v0.0.0-20250813215012-9b6a8b82c839 2>/dev/null || true
 	@go get $(DEROHE_PKG)/cmd/simulator@v0.0.0-20250813215012-9b6a8b82c839 2>/dev/null || true
 
+# Build mtp-anchor CLI tool
+mtp-anchor:
+	@echo "🔨 Building mtp-anchor..."
+	@mkdir -p $(BUILD_DIR)
+	go build -o $(BUILD_DIR)/mtp-anchor ./cmd/mtp-anchor
+	@chmod +x $(BUILD_DIR)/mtp-anchor
+	@echo "✅ mtp-anchor built: $(BUILD_DIR)/mtp-anchor"
+
+# Run unit tests for the messenger/mtp package (no simulator required)
+test-mtp:
+	@echo "🧪 Running messenger/mtp unit tests..."
+	go test ./messenger/mtp/... -v -count=1
+
+# Run the full integration test suite against a live simulator
+# Prerequisites: simulator daemon + wallet RPC must be running.
+# Optional env vars:
+#   WALLET_RPC  (default http://127.0.0.1:30000/json_rpc)
+#   DAEMON_RPC  (default http://127.0.0.1:20000/json_rpc)
+#   SCID        (only needed with --skip-deploy)
+test-mtp-integration: mtp-anchor
+	@echo "🧪 Running MTP integration tests..."
+	@bash cmd/mtp-anchor/integration_test.sh \
+		--wallet-rpc "$${WALLET_RPC:-http://127.0.0.1:30000/json_rpc}" \
+		--daemon-rpc "$${DAEMON_RPC:-http://127.0.0.1:20000/json_rpc}"
+
 # Development mode
 dev:
 	wails dev
@@ -100,10 +138,13 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all        - Build HOLOGRAM + derod + simulator (recommended)"
-	@echo "  hologram   - Build HOLOGRAM only"
+	@echo "  hologram   - Build HOLOGRAM only (with build metadata)"
+	@echo "  release    - Distribution build: clean + trimpath + metadata"
 	@echo "  derod      - Build derod from derohe source"
 	@echo "  simulator  - Build simulator from derohe source"
-	@echo "  dev        - Run in development mode"
+	@echo "  mtp-anchor - Build the mtp-anchor CLI tool"
+	@echo "  test-mtp   - Run messenger/mtp unit tests (no simulator needed)"
+	@echo "  test-mtp-integration - Run full integration suite (simulator required)"
 	@echo "  clean      - Remove build artifacts"
 	@echo "  help       - Show this help"
 	@echo ""

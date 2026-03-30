@@ -56,3 +56,6 @@ TELA-Browser-Wails
 
 # Reference projects (not part of HOLOGRAM, kept locally for reference)
 tela-cli/
+
+# MTP cache files (runtime artifacts, not source)
+*.mtp-cache.json
