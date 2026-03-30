@@ -1,4 +1,4 @@
-module TELA-Browser-Wails
+module github.com/DHEBP/HOLOGRAM
 
 go 1.24.0
 
