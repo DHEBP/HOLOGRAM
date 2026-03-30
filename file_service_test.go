@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -426,3 +427,330 @@ func TestDiscoverShardFiles_FindsShardsCreatedByShardFile(t *testing.T) {
 	}
 	_ = compression // may be empty for uncompressed
 }
+
+// =============================================================================
+// Tier 2 Tests — expandFileToShards + buildPreflightExpansion
+// These depend on the Phase 1 implementation. All tests are self-contained
+// (no running daemon, no network, no disk writes beyond t.TempDir()).
+// =============================================================================
+
+// ============== expandFileToShards ==============
+
+// A file well under the limit returns exactly one entry (fast path, no split).
+func TestExpandFileToShards_SmallFile_OneShard(t *testing.T) {
+	content := "console.log('hello');"
+	shards, err := expandFileToShards(content, "small.js", "TELA-JS-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(shards) != 1 {
+		t.Errorf("expected 1 shard for small file, got %d", len(shards))
+	}
+	if shards[0].ShardIndex != 0 {
+		t.Errorf("fast-path entry should have ShardIndex=0 (sentinel), got %d", shards[0].ShardIndex)
+	}
+	if shards[0].Name != "small.js" {
+		t.Errorf("fast-path name should be unchanged, got %q", shards[0].Name)
+	}
+}
+
+// A file exactly at the 18 KB limit returns one shard (boundary check).
+func TestExpandFileToShards_ExactlyAtLimit_OneShard(t *testing.T) {
+	// Build content that is exactly MAX_DOC_CODE_SIZE KB with no newlines.
+	content := strings.Repeat("x", int(MAX_DOC_CODE_SIZE*1024))
+	shards, err := expandFileToShards(content, "edge.js", "TELA-JS-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(shards) != 1 {
+		t.Errorf("content at exact limit should produce 1 shard, got %d", len(shards))
+	}
+}
+
+// Empty content produces at most 1 shard and does not panic.
+func TestExpandFileToShards_EmptyContent(t *testing.T) {
+	shards, err := expandFileToShards("", "empty.js", "TELA-JS-1")
+	if err != nil {
+		t.Fatalf("unexpected error for empty content: %v", err)
+	}
+	if len(shards) > 1 {
+		t.Errorf("empty content should not produce multiple shards, got %d", len(shards))
+	}
+}
+
+// A 36 KB file produces multiple shards, each individually under the limit.
+func TestExpandFileToShards_AllShardsUnderLimit(t *testing.T) {
+	content := strings.Repeat("console.log('shard');", 1800) // ~36 KB
+	shards, err := expandFileToShards(content, "large.js", "TELA-JS-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(shards) <= 1 {
+		t.Fatalf("expected multiple shards for 36KB content, got %d", len(shards))
+	}
+	for i, s := range shards {
+		size := getCodeSizeInKB(s.Content)
+		if size > MAX_DOC_CODE_SIZE {
+			t.Errorf("shard %d exceeds limit: %.2fKB > %.2fKB", i+1, size, MAX_DOC_CODE_SIZE)
+		}
+	}
+}
+
+// Shard names follow the base-N.ext convention matching tela.CreateShardFiles.
+func TestExpandFileToShards_ShardNamingConvention(t *testing.T) {
+	content := strings.Repeat("console.log('x');", 1800) // ~36 KB
+	shards, err := expandFileToShards(content, "app.js", "TELA-JS-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i, s := range shards {
+		expected := fmt.Sprintf("app-%d.js", i+1)
+		if s.Name != expected {
+			t.Errorf("shard %d name = %q, want %q", i+1, s.Name, expected)
+		}
+		if s.ShardIndex != i+1 {
+			t.Errorf("shard %d ShardIndex = %d, want %d", i+1, s.ShardIndex, i+1)
+		}
+	}
+}
+
+// ShardCount is correctly backfilled on all entries.
+func TestExpandFileToShards_ShardCountBackfilled(t *testing.T) {
+	content := strings.Repeat("console.log('x');", 1800) // ~36 KB
+	shards, err := expandFileToShards(content, "app.js", "TELA-JS-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	total := len(shards)
+	for i, s := range shards {
+		if s.ShardCount != total {
+			t.Errorf("shard %d ShardCount = %d, want %d", i+1, s.ShardCount, total)
+		}
+	}
+}
+
+// Concatenating all shard contents reconstructs the original exactly.
+func TestExpandFileToShards_ContentReconstructsExactly(t *testing.T) {
+	original := strings.Repeat("console.log('roundtrip');", 1500) // ~30 KB
+	shards, err := expandFileToShards(original, "app.js", "TELA-JS-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var rebuilt strings.Builder
+	for _, s := range shards {
+		rebuilt.WriteString(s.Content)
+	}
+	if rebuilt.String() != original {
+		t.Errorf("reconstructed content does not match original (%d vs %d chars)",
+			rebuilt.Len(), len(original))
+	}
+}
+
+// OriginalName is preserved on all shard entries.
+func TestExpandFileToShards_OriginalNamePreserved(t *testing.T) {
+	content := strings.Repeat("x", 25*1024)
+	shards, err := expandFileToShards(content, "styles.css", "TELA-CSS-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, s := range shards {
+		if s.OriginalName != "styles.css" {
+			t.Errorf("OriginalName = %q, want %q", s.OriginalName, "styles.css")
+		}
+	}
+}
+
+// ============== buildPreflightExpansion ==============
+
+func makeTestDOCInfo(t *testing.T, dir, name, content string) DOCInfo {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return DOCInfo{
+		Name:    name,
+		Path:    path,
+		DocType: "TELA-JS-1",
+		Size:    int64(len(content)),
+	}
+}
+
+// Small files are left completely untouched — one DOCInfo in = one DOCInfo out.
+func TestBuildPreflightExpansion_LeavesSmallFilesAlone(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{}
+	files := []DOCInfo{makeTestDOCInfo(t, dir, "small.js", "console.log('hi');")}
+	config := PreflightConfig{AutoShard: true, Compress: false}
+
+	exp, err := app.buildPreflightExpansion(files, config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(exp.DeployFiles) != 1 {
+		t.Errorf("expected 1 deploy file, got %d", len(exp.DeployFiles))
+	}
+	if exp.Summary.DeployDocCount != 1 {
+		t.Errorf("DeployDocCount = %d, want 1", exp.Summary.DeployDocCount)
+	}
+	if exp.Summary.ShardCount != 0 {
+		t.Errorf("ShardCount should be 0 for small files, got %d", exp.Summary.ShardCount)
+	}
+	if len(exp.Warnings) != 0 {
+		t.Errorf("no warnings expected for small files, got: %v", exp.Warnings)
+	}
+}
+
+// Oversized files are expanded into multiple deploy entries.
+func TestBuildPreflightExpansion_ExpandsOversizedFiles(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{}
+	oversized := strings.Repeat("console.log('x');", 1800) // ~36 KB
+	files := []DOCInfo{makeTestDOCInfo(t, dir, "large.js", oversized)}
+	config := PreflightConfig{AutoShard: true, Compress: false}
+
+	exp, err := app.buildPreflightExpansion(files, config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(exp.DeployFiles) <= 1 {
+		t.Errorf("expected >1 deploy files for oversized file, got %d", len(exp.DeployFiles))
+	}
+	if exp.Summary.ShardCount == 0 {
+		t.Error("ShardCount should be >0 when oversized files are expanded")
+	}
+	if len(exp.Warnings) == 0 {
+		t.Error("expected a warning for the oversized file")
+	}
+}
+
+// Summary.DeployDocCount reflects the expanded count, not the source file count.
+func TestBuildPreflightExpansion_SummaryDocCount(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{}
+	oversized := strings.Repeat("console.log('x');", 1800)
+	small := "console.log('small');"
+	files := []DOCInfo{
+		makeTestDOCInfo(t, dir, "large.js", oversized),
+		makeTestDOCInfo(t, dir, "small.js", small),
+	}
+	config := PreflightConfig{AutoShard: true, Compress: false}
+
+	exp, err := app.buildPreflightExpansion(files, config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exp.Summary.SourceFileCount != 2 {
+		t.Errorf("SourceFileCount = %d, want 2", exp.Summary.SourceFileCount)
+	}
+	if exp.Summary.DeployDocCount <= 2 {
+		t.Errorf("DeployDocCount should be >2 (large.js was sharded), got %d", exp.Summary.DeployDocCount)
+	}
+}
+
+// Gas estimate is non-zero for non-empty files.
+func TestBuildPreflightExpansion_GasEstimateNonZero(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{}
+	files := []DOCInfo{makeTestDOCInfo(t, dir, "app.js", "console.log('gas');")}
+	config := PreflightConfig{AutoShard: true, Compress: false}
+
+	exp, err := app.buildPreflightExpansion(files, config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exp.Summary.EstimatedGas == 0 {
+		t.Error("EstimatedGas should be >0 for non-empty deploy")
+	}
+}
+
+// Oversized index.html is rejected with a clear error — entrypoint protection.
+func TestBuildPreflightExpansion_RejectsOversizedIndexHTML(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{}
+	oversized := strings.Repeat("<div>x</div>", 2000) // ~24 KB
+	files := []DOCInfo{{
+		Name:    "index.html",
+		Path:    filepath.Join(dir, "index.html"),
+		DocType: "TELA-HTML-1",
+		Size:    int64(len(oversized)),
+	}}
+	if err := os.WriteFile(files[0].Path, []byte(oversized), 0644); err != nil {
+		t.Fatal(err)
+	}
+	config := PreflightConfig{AutoShard: true, Compress: false}
+
+	_, err := app.buildPreflightExpansion(files, config)
+	if err == nil {
+		t.Error("expected error for oversized index.html, got nil")
+	}
+	if !strings.Contains(err.Error(), "index.html") {
+		t.Errorf("error message should mention index.html, got: %v", err)
+	}
+}
+
+// A normally-sized index.html passes through without error.
+func TestBuildPreflightExpansion_SmallIndexHTML_PassesThrough(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{}
+	files := []DOCInfo{{
+		Name:    "index.html",
+		Path:    filepath.Join(dir, "index.html"),
+		DocType: "TELA-HTML-1",
+		Size:    30,
+	}}
+	if err := os.WriteFile(files[0].Path, []byte("<html><body>hi</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	config := PreflightConfig{AutoShard: true, Compress: false}
+
+	exp, err := app.buildPreflightExpansion(files, config)
+	if err != nil {
+		t.Fatalf("small index.html should not error, got: %v", err)
+	}
+	if len(exp.DeployFiles) != 1 {
+		t.Errorf("expected 1 deploy file, got %d", len(exp.DeployFiles))
+	}
+}
+
+// ShardGroups length matches the source file count (one group per source file).
+func TestBuildPreflightExpansion_ShardGroupsMatchSourceFiles(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{}
+	files := []DOCInfo{
+		makeTestDOCInfo(t, dir, "a.js", "console.log('a');"),
+		makeTestDOCInfo(t, dir, "b.js", strings.Repeat("x", 25*1024)),
+	}
+	config := PreflightConfig{AutoShard: true, Compress: false}
+
+	exp, err := app.buildPreflightExpansion(files, config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(exp.ShardGroups) != len(files) {
+		t.Errorf("ShardGroups length = %d, want %d", len(exp.ShardGroups), len(files))
+	}
+}
+
+// Virtual DOCInfo entries produced for shards carry DataString (not Path).
+func TestBuildPreflightExpansion_VirtualShardsHaveDataString(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{}
+	oversized := strings.Repeat("console.log('v');", 1800)
+	files := []DOCInfo{makeTestDOCInfo(t, dir, "large.js", oversized)}
+	config := PreflightConfig{AutoShard: true, Compress: false}
+
+	exp, err := app.buildPreflightExpansion(files, config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i, df := range exp.DeployFiles {
+		if df.DataString == "" {
+			t.Errorf("deploy file %d (%s) has empty DataString — virtual shards must carry in-memory content", i, df.Name)
+		}
+		if df.Path != "" {
+			t.Errorf("deploy file %d (%s) has a Path set — virtual shards should have no disk path", i, df.Name)
+		}
+	}
+}
+

@@ -825,6 +825,109 @@ func (a *App) ScanFolder(folderPath string) map[string]interface{} {
 	}
 }
 
+// PreflightExpand scans a folder and returns an expanded deploy plan.
+// When config.AutoShard is true, files exceeding the DOC size limit are split
+// in-memory into shard DOCInfos. No files are written to disk.
+//
+// This endpoint is called by BatchUpload.svelte when the auto-shard toggle is on.
+// It does NOT replace or modify ScanFolder — that path remains unchanged.
+//
+// configJSON must be a JSON string matching PreflightConfig:
+//   {"autoShard": true, "compress": true, "indexDurl": "my-app.tela"}
+func (a *App) PreflightExpand(folderPath, configJSON string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[DIR] PreflightExpand: scanning %s", folderPath))
+
+	var config PreflightConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return map[string]interface{}{"success": false, "error": "Invalid config JSON: " + err.Error()}
+	}
+
+	// Validate folder exists
+	info, err := os.Stat(folderPath)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("Folder not found: %v", err)}
+	}
+	if !info.IsDir() {
+		return map[string]interface{}{"success": false, "error": "Path is not a directory"}
+	}
+
+	// Walk the folder and build DOCInfo slice — same filtering logic as ScanFolder.
+	var files []DOCInfo
+	var scanErrors []string
+
+	err = filepath.Walk(folderPath, func(path string, fi os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			scanErrors = append(scanErrors, fmt.Sprintf("Error accessing %s: %v", path, walkErr))
+			return nil
+		}
+		if fi.IsDir() {
+			return nil
+		}
+		name := fi.Name()
+		// Skip hidden files, build artifacts, and shard output directories
+		if strings.HasPrefix(name, ".") || name == "Thumbs.db" || name == ".DS_Store" {
+			return nil
+		}
+		// Skip hidden directories (e.g. .git, .doc-shards)
+		rel, _ := filepath.Rel(folderPath, path)
+		for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+			if strings.HasPrefix(part, ".") {
+				return nil
+			}
+		}
+
+		relPath, _ := filepath.Rel(folderPath, path)
+		subDir := filepath.Dir(relPath)
+		if subDir == "." {
+			subDir = "/"
+		} else {
+			subDir = "/" + filepath.ToSlash(subDir)
+		}
+
+		docType := tela.ParseDocType(name)
+		files = append(files, DOCInfo{
+			Name:    name,
+			Path:    path,
+			SubDir:  subDir,
+			DocType: docType,
+			Size:    fi.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		scanErrors = append(scanErrors, fmt.Sprintf("Walk error: %v", err))
+	}
+
+	if len(files) == 0 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No deployable files found in folder",
+			"errors":  scanErrors,
+		}
+	}
+
+	expansion, err := a.buildPreflightExpansion(files, config)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error(), "errors": scanErrors}
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] PreflightExpand: %d source files → %d deploy DOCs (%d shards, ~%d gas)",
+		expansion.Summary.SourceFileCount,
+		expansion.Summary.DeployDocCount,
+		expansion.Summary.ShardCount,
+		expansion.Summary.EstimatedGas,
+	))
+
+	return map[string]interface{}{
+		"success":     true,
+		"deployFiles": expansion.DeployFiles,
+		"shardGroups": expansion.ShardGroups,
+		"warnings":    expansion.Warnings,
+		"summary":     expansion.Summary,
+		"errors":      scanErrors,
+	}
+}
+
 // GenerateSubDirs generates subDir paths from a list of files
 func (a *App) GenerateSubDirs(folderPath string, filesJSON string) map[string]interface{} {
 	// Parse files array

@@ -217,10 +217,22 @@ func (a *App) setupNetworkForDeployment(wallet *walletapi.Wallet_Disk, isSimulat
 
 // prepareDOCForDeployment reads, compresses, and signs a file for DOC deployment
 func (a *App) prepareDOCForDeployment(docInfo DOCInfo, wallet *walletapi.Wallet_Disk) (*PreparedDOC, error) {
-	// Read file data
-	data, err := os.ReadFile(docInfo.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
+	// Resolve file data — prefer in-memory content (virtual shard entries have no Path).
+	// Priority: Data bytes → DataString → read from Path.
+	var data []byte
+	if len(docInfo.Data) > 0 {
+		data = docInfo.Data
+	} else if docInfo.DataString != "" {
+		data = []byte(docInfo.DataString)
+	} else if docInfo.Path != "" {
+		var err error
+		data, err = os.ReadFile(docInfo.Path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read file: %w", err)
+		}
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("no file data provided for %s", docInfo.Name)
 	}
 
 	// Validate docType is accepted
@@ -1051,3 +1063,259 @@ func (a *App) waitForNewBlockWithHealthCheck(timeout time.Duration) error {
 	return fmt.Errorf("timeout after %v waiting for new block", timeout)
 }
 
+// =============================================================================
+// Auto-Shard Preflight — Phase 1
+// =============================================================================
+
+// PreflightConfig controls how buildPreflightExpansion behaves.
+type PreflightConfig struct {
+	AutoShard bool   `json:"autoShard"`
+	Compress  bool   `json:"compress"`
+	IndexDURL string `json:"indexDurl"` // passed through to summary for context
+}
+
+// ShardEntry describes one shard produced from an oversized source file.
+// ShardIndex 0 is a sentinel meaning the file fit in one DOC (no splitting occurred).
+type ShardEntry struct {
+	Name         string // deploy filename, e.g. "rive-1.js.gz"
+	Content      string // deploy-ready content (post-compression if applicable)
+	ShardIndex   int    // 1-based; 0 means single-DOC (no split)
+	ShardCount   int    // total shards for this source file (backfilled after loop)
+	OriginalName string // source filename, e.g. "rive.js"
+	InstallBytes int    // approximate installed SC content length in bytes
+}
+
+// ShardGroup groups all shard entries that came from a single source file.
+// Returned in PreflightExpansion so the frontend can render provenance:
+// "rive.js → 4 shard DOCs".
+type ShardGroup struct {
+	OriginalName      string
+	DocType           string
+	ShardCount        int
+	TotalInstallBytes int
+	Shards            []ShardEntry
+}
+
+// PreflightSummary is the aggregated statistics returned to the frontend.
+// EstimatedGas is the only pre-deploy gas number the frontend should display
+// when auto-shard is active — it replaces ScanFolder.totalGas.
+type PreflightSummary struct {
+	SourceFileCount   int
+	DeployDocCount    int    // may be > SourceFileCount when files were sharded
+	ShardCount        int    // total number of shard DOCs across all expanded files
+	TotalSourceBytes  int64
+	TotalInstallBytes int
+	EstimatedGas      uint64
+}
+
+// PreflightExpansion is the full response from buildPreflightExpansion.
+// DeployFiles is the expanded, ready-to-deploy DOCInfo list.
+// Phase 3 will wire DeployTELABatch to consume DeployFiles directly.
+type PreflightExpansion struct {
+	DeployFiles []DOCInfo
+	ShardGroups []ShardGroup
+	Warnings    []string
+	Summary     PreflightSummary
+}
+
+// expandFileToShards splits content into DOC-sized chunks using binary search.
+// content must already be in its final deploy form (post-compression if applicable).
+// Returns a single-entry slice when the content fits in one DOC (fast path).
+// ShardIndex is 0 on the fast-path entry (sentinel: "not a shard").
+// ShardCount is backfilled on all entries once the total is known.
+func expandFileToShards(content, fileName, docType string) ([]ShardEntry, error) {
+	// Fast path: content already fits in one DOC
+	if getCodeSizeInKB(content) <= MAX_DOC_CODE_SIZE {
+		return []ShardEntry{{
+			Name:         fileName,
+			Content:      content,
+			ShardIndex:   0, // sentinel: file was not split
+			ShardCount:   1,
+			OriginalName: fileName,
+			InstallBytes: len(content),
+		}}, nil
+	}
+
+	ext := filepath.Ext(fileName)
+	base := strings.TrimSuffix(fileName, ext)
+
+	runes := []rune(content)
+	var shards []ShardEntry
+	cursor := 0
+	shardIndex := 1
+
+	for cursor < len(runes) {
+		low := cursor + 1
+		high := len(runes)
+		bestEnd := -1
+
+		for low <= high {
+			mid := (low + high) / 2
+			chunk := string(runes[cursor:mid])
+			if getCodeSizeInKB(chunk) <= MAX_DOC_CODE_SIZE {
+				bestEnd = mid
+				low = mid + 1
+			} else {
+				high = mid - 1
+			}
+		}
+
+		if bestEnd == -1 {
+			return nil, fmt.Errorf("cannot shard %s: a single character exceeds the DOC size limit", fileName)
+		}
+
+		shardName := fmt.Sprintf("%s-%d%s", base, shardIndex, ext)
+		chunk := string(runes[cursor:bestEnd])
+		shards = append(shards, ShardEntry{
+			Name:         shardName,
+			Content:      chunk,
+			ShardIndex:   shardIndex,
+			OriginalName: fileName,
+			InstallBytes: len(chunk),
+		})
+		cursor = bestEnd
+		shardIndex++
+	}
+
+	// Backfill ShardCount on all entries now that the total is known
+	total := len(shards)
+	for i := range shards {
+		shards[i].ShardCount = total
+	}
+	return shards, nil
+}
+
+// readDocContent resolves the content of a DOCInfo for preflight analysis.
+// If compress is true and the file is not already compressed, GZIP is applied.
+// This mirrors the compress-first pipeline enforced in ShardFile and prepareDOCForDeployment.
+func (a *App) readDocContent(f DOCInfo, compress bool) (string, error) {
+	var data []byte
+	if len(f.Data) > 0 {
+		data = f.Data
+	} else if f.DataString != "" {
+		data = []byte(f.DataString)
+	} else if f.Path != "" {
+		var err error
+		data, err = os.ReadFile(f.Path)
+		if err != nil {
+			return "", fmt.Errorf("cannot read %s: %w", f.Name, err)
+		}
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("no content source for %s", f.Name)
+	}
+
+	if compress && !tela.IsCompressedExt(filepath.Ext(f.Name)) {
+		compressed, err := tela.Compress(data, tela.COMPRESSION_GZIP)
+		if err != nil {
+			return "", fmt.Errorf("compression failed for %s: %w", f.Name, err)
+		}
+		return compressed, nil
+	}
+	return string(data), nil
+}
+
+// buildPreflightExpansion processes a list of DOCInfos and returns an expanded
+// deploy plan. When a file exceeds MAX_DOC_CODE_SIZE it is split in-memory into
+// shard DOCInfos — no files are written to disk.
+//
+// Decision #3 (§12.16): oversized index.html (exact name match, case-insensitive)
+// is rejected with a clear error. Other oversized files are auto-sharded normally.
+func (a *App) buildPreflightExpansion(files []DOCInfo, config PreflightConfig) (PreflightExpansion, error) {
+	var result PreflightExpansion
+	var deployFiles []DOCInfo
+	var shardGroups []ShardGroup
+	var warnings []string
+	var totalSourceBytes int64
+	var totalInstallBytes int
+	var totalShardCount int
+	var totalGas uint64
+
+	for _, f := range files {
+		totalSourceBytes += f.Size
+
+		content, err := a.readDocContent(f, config.Compress)
+		if err != nil {
+			return result, err
+		}
+
+		// Compute the deploy filename (append .gz suffix when compressed)
+		deployName := f.Name
+		if config.Compress && !tela.IsCompressedExt(filepath.Ext(f.Name)) {
+			deployName = f.Name + tela.COMPRESSION_GZIP
+		}
+
+		// Reject oversized index.html — auto-sharding it would break entrypoint ordering.
+		if strings.EqualFold(f.Name, "index.html") && getCodeSizeInKB(content) > MAX_DOC_CODE_SIZE {
+			return result, fmt.Errorf(
+				"index.html exceeds the %.0fKB DOC limit and cannot be auto-sharded — "+
+					"splitting index.html would break the TELA application entrypoint (DOC1). "+
+					"Please reduce its size or split it manually.",
+				MAX_DOC_CODE_SIZE,
+			)
+		}
+
+		shards, err := expandFileToShards(content, deployName, f.DocType)
+		if err != nil {
+			return result, fmt.Errorf("failed to expand %s: %w", f.Name, err)
+		}
+
+		group := ShardGroup{
+			OriginalName: f.Name,
+			DocType:      f.DocType,
+			ShardCount:   len(shards),
+		}
+
+		for _, shard := range shards {
+			group.TotalInstallBytes += shard.InstallBytes
+			group.Shards = append(group.Shards, shard)
+
+			totalInstallBytes += shard.InstallBytes
+			gasEstimate := estimateGasCost(shard.InstallBytes)
+			totalGas += gasEstimate
+
+			deployFiles = append(deployFiles, DOCInfo{
+				Name:        shard.Name,
+				SubDir:      f.SubDir,
+				DocType:     f.DocType,
+				Compressed:  config.Compress,
+				DataString:  shard.Content,
+				Description: f.Description,
+				IconURL:     f.IconURL,
+				Ringsize:    f.Ringsize,
+				Size:        int64(shard.InstallBytes),
+			})
+
+			if shard.ShardIndex > 0 {
+				totalShardCount++
+			}
+		}
+
+		if len(shards) > 1 {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s will be split into %d shard DOCs",
+				f.Name, len(shards),
+			))
+		}
+
+		shardGroups = append(shardGroups, group)
+	}
+
+	// Add a conservative INDEX gas estimate (INDEX SC is typically ~500 bytes of template)
+	totalGas += estimateGasCost(512)
+
+	result = PreflightExpansion{
+		DeployFiles: deployFiles,
+		ShardGroups: shardGroups,
+		Warnings:    warnings,
+		Summary: PreflightSummary{
+			SourceFileCount:   len(files),
+			DeployDocCount:    len(deployFiles),
+			ShardCount:        totalShardCount,
+			TotalSourceBytes:  totalSourceBytes,
+			TotalInstallBytes: totalInstallBytes,
+			EstimatedGas:      totalGas,
+		},
+	}
+	return result, nil
+}
