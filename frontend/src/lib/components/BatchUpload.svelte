@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { walletState, settingsState, toast } from '../stores/appState.js';
-  import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList, GetMetadataFiles } from '../../../wailsjs/go/main/App.js';
+  import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList, GetMetadataFiles, PreflightExpand } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
   import { BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
   import { Copy, Eye, AlertTriangle, Search, Clock, Check, X, Puzzle } from 'lucide-svelte';
@@ -28,9 +28,11 @@
   let indexDescription = '';
   let indexIcon = '';
   
-  // New: Ringsize, compression, and confirmation
+  // New: Ringsize, compression, auto-shard, and confirmation
   let ringsize = 2; // 2 = updateable, 16+ = immutable
   let enableCompression = false; // Global compression toggle (matching tela-cli)
+  let enableAutoShard = false;   // Opt-in: expand oversized files into shards during preflight
+  let preflightExpansion = null; // Result from PreflightExpand when auto-shard is on
   let isSimulator = false;
   let showConfirmModal = false;
   
@@ -469,30 +471,54 @@
     
     loading = true;
     error = null;
+    preflightExpansion = null;
     
     try {
-      const result = await ScanFolder(folderPath);
-      if (result.success) {
-        files = result.files || [];
-        totalSize = result.totalSize || 0;
-        totalGas = result.totalGas || 0;
-        estimatedGas = result.estimatedGas || result.totalGas || 0;
-        
+      let scanSuccess = false;
+
+      if (enableAutoShard) {
+        const config = JSON.stringify({ autoShard: true, compress: enableCompression });
+        const result = await PreflightExpand(folderPath, config);
+        if (result.success) {
+          files = result.deployFiles || [];
+          preflightExpansion = {
+            deployFiles: result.deployFiles || [],
+            shardGroups: result.shardGroups || [],
+            warnings: result.warnings || [],
+            summary: result.summary || {},
+          };
+          totalSize = preflightExpansion.summary.totalSourceBytes || 0;
+          totalGas = preflightExpansion.summary.estimatedGas || 0;
+          estimatedGas = totalGas;
+          scanSuccess = true;
+        } else {
+          error = result.error;
+        }
+      } else {
+        const result = await ScanFolder(folderPath);
+        if (result.success) {
+          files = result.files || [];
+          totalSize = result.totalSize || 0;
+          totalGas = result.totalGas || 0;
+          estimatedGas = result.estimatedGas || result.totalGas || 0;
+          scanSuccess = true;
+        } else {
+          error = result.error;
+        }
+      }
+
+      if (scanSuccess) {
         // Auto-infer metadata from package.json, index.html, README
-        // This will set indexName, indexDURL, indexDescription, indexIcon if found
         await inferMetadataFromFolder();
         
         // Fallback: if metadata inference didn't find a name, use folder name
         if (!indexName) {
           const parts = folderPath.split(/[/\\]/);
           indexName = parts[parts.length - 1] || 'My TELA App';
-          // Also generate dURL from folder name as fallback
           if (!indexDURL) {
             indexDURL = defaultDurl(indexName);
           }
         }
-      } else {
-        error = result.error;
       }
     } catch (err) {
       error = err.message;
@@ -568,11 +594,14 @@
       const batchData = {
         files: files.map(f => ({
           name: f.name,
-          path: f.path,
+          path: f.path || '',
+          data: f.data || '',  // populated for virtual shard DOCs from PreflightExpand
           subDir: f.subDir,
           docType: f.docType,
           size: f.size,
-          compressed: enableCompression && f.canCompress, // Only compress if toggle enabled AND file is compressible
+          // For virtual shards, compression was already applied by PreflightExpand — trust f.compressed.
+          // For regular entries, derive from the toggle.
+          compressed: f.data ? (f.compressed || false) : (enableCompression && (f.canCompress || false)),
           ringsize: ringsize,
         })),
         indexName: indexName,
@@ -829,12 +858,20 @@
         <div class="preflight-summary">
           <div class="preflight-stats">
             <div class="preflight-stat">
-              <span class="preflight-stat-value">{preflightStats.sourceFiles}</span>
+              <span class="preflight-stat-value">
+                {enableAutoShard && preflightExpansion
+                  ? (preflightExpansion.summary.sourceFileCount ?? preflightStats.sourceFiles)
+                  : preflightStats.sourceFiles}
+              </span>
               <span class="preflight-stat-label">Source Files</span>
             </div>
             <div class="preflight-stat-arrow">→</div>
             <div class="preflight-stat">
-              <span class="preflight-stat-value">{preflightStats.deployDocs}</span>
+              <span class="preflight-stat-value">
+                {enableAutoShard && preflightExpansion
+                  ? (preflightExpansion.summary.deployDocCount ?? preflightStats.deployDocs)
+                  : preflightStats.deployDocs}
+              </span>
               <span class="preflight-stat-label">DOC Contracts</span>
             </div>
             <div class="preflight-stat-plus">+</div>
@@ -842,9 +879,34 @@
               <span class="preflight-stat-value">1</span>
               <span class="preflight-stat-label">INDEX Contract</span>
             </div>
+            {#if enableAutoShard && preflightExpansion && preflightExpansion.summary.estimatedGas}
+              <div class="preflight-stat-plus">•</div>
+              <div class="preflight-stat">
+                <span class="preflight-stat-value">~{preflightExpansion.summary.estimatedGas.toLocaleString()}</span>
+                <span class="preflight-stat-label">Est. Gas</span>
+              </div>
+            {/if}
           </div>
           
-          {#if preflightStats.hasOversized}
+          {#if enableAutoShard && preflightExpansion}
+            {#if preflightExpansion.shardGroups && preflightExpansion.shardGroups.length > 0}
+              <div class="preflight-shard-callout">
+                <span class="preflight-shard-icon">◈</span>
+                <span>
+                  {preflightExpansion.shardGroups.length} file{preflightExpansion.shardGroups.length > 1 ? 's' : ''} will be split into shards:
+                  {preflightExpansion.shardGroups.map(g => `${g.originalName} → ${g.shardCount} shards`).join(', ')}
+                </span>
+              </div>
+            {/if}
+            {#if preflightExpansion.warnings && preflightExpansion.warnings.length > 0}
+              {#each preflightExpansion.warnings as warn}
+                <div class="preflight-warning">
+                  <AlertTriangle size={14} />
+                  <span>{warn}</span>
+                </div>
+              {/each}
+            {/if}
+          {:else if preflightStats.hasOversized}
             <div class="preflight-warning">
               <AlertTriangle size={14} />
               <span>
@@ -853,7 +915,7 @@
               </span>
             </div>
             <div class="preflight-hint">
-              Large files will fail deployment. Use DocShard Manager in Studio to split them first, or enable auto-sharding (coming soon).
+              Large files will fail deployment. Enable Auto-Shard above to split them automatically, or use DocShard Manager in Studio.
             </div>
           {/if}
         </div>
@@ -1120,6 +1182,36 @@
         </div>
       {/if}
       
+      <!-- Auto-Shard Toggle -->
+      {#if preflightStats.hasOversized || enableAutoShard}
+        <div class="config-field">
+          <label class="config-label">Auto-Shard</label>
+          <button
+            type="button"
+            class="autoshard-toggle {enableAutoShard ? 'active' : ''}"
+            on:click={() => { enableAutoShard = !enableAutoShard; if (folderPath) scanFolder(); }}
+            disabled={deploying}
+          >
+            <div class="autoshard-track">
+              <div class="autoshard-thumb"></div>
+            </div>
+            <div class="autoshard-content">
+              <span class="autoshard-label">{enableAutoShard ? 'Enabled' : 'Disabled'}</span>
+              <span class="autoshard-desc">
+                {enableAutoShard
+                  ? 'Oversized files will be automatically split into shard DOCs'
+                  : 'Files over 18KB will block deployment'}
+              </span>
+            </div>
+          </button>
+          {#if enableAutoShard}
+            <p class="autoshard-note">
+              ◈ Files larger than 18KB will be split in-memory before deployment — no temp files written to disk
+            </p>
+          {/if}
+        </div>
+      {/if}
+      
       <!-- TELA-MODs Section (matching tela-cli modsPrompt) -->
       <div class="config-field mods-section">
         <div class="mods-header">
@@ -1246,7 +1338,7 @@
           <div class="btn-spinner"></div>
           Deploying... ({deployProgress.current}/{deployProgress.total})
         {:else}
-          Deploy {files.length} Files + INDEX
+          Deploy {enableAutoShard && preflightExpansion ? (preflightExpansion.summary.deployDocCount ?? files.length) : files.length} Files + INDEX
         {/if}
       </button>
     </div>
@@ -2254,6 +2346,115 @@
     border-radius: var(--r-md, 8px);
     font-size: 11px;
     color: var(--cyan-400, #22d3ee);
+  }
+
+  /* Auto-Shard Toggle */
+  .autoshard-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3, 12px);
+    width: 100%;
+    padding: var(--s-3, 12px) var(--s-4, 16px);
+    background: var(--void-deep, #08080e);
+    border: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
+    border-radius: var(--r-lg, 12px);
+    cursor: pointer;
+    transition: all 200ms ease-out;
+    text-align: left;
+  }
+
+  .autoshard-toggle:hover {
+    border-color: var(--border-subtle, rgba(255, 255, 255, 0.06));
+    background: var(--void-up, #181824);
+  }
+
+  .autoshard-toggle.active {
+    border-color: var(--violet-500, #8b5cf6);
+    background: rgba(139, 92, 246, 0.08);
+  }
+
+  .autoshard-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .autoshard-track {
+    width: 36px;
+    height: 20px;
+    background: var(--void-surface, #1e1e2a);
+    border-radius: 10px;
+    position: relative;
+    transition: background 200ms ease-out;
+    flex-shrink: 0;
+  }
+
+  .autoshard-toggle.active .autoshard-track {
+    background: var(--violet-500, #8b5cf6);
+  }
+
+  .autoshard-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: var(--text-4, #505068);
+    border-radius: 50%;
+    transition: all 200ms ease-out;
+  }
+
+  .autoshard-toggle.active .autoshard-thumb {
+    left: 18px;
+    background: #fff;
+  }
+
+  .autoshard-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .autoshard-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-2, #a8a8b8);
+  }
+
+  .autoshard-toggle.active .autoshard-label {
+    color: var(--violet-400, #a78bfa);
+  }
+
+  .autoshard-desc {
+    font-size: 11px;
+    color: var(--text-5, #404058);
+  }
+
+  .autoshard-note {
+    margin-top: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(139, 92, 246, 0.05);
+    border-radius: var(--r-md, 8px);
+    font-size: 11px;
+    color: var(--violet-400, #a78bfa);
+  }
+
+  .preflight-shard-callout {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(139, 92, 246, 0.06);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: var(--r-md, 8px);
+    font-size: 12px;
+    color: var(--violet-400, #a78bfa);
+    margin-top: var(--s-2, 8px);
+  }
+
+  .preflight-shard-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+    margin-top: 1px;
   }
   
   /* Simulator & Free Badges */
