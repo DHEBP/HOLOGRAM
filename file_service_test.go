@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -750,6 +751,240 @@ func TestBuildPreflightExpansion_VirtualShardsHaveDataString(t *testing.T) {
 		}
 		if df.Path != "" {
 			t.Errorf("deploy file %d (%s) has a Path set — virtual shards should have no disk path", i, df.Name)
+		}
+	}
+}
+
+// ============== Phase 5: Integration Tests — PreflightExpand Wails Binding ==============
+// These tests exercise the full PreflightExpand endpoint with real temp folders,
+// real file walking, and real JSON config — the same path the frontend calls.
+
+func TestPreflightExpand_SmallFolderNoShards(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html><body>hello</body></html>"), 0644)
+	os.WriteFile(filepath.Join(dir, "style.css"), []byte("body { margin: 0; }"), 0644)
+
+	app := &App{}
+	result := app.PreflightExpand(dir, `{"autoShard":true,"compress":false}`)
+
+	if result["success"] != true {
+		t.Fatalf("expected success, got error: %v", result["error"])
+	}
+	deployFiles, ok := result["deployFiles"].([]DOCInfo)
+	if !ok {
+		t.Fatalf("deployFiles wrong type: %T", result["deployFiles"])
+	}
+	if len(deployFiles) != 2 {
+		t.Errorf("expected 2 deploy files, got %d", len(deployFiles))
+	}
+	shardGroups, _ := result["shardGroups"].([]ShardGroup)
+	for _, sg := range shardGroups {
+		if sg.ShardCount > 1 {
+			t.Errorf("no files should be sharded, but %s has %d shards", sg.OriginalName, sg.ShardCount)
+		}
+	}
+}
+
+func TestPreflightExpand_OversizedFileSplits(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html><body>app</body></html>"), 0644)
+	oversized := strings.Repeat("var x=1;\n", 3000) // ~27KB
+	os.WriteFile(filepath.Join(dir, "big.js"), []byte(oversized), 0644)
+
+	app := &App{}
+	result := app.PreflightExpand(dir, `{"autoShard":true,"compress":false}`)
+
+	if result["success"] != true {
+		t.Fatalf("expected success, got error: %v", result["error"])
+	}
+	deployFiles := result["deployFiles"].([]DOCInfo)
+	if len(deployFiles) <= 2 {
+		t.Errorf("oversized big.js should produce >1 shard, but total deploy files = %d", len(deployFiles))
+	}
+
+	shardGroups := result["shardGroups"].([]ShardGroup)
+	foundBigShard := false
+	for _, sg := range shardGroups {
+		if sg.OriginalName == "big.js" && sg.ShardCount > 1 {
+			foundBigShard = true
+		}
+	}
+	if !foundBigShard {
+		t.Error("expected a ShardGroup for big.js with ShardCount > 1")
+	}
+
+	summary := result["summary"].(PreflightSummary)
+	if summary.ShardCount == 0 {
+		t.Error("summary.ShardCount should be > 0")
+	}
+	if summary.EstimatedGas == 0 {
+		t.Error("summary.EstimatedGas should be > 0")
+	}
+}
+
+func TestPreflightExpand_OversizedIndexHtmlRejected(t *testing.T) {
+	dir := t.TempDir()
+	oversized := strings.Repeat("<div>content</div>\n", 2000) // ~38KB
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte(oversized), 0644)
+
+	app := &App{}
+	result := app.PreflightExpand(dir, `{"autoShard":true,"compress":false}`)
+
+	if result["success"] != false {
+		t.Fatal("expected failure when index.html is oversized")
+	}
+	errMsg, _ := result["error"].(string)
+	if !strings.Contains(strings.ToLower(errMsg), "index.html") {
+		t.Errorf("error should mention index.html, got: %s", errMsg)
+	}
+}
+
+func TestPreflightExpand_HiddenFilesSkipped(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html></html>"), 0644)
+	os.WriteFile(filepath.Join(dir, ".DS_Store"), []byte("junk"), 0644)
+	os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	os.WriteFile(filepath.Join(dir, ".git", "config"), []byte("[core]"), 0644)
+
+	app := &App{}
+	result := app.PreflightExpand(dir, `{"autoShard":true,"compress":false}`)
+
+	if result["success"] != true {
+		t.Fatalf("expected success, got: %v", result["error"])
+	}
+	deployFiles := result["deployFiles"].([]DOCInfo)
+	for _, df := range deployFiles {
+		if strings.HasPrefix(df.Name, ".") {
+			t.Errorf("hidden file should be skipped: %s", df.Name)
+		}
+	}
+	if len(deployFiles) != 1 {
+		t.Errorf("expected 1 file (index.html only), got %d", len(deployFiles))
+	}
+}
+
+func TestPreflightExpand_InvalidFolder(t *testing.T) {
+	app := &App{}
+	result := app.PreflightExpand("/nonexistent/path/xyz", `{"autoShard":true}`)
+	if result["success"] != false {
+		t.Error("expected failure for nonexistent folder")
+	}
+}
+
+func TestPreflightExpand_InvalidConfigJSON(t *testing.T) {
+	app := &App{}
+	result := app.PreflightExpand("/tmp", `{bad json}`)
+	if result["success"] != false {
+		t.Error("expected failure for invalid JSON config")
+	}
+}
+
+func TestPreflightExpand_EmptyFolder(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{}
+	result := app.PreflightExpand(dir, `{"autoShard":true}`)
+	if result["success"] != false {
+		t.Error("expected failure for empty folder")
+	}
+}
+
+func TestPreflightExpand_WithCompression(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html><body>hi</body></html>"), 0644)
+	oversized := strings.Repeat("function f(){return 1;}\n", 1200) // ~28KB
+	os.WriteFile(filepath.Join(dir, "app.js"), []byte(oversized), 0644)
+
+	app := &App{}
+	result := app.PreflightExpand(dir, `{"autoShard":true,"compress":true}`)
+
+	if result["success"] != true {
+		t.Fatalf("expected success, got: %v", result["error"])
+	}
+	summary := result["summary"].(PreflightSummary)
+	if summary.DeployDocCount < 2 {
+		t.Errorf("expected at least 2 deploy docs, got %d", summary.DeployDocCount)
+	}
+}
+
+// JSON round-trip: simulates the exact path from frontend → DeployTELABatch JSON unmarshal.
+// Verifies that virtual shard DOCInfo entries survive JSON serialization and that
+// DataString (json:"data") is correctly populated when unmarshalled into BatchDeployConfig.
+func TestJSONRoundTrip_VirtualShardDOCInfo(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html></html>"), 0644)
+	oversized := strings.Repeat("x", 25*1024)
+	os.WriteFile(filepath.Join(dir, "big.js"), []byte(oversized), 0644)
+
+	app := &App{}
+	result := app.PreflightExpand(dir, `{"autoShard":true,"compress":false}`)
+	if result["success"] != true {
+		t.Fatalf("preflight failed: %v", result["error"])
+	}
+
+	deployFiles := result["deployFiles"].([]DOCInfo)
+
+	// Build the same JSON the frontend would send to DeployTELABatch
+	type filePart struct {
+		Name       string `json:"name"`
+		Path       string `json:"path"`
+		Data       string `json:"data"`
+		SubDir     string `json:"subDir"`
+		DocType    string `json:"docType"`
+		Size       int64  `json:"size"`
+		Compressed bool   `json:"compressed"`
+		Ringsize   uint64 `json:"ringsize"`
+	}
+	var parts []filePart
+	for _, df := range deployFiles {
+		parts = append(parts, filePart{
+			Name:       df.Name,
+			Path:       df.Path,
+			Data:       df.DataString,
+			SubDir:     df.SubDir,
+			DocType:    df.DocType,
+			Size:       df.Size,
+			Compressed: df.Compressed,
+			Ringsize:   2,
+		})
+	}
+
+	batchJSON := struct {
+		Files       []filePart `json:"files"`
+		IndexName   string     `json:"indexName"`
+		IndexDurl   string     `json:"indexDurl"`
+		Description string     `json:"description"`
+		Ringsize    uint64     `json:"ringsize"`
+	}{
+		Files:     parts,
+		IndexName: "test-app",
+		IndexDurl: "test.tela.shards",
+		Ringsize:  2,
+	}
+
+	raw, err := json.Marshal(batchJSON)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	// Unmarshal exactly as DeployTELABatch does
+	var batch BatchDeployConfig
+	if err := json.Unmarshal(raw, &batch); err != nil {
+		t.Fatalf("unmarshal into BatchDeployConfig failed: %v", err)
+	}
+
+	if len(batch.Files) != len(deployFiles) {
+		t.Fatalf("file count mismatch: %d vs %d", len(batch.Files), len(deployFiles))
+	}
+
+	for i, f := range batch.Files {
+		if f.Path == "" && f.DataString == "" {
+			t.Errorf("file %d (%s): both Path and DataString are empty — deploy would fail", i, f.Name)
+		}
+		if f.DataString != "" && f.Path != "" {
+			// Virtual shards should have DataString but no Path
+			if strings.Contains(f.Name, "-") { // shard names contain hyphens (e.g. big-1.js)
+				t.Logf("file %d (%s): has both Path and DataString — Path should be empty for virtual shards", i, f.Name)
+			}
 		}
 	}
 }
