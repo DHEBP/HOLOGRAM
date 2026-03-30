@@ -44,7 +44,7 @@ Browse TELA applications. Manage your DERO. Build and deploy dApps with an integ
 
 ### Prerequisites
 
-- **Go** 1.23.0+
+- **Go** 1.24.0+
 - **Wails** v2 CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 - **Node.js** 18+
 
@@ -61,7 +61,7 @@ sudo dnf install gtk3-devel glib2-devel webkit2gtk4.1-devel
 sudo pacman -S gtk3 glib2 webkit2gtk
 ```
 
-> **Note:** Ubuntu 24.04/Debian 13 users may need additional steps for webkit2gtk-4.0. See [Linux Setup Guide](docs/LINUX-SETUP.md).
+> **Note:** Ubuntu 24.04/Debian 13 users may need additional steps for webkit2gtk-4.0. See the [DERO community Linux setup guide](https://github.com/deroproject/documentation) or open an issue if you hit a platform-specific snag.
 
 ### Development
 
@@ -235,4 +235,4 @@ HOLOGRAM/
 
 **Version:** 1.0.0  
 **Status:** Production Ready  
-**Last Updated:** January 1, 2026
+**Last Updated:** March 2026
