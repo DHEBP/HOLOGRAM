@@ -278,14 +278,25 @@
     const folderName = (parts[parts.length - 1] || '').toLowerCase();
     return folderName.endsWith('.shards') || folderName.endsWith('.shard');
   })();
+
+  $: hasAutoShardGroups = enableAutoShard && preflightExpansion
+    && preflightExpansion.shardGroups && preflightExpansion.shardGroups.length > 0;
+
+  // Auto-adjust dURL when auto-shard produces shard groups
+  $: if (hasAutoShardGroups && indexDURL && !indexDURL.toLowerCase().endsWith('.tela.shards')) {
+    const base = indexDURL.replace(/\.tela(?:\.\w+)?$/, '');
+    indexDURL = base + '.tela.shards';
+  }
+
   $: shardDurlWarning = (() => {
-    if (!isShardFolder) return null;
+    const needsShardSuffix = isShardFolder || hasAutoShardGroups;
+    if (!needsShardSuffix) return null;
     const d = (indexDURL || '').trim().toLowerCase();
-    if (!d) return 'Shard folder detected — dURL should end with .tela.shards for reconstruction to work';
+    if (!d) return 'Shards detected — dURL should end with .tela.shards for reconstruction to work';
     if (d.endsWith('.tela.shards')) return null;
     if (d.endsWith('.shards') || d.endsWith('.shard'))
       return 'dURL needs full .tela.shards suffix for shard reconstruction (not just .' + d.split('.').pop() + ')';
-    return 'Shard folder detected — dURL should end with .tela.shards for reconstruction to work';
+    return 'Shards detected — dURL should end with .tela.shards for reconstruction to work';
   })();
 
   // =====================================================
