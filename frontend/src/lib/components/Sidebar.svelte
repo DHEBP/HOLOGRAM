@@ -13,7 +13,7 @@
   import Wordmark from './Wordmark.svelte';
   import { 
     Globe, Palette, Blocks, Wallet, Settings, 
-    Diamond,
+    Diamond, User,
     Globe2, FlaskConical, Gamepad2, Radio, FolderOpen
   } from 'lucide-svelte';
   import { getAvatarUrl, clearAvatarCache } from '../utils/avatarService.js';
@@ -69,13 +69,6 @@
   
   // XSWD server ready but no wallet connected
   $: xswdReadyNoWallet = $appState.xswdServerRunning && !walletIsConnected;
-
-  function detectAddressNetwork(address) {
-    if (!address) return 'unknown';
-    if (address.startsWith('dero1') || address.startsWith('deroi1')) return 'mainnet';
-    if (address.startsWith('deto1') || address.startsWith('detoi1')) return 'simulator';
-    return 'unknown';
-  }
   
   // Format address for display - show only the unique part (last 8 chars)
   function formatAddressForDisplay(address) {
@@ -148,12 +141,13 @@
       };
     });
     
-    // Listen for simulator completion — also triggers from the RPC return path,
-    // so we skip the toast here to avoid doubling it up.
+    // Listen for simulator completion
     EventsOn("simulator:complete", (data) => {
       simulatorStarting = false;
       showNetworkSwitchModal = false;
       if (data.success) {
+        toast.success(data.message || 'Simulator mode activated!', 3000);
+        // Immediately sync network mode and refresh status
         syncNetworkMode();
         refreshSimulatorStatus();
       }
@@ -210,17 +204,7 @@
     simulator: { label: 'Simulator', icon: 'gamepad', dotStatus: 'err' },
   };
   
-  // Use effective network from status (actual connection) when node is connected;
-  // otherwise use persisted preference. Prevents "Simulator" + mainnet block height mismatch on restart.
-  $: effectiveNetwork = $appState.nodeConnected && $appState.network
-    ? $appState.network
-    : $settingsState.network;
-  $: currentNetwork = networks[effectiveNetwork] || networks.mainnet;
-  $: walletAddressNetwork = detectAddressNetwork(walletDisplayAddress);
-  $: walletNetworkMismatch = walletMode === 'integrated'
-    && walletIsConnected
-    && walletAddressNetwork !== 'unknown'
-    && walletAddressNetwork !== effectiveNetwork;
+  $: currentNetwork = networks[$settingsState.network] || networks.mainnet;
   
   function selectTab(tabId) {
     dispatch('tabChange', tabId);
@@ -281,19 +265,16 @@
       
       try {
         const result = await StartSimulatorMode();
-        // Always close the modal when the call resolves — the simulator:complete
-        // event handler also does this, but the event may race with the RPC return
-        // (or be missed if Wails delivers it before the listener is active).
-        simulatorStarting = false;
-        showNetworkSwitchModal = false;
+        // Note: simulatorStarting and showNetworkSwitchModal are reset by event handlers
         
         if (result.success) {
-          toast.success(result.message || 'Simulator mode activated!', 3000);
           // Network mode will be updated via the completion event handler
           // But also ensure it's set here as a fallback
           await doSwitchNetwork('simulator');
           await refreshSimulatorStatus();
         } else {
+          simulatorStarting = false;
+          showNetworkSwitchModal = false;
           toast.error(result.error || 'Failed to start simulator', 5000);
         }
       } catch (e) {
@@ -382,11 +363,12 @@
     }
   }
   
-  // Avatar editing is moving to Villager; keep a clear temporary action for now.
+  // Navigate directly to Avatar Editor when clicking the avatar
   function handleAvatarClick(event) {
     event.stopPropagation();
     event.preventDefault();
-    toast.info('Villager avatar editor coming soon');
+    // Navigate to Wallet tab > My Identity section
+    dispatch('statusClick', { type: 'avatar', tab: 'wallet', section: 'avatar' });
   }
   
   async function handleConnectWallet() {
@@ -704,7 +686,7 @@
                 <button
                   on:click|stopPropagation={() => switchNetwork(id)}
                   class="network-dropdown-option"
-                  class:active={effectiveNetwork === id}
+                  class:active={$settingsState.network === id}
                   disabled={simulatorStarting && id !== 'simulator'}
                 >
                   <span class="dot-column">
@@ -727,7 +709,7 @@
             on:click|stopPropagation={(e) => handleStatusClick('block', e)}
           >
             <span class="info-label">BLOCK</span>
-            <span class="info-value value-ok">
+            <span class="info-value value-cyan">
               {formatBlockHeight($appState.chainHeight)}
             </span>
           </button>
@@ -859,7 +841,7 @@
                 <button
                   on:click|stopPropagation={() => switchNetwork(id)}
                   class="network-dropdown-option"
-                  class:active={effectiveNetwork === id}
+                  class:active={$settingsState.network === id}
                   disabled={simulatorStarting && id !== 'simulator'}
                 >
                   <span class="dot-column">
@@ -880,10 +862,10 @@
             class="unified-indicator collapsed"
             on:click|stopPropagation={(e) => handleStatusClick('block', e)}
           >
-            <span class="unified-dot dot-ok"></span>
+            <span class="unified-dot dot-cyan"></span>
             <div class="rail-tooltip">
               <span class="rail-tooltip-label">Block</span>
-              <span class="rail-tooltip-value tt-ok">
+              <span class="rail-tooltip-value tt-cyan">
                 {formatBlockHeight($appState.chainHeight)}
               </span>
             </div>
@@ -928,8 +910,8 @@
         {#if walletIsConnected && walletAvatarUrl}
           <img 
             src={walletAvatarUrl} 
-            alt="Wallet avatar"
-            title="Villager avatar editor coming soon"
+            alt="Edit Avatar"
+            title="Click to customize your avatar"
             class="wallet-avatar wallet-avatar-collapsed wallet-avatar-clickable"
             class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
             on:click={handleAvatarClick}
@@ -949,7 +931,7 @@
           <span class="rail-tooltip-label">Wallet</span>
           {#if walletMode === 'integrated'}
             <span class="rail-tooltip-value tt-ok">
-              {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
+              {formatAddressForDisplay(walletDisplayAddress)}
             </span>
             <span class="rail-tooltip-value tt-dim">Wallet Ready</span>
             {#if connectedApps.length > 0}
@@ -968,8 +950,8 @@
           {#if walletIsConnected && walletAvatarUrl}
             <img 
               src={walletAvatarUrl} 
-              alt="Wallet avatar"
-              title="Villager avatar editor coming soon"
+              alt="Edit Avatar"
+              title="Click to customize your avatar"
               class="wallet-avatar wallet-avatar-expanded wallet-avatar-clickable"
               class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
               on:click={handleAvatarClick}
@@ -985,7 +967,7 @@
         <div class="wallet-anchor-content">
           <span class="wallet-anchor-address" class:disconnected={!walletIsConnected} class:xswd-only={xswdReadyNoWallet}>
             {#if walletIsConnected}
-              {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
+              {formatAddressForDisplay(walletDisplayAddress)}
             {:else}
               Connect Wallet
             {/if}
@@ -994,9 +976,7 @@
             {#if $appState.pendingXSWDRequests?.length > 0}
               <span class="status-warn">{$appState.pendingXSWDRequests.length === 1 ? 'App requesting access' : `${$appState.pendingXSWDRequests.length} apps requesting access`}</span>
             {:else if walletMode === 'integrated'}
-              {#if walletNetworkMismatch}
-                <span class="status-warn">Network mismatch ({walletAddressNetwork === 'simulator' ? 'deto' : 'dero'})</span>
-              {:else if effectiveNetwork === 'simulator'}
+              {#if $settingsState.network === 'simulator'}
                 <span class="status-sim">Simulator Wallet</span>
               {:else}
                 <span class="status-ok">Wallet Ready</span>
@@ -1025,7 +1005,7 @@
           <p class="wallet-menu-label">CURRENT WALLET</p>
           <p class="wallet-menu-address">
             {#if $walletState.address}
-              {$settingsState.hideAddress ? '••••••••••••••' : `${$walletState.address.slice(0, 12)}...${$walletState.address.slice(-8)}`}
+              {$walletState.address.slice(0, 12)}...{$walletState.address.slice(-8)}
             {:else if $appState.engramConnected}
               Engram Wallet (External)
             {:else if xswdReadyNoWallet}
@@ -1035,14 +1015,7 @@
             {/if}
           </p>
           {#if $walletState.balance !== undefined && $walletState.isOpen}
-            <p class="wallet-menu-balance">
-              {$settingsState.hideBalance ? '••••••••' : `${($walletState.balance / 100000).toFixed(5)} DERO`}
-            </p>
-          {/if}
-          {#if walletNetworkMismatch && $walletState.isOpen}
-            <p class="wallet-menu-warning">
-              Address prefix ({walletAddressNetwork === 'simulator' ? 'deto' : 'dero'}) does not match selected network ({currentNetwork.label})
-            </p>
+            <p class="wallet-menu-balance">{($walletState.balance / 100000).toFixed(5)} DERO</p>
           {/if}
         </div>
         
@@ -1107,16 +1080,15 @@
               {/each}
             </div>
           {/if}
-
-          <!-- Manage Avatar Placeholder -->
+          
+          <!-- Edit Avatar Button -->
           <div class="wallet-menu-action">
             <button
-              on:click|stopPropagation={handleAvatarClick}
-              class="manage-avatar-btn"
-              title="Villager avatar editor coming soon"
+              on:click|stopPropagation={() => { showWalletMenu = false; handleAvatarClick(new Event('click')); }}
+              class="edit-avatar-btn"
             >
-              <span class="manage-avatar-title">Manage Avatar</span>
-              <span class="manage-avatar-subtitle">Coming soon (Villager on TELA)</span>
+              <User size={14} />
+              <span>Edit Avatar</span>
             </button>
           </div>
           
@@ -2398,13 +2370,6 @@
     color: var(--text-3);
     margin-top: var(--s-1);
   }
-
-  .wallet-menu-warning {
-    margin-top: var(--s-2);
-    font-size: 10px;
-    line-height: 1.4;
-    color: var(--status-warn);
-  }
   
   .wallet-option {
     width: 100%;
@@ -2501,42 +2466,33 @@
   .wallet-disconnect-btn:hover {
     background: rgba(248, 113, 113, 0.08);
   }
-
-  /* Manage Avatar Placeholder Button */
+  
+  /* Edit Avatar Button in Menu */
   .wallet-menu-action {
     padding: var(--s-2) var(--s-3);
     border-bottom: 1px solid var(--border-dim);
   }
-
-  .manage-avatar-btn {
+  
+  .edit-avatar-btn {
     width: 100%;
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
+    align-items: center;
+    gap: var(--s-2);
     padding: var(--s-2) var(--s-3);
     font-size: 11px;
+    font-weight: 500;
+    color: var(--cyan-400);
     background: transparent;
-    border: 1px dashed rgba(34, 211, 238, 0.28);
+    border: none;
     border-radius: var(--r-sm);
     cursor: pointer;
-    transition: background var(--dur-fast), border-color var(--dur-fast);
+    transition: background var(--dur-fast), color var(--dur-fast);
     text-align: left;
   }
-
-  .manage-avatar-btn:hover {
-    background: rgba(0, 255, 255, 0.06);
-    border-color: rgba(34, 211, 238, 0.42);
-  }
-
-  .manage-avatar-title {
-    color: var(--cyan-400);
-    font-weight: 500;
-  }
-
-  .manage-avatar-subtitle {
-    color: var(--text-4);
-    font-size: 10px;
+  
+  .edit-avatar-btn:hover {
+    background: rgba(0, 255, 255, 0.08);
+    color: var(--cyan-300);
   }
   
   .wallet-switch-section {
@@ -3264,6 +3220,10 @@
   
   .progress-bar-fill.simulator {
     background: linear-gradient(90deg, var(--status-err), var(--pink-400));
+  }
+  
+  .progress-bar-fill.mainnet {
+    background: linear-gradient(90deg, var(--cyan-400), var(--status-ok));
   }
   
   .progress-text {
