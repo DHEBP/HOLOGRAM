@@ -42,9 +42,14 @@
       .map(([id, _]) => id);
   }
 
+  function getWalletFilename(path) {
+    if (!path) return '';
+    return path.split(/[\\/]/).pop() || path;
+  }
+
   // Initialize wallet path from settings/state when modal opens
   $: if (isOpen && !walletPath) {
-    walletPath = $settingsState.lastWalletPath || $walletState.walletPath || '';
+    walletPath = $walletState.walletPath || $settingsState.lastWalletPath || '';
     // Load recent wallets
     loadRecentWallets();
   }
@@ -65,7 +70,7 @@
         const recents = await ListRecentWallets();
         if (recents && recents.length > 0) {
           recentWallets = recents;
-          recentWalletsInfo = recents.map(p => ({ path: p, filename: p.split('/').pop(), addressPrefix: '', isCurrent: false }));
+          recentWalletsInfo = recents.map(p => ({ path: p, filename: getWalletFilename(p), addressPrefix: '', isCurrent: false }));
           if (!walletPath && recents.length > 0) {
             walletPath = recents[0];
           }
@@ -601,7 +606,7 @@
                   on:click={async () => {
                     const selected = await SelectWalletFile();
                     if (selected) {
-                      selectWalletToSwitch({ path: selected, filename: selected.split('/').pop(), addressPrefix: '' });
+                      selectWalletToSwitch({ path: selected, filename: getWalletFilename(selected), addressPrefix: '' });
                     }
                   }}
                   class="modal-browse-btn"
@@ -661,7 +666,7 @@
                       on:click={() => walletPath = recent}
                       class="wallet-recent-simple-item"
                     >
-                      {recent.split('/').pop()}
+                      {getWalletFilename(recent)}
                     </button>
                   {/each}
                 </div>

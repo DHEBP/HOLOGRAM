@@ -14,7 +14,6 @@
   import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
   import QRCodeComponent from '../lib/components/QRCode.svelte';
   import AddContactModal from '../lib/components/AddContactModal.svelte';
-  import AvatarEditor from '../lib/components/AvatarEditor.svelte';
   import PasswordInput from '../lib/components/PasswordInput.svelte';
   
   // ============================================
@@ -25,9 +24,6 @@
   const sidebarSections = {
     overview: [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    ],
-    identity: [
-      { id: 'avatar', label: 'My Identity', icon: User },
     ],
     transactions: [
       { id: 'send', label: 'Send', icon: ArrowUp },
@@ -327,7 +323,7 @@
           recentWallets = recents;
           recentWalletsInfo = recents.map(p => ({ 
             path: p, 
-            filename: p.split('/').pop(), 
+            filename: getWalletFilename(p), 
             addressPrefix: '' 
           }));
         }
@@ -1369,6 +1365,11 @@
     if (!addr) return '';
     return addr.slice(0, 12) + '...' + addr.slice(-8);
   }
+
+  function getWalletFilename(path) {
+    if (!path) return '';
+    return path.split(/[\\/]/).pop() || path;
+  }
   
   function formatTime(timestamp) {
     if (!timestamp) return '';
@@ -2287,16 +2288,6 @@
           <p class="content-section-desc">View and manage your token holdings</p>
           
           <TokenPortfolio />
-        {/if}
-
-        <!-- ============================================
-             MY IDENTITY / AVATAR SECTION
-             ============================================ -->
-        {#if activeSection === 'avatar'}
-          <div class="content-section-title">My Identity</div>
-          <p class="content-section-desc">Create and customize your Villager avatar</p>
-          
-          <AvatarEditor />
         {/if}
 
         <!-- ============================================
