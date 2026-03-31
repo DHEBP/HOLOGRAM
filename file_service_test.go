@@ -715,7 +715,7 @@ func TestBuildPreflightExpansion_SmallIndexHTML_PassesThrough(t *testing.T) {
 }
 
 // ShardGroups length matches the source file count (one group per source file).
-func TestBuildPreflightExpansion_ShardGroupsMatchSourceFiles(t *testing.T) {
+func TestBuildPreflightExpansion_ShardGroupsOnlyOversized(t *testing.T) {
 	dir := t.TempDir()
 	app := &App{}
 	files := []DOCInfo{
@@ -728,8 +728,11 @@ func TestBuildPreflightExpansion_ShardGroupsMatchSourceFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(exp.ShardGroups) != len(files) {
-		t.Errorf("ShardGroups length = %d, want %d", len(exp.ShardGroups), len(files))
+	if len(exp.ShardGroups) != 1 {
+		t.Errorf("ShardGroups length = %d, want 1 (only oversized files)", len(exp.ShardGroups))
+	}
+	if exp.ShardGroups[0].OriginalName != "b.js" {
+		t.Errorf("ShardGroup[0].OriginalName = %q, want %q", exp.ShardGroups[0].OriginalName, "b.js")
 	}
 }
 

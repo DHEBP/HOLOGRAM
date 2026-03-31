@@ -498,10 +498,6 @@ export function GetMetadataFiles(arg1) {
   return window['go']['main']['App']['GetMetadataFiles'](arg1);
 }
 
-export function PreflightExpand(arg1, arg2) {
-  return window['go']['main']['App']['PreflightExpand'](arg1, arg2);
-}
-
 export function GetMiningEarningsSummary() {
   return window['go']['main']['App']['GetMiningEarningsSummary']();
 }
@@ -896,6 +892,10 @@ export function ParseSCFunctions(arg1) {
 
 export function PrefetchApp(arg1) {
   return window['go']['main']['App']['PrefetchApp'](arg1);
+}
+
+export function PreflightExpand(arg1, arg2) {
+  return window['go']['main']['App']['PreflightExpand'](arg1, arg2);
 }
 
 export function PrepareMODInstall(arg1, arg2) {
