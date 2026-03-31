@@ -59,3 +59,8 @@ tela-cli/
 
 # MTP cache files (runtime artifacts, not source)
 *.mtp-cache.json
+
+# Local simulator/runtime sandboxes
+/testnet_simulator/
+/mtp-anchor/
+/mtp-anchor
