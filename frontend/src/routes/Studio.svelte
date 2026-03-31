@@ -1988,9 +1988,6 @@
         bind:batchDragging
         bind:batchDropzoneElement
         selectFolder={SelectFolder}
-        on:complete={(e) => {
-          toast.success(`Deployment complete! INDEX: ${e.detail.indexScid?.substring(0, 16)}...`);
-        }}
         on:preview={(e) => {
           previewInBrowser(e.detail.scid);
         }}
