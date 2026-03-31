@@ -208,6 +208,7 @@
   $: isValidSeed = seedWordCount === 25;
   $: changePasswordsMatch = changePasswordNew === changePasswordConfirm && changePasswordNew.length > 0;
   $: canChangePassword = changePasswordCurrent.trim() && changePasswordsMatch;
+  $: walletDisplayPath = $walletState.walletPath || currentWalletPath;
   
   // Send validation
   $: availableBalance = $walletState.balance / 100000;
@@ -1418,6 +1419,11 @@
       console.error('File dialog error:', err);
     }
   }
+
+  // Keep wallet path display synced when wallet is switched outside this route
+  $: if ($walletState.walletPath && $walletState.walletPath !== currentWalletPath) {
+    currentWalletPath = $walletState.walletPath;
+  }
 </script>
 
 {#if $walletState.isOpen}
@@ -1615,9 +1621,9 @@
                   {/if}
                 </button>
               </div>
-              {#if currentWalletPath}
-                <div class="wallet-path" title={currentWalletPath}>
-                  {currentWalletPath.split('/').pop() || currentWalletPath.split('\\').pop()}
+              {#if walletDisplayPath}
+                <div class="wallet-path" title={walletDisplayPath}>
+                  {getWalletFilename(walletDisplayPath)}
                 </div>
               {/if}
             </div>
