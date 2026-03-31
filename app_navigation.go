@@ -19,24 +19,8 @@ func (a *App) Navigate(scid string) map[string]interface{} {
 	// If input looks like dero://<identifier>, strip scheme and try dURL first
 	if len(input) > 7 && (input[:7] == "dero://") {
 		name := input[7:]
-		if cached, ok := a.getCachedDURLMapping(name); ok {
-			resolved = cached
-			a.logToConsole(fmt.Sprintf("[Search] Resolved dero://%s → %s (cache)", name, cached))
-
-			// Refresh mapping in the background when possible
-			if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
-				go func(n string) {
-					if sc, ok := a.gnomonClient.ResolveDURL(n); ok {
-						a.cacheDURLMapping(n, sc)
-						return
-					}
-					if sc, ok := a.gnomonClient.ResolveName(n); ok {
-						a.cacheDURLMapping(n, sc)
-					}
-				}(name)
-			}
-		} else if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
-			// Prefer exact dURL match
+		// Prefer live Gnomon resolution first so stale cache entries do not win.
+		if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
 			if sc, ok := a.gnomonClient.ResolveDURL(name); ok {
 				resolved = sc
 				a.cacheDURLMapping(name, sc)
@@ -45,11 +29,17 @@ func (a *App) Navigate(scid string) map[string]interface{} {
 				resolved = sc
 				a.cacheDURLMapping(name, sc)
 				a.logToConsole(fmt.Sprintf("[Search] Resolved name dero://%s → %s", name, sc))
+			} else if cached, ok := a.getCachedDURLMapping(name); ok {
+				resolved = cached
+				a.logToConsole(fmt.Sprintf("[Search] Resolved dero://%s → %s (cache fallback)", name, cached))
 			} else {
 				a.logToConsole(fmt.Sprintf("[WARN]  Could not resolve dero://%s via Gnomon (name or dURL)", name))
 			}
+		} else if cached, ok := a.getCachedDURLMapping(name); ok {
+			resolved = cached
+			a.logToConsole(fmt.Sprintf("[Search] Resolved dero://%s → %s (cache)", name, cached))
 		} else {
-			a.logToConsole("[WARN]  Gnomon not running; cannot resolve dero:// names")
+			a.logToConsole("[WARN]  Gnomon not running and no cached dURL mapping available")
 		}
 	}
 
@@ -94,4 +84,3 @@ func (a *App) ClearHistory() map[string]interface{} {
 		"message": "History cleared",
 	}
 }
-

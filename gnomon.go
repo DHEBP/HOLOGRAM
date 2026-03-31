@@ -605,21 +605,25 @@ func (g *GnomonClient) ResolveName(name string) (string, bool) {
 
 	apps := g.GetTELAApps()
 
-	// exact matches first
+	// exact matches first (pick newest if multiple)
+	exactCandidates := make([]string, 0)
 	for _, app := range apps {
 		if dn, ok := app["display_name"].(string); ok && strings.ToLower(dn) == target {
 			if scid, ok := app["scid"].(string); ok && scid != "" {
-				return scid, true
+				exactCandidates = append(exactCandidates, scid)
 			}
 		}
 		if n, ok := app["name"].(string); ok && strings.ToLower(n) == target {
 			if scid, ok := app["scid"].(string); ok && scid != "" {
-				return scid, true
+				exactCandidates = append(exactCandidates, scid)
 			}
 		}
 	}
+	if scid, ok := g.pickNewestSCID(exactCandidates); ok {
+		return scid, true
+	}
 
-	// prefix match (collect candidates)
+	// prefix match (collect candidates and pick newest)
 	candidates := make([]string, 0)
 	for _, app := range apps {
 		if dn, ok := app["display_name"].(string); ok && strings.HasPrefix(strings.ToLower(dn), target) {
@@ -632,8 +636,8 @@ func (g *GnomonClient) ResolveName(name string) (string, bool) {
 			}
 		}
 	}
-	if len(candidates) == 1 {
-		return candidates[0], true
+	if scid, ok := g.pickNewestSCID(candidates); ok {
+		return scid, true
 	}
 	return "", false
 }
@@ -654,6 +658,7 @@ func (g *GnomonClient) ResolveDURL(durl string) (string, bool) {
 	targetNorm = strings.TrimPrefix(targetNorm, "dero://")
 
 	apps := g.GetTELAApps()
+	candidates := make([]string, 0)
 	for _, app := range apps {
 		if du, ok := app["durl"].(string); ok {
 			// Normalize stored dURL too
@@ -662,12 +667,36 @@ func (g *GnomonClient) ResolveDURL(durl string) (string, bool) {
 
 			if duNorm == targetNorm {
 				if scid, ok := app["scid"].(string); ok && scid != "" {
-					return scid, true
+					candidates = append(candidates, scid)
 				}
 			}
 		}
 	}
+	if scid, ok := g.pickNewestSCID(candidates); ok {
+		return scid, true
+	}
 	return "", false
+}
+
+// pickNewestSCID returns the candidate with the highest interaction height.
+// Ties fall back to lexicographical SCID order for deterministic results.
+func (g *GnomonClient) pickNewestSCID(candidates []string) (string, bool) {
+	if len(candidates) == 0 {
+		return "", false
+	}
+
+	best := candidates[0]
+	bestHeight := g.LatestInteractionHeight(best)
+
+	for _, scid := range candidates[1:] {
+		h := g.LatestInteractionHeight(scid)
+		if h > bestHeight || (h == bestHeight && scid > best) {
+			best = scid
+			bestHeight = h
+		}
+	}
+
+	return best, true
 }
 
 // GetRating fetches rating data for a SCID from Gnomon indexed data
