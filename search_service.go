@@ -1067,28 +1067,6 @@ func (a *App) SearchMyContent() map[string]interface{} {
 
 	a.logToConsole("[SEARCH] Querying Gnomon for owned contracts...")
 	
-	// Debug: Check how many SCIDs Gnomon has indexed total
-	allScids := a.gnomonClient.GetAllOwnersAndSCIDs()
-	a.logToConsole(fmt.Sprintf("[DEBUG] Gnomon has indexed %d total contracts", len(allScids)))
-	
-	// Debug: Log first few SCIDs and their owners
-	count := 0
-	for scid, owner := range allScids {
-		if count < 5 {
-			// Safely truncate strings to avoid panic
-			scidTrunc := scid
-			if len(scid) > 16 {
-				scidTrunc = scid[:16]
-			}
-			ownerTrunc := owner
-			if len(owner) > 20 {
-				ownerTrunc = owner[:20]
-			}
-			a.logToConsole(fmt.Sprintf("[DEBUG] SCID: %s... Owner: %s...", scidTrunc, ownerTrunc))
-			count++
-		}
-	}
-	
 	docs := a.gnomonClient.GetMyDOCs(walletAddress, "")
 	indexes := a.gnomonClient.GetMyINDEXes(walletAddress)
 

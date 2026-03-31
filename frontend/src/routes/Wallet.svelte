@@ -8,7 +8,7 @@
     Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe,
     LayoutDashboard, QrCode, History, Coins, Users, FileSignature, RefreshCw,
     Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield,
-    Key, User, Eye, EyeOff
+    Key, Eye, EyeOff
   } from 'lucide-svelte';
   
   import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
@@ -336,7 +336,6 @@
       
       // Listen for simulator mode activation
       EventsOn('simulator:complete', async (data) => {
-        console.log('[WALLET] Simulator complete event received, loading test wallets...');
         await syncNetworkMode();
         await loadTestWallets();
       });
@@ -353,7 +352,6 @@
 
       // Listen for network mode changes
       EventsOn('network-mode-changed', async () => {
-        console.log('[WALLET] Network mode changed, checking for test wallets...');
         await syncNetworkMode();
         if ($settingsState.network === 'simulator') {
           await loadTestWallets();
@@ -364,7 +362,7 @@
         }
       });
       
-      // Listen for section navigation from Sidebar (e.g., avatar click → My Identity)
+      // Listen for section navigation from Sidebar
       const handleNavigateSection = (e) => {
         const { section } = e.detail;
         if (section && Object.values(sidebarSections).flat().find(s => s.id === section)) {

@@ -931,7 +931,6 @@ let addressInput = '';
           case 'call':
             // Handle XSWD method call
             const { method, params, authState } = payload;
-            addConsoleLog(`[DEBUG] XSWD call received: method=${method}, authState=${authState}`);
             const normalizedMethod = method.replace('DERO.', '');
           const methodLower = normalizedMethod.toLowerCase();
           const callSettings = get(settingsState);

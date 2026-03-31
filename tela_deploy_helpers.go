@@ -85,13 +85,11 @@ func (a *App) getSimulatorTransferDestination(senderAddress string) string {
 	}
 
 	// Sender IS wallet #0 - we need to find a different REGISTERED wallet
-	a.logToConsole("[DEBUG] Sender is default simulator address, looking for alternate registered destination...")
 
 	// Try to get wallet #1 from the simulator wallet manager
 	if a.simulatorManager != nil && a.simulatorManager.walletManager != nil {
 		wallet1 := a.simulatorManager.walletManager.GetWallet(1)
 		if wallet1 != nil && wallet1.Address != "" && wallet1.Registered {
-			a.logToConsole(fmt.Sprintf("[DEBUG] Using registered wallet #1 as destination: %s...", wallet1.Address[:20]))
 			return wallet1.Address
 		}
 
@@ -99,7 +97,6 @@ func (a *App) getSimulatorTransferDestination(senderAddress string) string {
 		for i := 2; i < 22; i++ {
 			wallet := a.simulatorManager.walletManager.GetWallet(i)
 			if wallet != nil && wallet.Address != "" && wallet.Registered && wallet.Address != senderAddress {
-				a.logToConsole(fmt.Sprintf("[DEBUG] Using registered wallet #%d as destination: %s...", i, wallet.Address[:20]))
 				return wallet.Address
 			}
 		}
@@ -166,7 +163,6 @@ func (a *App) setupNetworkForDeployment(wallet *walletapi.Wallet_Disk, isSimulat
 	if isSimulator {
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode")
 
 		// Store endpoint for later use but DON'T connect yet
 		// Each transaction will temporarily connect/disconnect
@@ -182,7 +178,6 @@ func (a *App) setupNetworkForDeployment(wallet *walletapi.Wallet_Disk, isSimulat
 		}
 
 		// Non-simulator: Connect walletapi normally
-		a.logToConsole(fmt.Sprintf("[DEBUG] Connecting walletapi to daemon: %s", endpoint))
 		if err := walletapi.Connect(endpoint); err != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
 		}
@@ -281,8 +276,6 @@ func (a *App) prepareDOCForDeployment(docInfo DOCInfo, wallet *walletapi.Wallet_
 		return nil, fmt.Errorf("wallet.SignData returned nil")
 	}
 
-	a.logToConsole(fmt.Sprintf("[DEBUG] %s signature length: %d bytes", docInfo.Name, len(signature)))
-
 	_, checkC, checkS, err := tela.ParseSignature(signature)
 	if err != nil {
 		return nil, fmt.Errorf("ParseSignature failed: %w", err)
@@ -291,9 +284,6 @@ func (a *App) prepareDOCForDeployment(docInfo DOCInfo, wallet *walletapi.Wallet_
 	// Pad checkC and checkS to 64 chars
 	checkC = padHex64(checkC)
 	checkS = padHex64(checkS)
-
-	a.logToConsole(fmt.Sprintf("[DEBUG] %s checkC: '%s' (len=%d)", docInfo.Name, checkC, len(checkC)))
-	a.logToConsole(fmt.Sprintf("[DEBUG] %s checkS: '%s' (len=%d)", docInfo.Name, checkS, len(checkS)))
 
 	// Build DOC
 	doc := &tela.DOC{
@@ -328,9 +318,7 @@ func (a *App) prepareDOCForDeployment(docInfo DOCInfo, wallet *walletapi.Wallet_
 func (a *App) disconnectWalletAPI() {
 	rpcClient := walletapi.GetRPCClient()
 	if rpcClient != nil && rpcClient.WS != nil {
-		if err := rpcClient.WS.Close(); err != nil {
-			a.logToConsole(fmt.Sprintf("[DEBUG] Websocket close returned: %v (may already be closed)", err))
-		}
+		_ = rpcClient.WS.Close()
 	}
 
 	walletapi.Connected = false
@@ -491,10 +479,7 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 		if a.simulatorDeployEndpoint == "" {
 			return "", fmt.Errorf("simulator deploy endpoint not set - please restart simulator mode")
 		}
-		a.logToConsole(fmt.Sprintf("[DEBUG] Pre-flight: simulatorDeployEndpoint = '%s'", a.simulatorDeployEndpoint))
 	}
-
-	a.logToConsole(fmt.Sprintf("[DEBUG] Calling tela.Installer for %s...", prepared.Original.Name))
 
 	var txid string
 
@@ -572,7 +557,6 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 				mature, _ = wallet.Get_Balance()
 			}
 			_, locked := wallet.Get_Balance()
-			a.logToConsole(fmt.Sprintf("[DEBUG] Wallet balance: mature=%d, locked=%d", mature, locked))
 			if mature == 0 && locked == 0 {
 				walletapi.Daemon_Endpoint_Active = ""
 				a.disconnectWalletAPI()
@@ -804,7 +788,7 @@ func (a *App) verifyDeployedDOC(scid string, fileName string, maxRetries int) er
 			for k := range scData {
 				keys = append(keys, k)
 			}
-			a.logToConsole(fmt.Sprintf("[DEBUG] DOC %s available keys: %v", fileName, keys))
+			a.logToConsole(fmt.Sprintf("[WARN] DOC %s unresolved during verification (keys: %v)", fileName, keys))
 		}
 	}
 
@@ -848,7 +832,7 @@ func (a *App) verifySimulatorDOCDeployment(scid string, fileName string, maxRetr
 		for k := range scData {
 			keys = append(keys, k)
 		}
-		a.logToConsole(fmt.Sprintf("[DEBUG] Simulator DOC %s unresolved (keys: %v)", fileName, keys))
+		a.logToConsole(fmt.Sprintf("[WARN] Simulator DOC %s unresolved during verification (keys: %v)", fileName, keys))
 	}
 
 	return fmt.Errorf("DOC %s unresolved after %d retries (empty code / missing metadata)", fileName, maxRetries)
@@ -913,7 +897,7 @@ func (a *App) verifyDeployedINDEX(scid string, durl string, maxRetries int) erro
 			for k := range scData {
 				keys = append(keys, k)
 			}
-			a.logToConsole(fmt.Sprintf("[DEBUG] INDEX available keys: %v", keys))
+			a.logToConsole(fmt.Sprintf("[WARN] INDEX unresolved during verification (keys: %v)", keys))
 		}
 	}
 
@@ -1004,7 +988,6 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 
 			// Check wallet balance
 			mature, locked := wallet.Get_Balance()
-			a.logToConsole(fmt.Sprintf("[DEBUG] Wallet balance before INDEX: mature=%d, locked=%d", mature, locked))
 
 			if mature == 0 && locked == 0 {
 				a.disconnectWalletAPI()
@@ -1021,7 +1004,6 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 						a.disconnectWalletAPI()
 						walletapi.Daemon_Endpoint_Active = ""
 					}
-					a.logToConsole(fmt.Sprintf("[DEBUG] Balance after block %d: mature=%d, locked=%d", balanceWait+1, mature, locked))
 					if mature > 0 {
 						break
 					}
@@ -1209,7 +1191,6 @@ func (a *App) waitForNewBlockWithHealthCheck(timeout time.Duration) error {
 		} else if th, ok := info["topoheight"].(int64); ok {
 			startHeight = th
 		}
-		a.logToConsole(fmt.Sprintf("[DEBUG] Current height: %d, waiting for new block...", startHeight))
 	} else {
 		return fmt.Errorf("daemon client not available")
 	}

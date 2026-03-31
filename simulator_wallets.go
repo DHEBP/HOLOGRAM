@@ -995,7 +995,6 @@ func (a *App) FundTestWallet(targetIndex int, amount uint64) map[string]interfac
 		if err != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] Direct balance query attempt %d failed: %v", attempt, err))
 		} else {
-			a.logToConsole(fmt.Sprintf("[DEBUG] Direct balance query attempt %d: balance = %d (expected ~%d)", attempt, directBalance, expectedBalance))
 			newBalance = directBalance
 
 			// Update the stored balance

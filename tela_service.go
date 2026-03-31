@@ -165,7 +165,6 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 				docInfo.Name, originalSize, compressedSize, savings))
 		} else {
 			// File already has compression extension
-			a.logToConsole(fmt.Sprintf("[DEBUG] File already compressed: %s", fileName))
 			compressionStr = ext
 		}
 	}
@@ -179,16 +178,6 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 			"success": false,
 			"error":   "Failed to sign file content",
 		}
-	}
-
-	// Debug: Log signature details
-	a.logToConsole(fmt.Sprintf("[DEBUG] Signature length: %d bytes", len(signature)))
-	sigStr := string(signature)
-	// Log first 200 chars of signature to see format
-	if len(sigStr) > 200 {
-		a.logToConsole(fmt.Sprintf("[DEBUG] Signature preview: %s...", sigStr[:200]))
-	} else {
-		a.logToConsole(fmt.Sprintf("[DEBUG] Signature: %s", sigStr))
 	}
 
 	// Parse the signature to extract C and S values
@@ -211,10 +200,6 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 	if len(checkS) < 64 {
 		checkS = strings.Repeat("0", 64-len(checkS)) + checkS
 	}
-
-	// Debug: Log extracted signature values (after padding)
-	a.logToConsole(fmt.Sprintf("[DEBUG] Parsed checkC: '%s' (len=%d)", checkC, len(checkC)))
-	a.logToConsole(fmt.Sprintf("[DEBUG] Parsed checkS: '%s' (len=%d)", checkS, len(checkS)))
 
 	// Build DOC structure (matching tela-cli)
 	doc := tela.DOC{
@@ -255,7 +240,6 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 		// Set globals for simulator
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode (--simulator=true)")
 
 		// Set wallet daemon address and mode (no websocket connection yet)
 		wallet.SetDaemonAddress(endpoint)
@@ -270,7 +254,6 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 		// Setting Connected=true just satisfies the check in TransferPayload0.
 		walletapi.Connected = true
 
-		a.logToConsole(fmt.Sprintf("[DEBUG] Set Daemon_Endpoint_Active=%s, Connected=true (tela library will create websocket)", endpoint))
 		a.logToConsole("[OK] Proceeding with installation (tela library will create its own websocket)")
 	} else {
 		// For mainnet: use setupNetworkForDeployment (which calls walletapi.Connect)
@@ -585,7 +568,6 @@ func (a *App) InstallINDEX(indexJSON string) map[string]interface{} {
 	if isSimulator {
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode (--simulator=true)")
 
 		// Set wallet daemon address and mode (no websocket connection yet)
 		wallet.SetDaemonAddress(endpoint)
@@ -594,7 +576,6 @@ func (a *App) InstallINDEX(indexJSON string) map[string]interface{} {
 		// Set the endpoint variable and Connected flag for tela library
 		walletapi.Daemon_Endpoint_Active = endpoint
 		walletapi.Connected = true // Required for TransferPayload0 check
-		a.logToConsole(fmt.Sprintf("[DEBUG] Set Daemon_Endpoint_Active=%s, Connected=true (tela library will create websocket)", endpoint))
 	} else {
 		// Get daemon endpoint for non-simulator
 		if a.daemonClient != nil {
@@ -604,7 +585,7 @@ func (a *App) InstallINDEX(indexJSON string) map[string]interface{} {
 		}
 
 		// For non-simulator: use walletapi.Connect()
-		a.logToConsole(fmt.Sprintf("[DEBUG] Connecting walletapi to daemon: %s", endpoint))
+		a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi to daemon: %s", endpoint))
 		if err := walletapi.Connect(endpoint); err != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
 		}
@@ -672,15 +653,6 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		}
 	}
 
-	// Debug: Log what we received from frontend
-	a.logToConsole(fmt.Sprintf("[DEBUG] Received INDEX update request:"))
-	a.logToConsole(fmt.Sprintf("[DEBUG]   Name: %s", idx.Name))
-	a.logToConsole(fmt.Sprintf("[DEBUG]   DURL: %s", idx.DURL))
-	a.logToConsole(fmt.Sprintf("[DEBUG]   DOCSCIDs count: %d", len(idx.DOCSCIDs)))
-	for i, doc := range idx.DOCSCIDs {
-		a.logToConsole(fmt.Sprintf("[DEBUG]   DOCSCIDs[%d]: %s", i, doc))
-	}
-
 	// Get daemon endpoint
 	// CRITICAL: In simulator mode, do NOT call walletapi.Connect() - see InstallDOC for explanation
 	endpoint := "127.0.0.1:10102"
@@ -688,7 +660,6 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		endpoint = "127.0.0.1:20000"
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode (--simulator=true)")
 
 		// Set wallet daemon address and mode (no websocket connection yet)
 		wallet.SetDaemonAddress(endpoint)
@@ -697,7 +668,6 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		// Set the endpoint variable and Connected flag for tela library
 		walletapi.Daemon_Endpoint_Active = endpoint
 		walletapi.Connected = true // Required for TransferPayload0 check
-		a.logToConsole(fmt.Sprintf("[DEBUG] Set Daemon_Endpoint_Active=%s, Connected=true (tela library will create websocket)", endpoint))
 	} else if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
 		endpoint = strings.TrimPrefix(ep, "http://")
 		endpoint = strings.TrimPrefix(endpoint, "https://")
@@ -760,12 +730,6 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		if existingIndex.SCVersion.LessThan(latestVersion) {
 			a.logToConsole(fmt.Sprintf("[INFO] INDEX version %s will be updated to %s", existingIndex.SCVersion.String(), latestVersion.String()))
 		}
-	}
-
-	// Debug: Log the DOCs being sent in the update
-	a.logToConsole(fmt.Sprintf("[DEBUG] INDEX update - DOCs to set: %d", len(index.DOCs)))
-	for i, doc := range index.DOCs {
-		a.logToConsole(fmt.Sprintf("[DEBUG]   DOC%d: %s", i+1, doc))
 	}
 
 	// Update INDEX using tela library
@@ -1210,7 +1174,6 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 	if ringsize == 0 {
 		ringsize = 2
 	}
-	a.logToConsole(fmt.Sprintf("[DEBUG] Using ringsize %d", ringsize))
 
 	// Deploy each DOC
 	docScids := []string{}
@@ -1293,7 +1256,6 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 			blockConfirmed := false
 			for blockWaitAttempt := 0; blockWaitAttempt < 3; blockWaitAttempt++ {
 				timeout := time.Duration(60+blockWaitAttempt*30) * time.Second // 60s, 90s, 120s
-				a.logToConsole(fmt.Sprintf("[DEBUG] Block wait attempt %d (timeout: %v)...", blockWaitAttempt+1, timeout))
 
 				if err := a.waitForNewBlockWithHealthCheck(timeout); err != nil {
 					a.logToConsole(fmt.Sprintf("[WARN] Block wait attempt %d failed: %v", blockWaitAttempt+1, err))
@@ -1362,7 +1324,6 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		blockConfirmed := false
 		for blockWaitAttempt := 0; blockWaitAttempt < 3; blockWaitAttempt++ {
 			timeout := time.Duration(60+blockWaitAttempt*30) * time.Second
-			a.logToConsole(fmt.Sprintf("[DEBUG] INDEX block wait attempt %d (timeout: %v)...", blockWaitAttempt+1, timeout))
 
 			if err := a.waitForNewBlockWithHealthCheck(timeout); err != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] INDEX block wait attempt %d failed: %v", blockWaitAttempt+1, err))

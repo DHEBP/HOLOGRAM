@@ -904,18 +904,7 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 		if fallbackMeta.FileName != "" && fallbackMeta.DocType != "" {
 			a.logToConsole(fmt.Sprintf("  [FALLBACK] DOC metadata recovered from code: %s (%s)", fallbackMeta.FileName, fallbackMeta.DocType))
 		} else {
-			// Debug: log what we actually received
-			if raw, exists := docData["stringkeys"]; exists {
-				a.logToConsole(fmt.Sprintf("  [DEBUG] stringkeys exists but wrong type: %T", raw))
-			} else {
-				a.logToConsole("  [DEBUG] stringkeys field does not exist in response")
-				// Log available keys for debugging
-				keys := make([]string, 0, len(docData))
-				for k := range docData {
-					keys = append(keys, k)
-				}
-				a.logToConsole(fmt.Sprintf("  [DEBUG] Available keys: %v", keys))
-			}
+			a.logToConsole("  [WARN] DOC contract response missing usable stringkeys metadata")
 			return fmt.Errorf("no stringkeys in DOC contract")
 		}
 	}
