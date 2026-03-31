@@ -50,9 +50,9 @@ var TELADeploymentErrors = []TELADeploymentError{
 	},
 	{
 		Pattern:     `graviton.*panic|daemon.*crash|simulator.*crash`,
-		Title:       "Daemon crashed (likely Unicode in file)",
-		Description: "The DERO daemon or Graviton database crashed. This is often caused by Unicode characters in your deployment files that the system cannot process.",
-		Fix:         "Check all files for non-ASCII characters using: grep -P \"[^\\x00-\\x7F]\" yourfile.js\nReplace any Unicode characters with ASCII equivalents.",
+		Title:       "Daemon crashed during deployment",
+		Description: "The simulator daemon process became unavailable during deployment. This can be caused by malformed DOC content, SC parse/execution failures, or simulator connection instability.",
+		Fix:         "Check deploy logs around the first failing file and look for DVM parse errors (e.g., \"Expecting declaration of function\"). Also ensure files are ASCII-safe and do not contain '*/' inside raw DOC content.",
 		Example:     "",
 	},
 
