@@ -1528,19 +1528,8 @@ let addressInput = '';
         '})();' +
         '</scr' + 'ipt>';
       
-      // Inject at the very start of <head> (before base tag or any other scripts)
-      if (html.includes('<head>')) {
-        html = html.replace('<head>', '<head>' + telaHostPlaceholder);
-      } else if (html.includes('</head>')) {
-        html = html.replace('</head>', telaHostPlaceholder + '</head>');
-      } else {
-        // No head, inject at start of body or beginning
-        if (html.includes('<body>')) {
-          html = html.replace('<body>', '<head>' + telaHostPlaceholder + '</head><body>');
-        } else {
-          html = telaHostPlaceholder + html;
-        }
-      }
+      // Inject into the document without moving <!DOCTYPE html> from byte 0.
+      html = injectIntoHtmlDocument(html, telaHostPlaceholder);
       
       // Rewrite remaining URLs (scripts, images, etc.) to absolute URLs
       // This allows us to use srcdoc while maintaining asset loading
@@ -1551,7 +1540,7 @@ let addressInput = '';
       // This enables dApps to connect via XSWD (ws://localhost:44326/xswd)
       // The bridge proxies WebSocket calls through postMessage to the parent Browser.svelte
       const bridgeScript = getXSWDBridgeScript();
-      html = bridgeScript + html;
+      html = injectIntoHtmlDocument(html, bridgeScript);
       
       addConsoleLog('[OK] Injected XSWD bridge and telaHost placeholder into HTML');
       
@@ -1777,6 +1766,12 @@ let addressInput = '';
       // Start real HTTP server for this TELA content
       const serverResult = await ServeTELAContent(scid);
       
+      if (serverResult.success && serverResult.srcdocOnly) {
+        addConsoleLog('[OK] DocShards content — srcdoc mode (no HTTP server needed)');
+        telaServerFallback = null;
+        return false;
+      }
+
       if (serverResult.success && serverResult.url) {
         addConsoleLog(`[Server] TELA server started: ${serverResult.url}`);
         activeTelaServer = serverResult.name;
@@ -2224,6 +2219,29 @@ let addressInput = '';
 })();
 <\/script>`;
   }
+
+  function injectIntoHtmlDocument(html, snippet) {
+    if (!snippet) return html;
+
+    const injectIntoDocument = (doc) => {
+      if (/<head[\s>]/i.test(doc)) {
+        return doc.replace(/<head([^>]*)>/i, `<head$1>${snippet}`);
+      }
+      if (/<body[\s>]/i.test(doc)) {
+        return doc.replace(/<body([^>]*)>/i, `<head>${snippet}</head><body$1>`);
+      }
+      return snippet + doc;
+    };
+
+    const doctypeMatch = html.match(/^\s*<!doctype[^>]*>/i);
+    if (!doctypeMatch) {
+      return injectIntoDocument(html);
+    }
+
+    const doctype = doctypeMatch[0];
+    const rest = html.slice(doctype.length);
+    return doctype + injectIntoDocument(rest);
+  }
   
   function renderContent(html) {
     if (!contentFrame) return;
@@ -2234,9 +2252,9 @@ let addressInput = '';
       
       let injectedHtml = html;
       if (ENABLE_BRIDGE) {
-        // Inject the XSWD bridge script at the ABSOLUTE BEGINNING of the HTML
+        // Preserve <!DOCTYPE html> so srcdoc stays in standards mode.
         const bridgeScript = getXSWDBridgeScript();
-        injectedHtml = bridgeScript + html;
+        injectedHtml = injectIntoHtmlDocument(html, bridgeScript);
       }
       
       // Remove src attribute - we're using srcdoc for inline content

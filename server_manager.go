@@ -887,6 +887,17 @@ func (a *App) ServeTELAContent(scid string) map[string]interface{} {
 	// Start server using tela library
 	telaLink, err := tela.ServeTELA(scid, endpoint)
 	if err != nil {
+		// DocShards INDEX contracts are assembled by HOLOGRAM, not the tela library.
+		// The tela library doesn't support serving them, so use srcdoc mode directly.
+		if strings.Contains(err.Error(), "DocShards") {
+			a.logToConsole("[OK] DocShards content — using srcdoc mode (HOLOGRAM handles shard assembly)")
+			return map[string]interface{}{
+				"success":    true,
+				"srcdocOnly": true,
+				"scid":       scid,
+				"message":    "DocShards content served via srcdoc mode",
+			}
+		}
 		// Retry once if a stale clone already exists
 		if cleanupTelaCloneFromError(err, a.logToConsole) {
 			telaLink, err = tela.ServeTELA(scid, endpoint)

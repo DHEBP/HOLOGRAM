@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,9 +34,9 @@ type TELAContent struct {
 
 // DocFile represents a single extracted file from a DOC contract
 type DocFile struct {
-    Name    string
-    Content string
-    DocType string
+	Name    string
+	Content string
+	DocType string
 }
 
 // FetchTELAContent fetches and assembles TELA content from the blockchain
@@ -50,9 +52,17 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 
 	a.logToConsole("[OK] Smart contract fetched successfully")
 
-	// Detect if this is a DOC or INDEX by checking for docType vs DOC1
+	// Detect if this is a DOC or INDEX by checking for docType vs DOC1.
+	// Simulator GetSC can omit DOC stringkeys while still returning valid code.
 	stringKeys, hasStringKeys := scData["stringkeys"].(map[string]interface{})
 	if !hasStringKeys {
+		if code, ok := scData["code"].(string); ok {
+			fallbackMeta := extractDOCMetadataFromCode(code)
+			if fallbackMeta.FileName != "" && fallbackMeta.DocType != "" {
+				a.logToConsole("[FALLBACK] No stringkeys on root contract; treating as standalone DOC from code metadata")
+				return a.fetchSingleDOC(scid, scData)
+			}
+		}
 		return nil, fmt.Errorf("invalid TELA contract: no stringkeys")
 	}
 
@@ -89,8 +99,8 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 		CSS:   make([]string, 0),
 		JS:    make([]string, 0),
 		Meta:  make(map[string]interface{}),
-        SCIDs: make(map[string]string),
-        Files: make([]DocFile, 0),
+		SCIDs: make(map[string]string),
+		Files: make([]DocFile, 0),
 	}
 
 	// Extract INDEX metadata from stringkeys (hex-encoded)
@@ -157,18 +167,18 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 	if len(failedDOCs) > 0 {
 		a.logToConsole(fmt.Sprintf("[RETRY] %d DOCs failed, retrying after 2s delay (blockchain propagation)...", len(failedDOCs)))
 		time.Sleep(2 * time.Second)
-		
+
 		for _, i := range failedDOCs {
 			scid := docSCIDs[i]
 			a.logToConsole(fmt.Sprintf("  [RETRY] Re-fetching DOC %d: %s...", i+1, scid[:16]))
-			
+
 			// Re-fetch the DOC
 			data, err := a.fetchSmartContract(scid, true, true)
 			if err != nil {
 				a.logToConsole(fmt.Sprintf("  [ERR] Retry fetch failed for DOC %d: %v", i+1, err))
 				continue
 			}
-			
+
 			// Try to process again
 			if err := a.processDOC(data, content); err != nil {
 				a.logToConsole(fmt.Sprintf("  [ERR] Retry process failed for DOC %d: %v", i+1, err))
@@ -180,47 +190,54 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 
 	a.logToConsole(fmt.Sprintf("[OK] Processed %d DOCs total", len(docSCIDs)))
 
+	// Reassemble shard chunks before HTML assembly.
+	// Shard chunks (e.g., img.png-1.gz, img.png-2.gz) are raw slices of a larger
+	// gzip stream. They must be concatenated in order, then decompressed as one.
+	a.reassembleShardChunks(content)
+
 	// Check if we got at least HTML
 	if content.HTML == "" {
-        // Attempt shard assembly if this is a shard index dURL
-        if du, ok := content.Meta["durl"].(string); ok && isShardIndexDURL(du) {
-            a.logToConsole("[LINK] Shard index detected; assembling shard files")
-            assembled := assembleShardFiles(content)
-            if assembled != "" {
-                content.HTML = assembled
-            }
-        }
-        
-        // Fallback: if we have static text files but no HTML, render them as a document
-        if content.HTML == "" && len(content.StaticByName) > 0 {
-            for fileName, fileContent := range content.StaticByName {
-                if isTextBasedFile(fileName) {
-                    scid := content.SCIDs[fileName]
-                    a.logToConsole(fmt.Sprintf("[FALLBACK] Rendering static text file %s as document", fileName))
-                    content.HTML = renderTextViewer(fileName, fileContent, scid)
-                    break // Use the first text file found
-                }
-            }
-        }
-        
-        if content.HTML == "" {
-            a.logToConsole("[ERR] No HTML content found in any DOC")
-            return nil, fmt.Errorf("no HTML content found")
-        }
+		// Attempt shard assembly if this is a shard index dURL
+		if du, ok := content.Meta["durl"].(string); ok && isShardIndexDURL(du) {
+			a.logToConsole("[LINK] Shard index detected; assembling shard files")
+			assembled := assembleShardFiles(content)
+			if assembled != "" {
+				content.HTML = assembled
+			}
+		}
+
+		// Fallback: if we have static text files but no HTML, render them as a document
+		if content.HTML == "" && len(content.StaticByName) > 0 {
+			for fileName, fileContent := range content.StaticByName {
+				if isTextBasedFile(fileName) {
+					scid := content.SCIDs[fileName]
+					a.logToConsole(fmt.Sprintf("[FALLBACK] Rendering static text file %s as document", fileName))
+					content.HTML = renderTextViewer(fileName, fileContent, scid)
+					break // Use the first text file found
+				}
+			}
+		}
+
+		if content.HTML == "" {
+			a.logToConsole("[ERR] No HTML content found in any DOC")
+			return nil, fmt.Errorf("no HTML content found")
+		}
 	}
 
-    // Assemble final HTML (unless already assembled via shards or library view)
-    duStr, hasDU := content.Meta["durl"].(string)
-    if hasDU && isLibraryDURL(duStr) {
-        a.logToConsole("[TELA] Library dURL detected; rendering library info view")
-        content.HTML = renderLibraryInfo(content)
-    } else if !(content.HTML != "" && hasDU && isShardIndexDURL(duStr)) {
-        a.logToConsole("[TELA] Assembling final HTML...")
-        if err := a.assembleFinalHTML(content); err != nil {
-            a.logToConsole(fmt.Sprintf("[ERR] Assembly failed: %v", err))
-            return nil, err
-        }
-    }
+	// Assemble final HTML (except library view).
+	// IMPORTANT: DocShards still require final assembly so external references like
+	// <link href="styles.css"> and <img src="img/img.png"> are inlined for srcdoc mode.
+	duStr, hasDU := content.Meta["durl"].(string)
+	if hasDU && isLibraryDURL(duStr) {
+		a.logToConsole("[TELA] Library dURL detected; rendering library info view")
+		content.HTML = renderLibraryInfo(content)
+	} else {
+		a.logToConsole("[TELA] Assembling final HTML...")
+		if err := a.assembleFinalHTML(content); err != nil {
+			a.logToConsole(fmt.Sprintf("[ERR] Assembly failed: %v", err))
+			return nil, err
+		}
+	}
 
 	a.logToConsole("[OK] HTML assembly complete!")
 	return content, nil
@@ -228,14 +245,104 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 
 // isShardIndexDURL returns true if the dURL ends with .tela.shards
 func isShardIndexDURL(durl string) bool {
-    s := strings.ToLower(strings.TrimSpace(durl))
-    return strings.HasSuffix(s, ".tela.shards")
+	s := strings.ToLower(strings.TrimSpace(durl))
+	return strings.HasSuffix(s, ".tela.shards")
+}
+
+// isShardChunkName returns true if the filename matches the shard naming pattern
+// (e.g., "img.png-1.gz", "rive.js-3.gz") produced by expandFileToShards.
+var shardChunkRe = regexp.MustCompile(`^(.+)-(\d+)(\.\w+)$`)
+
+func isShardChunkName(fileName string) bool {
+	return shardChunkRe.MatchString(fileName)
+}
+
+// parseShardChunkName extracts the original base+ext, shard index, and outer extension.
+// For "img.png-2.gz" it returns ("img.png", 2, ".gz", true).
+func parseShardChunkName(fileName string) (baseName string, index int, ext string, ok bool) {
+	m := shardChunkRe.FindStringSubmatch(fileName)
+	if m == nil {
+		return "", 0, "", false
+	}
+	idx, err := strconv.Atoi(m[2])
+	if err != nil {
+		return "", 0, "", false
+	}
+	return m[1], idx, m[3], true
+}
+
+// reassembleShardChunks scans StaticByName for shard chunks, concatenates them
+// in order, decompresses the result, and stores the reassembled file under the
+// original filename. Individual chunk entries are removed.
+func (a *App) reassembleShardChunks(content *TELAContent) {
+	if content.StaticByName == nil {
+		return
+	}
+
+	type chunk struct {
+		index   int
+		content string
+	}
+	groups := map[string][]chunk{}
+
+	for name, data := range content.StaticByName {
+		baseName, idx, _, ok := parseShardChunkName(name)
+		if !ok {
+			continue
+		}
+		groups[baseName] = append(groups[baseName], chunk{index: idx, content: data})
+	}
+
+	if len(groups) == 0 {
+		return
+	}
+
+	for baseName, chunks := range groups {
+		sort.Slice(chunks, func(i, j int) bool { return chunks[i].index < chunks[j].index })
+
+		var combined bytes.Buffer
+		for _, c := range chunks {
+			raw, err := base64.StdEncoding.DecodeString(c.content)
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Shard %s chunk %d base64 decode failed: %v", baseName, c.index, err))
+				combined.Write([]byte(c.content))
+				continue
+			}
+			combined.Write(raw)
+		}
+
+		reader, err := gzip.NewReader(bytes.NewReader(combined.Bytes()))
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Shard reassembly gzip open failed for %s: %v — storing raw", baseName, err))
+			content.StaticByName[baseName] = base64.StdEncoding.EncodeToString(combined.Bytes())
+		} else {
+			decompressed, err := io.ReadAll(reader)
+			reader.Close()
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Shard reassembly gzip read failed for %s: %v — storing raw", baseName, err))
+				content.StaticByName[baseName] = base64.StdEncoding.EncodeToString(combined.Bytes())
+			} else {
+				content.StaticByName[baseName] = string(decompressed)
+				a.logToConsole(fmt.Sprintf("[OK] Reassembled %d shard chunks → %s (%d bytes)", len(chunks), baseName, len(decompressed)))
+			}
+		}
+
+		// Remove individual chunk entries
+		for _, c := range chunks {
+			for name := range content.StaticByName {
+				bn, idx, _, ok := parseShardChunkName(name)
+				if ok && bn == baseName && idx == c.index {
+					delete(content.StaticByName, name)
+				}
+			}
+		}
+	}
 }
 
 // isLibraryDURL returns true if the dURL ends with .tela.lib
 func isLibraryDURL(durl string) bool {
-    s := strings.ToLower(strings.TrimSpace(durl))
-    return strings.HasSuffix(s, ".tela.lib")
+	s := strings.ToLower(strings.TrimSpace(durl))
+	return strings.HasSuffix(s, ".tela.lib")
 }
 
 // fetchSingleDOC renders a standalone DOC contract directly (not part of an INDEX)
@@ -251,19 +358,31 @@ func (a *App) fetchSingleDOC(scid string, docData map[string]interface{}) (*TELA
 		JSByName:  make(map[string]string),
 	}
 
-	stringKeys, ok := docData["stringkeys"].(map[string]interface{})
+	code, ok := docData["code"].(string)
 	if !ok {
+		return nil, fmt.Errorf("no code in DOC contract")
+	}
+	if strings.TrimSpace(code) == "" {
+		return nil, fmt.Errorf("empty code in DOC contract")
+	}
+
+	stringKeys, ok := docData["stringkeys"].(map[string]interface{})
+	fallbackMeta := extractDOCMetadataFromCode(code)
+	if !ok && (fallbackMeta.FileName == "" || fallbackMeta.DocType == "") {
 		return nil, fmt.Errorf("no stringkeys in DOC contract")
 	}
 
 	// Extract DOC metadata
 	// TELA V2 uses "var_header_*" keys, V1 uses "*Hdr" keys
-	docType := ""
+	docType := fallbackMeta.DocType
 	if docTypeHex, ok := stringKeys["docType"].(string); ok {
 		docType = decodeHexString(docTypeHex)
 	}
 
-	fileName := "document"
+	fileName := fallbackMeta.FileName
+	if fileName == "" {
+		fileName = "document"
+	}
 	if fileNameHex, ok := stringKeys["var_header_name"].(string); ok {
 		fileName = decodeHexString(fileNameHex)
 	} else if fileNameHex, ok := stringKeys["nameHdr"].(string); ok {
@@ -278,16 +397,12 @@ func (a *App) fetchSingleDOC(scid string, docData map[string]interface{}) (*TELA
 	}
 	if durlHex, ok := stringKeys["dURL"].(string); ok {
 		content.Meta["durl"] = decodeHexString(durlHex)
+	} else if fallbackMeta.DURL != "" {
+		content.Meta["durl"] = fallbackMeta.DURL
 	}
 	content.Meta["name"] = fileName
 	content.Meta["docType"] = docType
 	content.Meta["scid"] = scid
-
-	// Get the code (actual file content)
-	code, ok := docData["code"].(string)
-	if !ok {
-		return nil, fmt.Errorf("no code in DOC contract")
-	}
 
 	// Extract file content from smart contract comment block
 	fileContent := extractFileContentFromCode(code)
@@ -505,38 +620,38 @@ h1 {
 func isTextBasedFile(fileName string) bool {
 	ext := strings.ToLower(filepath.Ext(fileName))
 	textExtensions := map[string]bool{
-		".txt":  true,
-		".text": true,
-		".log":  true,
-		".csv":  true,
-		".xml":  true,
-		".yaml": true,
-		".yml":  true,
-		".toml": true,
-		".ini":  true,
-		".cfg":  true,
-		".conf": true,
-		".sh":   true,
-		".bash": true,
-		".zsh":  true,
-		".bat":  true,
-		".ps1":  true,
-		".sql":  true,
-		".env":  true,
-		".gitignore": true,
+		".txt":          true,
+		".text":         true,
+		".log":          true,
+		".csv":          true,
+		".xml":          true,
+		".yaml":         true,
+		".yml":          true,
+		".toml":         true,
+		".ini":          true,
+		".cfg":          true,
+		".conf":         true,
+		".sh":           true,
+		".bash":         true,
+		".zsh":          true,
+		".bat":          true,
+		".ps1":          true,
+		".sql":          true,
+		".env":          true,
+		".gitignore":    true,
 		".editorconfig": true,
 	}
 	// Also check for files without extensions that are commonly text
 	if ext == "" {
 		baseName := strings.ToLower(filepath.Base(fileName))
 		textFiles := map[string]bool{
-			"readme":    true,
-			"license":   true,
-			"changelog": true,
-			"authors":   true,
+			"readme":       true,
+			"license":      true,
+			"changelog":    true,
+			"authors":      true,
 			"contributing": true,
-			"makefile":  true,
-			"dockerfile": true,
+			"makefile":     true,
+			"dockerfile":   true,
 		}
 		return textFiles[baseName]
 	}
@@ -548,8 +663,8 @@ func isTextBasedFile(fileName string) bool {
 func isHTMLFile(fileName string) bool {
 	ext := strings.ToLower(filepath.Ext(fileName))
 	htmlExtensions := map[string]bool{
-		".html": true,
-		".htm":  true,
+		".html":  true,
+		".htm":   true,
 		".xhtml": true,
 	}
 	return htmlExtensions[ext]
@@ -557,63 +672,81 @@ func isHTMLFile(fileName string) bool {
 
 // assembleShardFiles concatenates shard file contents in DOC order into a simple HTML wrapper
 func assembleShardFiles(content *TELAContent) string {
-    if content == nil || len(content.Files) == 0 {
-        return ""
-    }
-    var b strings.Builder
-    b.WriteString("<html><head>")
-    // inject any CSS gathered
-    if len(content.CSS) > 0 {
-        b.WriteString("<style>\n")
-        for _, c := range content.CSS { b.WriteString(c); b.WriteString("\n") }
-        b.WriteString("</style>")
-    }
-    b.WriteString("</head><body>")
-    // naive concatenation in fetched order
-    for _, f := range content.Files {
-        if f.DocType == "TELA-HTML-1" || strings.HasPrefix(f.DocType, "TELA-HTML") || f.DocType == "" {
-            b.WriteString(f.Content)
-            b.WriteString("\n")
-        }
-    }
-    // inject any JS at bottom
-    if len(content.JS) > 0 {
-        b.WriteString("<script>\n")
-        for _, j := range content.JS { b.WriteString(j); b.WriteString("\n") }
-        b.WriteString("</script>")
-    }
-    b.WriteString("</body></html>")
-    return b.String()
+	if content == nil || len(content.Files) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<html><head>")
+	// inject any CSS gathered
+	if len(content.CSS) > 0 {
+		b.WriteString("<style>\n")
+		for _, c := range content.CSS {
+			b.WriteString(c)
+			b.WriteString("\n")
+		}
+		b.WriteString("</style>")
+	}
+	b.WriteString("</head><body>")
+	// naive concatenation in fetched order
+	for _, f := range content.Files {
+		if f.DocType == "TELA-HTML-1" || strings.HasPrefix(f.DocType, "TELA-HTML") || f.DocType == "" {
+			b.WriteString(f.Content)
+			b.WriteString("\n")
+		}
+	}
+	// inject any JS at bottom
+	if len(content.JS) > 0 {
+		b.WriteString("<script>\n")
+		for _, j := range content.JS {
+			b.WriteString(j)
+			b.WriteString("\n")
+		}
+		b.WriteString("</script>")
+	}
+	b.WriteString("</body></html>")
+	return b.String()
 }
 
 // renderLibraryInfo returns a simple HTML describing the library contents
 func renderLibraryInfo(content *TELAContent) string {
-    var b strings.Builder
-    b.WriteString("<html><head><style>body{font-family:system-ui,Segoe UI,Arial,sans-serif;background:#0b0b0b;color:#ddd;padding:24px} table{width:100%;border-collapse:collapse;margin-top:12px} th,td{border:1px solid #333;padding:8px;text-align:left} th{background:#131313} code{color:#9cd} h1{margin:0 0 6px 0} .meta{color:#aaa;margin-top:4px}</style></head><body>")
-    name := "Library"
-    if v, ok := content.Meta["name"].(string); ok && v != "" { name = v }
-    durl := ""; if v, ok := content.Meta["durl"].(string); ok { durl = v }
-    descr := ""; if v, ok := content.Meta["description"].(string); ok { descr = v }
-    b.WriteString("<h1>" + htmlEscape(name) + "</h1>")
-    if durl != "" { b.WriteString("<div class=\"meta\"><strong>dURL:</strong> <code>" + htmlEscape(durl) + "</code></div>") }
-    if descr != "" { b.WriteString("<div class=\"meta\">" + htmlEscape(descr) + "</div>") }
-    b.WriteString("<table><thead><tr><th>File</th><th>Type</th><th>SCID</th></tr></thead><tbody>")
-    for _, f := range content.Files {
-        sc := content.SCIDs[f.Name]
-        b.WriteString("<tr><td>" + htmlEscape(f.Name) + "</td><td><code>" + htmlEscape(f.DocType) + "</code></td><td><code>" + htmlEscape(sc) + "</code></td></tr>")
-    }
-    b.WriteString("</tbody></table>")
-    b.WriteString("</body></html>")
-    return b.String()
+	var b strings.Builder
+	b.WriteString("<html><head><style>body{font-family:system-ui,Segoe UI,Arial,sans-serif;background:#0b0b0b;color:#ddd;padding:24px} table{width:100%;border-collapse:collapse;margin-top:12px} th,td{border:1px solid #333;padding:8px;text-align:left} th{background:#131313} code{color:#9cd} h1{margin:0 0 6px 0} .meta{color:#aaa;margin-top:4px}</style></head><body>")
+	name := "Library"
+	if v, ok := content.Meta["name"].(string); ok && v != "" {
+		name = v
+	}
+	durl := ""
+	if v, ok := content.Meta["durl"].(string); ok {
+		durl = v
+	}
+	descr := ""
+	if v, ok := content.Meta["description"].(string); ok {
+		descr = v
+	}
+	b.WriteString("<h1>" + htmlEscape(name) + "</h1>")
+	if durl != "" {
+		b.WriteString("<div class=\"meta\"><strong>dURL:</strong> <code>" + htmlEscape(durl) + "</code></div>")
+	}
+	if descr != "" {
+		b.WriteString("<div class=\"meta\">" + htmlEscape(descr) + "</div>")
+	}
+	b.WriteString("<table><thead><tr><th>File</th><th>Type</th><th>SCID</th></tr></thead><tbody>")
+	for _, f := range content.Files {
+		sc := content.SCIDs[f.Name]
+		b.WriteString("<tr><td>" + htmlEscape(f.Name) + "</td><td><code>" + htmlEscape(f.DocType) + "</code></td><td><code>" + htmlEscape(sc) + "</code></td></tr>")
+	}
+	b.WriteString("</tbody></table>")
+	b.WriteString("</body></html>")
+	return b.String()
 }
 
 // htmlEscape minimal escape
 func htmlEscape(s string) string {
-    s = strings.ReplaceAll(s, "&", "&amp;")
-    s = strings.ReplaceAll(s, "<", "&lt;")
-    s = strings.ReplaceAll(s, ">", "&gt;")
-    s = strings.ReplaceAll(s, "\"", "&quot;")
-    return s
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	return s
 }
 
 // fetchSmartContract fetches a smart contract from the blockchain
@@ -643,21 +776,21 @@ func extractDOCsSCIDs(indexData map[string]interface{}) []string {
 	code, hasCode := indexData["code"].(string)
 	if hasCode && code != "" {
 		log.Println("  [TELA] Extracting DOC SCIDs from smart contract CODE...")
-		
+
 		// Parse STORE("DOCx", "scid") patterns from the code
 		// Pattern: STORE("DOC1", "64-char-hex-scid")
 		docPattern := regexp.MustCompile(`STORE\("(DOC\d+)",\s*"([a-f0-9]{64})"\)`)
 		matches := docPattern.FindAllStringSubmatch(code, -1)
-		
+
 		// Build a map to handle DOC ordering (DOC1, DOC2, etc.)
 		docMap := make(map[int]string)
 		maxDoc := 0
-		
+
 		for _, match := range matches {
 			if len(match) == 3 {
-				key := match[1]   // e.g., "DOC1"
-				scid := match[2]  // 64-char hex SCID
-				
+				key := match[1]  // e.g., "DOC1"
+				scid := match[2] // 64-char hex SCID
+
 				// Extract the number from DOCx
 				var docNum int
 				fmt.Sscanf(key, "DOC%d", &docNum)
@@ -670,14 +803,14 @@ func extractDOCsSCIDs(indexData map[string]interface{}) []string {
 				}
 			}
 		}
-		
+
 		// Build ordered slice from DOC1 to DOCn
 		for i := 1; i <= maxDoc; i++ {
 			if scid, ok := docMap[i]; ok {
 				scids = append(scids, scid)
 			}
 		}
-		
+
 		if len(scids) > 0 {
 			return scids
 		}
@@ -722,44 +855,87 @@ func decodeHexString(hexStr string) string {
 	return strings.TrimRight(string(decoded), "\x00 \t\n\r")
 }
 
+func extractStoredStringValue(code string, key string) string {
+	pattern := regexp.MustCompile(fmt.Sprintf(`STORE\("%s",\s*"((?:[^"\\]|\\.)*)"\)`, regexp.QuoteMeta(key)))
+	match := pattern.FindStringSubmatch(code)
+	if len(match) < 2 {
+		return ""
+	}
+
+	unquoted, err := strconv.Unquote(`"` + match[1] + `"`)
+	if err != nil {
+		return match[1]
+	}
+
+	return unquoted
+}
+
+type docMetadata struct {
+	FileName string
+	DocType  string
+	DURL     string
+	SubDir   string
+}
+
+func extractDOCMetadataFromCode(code string) docMetadata {
+	return docMetadata{
+		FileName: extractStoredStringValue(code, "var_header_name"),
+		DocType:  extractStoredStringValue(code, "docType"),
+		DURL:     extractStoredStringValue(code, "dURL"),
+		SubDir:   extractStoredStringValue(code, "subDir"),
+	}
+}
+
 // processDOC processes a DOC contract and extracts its content
 func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) error {
-	stringKeys, ok := docData["stringkeys"].(map[string]interface{})
+	code, ok := docData["code"].(string)
 	if !ok {
-		// Debug: log what we actually received
-		if raw, exists := docData["stringkeys"]; exists {
-			a.logToConsole(fmt.Sprintf("  [DEBUG] stringkeys exists but wrong type: %T", raw))
+		return fmt.Errorf("no code in DOC contract")
+	}
+	if strings.TrimSpace(code) == "" {
+		return fmt.Errorf("empty code in DOC contract")
+	}
+
+	stringKeys, ok := docData["stringkeys"].(map[string]interface{})
+	fallbackMeta := extractDOCMetadataFromCode(code)
+	if !ok {
+		// Simulator GetSC can return DOC code without stringkeys.
+		// Fall back to parsing metadata directly from the contract code.
+		if fallbackMeta.FileName != "" && fallbackMeta.DocType != "" {
+			a.logToConsole(fmt.Sprintf("  [FALLBACK] DOC metadata recovered from code: %s (%s)", fallbackMeta.FileName, fallbackMeta.DocType))
 		} else {
-			a.logToConsole("  [DEBUG] stringkeys field does not exist in response")
-			// Log available keys for debugging
-			keys := make([]string, 0, len(docData))
-			for k := range docData {
-				keys = append(keys, k)
+			// Debug: log what we actually received
+			if raw, exists := docData["stringkeys"]; exists {
+				a.logToConsole(fmt.Sprintf("  [DEBUG] stringkeys exists but wrong type: %T", raw))
+			} else {
+				a.logToConsole("  [DEBUG] stringkeys field does not exist in response")
+				// Log available keys for debugging
+				keys := make([]string, 0, len(docData))
+				for k := range docData {
+					keys = append(keys, k)
+				}
+				a.logToConsole(fmt.Sprintf("  [DEBUG] Available keys: %v", keys))
 			}
-			a.logToConsole(fmt.Sprintf("  [DEBUG] Available keys: %v", keys))
+			return fmt.Errorf("no stringkeys in DOC contract")
 		}
-		return fmt.Errorf("no stringkeys in DOC contract")
 	}
 
 	// Get docType (hex-encoded) - with nil check
-	docType := ""
+	docType := fallbackMeta.DocType
 	if docTypeHex, ok := stringKeys["docType"].(string); ok {
 		docType = decodeHexString(docTypeHex)
 	}
-	
+
 	// Get fileName (hex-encoded) - with nil check
 	// TELA V2 uses "var_header_name", V1 uses "nameHdr"
-	fileName := "unknown"
+	fileName := fallbackMeta.FileName
+	if fileName == "" {
+		fileName = "unknown"
+	}
 	if fileNameHex, ok := stringKeys["var_header_name"].(string); ok {
 		fileName = decodeHexString(fileNameHex)
 	} else if fileNameHex, ok := stringKeys["nameHdr"].(string); ok {
 		fileName = decodeHexString(fileNameHex)
-	}
-
-	// Get the code (actual file content)
-	code, ok := docData["code"].(string)
-	if !ok {
-		return fmt.Errorf("no code in DOC contract")
 	}
 
 	// Extract the actual file content from the smart contract
@@ -772,18 +948,20 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 
 	// Check if file is gzip-compressed (ends with .gz)
 	if strings.HasSuffix(fileName, ".gz") {
-		a.logToConsole(fmt.Sprintf("  OK Extracted %s (%d bytes, compressed)", fileName, len(fileContent)))
-		
-		// Decompress the content
-		decompressed, err := decompressGzip(fileContent)
-		if err != nil {
-			a.logToConsole(fmt.Sprintf("  [WARN]  Gzip decompression failed: %v", err))
-			// Continue with compressed content as fallback
+		if isShardChunkName(fileName) {
+			// Shard chunk — raw slice of a larger gzip stream. Don't try to
+			// decompress individually; reassembly happens after all DOCs are collected.
+			a.logToConsole(fmt.Sprintf("  OK Extracted %s (%d bytes, shard chunk)", fileName, len(fileContent)))
 		} else {
-			fileContent = decompressed
-			// Remove .gz from filename for proper type detection
-			fileName = strings.TrimSuffix(fileName, ".gz")
-			a.logToConsole(fmt.Sprintf("  OK Decompressed to %s (%d bytes)", fileName, len(fileContent)))
+			a.logToConsole(fmt.Sprintf("  OK Extracted %s (%d bytes, compressed)", fileName, len(fileContent)))
+			decompressed, err := decompressGzip(fileContent)
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("  [WARN]  Gzip decompression failed: %v", err))
+			} else {
+				fileContent = decompressed
+				fileName = strings.TrimSuffix(fileName, ".gz")
+				a.logToConsole(fmt.Sprintf("  OK Decompressed to %s (%d bytes)", fileName, len(fileContent)))
+			}
 		}
 	} else {
 		a.logToConsole(fmt.Sprintf("  OK Extracted %s (%d bytes)", fileName, len(fileContent)))
@@ -795,7 +973,7 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 		scid = scidStr
 	}
 
-    // Store by type
+	// Store by type
 	switch {
 	case strings.HasPrefix(docType, "TELA-HTML"):
 		content.HTML = fileContent
@@ -835,7 +1013,7 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 		if scid != "" {
 			content.SCIDs[fileName] = scid
 		}
-		
+
 		// IMPORTANT: If this is an HTML file (like index.html), treat it as the main HTML content
 		// Some TELA apps use TELA-STATIC for HTML files instead of TELA-HTML
 		if content.HTML == "" && isHTMLFile(fileName) {
@@ -858,12 +1036,12 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 		}
 	}
 
-    // Record raw file for shard/library handling
-    content.Files = append(content.Files, DocFile{
-        Name:    fileName,
-        Content: fileContent,
-        DocType: docType,
-    })
+	// Record raw file for shard/library handling
+	content.Files = append(content.Files, DocFile{
+		Name:    fileName,
+		Content: fileContent,
+		DocType: docType,
+	})
 
 	return nil
 }
@@ -1045,7 +1223,7 @@ func (a *App) assembleFinalHTML(content *TELAContent) error {
 					default:
 						mimeType = "application/octet-stream"
 					}
-					
+
 					// For SVG, we can inline directly; for binary, use base64
 					if ext == ".svg" {
 						// SVG can be inlined directly as data URI
@@ -1134,4 +1312,3 @@ func currentTimeStamp() string {
 	now := time.Now()
 	return now.Format("15:04:05")
 }
-

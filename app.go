@@ -59,6 +59,12 @@ type App struct {
 	// Simulator Mode (integrated testing environment)
 	simulatorManager *SimulatorManager
 
+	// simulatorDeployEndpoint holds the real daemon endpoint during simulator batch deploy.
+	// Daemon_Endpoint_Active is intentionally blanked between TXs to suppress
+	// walletapi.Keep_Connectivity from opening competing WebSocket connections.
+	// This field lets deployDOC restore the endpoint when it needs to connect.
+	simulatorDeployEndpoint string
+
 	// Gnomon WebSocket API Server (simple-gnomon feature)
 	gnomonWSServer *GnomonWSServer
 
@@ -632,20 +638,9 @@ func (a *App) FetchSCID(scid string) map[string]interface{} {
 		}
 	}
 
-	// Fallback: serve last cached content even if version is unknown/mismatched
-	if a.cache != nil {
-		if html, ok := a.cache.GetHTML(scid); ok && html != "" {
-			a.logToConsole("[FAST] Cache hit (unverified): serving last cached content")
-			ch := computeContentHash(html)
-			return map[string]interface{}{
-				"success": true,
-				"scid":    scid,
-				"content": html,
-				"meta":    map[string]interface{}{"cache": true, "stale": true, "version": version, "hash": ch},
-				"message": "Content served from cache (unverified)",
-			}
-		}
-	}
+	// IMPORTANT: Do not serve unverified cache snapshots.
+	// They can be stale and cause incorrect rendering after deploys/fixes.
+	// If versioned cache misses, fetch fresh content from blockchain.
 
 	content, err := a.FetchTELAContent(scid)
 	if err != nil {
@@ -700,33 +695,16 @@ func (a *App) FetchByDURL(durl string) map[string]interface{} {
 	cachedSCID, cached := a.getCachedDURLMapping(name)
 	scid := ""
 
-	// Fast path: serve cached HTML immediately when we have a cached mapping
-	if cached && a.cache != nil {
-		if html, ok := a.cache.GetHTML(cachedSCID); ok && html != "" {
-			ch := computeContentHash(html)
-			return map[string]interface{}{
-				"success": true,
-				"scid":    cachedSCID,
-				"content": html,
-				"meta": map[string]interface{}{
-					"cache":      true,
-					"stale":      true,
-					"hash":       ch,
-					"durl":       name,
-					"durl_cache": true,
-				},
-				"message": "Content served from cache (unverified)",
-			}
-		}
-	}
-
+	// Prefer live Gnomon resolution first so stale cache mappings don't override
+	// the latest on-chain contract for the same dURL.
 	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
-		if cached {
-			scid = cachedSCID
-		} else if sc, ok := a.gnomonClient.ResolveDURL(name); ok {
+		if sc, ok := a.gnomonClient.ResolveDURL(name); ok {
 			scid = sc
 		} else if sc, ok2 := a.gnomonClient.ResolveName(name); ok2 {
 			scid = sc
+		} else if cached {
+			scid = cachedSCID
+			a.logToConsole(fmt.Sprintf("[Search] Using cached dURL mapping fallback for %s → %s", name, cachedSCID))
 		} else {
 			return map[string]interface{}{
 				"success": false,
