@@ -1217,28 +1217,27 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 			"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name, "status": "completed", "scid": txid,
 		})
 
-		// POST-DEPLOYMENT VERIFICATION: Check that the DOC's init() succeeded
-		// This catches cases where the SC was deployed but stringkeys weren't stored
+		// POST-DEPLOYMENT VERIFICATION (belt-and-suspenders: deployDOC already verified,
+		// but re-check before committing to INDEX creation)
 		if !isSimulator {
-			a.logToConsole(fmt.Sprintf("[VERIFY] Checking DOC %s (%s...) has valid stringkeys...", docInfo.Name, txid[:16]))
+			a.logToConsole(fmt.Sprintf("[VERIFY] Re-checking DOC %s (%s...) before proceeding...", docInfo.Name, txid[:16]))
 			runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
 				"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name,
 				"status": "verifying", "scid": txid,
 			})
 
-			// Wait a moment for the transaction to propagate before verifying
 			time.Sleep(1 * time.Second)
 
 			if err := a.verifyDeployedDOC(txid, docInfo.Name, 3); err != nil {
-				a.logToConsole(fmt.Sprintf("[WARN] DOC verification failed: %v", err))
-				// Emit warning but continue - the DOC might still work after more time
-				runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
-					"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name,
-					"status": "verify_warning", "scid": txid, "warning": err.Error(),
+				a.logToConsole(fmt.Sprintf("[ERR] DOC re-verification failed — aborting batch: %v", err))
+				runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{
+					"error": err.Error(), "fileName": docInfo.Name, "index": i, "partial": deployedFiles,
 				})
-			} else {
-				a.logToConsole(fmt.Sprintf("[OK] DOC %s verified successfully", docInfo.Name))
+				return map[string]interface{}{
+					"success": false, "error": "DOC verification failed after deploy: " + err.Error(), "partial": deployedFiles,
+				}
 			}
+			a.logToConsole(fmt.Sprintf("[OK] DOC %s verified successfully", docInfo.Name))
 		}
 
 		// CRITICAL: Wait for block confirmation between deployments

@@ -737,6 +737,24 @@ func (a *App) deployDOC(wallet *walletapi.Wallet_Disk, prepared *PreparedDOC, ri
 			// Disconnect after send
 			a.disconnectWalletAPI()
 
+			// === POINT OF NO RETURN ===
+			// The tx is on the wire. Do NOT retry from here — a second attempt
+			// would send a duplicate tx, potentially orphaning the first DOC if
+			// the original tx mines later. Break on any failure, never continue.
+
+			if err := a.waitForTransactionConfirmation(txid, 120*time.Second, 3*time.Second); err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] %v", err))
+				lastErr = fmt.Errorf("transaction sent but not confirmed: %v", err)
+				break
+			}
+			a.logToConsole(fmt.Sprintf("[OK] DOC transaction confirmed: %s", txid[:16]))
+
+			if err := a.verifyDeployedDOC(txid, prepared.Original.Name, 3); err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] %v", err))
+				lastErr = fmt.Errorf("DOC install did not materialize on-chain: %v", err)
+				break
+			}
+
 			// SUCCESS!
 			lastErr = nil
 			break
@@ -771,15 +789,27 @@ func (a *App) verifyDeployedDOC(scid string, fileName string, maxRetries int) er
 			continue
 		}
 
-		// Check for stringkeys - this indicates init() ran successfully
+		// Primary check: stringkeys indicate init() ran successfully.
 		if stringKeys, hasStringKeys := scData["stringkeys"].(map[string]interface{}); hasStringKeys && len(stringKeys) > 0 {
 			// Check for essential TELA DOC fields
 			if _, hasFileURL := stringKeys["fileURL"]; hasFileURL {
 				a.logToConsole(fmt.Sprintf("[OK] DOC %s verified: stringkeys present with fileURL", fileName))
 				return nil
 			}
-			// Has stringkeys but no fileURL - might be partial init
+			// Some daemons propagate metadata in stages; contract code presence is still
+			// a strong signal that the install landed.
+			if code, ok := scData["code"].(string); ok && strings.TrimSpace(code) != "" {
+				a.logToConsole(fmt.Sprintf("[OK] DOC %s verified: contract code present (metadata still propagating)", fileName))
+				return nil
+			}
 			a.logToConsole(fmt.Sprintf("[WARN] DOC %s has stringkeys but missing fileURL", fileName))
+		}
+
+		// Fallback: if contract code is present and non-empty, the DOC exists on-chain
+		// even if stringkeys are temporarily unavailable on this node.
+		if code, ok := scData["code"].(string); ok && strings.TrimSpace(code) != "" {
+			a.logToConsole(fmt.Sprintf("[OK] DOC %s verified: contract code present", fileName))
+			return nil
 		}
 
 		// Log what we got for debugging
@@ -792,7 +822,54 @@ func (a *App) verifyDeployedDOC(scid string, fileName string, maxRetries int) er
 		}
 	}
 
-	return fmt.Errorf("DOC %s deployed but init() may have failed - no stringkeys after %d retries", fileName, maxRetries)
+	return fmt.Errorf("DOC %s unresolved after %d retries (empty code / missing metadata)", fileName, maxRetries)
+}
+
+// waitForTransactionConfirmation waits until a transaction appears in a block.
+// A "sent" tx hash can still be dropped by mempool; this catches that case.
+func (a *App) waitForTransactionConfirmation(txid string, timeout time.Duration, pollInterval time.Duration) error {
+	if a.daemonClient == nil {
+		return fmt.Errorf("daemon client not available")
+	}
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	if pollInterval <= 0 {
+		pollInterval = 2 * time.Second
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		result, err := a.daemonClient.Call("DERO.GetTransaction", map[string]interface{}{
+			"txs_hashes":     []string{txid},
+			"decode_as_json": 0,
+		})
+		if err == nil {
+			if resultMap, ok := result.(map[string]interface{}); ok {
+				if txs, ok := resultMap["txs"].([]interface{}); ok && len(txs) > 0 {
+					if tx, ok := txs[0].(map[string]interface{}); ok {
+						switch bh := tx["block_height"].(type) {
+						case float64:
+							if int64(bh) > 0 {
+								return nil
+							}
+						case int64:
+							if bh > 0 {
+								return nil
+							}
+						case int:
+							if bh > 0 {
+								return nil
+							}
+						}
+					}
+				}
+			}
+		}
+		time.Sleep(pollInterval)
+	}
+
+	return fmt.Errorf("transaction %s was not confirmed within %s", txid, timeout)
 }
 
 // verifySimulatorDOCDeployment validates a DOC deploy in simulator mode.
@@ -1150,6 +1227,23 @@ func (a *App) createINDEX(wallet *walletapi.Wallet_Disk, config *BatchDeployConf
 
 			// Disconnect after send
 			a.disconnectWalletAPI()
+
+			// === POINT OF NO RETURN ===
+			// Same safety rule as DOC: tx is on the wire, no retries.
+
+			if err := a.waitForTransactionConfirmation(txid, 120*time.Second, 3*time.Second); err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] %v", err))
+				lastErr = fmt.Errorf("INDEX transaction sent but not confirmed: %v", err)
+				break
+			}
+			a.logToConsole(fmt.Sprintf("[OK] INDEX transaction confirmed: %s", txid[:16]))
+
+			if err := a.verifyDeployedINDEX(txid, config.IndexDURL, 3); err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] %v", err))
+				lastErr = fmt.Errorf("INDEX did not materialize on-chain: %v", err)
+				break
+			}
+			a.logToConsole("[OK] INDEX verified on-chain")
 
 			// SUCCESS!
 			lastErr = nil

@@ -286,8 +286,13 @@ func (a *App) reassembleShardChunks(content *TELAContent) {
 	groups := map[string][]chunk{}
 
 	for name, data := range content.StaticByName {
-		baseName, idx, _, ok := parseShardChunkName(name)
+		baseName, idx, ext, ok := parseShardChunkName(name)
 		if !ok {
+			continue
+		}
+		// Auto-shard chunks are expected to be gzip/base64 payload parts (*.gz).
+		// Skip non-gz names so we don't attempt gzip reassembly on plain-text shards.
+		if ext != ".gz" {
 			continue
 		}
 		groups[baseName] = append(groups[baseName], chunk{index: idx, content: data})
@@ -300,27 +305,28 @@ func (a *App) reassembleShardChunks(content *TELAContent) {
 	for baseName, chunks := range groups {
 		sort.Slice(chunks, func(i, j int) bool { return chunks[i].index < chunks[j].index })
 
-		var combined bytes.Buffer
+		var combinedBase64 strings.Builder
 		for _, c := range chunks {
-			raw, err := base64.StdEncoding.DecodeString(c.content)
-			if err != nil {
-				a.logToConsole(fmt.Sprintf("[WARN] Shard %s chunk %d base64 decode failed: %v", baseName, c.index, err))
-				combined.Write([]byte(c.content))
-				continue
-			}
-			combined.Write(raw)
+			combinedBase64.WriteString(c.content)
 		}
 
-		reader, err := gzip.NewReader(bytes.NewReader(combined.Bytes()))
+		combinedRaw, err := base64.StdEncoding.DecodeString(combinedBase64.String())
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Shard reassembly base64 decode failed for %s: %v — storing raw", baseName, err))
+			content.StaticByName[baseName] = combinedBase64.String()
+			continue
+		}
+
+		reader, err := gzip.NewReader(bytes.NewReader(combinedRaw))
 		if err != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] Shard reassembly gzip open failed for %s: %v — storing raw", baseName, err))
-			content.StaticByName[baseName] = base64.StdEncoding.EncodeToString(combined.Bytes())
+			content.StaticByName[baseName] = base64.StdEncoding.EncodeToString(combinedRaw)
 		} else {
 			decompressed, err := io.ReadAll(reader)
 			reader.Close()
 			if err != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] Shard reassembly gzip read failed for %s: %v — storing raw", baseName, err))
-				content.StaticByName[baseName] = base64.StdEncoding.EncodeToString(combined.Bytes())
+				content.StaticByName[baseName] = base64.StdEncoding.EncodeToString(combinedRaw)
 			} else {
 				content.StaticByName[baseName] = string(decompressed)
 				a.logToConsole(fmt.Sprintf("[OK] Reassembled %d shard chunks → %s (%d bytes)", len(chunks), baseName, len(decompressed)))
