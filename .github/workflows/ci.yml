@@ -19,6 +19,13 @@ jobs:
           go-version: "1.24"
           cache: true
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Install Linux UI dependencies
         run: |
           sudo apt-get update -q
@@ -36,6 +43,11 @@ jobs:
           fi
 
           sudo apt-get install -y --no-install-recommends "${WEBKIT_DEV_PKG}"
+
+      - name: Build frontend assets for go:embed
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
 
       - name: go build
         run: go build ./...
