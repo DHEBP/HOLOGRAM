@@ -79,7 +79,7 @@
 
 {#if show}
   <div class="modal-overlay" on:click|self={close}>
-    <div class="modal">
+    <div class="modal-content">
       <div class="modal-header">
         <div class="modal-title">
           <Users size={18} />
@@ -149,71 +149,6 @@
 {/if}
 
 <style>
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: var(--s-4);
-  }
-  
-  .modal {
-    background: var(--void-mid);
-    border: 1px solid var(--border-dim);
-    border-radius: var(--r-lg);
-    width: 100%;
-    max-width: 440px;
-    max-height: 90vh;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-  
-  .modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--s-4);
-    border-bottom: 1px solid var(--border-dim);
-  }
-  
-  .modal-title {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-1);
-  }
-  
-  .modal-close {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    background: transparent;
-    border: none;
-    border-radius: var(--r-sm);
-    color: var(--text-3);
-    cursor: pointer;
-    transition: all 150ms ease;
-  }
-  
-  .modal-close:hover {
-    background: var(--void-up);
-    color: var(--text-1);
-  }
-  
-  .modal-body {
-    padding: var(--s-4);
-    overflow-y: auto;
-  }
-  
   .mono {
     font-family: var(--font-mono);
     font-size: 12px;
@@ -222,14 +157,6 @@
   .textarea {
     resize: vertical;
     min-height: 60px;
-  }
-  
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--s-3);
-    padding: var(--s-4);
-    border-top: 1px solid var(--border-dim);
   }
   
   :global(.spin) {

@@ -156,7 +156,7 @@
       <h3>Token Portfolio</h3>
     </div>
     <div class="header-actions">
-      {#if localWalletOpen && !xswdConnected}
+      {#if localWalletOpen}
         <button class="btn-icon" on:click={() => showAddToken = true} title="Add Token">
           <Plus size={14} />
         </button>
@@ -190,7 +190,7 @@
     <div class="portfolio-empty">
       <Coins size={24} strokeWidth={1} />
       <p>No tokens found</p>
-      {#if localWalletOpen && !xswdConnected}
+      {#if localWalletOpen}
         <button class="btn btn-primary btn-sm" on:click={() => showAddToken = true}>
           <Plus size={14} />
           Add Token

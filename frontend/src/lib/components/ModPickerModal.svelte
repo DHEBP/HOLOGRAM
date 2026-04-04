@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
   import { GetMODsList } from '../../../wailsjs/go/main/App.js';
+  import { Puzzle, X } from 'lucide-svelte';
   
   export let show = false;
   export let selectedVsMod = '';
@@ -91,17 +92,23 @@
 
 {#if show}
   <div class="modal-overlay" on:click={close}>
-    <div class="modal-content" on:click|stopPropagation>
+    <div class="modal-content modal-content-wide mods-modal-content" on:click|stopPropagation>
       <div class="modal-header">
-        <div class="modal-title-row">
-          <span class="modal-icon">⬡</span>
-          <h2 class="modal-title">TELA-MODs</h2>
+        <div class="modal-header-left">
+          <div class="modal-icon">
+            <Puzzle size={18} />
+          </div>
+          <div>
+            <h2 class="modal-title">TELA-MODs</h2>
+            <p class="modal-subtitle">Add smart contract functionality to your INDEX</p>
+          </div>
         </div>
-        <p class="modal-subtitle">Add smart contract functionality to your INDEX</p>
-        <button class="modal-close" on:click={close}>✕</button>
+        <button class="modal-close" on:click={close} aria-label="Close">
+          <X size={16} />
+        </button>
       </div>
       
-      <div class="modal-body">
+      <div class="modal-body mods-modal-body">
         {#if loading}
           <div class="loading-state">
             <div class="spinner"></div>
@@ -197,8 +204,8 @@
       </div>
       
       <div class="modal-footer">
-        <button class="btn-cancel" on:click={close}>Cancel</button>
-        <button class="btn-confirm" on:click={confirm} disabled={loading}>
+        <button class="modal-btn modal-btn-secondary" on:click={close}>Cancel</button>
+        <button class="modal-btn modal-btn-primary" on:click={confirm} disabled={loading}>
           {#if getSelectedTags()}
             Apply {localVsMod ? 1 : 0}{localTxMods.length > 0 ? '+' + localTxMods.length : ''} MOD{(localVsMod ? 1 : 0) + localTxMods.length !== 1 ? 's' : ''}
           {:else}
@@ -211,87 +218,13 @@
 {/if}
 
 <style>
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.85);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    backdrop-filter: blur(8px);
-  }
-  
-  .modal-content {
+  .mods-modal-content {
     width: 100%;
     max-width: 640px;
     max-height: 85vh;
-    background: var(--void-mid, #12121c);
-    border: 1px solid var(--border-default, rgba(255, 255, 255, 0.09));
-    border-radius: var(--r-2xl, 20px);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
   }
-  
-  .modal-header {
-    padding: var(--s-5, 20px) var(--s-6, 24px);
-    border-bottom: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
-    position: relative;
-  }
-  
-  .modal-title-row {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2, 8px);
-    margin-bottom: var(--s-1, 4px);
-  }
-  
-  .modal-icon {
-    font-size: 20px;
-    color: var(--violet-400, #a78bfa);
-  }
-  
-  .modal-title {
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--text-1, #f8f8fc);
-    margin: 0;
-  }
-  
-  .modal-subtitle {
-    font-size: 13px;
-    color: var(--text-4, #505068);
-    margin: 0;
-  }
-  
-  .modal-close {
-    position: absolute;
-    top: var(--s-4, 16px);
-    right: var(--s-4, 16px);
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--void-up, #181824);
-    border: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
-    border-radius: var(--r-md, 8px);
-    color: var(--text-4, #505068);
-    cursor: pointer;
-    transition: all 150ms ease;
-  }
-  
-  .modal-close:hover {
-    background: var(--void-surface, #1e1e2a);
-    color: var(--text-2, #a8a8b8);
-    border-color: var(--border-subtle, rgba(255, 255, 255, 0.06));
-  }
-  
-  .modal-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--s-5, 20px) var(--s-6, 24px);
+
+  .mods-modal-body {
     display: flex;
     flex-direction: column;
     gap: var(--s-5, 20px);
@@ -537,51 +470,8 @@
     flex-shrink: 0;
   }
   
-  /* Footer */
-  .modal-footer {
-    display: flex;
-    gap: var(--s-3, 12px);
-    padding: var(--s-4, 16px) var(--s-6, 24px);
-    border-top: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
-  }
-  
-  .btn-cancel {
+  .modal-footer .modal-btn {
     flex: 1;
-    padding: var(--s-3, 12px);
-    background: var(--void-up, #181824);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-    border-radius: var(--r-lg, 12px);
-    color: var(--text-3, #707088);
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 150ms ease;
-  }
-  
-  .btn-cancel:hover {
-    background: var(--void-surface, #1e1e2a);
-    color: var(--text-2, #a8a8b8);
-  }
-  
-  .btn-confirm {
-    flex: 1;
-    padding: var(--s-3, 12px);
-    background: var(--violet-500, #8b5cf6);
-    border: none;
-    border-radius: var(--r-lg, 12px);
-    color: white;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 150ms ease;
-  }
-  
-  .btn-confirm:hover {
-    background: var(--violet-400, #a78bfa);
-  }
-  
-  .btn-confirm:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>
 

@@ -1666,40 +1666,52 @@
 {#if showConfirmModal}
   <div class="modal-overlay" on:click={cancelDeploy}>
     <div class="modal-content" on:click|stopPropagation>
+
       <div class="modal-header">
-        <span class="modal-icon">⚠</span>
-        <h3 class="modal-title">Confirm Deployment</h3>
+        <div class="modal-header-left">
+          <div class="modal-icon warning">
+            <AlertTriangle size={18} strokeWidth={1.5} />
+          </div>
+          <div>
+            <h3 class="modal-title">Confirm Deployment</h3>
+            <p class="modal-subtitle">This action is permanent and cannot be undone</p>
+          </div>
+        </div>
+        <button class="modal-close" on:click={cancelDeploy} aria-label="Close">
+          <X size={16} />
+        </button>
       </div>
-      
+
       <div class="modal-body">
-        <p class="modal-warning">
-          You are about to deploy to <strong>Mainnet</strong>. This transaction is <strong>permanent</strong> and will consume DERO.
+        <p class="deploy-warn-text">
+          You are deploying to <strong>Mainnet</strong>. The transaction is <strong>permanent</strong> and will consume DERO.
         </p>
-        
-        <div class="modal-details">
-          <div class="modal-detail-row">
-            <span class="detail-label">Files</span>
-            <span class="detail-value">{files.length} DOCs + 1 INDEX</span>
+
+        <div class="confirm-details">
+          <div class="confirm-row">
+            <span class="confirm-label">Files</span>
+            <span class="confirm-value">{files.length} DOCs + 1 INDEX</span>
           </div>
-          <div class="modal-detail-row">
-            <span class="detail-label">Total Size</span>
-            <span class="detail-value">{formatSize(totalSize)}</span>
+          <div class="confirm-row">
+            <span class="confirm-label">Total Size</span>
+            <span class="confirm-value">{formatSize(totalSize)}</span>
           </div>
-          <div class="modal-detail-row">
-            <span class="detail-label">Estimated Gas</span>
-            <span class="detail-value cost">~{totalGas.toLocaleString()}</span>
+          <div class="confirm-row">
+            <span class="confirm-label">Estimated Gas</span>
+            <span class="confirm-value confirm-value-amount">~{totalGas.toLocaleString()}</span>
           </div>
-          <div class="modal-detail-row">
-            <span class="detail-label">Type</span>
-            <span class="detail-value">{ringsize === 2 ? 'Updateable (Ring 2)' : 'Immutable (Ring 16)'}</span>
+          <div class="confirm-row">
+            <span class="confirm-label">Type</span>
+            <span class="confirm-value">{ringsize === 2 ? 'Updateable (Ring 2)' : 'Immutable (Ring 16)'}</span>
           </div>
         </div>
       </div>
-      
-      <div class="modal-actions">
-        <button class="btn-cancel" on:click={cancelDeploy}>Cancel</button>
-        <button class="btn-confirm" on:click={confirmDeploy}>Deploy to Mainnet</button>
+
+      <div class="modal-footer">
+        <button class="modal-btn modal-btn-secondary" on:click={cancelDeploy}>Cancel</button>
+        <button class="modal-btn modal-btn-primary" on:click={confirmDeploy}>Deploy to Mainnet</button>
       </div>
+
     </div>
   </div>
 {/if}
@@ -3121,9 +3133,7 @@
   .autoshard-toggle:focus-visible,
   .mods-toggle:focus-visible,
   .mod-option:focus-visible,
-  .error-dismiss:focus-visible,
-  .btn-cancel:focus-visible,
-  .btn-confirm:focus-visible {
+  .error-dismiss:focus-visible {
     outline: 2px solid var(--cyan-400, #22d3ee);
     outline-offset: 2px;
   }
@@ -3149,129 +3159,16 @@
     color: var(--status-err, #f87171);
   }
   
-  /* Confirmation Modal */
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.8);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    backdrop-filter: blur(4px);
-  }
-  
-  .modal-content {
-    width: 100%;
-    max-width: 420px;
-    padding: var(--s-6, 24px);
-    background: var(--void-mid, #12121c);
-    border: 1px solid var(--border-default, rgba(255, 255, 255, 0.09));
-    border-radius: var(--r-xl, 16px);
-  }
-  
-  .modal-header {
-    display: flex;
-    align-items: center;
-    gap: var(--s-3, 12px);
-    margin-bottom: var(--s-4, 16px);
-  }
-  
-  .modal-icon {
-    font-size: 24px;
-    color: var(--status-warn, #fbbf24);
-  }
-  
-  .modal-title {
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--text-1, #f8f8fc);
-  }
-  
-  .modal-body {
-    margin-bottom: var(--s-5, 20px);
-  }
-  
-  .modal-warning {
+  /* Confirmation Modal — deploy warning body text */
+  .deploy-warn-text {
     font-size: 13px;
-    color: var(--text-3, #707088);
-    line-height: 1.5;
-    margin-bottom: var(--s-4, 16px);
+    color: var(--text-3);
+    line-height: 1.6;
+    margin-bottom: var(--s-4);
   }
-  
-  .modal-warning strong {
-    color: var(--text-1, #f8f8fc);
-  }
-  
-  .modal-details {
-    background: var(--void-deep, #08080e);
-    border-radius: var(--r-lg, 12px);
-    padding: var(--s-3, 12px);
-  }
-  
-  .modal-detail-row {
-    display: flex;
-    justify-content: space-between;
-    padding: var(--s-2, 8px) 0;
-    border-bottom: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
-  }
-  
-  .modal-detail-row:last-child {
-    border-bottom: none;
-  }
-  
-  .detail-label {
-    font-size: 13px;
-    color: var(--text-4, #505068);
-  }
-  
-  .detail-value {
-    font-size: 13px;
-    color: var(--text-2, #a8a8b8);
-  }
-  
-  .detail-value.cost {
-    color: var(--cyan-400, #22d3ee);
-    font-weight: 500;
-  }
-  
-  .modal-actions {
-    display: flex;
-    gap: var(--s-3, 12px);
-  }
-  
-  .btn-cancel {
-    flex: 1;
-    padding: var(--s-3, 12px);
-    background: var(--void-up, #181824);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-    border-radius: var(--r-lg, 12px);
-    color: var(--text-3, #707088);
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 200ms ease-out;
-  }
-  
-  .btn-cancel:hover {
-    background: var(--void-surface, #1e1e2a);
-    color: var(--text-2, #a8a8b8);
-  }
-  
-  .btn-confirm {
-    flex: 1;
-    padding: var(--s-3, 12px);
-    background: var(--cyan-500, #06b6d4);
-    border: none;
-    border-radius: var(--r-lg, 12px);
-    color: var(--void-pure, #000000);
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 200ms ease-out;
-  }
-  
-  .btn-confirm:hover {
-    background: var(--cyan-400, #22d3ee);
+
+  .deploy-warn-text strong {
+    color: var(--text-1);
   }
   
   /* === TELA-MODs Styles === */

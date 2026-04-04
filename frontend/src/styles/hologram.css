@@ -6824,6 +6824,13 @@
     .modal-header-dark {
       background: var(--void-deep);
     }
+
+    .modal-header-left {
+      display: flex;
+      align-items: center;
+      gap: var(--s-3);
+      min-width: 0;
+    }
     
     /* Modal Title */
     .modal-title {
@@ -6839,6 +6846,44 @@
     
     .modal-title-icon {
       color: var(--cyan-400);
+    }
+
+    .modal-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--r-md);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--cyan-400);
+      background: rgba(34, 211, 238, 0.12);
+      border: 1px solid rgba(34, 211, 238, 0.22);
+      flex-shrink: 0;
+    }
+
+    .modal-icon.warning {
+      color: var(--status-warn);
+      background: rgba(251, 191, 36, 0.12);
+      border-color: rgba(251, 191, 36, 0.24);
+    }
+
+    .modal-icon.error {
+      color: var(--status-err);
+      background: rgba(248, 113, 113, 0.12);
+      border-color: rgba(248, 113, 113, 0.24);
+    }
+
+    .modal-icon.success {
+      color: var(--status-ok);
+      background: rgba(52, 211, 153, 0.12);
+      border-color: rgba(52, 211, 153, 0.24);
+    }
+
+    .modal-subtitle {
+      margin: var(--s-1) 0 0;
+      font-size: 12px;
+      color: var(--text-3);
+      line-height: 1.45;
     }
     
     /* Modal Close Button */
