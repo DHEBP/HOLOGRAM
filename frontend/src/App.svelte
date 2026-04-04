@@ -12,7 +12,7 @@
   import Settings from './routes/Settings.svelte';
   // Mining tab removed - Developer Support now in Settings > Developer Support
   // Network tab removed - node controls moved to Settings > Node
-  import { appState, settingsState, updateStatus, addExternalRequest, dismissWalletRequest, toast, loadSettings, syncNetworkMode } from './lib/stores/appState.js';
+  import { appState, walletState, settingsState, updateStatus, addExternalRequest, dismissWalletRequest, toast, loadSettings, syncNetworkMode } from './lib/stores/appState.js';
   import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions, NotifyWizardComplete } from '../wailsjs/go/main/App.js';
   import { EventsOn } from '../wailsjs/runtime/runtime.js';
   import { waitForWails } from './lib/utils/wails.js';
@@ -198,6 +198,14 @@
           walletOpen: status.wallet.open,
           walletAddress: status.wallet.address || '',
           walletBalance: status.wallet.balance || 0,
+        }));
+        walletState.update(state => ({
+          ...state,
+          isOpen: !!status.wallet.open,
+          address: status.wallet.address || '',
+          balance: status.wallet.balance || 0,
+          lockedBalance: status.wallet.lockedBalance || 0,
+          walletPath: status.wallet.open ? state.walletPath : '',
         }));
       }
     });

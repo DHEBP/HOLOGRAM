@@ -6,7 +6,8 @@
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus,
     ApproveWalletConnection, ConnectXSWD,
     GetRecentWalletsWithInfo, SwitchWallet, GetActiveXSWDConnections, RevokeXSWDConnection,
-    DisconnectXSWD, CloseWallet, RemoveRecentWallet
+    DisconnectXSWD, CloseWallet, RemoveRecentWallet, UseSimulatorWallet,
+    GetSimulatorTestWallets, OpenSimulatorTestWallet
   } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
   import { DotIndicator, Icons } from './holo';
@@ -36,6 +37,9 @@
   // Network switch modal state
   let showNetworkSwitchModal = false;
   let networkSwitchTarget = 'simulator'; // 'simulator' or 'mainnet'
+  let networkSwitchStartedAt = 0;
+  let networkSwitchElapsed = 0;
+  let networkSwitchTicker = null;
   const networkSwitchSteps = [
     { id: 0, label: 'Checking current connection' },
     { id: 1, label: 'Checking simulator binary' },
@@ -55,6 +59,9 @@
   let showConnectedApps = false;
   let connectedApps = [];
   let loadingApps = false;
+  let simulatorQuickWallets = [];
+  let simulatorWalletsLoading = false;
+  let switchingSimulatorWalletIndex = null;
   
   // Determine wallet address to display (reactive statements)
   // Priority: Integrated wallet address > Engram (external) address
@@ -153,6 +160,7 @@
     EventsOn("simulator:complete", (data) => {
       simulatorStarting = false;
       showNetworkSwitchModal = false;
+      stopNetworkSwitchTimer();
       if (data.success) {
         syncNetworkMode();
         refreshSimulatorStatus();
@@ -163,12 +171,14 @@
     EventsOn("simulator:error", (data) => {
       simulatorStarting = false;
       showNetworkSwitchModal = false;
+      stopNetworkSwitchTimer();
       showSimulatorToastOnce('error', data.error || 'Simulator startup failed', 5000);
     });
   });
   
   onDestroy(() => {
     if (epochInterval) clearInterval(epochInterval);
+    stopNetworkSwitchTimer();
     // Clean up avatar cache
     if (walletDisplayAddress) {
       clearAvatarCache(walletDisplayAddress);
@@ -194,6 +204,32 @@
       // Silently fail
     }
   }
+
+  async function ensureSimulatorWalletActive() {
+    // Keep external-wallet UX unchanged.
+    if ($appState.engramConnected) return;
+
+    const currentAddrNetwork = detectAddressNetwork($walletState.address);
+    const needsSimulatorWallet = !$walletState.isOpen || currentAddrNetwork !== 'simulator';
+    if (!needsSimulatorWallet) return;
+
+    try {
+      const result = await UseSimulatorWallet();
+      if (result?.success) {
+        walletState.update(state => ({
+          ...state,
+          isOpen: true,
+          address: result.address || '',
+          balance: result.balance ?? 0,
+          lockedBalance: result.locked ?? 0,
+          walletPath: result.path || state.walletPath
+        }));
+      }
+    } catch (e) {
+      // Non-fatal: mismatch warning remains visible if activation fails.
+      console.warn('Failed to auto-activate simulator wallet:', e);
+    }
+  }
   
   export let tabs = [];
   export let currentTab = 'browser';
@@ -203,6 +239,24 @@
   
   let showNetworkMenu = false;
   let lastSimulatorToast = { key: '', at: 0 };
+
+  function startNetworkSwitchTimer() {
+    networkSwitchStartedAt = Date.now();
+    networkSwitchElapsed = 0;
+    if (networkSwitchTicker) clearInterval(networkSwitchTicker);
+    networkSwitchTicker = setInterval(() => {
+      networkSwitchElapsed = Math.max(0, Math.floor((Date.now() - networkSwitchStartedAt) / 1000));
+    }, 1000);
+  }
+
+  function stopNetworkSwitchTimer() {
+    if (networkSwitchTicker) {
+      clearInterval(networkSwitchTicker);
+      networkSwitchTicker = null;
+    }
+    networkSwitchStartedAt = 0;
+    networkSwitchElapsed = 0;
+  }
 
   function showSimulatorToastOnce(type, message, duration = 5000) {
     const now = Date.now();
@@ -300,6 +354,7 @@
       networkSwitchTarget = 'simulator';
       simulatorProgress = { step: 0, message: 'Starting simulator...', status: 'starting' };
       showNetworkSwitchModal = true;
+      startNetworkSwitchTimer();
       
       try {
         const result = await StartSimulatorMode();
@@ -308,6 +363,7 @@
         // (or be missed if Wails delivers it before the listener is active).
         simulatorStarting = false;
         showNetworkSwitchModal = false;
+        stopNetworkSwitchTimer();
         
         if (result.success) {
           showSimulatorToastOnce('success', result.message || 'Simulator mode activated!', 3000);
@@ -315,12 +371,14 @@
           // But also ensure it's set here as a fallback
           await doSwitchNetwork('simulator');
           await refreshSimulatorStatus();
+          await ensureSimulatorWalletActive();
         } else {
           showSimulatorToastOnce('error', result.error || 'Failed to start simulator', 5000);
         }
       } catch (e) {
         simulatorStarting = false;
         showNetworkSwitchModal = false;
+        stopNetworkSwitchTimer();
         showSimulatorToastOnce('error', e.message || 'Failed to start simulator', 5000);
       }
     } else if (simulatorAction === 'stop') {
@@ -328,16 +386,31 @@
       networkSwitchTarget = 'mainnet';
       simulatorProgress = { step: 0, message: 'Stopping simulator...', status: 'stopping' };
       showNetworkSwitchModal = true;
+      startNetworkSwitchTimer();
       
       try {
         await StopSimulatorMode();
+        // Immediately clear a simulator wallet from local UI state while
+        // backend status broadcast catches up.
+        if (detectAddressNetwork($walletState.address) === 'simulator') {
+          walletState.update(state => ({
+            ...state,
+            isOpen: false,
+            address: '',
+            balance: 0,
+            lockedBalance: 0,
+            walletPath: '',
+          }));
+        }
         await doSwitchNetwork('mainnet');
         await refreshSimulatorStatus();
         showNetworkSwitchModal = false;
+        stopNetworkSwitchTimer();
         toast.success('Switched to Mainnet', 2000);
       } catch (e) {
         console.error('Failed to stop simulator:', e);
         showNetworkSwitchModal = false;
+        stopNetworkSwitchTimer();
         toast.error('Failed to stop simulator: ' + e.message, 5000);
       }
     }
@@ -444,6 +517,60 @@
       console.error('Failed to load recent wallets:', e);
     }
   }
+
+  function formatBalanceAtomic(balance) {
+    const atomic = Number(balance || 0);
+    return (atomic / 100000).toFixed(5);
+  }
+
+  async function loadSimulatorQuickWallets() {
+    if (simulatorWalletsLoading) return;
+    simulatorWalletsLoading = true;
+    try {
+      const result = await GetSimulatorTestWallets();
+      if (result?.success && Array.isArray(result.wallets)) {
+        simulatorQuickWallets = [...result.wallets].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      } else {
+        simulatorQuickWallets = [];
+      }
+    } catch (e) {
+      simulatorQuickWallets = [];
+      console.error('Failed to load simulator quick wallets:', e);
+    } finally {
+      simulatorWalletsLoading = false;
+    }
+  }
+
+  async function handleSimulatorQuickSwitch(wallet) {
+    if (!wallet || wallet.index === undefined || wallet.index === null) return;
+    if ($walletState.address && wallet.address === $walletState.address) return;
+
+    switchingSimulatorWalletIndex = wallet.index;
+    try {
+      const result = await OpenSimulatorTestWallet(wallet.index);
+      if (!result?.success) {
+        toast.error(result?.error || 'Failed to open test wallet');
+        return;
+      }
+
+      walletState.update(state => ({
+        ...state,
+        isOpen: true,
+        address: result.address || '',
+        balance: result.balance ?? 0,
+        lockedBalance: result.locked ?? 0,
+        walletPath: result.path || state.walletPath,
+      }));
+
+      await loadSimulatorQuickWallets();
+      showWalletMenu = false;
+      toast.success(`Switched to test wallet #${wallet.index}`);
+    } catch (e) {
+      toast.error(e.message || 'Failed to open test wallet');
+    } finally {
+      switchingSimulatorWalletIndex = null;
+    }
+  }
   
   async function loadConnectedApps() {
     loadingApps = true;
@@ -490,6 +617,11 @@
     if (showWalletMenu) {
       await loadRecentWallets();
       await loadConnectedApps();
+      if (effectiveNetwork === 'simulator') {
+        await loadSimulatorQuickWallets();
+      } else {
+        simulatorQuickWallets = [];
+      }
     } else {
       switchingWallet = null;
       switchPassword = '';
@@ -1101,6 +1233,41 @@
           </div>
         {:else}
           <!-- Other wallets list -->
+          {#if effectiveNetwork === 'simulator'}
+            <div class="wallet-quickswitch-list">
+              <p class="wallet-menu-label">TEST WALLETS</p>
+              {#if simulatorWalletsLoading}
+                <p class="wallet-quick-hint">Loading test wallets...</p>
+              {:else if simulatorQuickWallets.length === 0}
+                <p class="wallet-quick-hint">No simulator wallets available yet</p>
+              {:else}
+                {#each simulatorQuickWallets.slice(0, 8) as wallet}
+                  {@const isCurrentSimWallet = !!$walletState.address && wallet.address === $walletState.address}
+                  <button
+                    on:click|stopPropagation={() => handleSimulatorQuickSwitch(wallet)}
+                    class="wallet-option wallet-option-test"
+                    disabled={isCurrentSimWallet || switchingSimulatorWalletIndex === wallet.index}
+                  >
+                    <span class="wallet-option-icon"><Gamepad2 size={14} strokeWidth={1.5} /></span>
+                    <div class="wallet-option-info">
+                      <p class="wallet-option-name">Test Wallet #{wallet.index}</p>
+                      <p class="wallet-option-addr">
+                        {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(wallet.address)} ·
+                        {$settingsState.hideBalance ? '••••' : `${formatBalanceAtomic(wallet.balance)} DERO`}
+                      </p>
+                    </div>
+                    {#if isCurrentSimWallet}
+                      <span class="wallet-test-active">Active</span>
+                    {:else if switchingSimulatorWalletIndex === wallet.index}
+                      <span class="wallet-test-active">...</span>
+                    {/if}
+                  </button>
+                {/each}
+                <p class="wallet-quick-hint">Open Wallet tab for full simulator wallet list</p>
+              {/if}
+            </div>
+          {/if}
+
           {#if recentWalletsInfo.filter(w => !w.isCurrent).length > 0}
             <div class="wallet-quickswitch-list">
               <p class="wallet-menu-label">QUICK SWITCH</p>
@@ -1403,6 +1570,9 @@
         <div class="network-switch-simple">
           <div class="simple-spinner"></div>
           <p class="simple-message">Closing simulator services and connecting to mainnet node...</p>
+          <p class="simple-elapsed">
+            Elapsed {networkSwitchElapsed}s{networkSwitchElapsed > 25 ? ' — this can take up to a minute' : ''}
+          </p>
         </div>
       {/if}
     </div>
@@ -1809,7 +1979,6 @@
   .info-value.value-ok { color: var(--status-ok); }
   .info-value.value-warn { color: var(--status-warn); }
   .info-value.value-err { color: var(--status-err); }
-  .info-value.value-cyan { color: var(--cyan-400); }
   
   /* ============================================
      COLLAPSED STATE - LED Strip (unchanged)
@@ -1926,7 +2095,6 @@
   .unified-dot.dot-ok { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
   .unified-dot.dot-warn { background: var(--status-warn); box-shadow: 0 0 6px var(--status-warn); }
   .unified-dot.dot-err { background: var(--status-err); box-shadow: 0 0 6px var(--status-err); }
-  .unified-dot.dot-cyan { background: var(--cyan-400); box-shadow: 0 0 6px var(--cyan-400); }
   
   /* v6.3 Edge Rail: Smaller dots (5px) for LED strip */
   .sidebar.collapsed .unified-dot {
@@ -1937,7 +2105,6 @@
   .sidebar.collapsed .unified-dot.dot-ok { box-shadow: 0 0 4px var(--status-ok); }
   .sidebar.collapsed .unified-dot.dot-warn { box-shadow: 0 0 4px var(--status-warn); }
   .sidebar.collapsed .unified-dot.dot-err { box-shadow: 0 0 4px var(--status-err); }
-  .sidebar.collapsed .unified-dot.dot-cyan { box-shadow: 0 0 4px var(--cyan-400); }
   
   /* ============================================
      v6.3 TOOLTIP SYSTEM FOR COLLAPSED STATE
@@ -2444,6 +2611,19 @@
   .wallet-option:hover {
     background: var(--void-hover);
   }
+
+  .wallet-option:disabled {
+    opacity: 0.7;
+    cursor: default;
+  }
+
+  .wallet-option-test {
+    border-left: 2px solid transparent;
+  }
+
+  .wallet-option-test:hover {
+    border-left-color: var(--status-err);
+  }
   
   .wallet-option-icon {
     font-size: 12px;
@@ -2467,6 +2647,12 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-4);
+  }
+
+  .wallet-test-active {
+    font-size: 10px;
+    color: var(--status-ok);
+    font-family: var(--font-mono);
   }
   
   .wallet-option-row {
@@ -2598,6 +2784,13 @@
   
   .wallet-quickswitch-list .wallet-menu-label {
     padding: var(--s-1) var(--s-3);
+  }
+
+  .wallet-quick-hint {
+    margin: 0;
+    padding: 0 var(--s-3) var(--s-2);
+    font-size: 10px;
+    color: var(--text-4);
   }
   
   .connected-apps-section {
@@ -2822,268 +3015,6 @@
     min-width: 140px;
   }
   
-  /* Simulator Modal - Hologram v6.1 Wizard Style */
-  .sim-modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.85);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    backdrop-filter: blur(8px);
-  }
-  
-  .sim-modal-card {
-    background: var(--void-mid);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-lg);
-    width: 90%;
-    max-width: 420px;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
-    overflow: hidden;
-    position: relative;
-  }
-  
-  /* Shimmer border effect */
-  .sim-modal-card::before {
-    content: '';
-    position: absolute;
-    inset: -1px;
-    border-radius: var(--r-lg);
-    padding: 1px;
-    background: var(--grad-shimmer);
-    background-size: 300% 100%;
-    animation: shimmer 4s linear infinite;
-    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    z-index: 0;
-    pointer-events: none;
-  }
-  
-  /* Status Bar */
-  .sim-modal-status {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--s-3) var(--s-4);
-    border-bottom: 1px solid var(--border-dim);
-    background: var(--void-deep);
-    position: relative;
-    z-index: 1;
-  }
-  
-  .sim-modal-status-left {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-  }
-  
-  .sim-modal-status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--text-4);
-  }
-  
-  .sim-modal-status-dot.start { background: var(--status-ok); box-shadow: 0 0 8px var(--status-ok); }
-  .sim-modal-status-dot.stop { background: var(--status-warn); box-shadow: 0 0 8px var(--status-warn); }
-  
-  .sim-modal-status-text {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-3);
-  }
-  
-  .sim-modal-badge {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    padding: 3px 8px;
-    border-radius: 4px;
-    border: 1px solid;
-  }
-  
-  .sim-modal-badge.start { color: var(--status-ok); border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.08); }
-  .sim-modal-badge.stop { color: var(--status-warn); border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.08); }
-  
-  /* Header */
-  .sim-modal-header {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    padding: var(--s-5) var(--s-4) var(--s-4);
-    position: relative;
-    z-index: 1;
-  }
-  
-  .sim-modal-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 56px;
-    height: 56px;
-    border-radius: 50%;
-    border: 1px solid;
-    margin-bottom: var(--s-3);
-  }
-  
-  .sim-modal-icon.start {
-    color: var(--status-ok);
-    background: rgba(52, 211, 153, 0.08);
-    border-color: rgba(52, 211, 153, 0.25);
-    box-shadow: 0 0 20px rgba(52, 211, 153, 0.15);
-  }
-  
-  .sim-modal-icon.stop {
-    color: var(--status-warn);
-    background: rgba(251, 191, 36, 0.08);
-    border-color: rgba(251, 191, 36, 0.25);
-    box-shadow: 0 0 20px rgba(251, 191, 36, 0.15);
-  }
-  
-  .sim-modal-title {
-    font-family: var(--font-mono);
-    font-size: 14px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-1);
-    margin: 0 0 var(--s-2);
-  }
-  
-  .sim-modal-desc {
-    font-size: 13px;
-    color: var(--text-3);
-    margin: 0;
-    line-height: 1.5;
-  }
-  
-  /* Body */
-  .sim-modal-body {
-    padding: 0 var(--s-4) var(--s-4);
-    position: relative;
-    z-index: 1;
-  }
-  
-  .sim-modal-features {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-2);
-    margin-bottom: var(--s-3);
-  }
-  
-  .sim-modal-feature {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    font-size: 12px;
-    color: var(--text-2);
-    padding: var(--s-2) var(--s-3);
-    background: var(--void-deep);
-    border-radius: var(--r-sm);
-    border: 1px solid var(--border-subtle);
-  }
-  
-  .sim-modal-feature :global(.sim-feature-icon) {
-    color: var(--text-4);
-    flex-shrink: 0;
-  }
-  
-  .sim-modal-note {
-    padding: var(--s-3);
-    border-radius: var(--r-md);
-    font-size: 12px;
-    line-height: 1.5;
-    margin-bottom: var(--s-2);
-  }
-  
-  .sim-modal-note:last-child {
-    margin-bottom: 0;
-  }
-  
-  .sim-modal-note.cyan {
-    background: rgba(34, 211, 238, 0.08);
-    border: 1px solid rgba(34, 211, 238, 0.2);
-    color: var(--cyan-400);
-  }
-  
-  .sim-modal-note.warn {
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.2);
-    color: var(--status-warn);
-  }
-  
-  /* Actions */
-  .sim-modal-actions {
-    display: flex;
-    gap: var(--s-3);
-    padding: var(--s-4);
-    border-top: 1px solid var(--border-dim);
-    background: var(--void-deep);
-    position: relative;
-    z-index: 1;
-  }
-  
-  .sim-modal-btn {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--s-3) var(--s-4);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    border-radius: var(--r-md);
-    cursor: pointer;
-    transition: all var(--dur-med) var(--ease-out);
-    border: none;
-  }
-  
-  .sim-modal-btn.secondary {
-    background: var(--void-up);
-    color: var(--text-3);
-    border: 1px solid var(--border-subtle);
-  }
-  
-  .sim-modal-btn.secondary:hover {
-    background: var(--void-surface);
-    color: var(--text-1);
-    border-color: var(--border-default);
-  }
-  
-  .sim-modal-btn.primary {
-    background: var(--status-ok);
-    color: var(--void-pure);
-  }
-  
-  .sim-modal-btn.primary:hover {
-    filter: brightness(1.1);
-    box-shadow: 0 0 16px rgba(52, 211, 153, 0.4);
-    transform: translateY(-1px);
-  }
-  
-  .sim-modal-btn.warn {
-    background: var(--status-warn);
-    color: var(--void-pure);
-  }
-  
-  .sim-modal-btn.warn:hover {
-    filter: brightness(1.1);
-    box-shadow: 0 0 16px rgba(251, 191, 36, 0.4);
-    transform: translateY(-1px);
-  }
-  
   :global(.c-violet) {
     color: var(--violet-400);
   }
@@ -3099,7 +3030,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 2000;
+    z-index: var(--z-modal-nested, 2000);
     animation: fadeIn 0.2s ease-out;
   }
   
@@ -3228,15 +3159,15 @@
   }
   
   .step-circle {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    border: 1.5px solid currentColor;
+    border: 1px solid currentColor;
   }
   
   .step-spinner {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     border: 2px solid transparent;
     border-top-color: currentColor;
     border-radius: 50%;
@@ -3274,13 +3205,13 @@
   .progress-bar-track {
     height: 4px;
     background: var(--void-up);
-    border-radius: 2px;
+    border-radius: var(--r-xs);
     overflow: hidden;
   }
   
   .progress-bar-fill {
     height: 100%;
-    border-radius: 2px;
+    border-radius: var(--r-xs);
     transition: width 0.3s ease-out;
   }
   
@@ -3309,7 +3240,7 @@
   .simple-spinner {
     width: 40px;
     height: 40px;
-    border: 3px solid var(--void-up);
+    border: 2px solid var(--void-up);
     border-top-color: var(--status-ok);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
@@ -3321,5 +3252,14 @@
     text-align: center;
     line-height: 1.5;
     margin: 0;
+  }
+
+  .simple-elapsed {
+    margin: 0;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-4);
+    text-align: center;
+    letter-spacing: 0.02em;
   }
 </style>

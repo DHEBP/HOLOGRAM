@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -468,6 +469,30 @@ func (sm *SimulatorManager) StopSimulatorMode() map[string]interface{} {
 	if sm.walletManager != nil {
 		sm.walletManager.CloseAll()
 	}
+
+	// If the currently active global wallet is one of the simulator wallets,
+	// clear it so the UI doesn't keep showing a stale deto* wallet after we
+	// switch back to mainnet.
+	walletManager.Lock()
+	if walletManager.isOpen {
+		shouldClear := strings.HasPrefix(walletManager.walletPath, "TestWallet_")
+		if !shouldClear && walletManager.wallet != nil {
+			addr := walletManager.wallet.GetAddress().String()
+			if strings.HasPrefix(addr, "deto1") || strings.HasPrefix(addr, "detoi1") {
+				shouldClear = true
+			}
+		}
+		if shouldClear {
+			if walletManager.wallet != nil {
+				walletManager.wallet.Close_Encrypted_Wallet()
+			}
+			walletManager.wallet = nil
+			walletManager.walletPath = ""
+			walletManager.isOpen = false
+			sm.app.logToConsole("[OK] Cleared active simulator wallet from global wallet state")
+		}
+	}
+	walletManager.Unlock()
 
 	// Step 2: Stop daemon
 	stopResult := sm.app.StopNode()
