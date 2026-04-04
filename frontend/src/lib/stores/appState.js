@@ -285,6 +285,10 @@ export async function loadSettings() {
 // Save a setting to backend using the correct backend key
 export async function saveSetting(frontendKey, value) {
   const backendKey = settingsKeyMapReverse[frontendKey] || frontendKey;
+  const currentValue = get(settingsState)?.[frontendKey];
+  if (currentValue === value) {
+    return;
+  }
   
   // Update frontend state immediately
   settingsState.update(state => ({ ...state, [frontendKey]: value }));
@@ -407,11 +411,19 @@ export async function syncNetworkMode() {
       // Do NOT touch daemonEndpoint here — it is loaded from disk by loadSettings()
       // and updated only by TestAndConnectEndpoint. Overwriting it here would replace
       // a user-configured remote endpoint with a constructed 127.0.0.1 URL.
-      settingsState.update(state => ({
-        ...state,
-        network: network,
-      }));
-      await saveSetting('network', network);
+      const currentNetworkSetting = get(settingsState)?.network;
+      if (currentNetworkSetting !== network) {
+        settingsState.update(state => ({
+          ...state,
+          network: network,
+        }));
+        await saveSetting('network', network);
+      } else {
+        settingsState.update(state => ({
+          ...state,
+          network: network,
+        }));
+      }
       
       console.log('[Network] Mode synced:', { network, endpoint });
     }

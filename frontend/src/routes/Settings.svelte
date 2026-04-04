@@ -920,8 +920,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       if (result.success) {
         // Sync network mode from backend (this updates appState and settingsState)
         await syncNetworkMode();
-        // Also update settings for compatibility
-        await updateSetting('network', newNetwork);
       } else {
         console.error('Failed to set network mode:', result.error);
       }

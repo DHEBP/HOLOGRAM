@@ -1239,6 +1239,45 @@ func checkDaemonConnectivity(wallet *walletapi.Wallet_Disk) map[string]interface
 	return nil
 }
 
+// withSimulatorTransactionConnectivity runs a wallet transaction with the simulator-safe
+// connect/disconnect pattern. Test wallets are intentionally left disconnected after opening
+// so the simulator's single WebSocket slot stays free for Gnomon and other services.
+func (a *App) withSimulatorTransactionConnectivity(wallet *walletapi.Wallet_Disk, action string, fn func() map[string]interface{}) map[string]interface{} {
+	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
+
+	// Close any stale walletapi socket first, then pause Gnomon so the simulator has one free slot.
+	a.disconnectWalletAPI()
+	gnomonWasRunning := a.pauseGnomonForSimulator()
+	time.Sleep(300 * time.Millisecond)
+
+	cleanup := func() {
+		a.disconnectWalletAPI()
+		if gnomonWasRunning {
+			time.Sleep(300 * time.Millisecond)
+			a.resumeGnomonForSimulator()
+		}
+	}
+
+	if err := walletapi.Connect(endpoint); err != nil {
+		cleanup()
+		return map[string]interface{}{
+			"success":        false,
+			"error":          fmt.Sprintf("Failed to connect wallet to simulator for %s.", action),
+			"technicalError": err.Error(),
+		}
+	}
+
+	wallet.SetDaemonAddress(endpoint)
+	wallet.SetOnlineMode()
+	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Pre-%s simulator wallet sync failed: %v", action, err))
+	}
+
+	result := fn()
+	cleanup()
+	return result
+}
+
 // sanitizeSCID strips trailing null bytes, whitespace, and quotes from an SCID string.
 // DERO SC storage and some dApp frontends occasionally pad values with \x00.
 func sanitizeSCID(s string) string {
@@ -1490,60 +1529,69 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			return map[string]interface{}{"success": false, "error": "Please specify a transfer amount and destination, or a smart contract call."}
 		}
 
-		if errResp := checkDaemonConnectivity(wallet); errResp != nil {
-			return errResp
-		}
-		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] Pre-transfer wallet sync failed: %v", syncErr))
-		}
-
-		mature, _ := wallet.Get_Balance()
-		var totalTransferAmount uint64
-		for _, t := range transfers {
-			totalTransferAmount += t.Amount + t.Burn
-		}
-		if mature == 0 || (totalTransferAmount > 0 && mature < totalTransferAmount) {
-			return map[string]interface{}{
-				"success":        false,
-				"error":          fmt.Sprintf("Insufficient balance. You have %s DERO but this transaction requires at least %s DERO plus gas fees.", formatDEROAmount(mature), formatDEROAmount(totalTransferAmount)),
-				"technicalError": fmt.Sprintf("mature balance %d < required %d", mature, totalTransferAmount),
+		runTransfer := func() map[string]interface{} {
+			if !a.IsInSimulatorMode() {
+				if errResp := checkDaemonConnectivity(wallet); errResp != nil {
+					return errResp
+				}
 			}
-		}
-
-		ringsize := uint64(2)
-		if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
-			ringsize = uint64(rs)
-		}
-		// dApp-requested fee (0 = let daemon pick)
-		fees := uint64(0)
-		if f, ok := params["fees"].(float64); ok && f > 0 {
-			fees = uint64(f)
-		}
-		a.logToConsole(fmt.Sprintf("[XSWD] Building transfer TX with ringsize=%d fees=%d", ringsize, fees))
-
-		tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
-		if err != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] Transfer build failed, retrying after resync: %v", err))
 			if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
-				a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+				a.logToConsole(fmt.Sprintf("[WARN] Pre-transfer wallet sync failed: %v", syncErr))
 			}
-			tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+
+			mature, _ := wallet.Get_Balance()
+			var totalTransferAmount uint64
+			for _, t := range transfers {
+				totalTransferAmount += t.Amount + t.Burn
+			}
+			if mature == 0 || (totalTransferAmount > 0 && mature < totalTransferAmount) {
+				return map[string]interface{}{
+					"success":        false,
+					"error":          fmt.Sprintf("Insufficient balance. You have %s DERO but this transaction requires at least %s DERO plus gas fees.", formatDEROAmount(mature), formatDEROAmount(totalTransferAmount)),
+					"technicalError": fmt.Sprintf("mature balance %d < required %d", mature, totalTransferAmount),
+				}
+			}
+
+			ringsize := uint64(2)
+			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
+				ringsize = uint64(rs)
+			}
+			// dApp-requested fee (0 = let daemon pick)
+			fees := uint64(0)
+			if f, ok := params["fees"].(float64); ok && f > 0 {
+				fees = uint64(f)
+			}
+			a.logToConsole(fmt.Sprintf("[XSWD] Building transfer TX with ringsize=%d fees=%d", ringsize, fees))
+
+			tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
 			if err != nil {
-				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+				a.logToConsole(fmt.Sprintf("[WARN] Transfer build failed, retrying after resync: %v", err))
+				if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+				}
+				tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+				if err != nil {
+					return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+				}
+			}
+
+			if err := wallet.SendTransaction(tx); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] Transfer broadcast failed: %s", err.Error()))
+				return map[string]interface{}{"success": false, "error": fmt.Sprintf("Transaction built but failed to broadcast: %s", FriendlyError(err)), "technicalError": err.Error()}
+			}
+
+			txid := tx.GetHash().String()
+			a.logToConsole(fmt.Sprintf("[OK] Transfer TX sent: %s (ringsize=%d)", txid, ringsize))
+			return map[string]interface{}{
+				"success": true,
+				"result":  map[string]interface{}{"txid": txid},
 			}
 		}
 
-		if err := wallet.SendTransaction(tx); err != nil {
-			a.logToConsole(fmt.Sprintf("[ERR] Transfer broadcast failed: %s", err.Error()))
-			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Transaction built but failed to broadcast: %s", FriendlyError(err)), "technicalError": err.Error()}
+		if a.IsInSimulatorMode() {
+			return a.withSimulatorTransactionConnectivity(wallet, "transfer", runTransfer)
 		}
-
-		txid := tx.GetHash().String()
-		a.logToConsole(fmt.Sprintf("[OK] Transfer TX sent: %s (ringsize=%d)", txid, ringsize))
-		return map[string]interface{}{
-			"success": true,
-			"result":  map[string]interface{}{"txid": txid},
-		}
+		return runTransfer()
 
 	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
 		scid := ""
@@ -1608,57 +1656,66 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		// Merge deposit entries in front of any explicit transfers
 		transfers = append(scDeposit, transfers...)
 
-		if errResp := checkDaemonConnectivity(wallet); errResp != nil {
-			return errResp
-		}
-		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] Pre-scinvoke wallet sync failed: %v", syncErr))
-		}
-
-		mature, _ := wallet.Get_Balance()
-		if mature == 0 {
-			return map[string]interface{}{
-				"success":        false,
-				"error":          "Insufficient balance. Even a smart contract call requires gas fees — please fund your wallet first.",
-				"technicalError": "wallet mature balance is 0",
+		runSCInvoke := func() map[string]interface{} {
+			if !a.IsInSimulatorMode() {
+				if errResp := checkDaemonConnectivity(wallet); errResp != nil {
+					return errResp
+				}
 			}
-		}
-
-		ringsize := uint64(2)
-		if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
-			ringsize = uint64(rs)
-		}
-		fees := uint64(0)
-		if f, ok := params["fees"].(float64); ok && f > 0 {
-			fees = uint64(f)
-		}
-		a.logToConsole(fmt.Sprintf("[XSWD] Building scinvoke TX with ringsize=%d fees=%d", ringsize, fees))
-
-		tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
-		if err != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] scinvoke build failed, retrying after resync: %v", err))
 			if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
-				a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+				a.logToConsole(fmt.Sprintf("[WARN] Pre-scinvoke wallet sync failed: %v", syncErr))
 			}
-			tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+
+			mature, _ := wallet.Get_Balance()
+			if mature == 0 {
+				return map[string]interface{}{
+					"success":        false,
+					"error":          "Insufficient balance. Even a smart contract call requires gas fees — please fund your wallet first.",
+					"technicalError": "wallet mature balance is 0",
+				}
+			}
+
+			ringsize := uint64(2)
+			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
+				ringsize = uint64(rs)
+			}
+			fees := uint64(0)
+			if f, ok := params["fees"].(float64); ok && f > 0 {
+				fees = uint64(f)
+			}
+			a.logToConsole(fmt.Sprintf("[XSWD] Building scinvoke TX with ringsize=%d fees=%d", ringsize, fees))
+
+			tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
 			if err != nil {
-				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+				a.logToConsole(fmt.Sprintf("[WARN] scinvoke build failed, retrying after resync: %v", err))
+				if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+				}
+				tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+				if err != nil {
+					return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+				}
+			}
+
+			if err := wallet.SendTransaction(tx); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] scinvoke broadcast failed: %s", err.Error()))
+				return map[string]interface{}{"success": false, "error": fmt.Sprintf("SC call built but failed to broadcast: %s", FriendlyError(err)), "technicalError": err.Error()}
+			}
+
+			txid := tx.GetHash().String()
+			a.logToConsole(fmt.Sprintf("[OK] scinvoke TX sent: %s (ringsize=%d)", txid, ringsize))
+			return map[string]interface{}{
+				"success": true,
+				"result": map[string]interface{}{
+					"txid": txid,
+				},
 			}
 		}
 
-		if err := wallet.SendTransaction(tx); err != nil {
-			a.logToConsole(fmt.Sprintf("[ERR] scinvoke broadcast failed: %s", err.Error()))
-			return map[string]interface{}{"success": false, "error": fmt.Sprintf("SC call built but failed to broadcast: %s", FriendlyError(err)), "technicalError": err.Error()}
+		if a.IsInSimulatorMode() {
+			return a.withSimulatorTransactionConnectivity(wallet, "scinvoke", runSCInvoke)
 		}
-
-		txid := tx.GetHash().String()
-		a.logToConsole(fmt.Sprintf("[OK] scinvoke TX sent: %s (ringsize=%d)", txid, ringsize))
-		return map[string]interface{}{
-			"success": true,
-			"result": map[string]interface{}{
-				"txid": txid,
-			},
-		}
+		return runSCInvoke()
 
 	case "GetTransfers", "get_transfers":
 		coinbase, in, out := true, true, true

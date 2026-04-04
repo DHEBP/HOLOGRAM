@@ -2,7 +2,7 @@
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode, toast, combinedSyncProgress } from '../stores/appState.js';
   import { 
-    SetSetting, GetEpochStats, SetNetworkMode,
+    GetEpochStats, SetNetworkMode,
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus,
     ApproveWalletConnection, ConnectXSWD,
     GetRecentWalletsWithInfo, SwitchWallet, GetActiveXSWDConnections, RevokeXSWDConnection,
@@ -163,7 +163,7 @@
     EventsOn("simulator:error", (data) => {
       simulatorStarting = false;
       showNetworkSwitchModal = false;
-      toast.error(data.error || 'Simulator startup failed', 5000);
+      showSimulatorToastOnce('error', data.error || 'Simulator startup failed', 5000);
     });
   });
   
@@ -202,6 +202,30 @@
   const dispatch = createEventDispatcher();
   
   let showNetworkMenu = false;
+  let lastSimulatorToast = { key: '', at: 0 };
+
+  function showSimulatorToastOnce(type, message, duration = 5000) {
+    const now = Date.now();
+    const key = `${type}:${message || ''}`;
+    if (lastSimulatorToast.key === key && (now - lastSimulatorToast.at) < 2000) {
+      return;
+    }
+    lastSimulatorToast = { key, at: now };
+
+    switch (type) {
+      case 'success':
+        toast.success(message, duration);
+        break;
+      case 'warning':
+        toast.warning(message, duration);
+        break;
+      case 'error':
+        toast.error(message, duration);
+        break;
+      default:
+        toast.info(message, duration);
+    }
+  }
   
   // Network configuration - v6 colors
   // Mainnet = Green (primary/production), Simulator = Red (local/dev)
@@ -258,8 +282,6 @@
       if (result.success) {
         // Sync network mode from backend (updates both appState and settingsState)
         await syncNetworkMode();
-        // Also update settings for compatibility
-        await SetSetting(JSON.stringify({ network: networkId }));
       } else {
         console.error('Failed to set network mode:', result.error);
       }
@@ -288,18 +310,18 @@
         showNetworkSwitchModal = false;
         
         if (result.success) {
-          toast.success(result.message || 'Simulator mode activated!', 3000);
+          showSimulatorToastOnce('success', result.message || 'Simulator mode activated!', 3000);
           // Network mode will be updated via the completion event handler
           // But also ensure it's set here as a fallback
           await doSwitchNetwork('simulator');
           await refreshSimulatorStatus();
         } else {
-          toast.error(result.error || 'Failed to start simulator', 5000);
+          showSimulatorToastOnce('error', result.error || 'Failed to start simulator', 5000);
         }
       } catch (e) {
         simulatorStarting = false;
         showNetworkSwitchModal = false;
-        toast.error(e.message || 'Failed to start simulator', 5000);
+        showSimulatorToastOnce('error', e.message || 'Failed to start simulator', 5000);
       }
     } else if (simulatorAction === 'stop') {
       // Stop simulator and switch to mainnet with progress modal

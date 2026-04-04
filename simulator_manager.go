@@ -74,9 +74,14 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 		sm.isStarting = false
 		sm.Unlock()
 	}()
+	switchResumeNetwork := "simulator"
+	sm.app.setNetworkSwitching(true, "simulator")
+	defer func() {
+		sm.app.setNetworkSwitching(false, switchResumeNetwork)
+	}()
 
 	sm.app.logToConsole("[SIM] Starting Simulator Mode...")
-	
+
 	// CRITICAL: Set globals for simulator mode EARLY
 	// This must happen before any walletapi.Connect() calls throughout the simulator lifecycle
 	// The walletapi checks globals.IsMainnet() which compares Config.Name
@@ -85,7 +90,7 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 	globals.Arguments["--testnet"] = true // Required for InitNetwork() to set Config = Testnet
 	globals.InitNetwork()
 	sm.app.logToConsole("[SIM] Set globals for simulator mode (--simulator=true, --testnet=true)")
-	
+
 	// Emit initial progress event
 	if sm.app.ctx != nil {
 		wailsRuntime.EventsEmit(sm.app.ctx, "simulator:progress", map[string]interface{}{
@@ -109,7 +114,7 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 	previousEndpoint := ""
 	previousNetworkMode := ""
 	previousDaemonClient := sm.app.daemonClient
-	
+
 	// Safely check if external node is connected (isExternal might not exist in map)
 	if isExt, ok := currentStatus["isExternal"].(bool); ok && isExt {
 		wasExternalConnected = true
@@ -175,7 +180,7 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 			"status":  "starting",
 		})
 	}
-	
+
 	// First set network mode (this will change daemonClient endpoint)
 	modeResult := sm.app.SetNetworkMode("simulator")
 	if !modeResult["success"].(bool) {
@@ -183,6 +188,9 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 		if wasExternalConnected && previousDaemonClient != nil {
 			sm.app.daemonClient = previousDaemonClient
 			sm.app.logToConsole("[RESTORE] Rolled back to previous connection")
+			if previousNetworkMode != "" {
+				switchResumeNetwork = previousNetworkMode
+			}
 		}
 		if sm.app.ctx != nil {
 			wailsRuntime.EventsEmit(sm.app.ctx, "simulator:error", map[string]interface{}{
@@ -203,6 +211,32 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 	// Start the node
 	startResult := sm.app.StartNodeWithNetwork(sm.baseDir, "simulator")
 	if !startResult["success"].(bool) {
+		if staleSimulator, _ := startResult["staleSimulator"].(bool); staleSimulator {
+			sm.app.logToConsole("[SIM] Existing simulator daemon detected during activation; reconnecting instead...")
+			if err := sm.ReconnectSimulatorMode(); err == nil {
+				netConfig := GetNetworkConfig(NetworkSimulator)
+				if sm.app.ctx != nil {
+					wailsRuntime.EventsEmit(sm.app.ctx, "simulator:complete", map[string]interface{}{
+						"success":       true,
+						"message":       "Connected to existing simulator daemon",
+						"walletAddress": sm.walletManager.GetPrimaryAddress(),
+						"walletCount":   sm.walletManager.Count(),
+						"rpcEndpoint":   fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort),
+					})
+				}
+				return map[string]interface{}{
+					"success":       true,
+					"message":       "Connected to existing simulator daemon",
+					"walletAddress": sm.walletManager.GetPrimaryAddress(),
+					"walletCount":   sm.walletManager.Count(),
+					"rpcEndpoint":   fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort),
+					"reconnected":   true,
+				}
+			} else {
+				sm.app.logToConsole(fmt.Sprintf("[WARN] Failed to reconnect to existing simulator daemon: %v", err))
+			}
+		}
+
 		// Rollback: restore previous connection if we had one
 		if wasExternalConnected && previousDaemonClient != nil {
 			sm.app.logToConsole("[RESTORE] Simulator failed to start, restoring previous connection...")
@@ -210,18 +244,21 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 			// Restore network mode
 			if previousNetworkMode != "" {
 				sm.app.SetNetworkMode(previousNetworkMode)
+				switchResumeNetwork = previousNetworkMode
 			}
 			sm.app.logToConsole(fmt.Sprintf("[OK] Restored connection to external %s node", previousNetworkMode))
+		} else {
+			switchResumeNetwork = "mainnet"
 		}
 		if sm.app.ctx != nil {
 			wailsRuntime.EventsEmit(sm.app.ctx, "simulator:error", map[string]interface{}{
-				"error": "Failed to start simulator daemon",
+				"error": fmt.Sprintf("%v", startResult["error"]),
 				"step":  "start_daemon",
 			})
 		}
 		return map[string]interface{}{
 			"success":        false,
-			"error":          "Failed to start simulator daemon",
+			"error":          fmt.Sprintf("%v", startResult["error"]),
 			"technicalError": fmt.Sprintf("%v", startResult["error"]),
 			"step":           "start_daemon",
 			"rolledBack":     wasExternalConnected,
@@ -253,8 +290,11 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 			// Restore network mode
 			if previousNetworkMode != "" {
 				sm.app.SetNetworkMode(previousNetworkMode)
+				switchResumeNetwork = previousNetworkMode
 			}
 			sm.app.logToConsole(fmt.Sprintf("[OK] Restored connection to external %s node", previousNetworkMode))
+		} else {
+			switchResumeNetwork = "mainnet"
 		}
 		if sm.app.ctx != nil {
 			wailsRuntime.EventsEmit(sm.app.ctx, "simulator:error", map[string]interface{}{
@@ -288,7 +328,7 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 			"status":  "setting_up",
 		})
 	}
-	
+
 	if err := sm.walletManager.SetupWallets(sm.baseDir); err != nil {
 		if sm.app.ctx != nil {
 			wailsRuntime.EventsEmit(sm.app.ctx, "simulator:error", map[string]interface{}{
@@ -303,7 +343,7 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 			"step":           "setup_wallets",
 		}
 	}
-	
+
 	// Register all test wallets on blockchain
 	sm.app.logToConsole("[WALLET] Registering test wallets on blockchain...")
 	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
@@ -312,7 +352,7 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 	} else {
 		sm.app.logToConsole(fmt.Sprintf("[OK] %d pre-seeded test wallets ready", sm.walletManager.Count()))
 	}
-	
+
 	if sm.app.ctx != nil {
 		wailsRuntime.EventsEmit(sm.app.ctx, "simulator:progress", map[string]interface{}{
 			"step":    4,
@@ -340,21 +380,21 @@ func (sm *SimulatorManager) StartSimulatorMode() map[string]interface{} {
 
 	sm.app.logToConsole("[OK] Simulator Mode activated successfully!")
 	sm.app.logToConsole("[INFO] The simulator has built-in auto-mining - transactions are confirmed automatically")
-	
+
 	// Get final status
 	netConfig := GetNetworkConfig(NetworkSimulator)
-	
+
 	// Emit completion event
 	if sm.app.ctx != nil {
 		wailsRuntime.EventsEmit(sm.app.ctx, "simulator:complete", map[string]interface{}{
-			"success":        true,
-			"message":        "Simulator mode activated successfully!",
-			"walletAddress":  sm.walletManager.GetPrimaryAddress(),
-			"walletCount":    sm.walletManager.Count(),
-			"rpcEndpoint":    fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort),
+			"success":       true,
+			"message":       "Simulator mode activated successfully!",
+			"walletAddress": sm.walletManager.GetPrimaryAddress(),
+			"walletCount":   sm.walletManager.Count(),
+			"rpcEndpoint":   fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort),
 		})
 	}
-	
+
 	return map[string]interface{}{
 		"success":       true,
 		"message":       "Simulator mode activated",
@@ -419,6 +459,8 @@ func (sm *SimulatorManager) StopSimulatorMode() map[string]interface{} {
 			"message": "Simulator was not running",
 		}
 	}
+	sm.app.setNetworkSwitching(true, "mainnet")
+	defer sm.app.setNetworkSwitching(false, "mainnet")
 
 	sm.app.logToConsole("[STOP] Stopping Simulator Mode...")
 
@@ -430,7 +472,12 @@ func (sm *SimulatorManager) StopSimulatorMode() map[string]interface{} {
 	// Step 2: Stop daemon
 	stopResult := sm.app.StopNode()
 	if !stopResult["success"].(bool) {
-		sm.app.logToConsole(fmt.Sprintf("[WARN] Warning stopping daemon: %v", stopResult["error"]))
+		if errMsg, ok := stopResult["error"].(string); ok && errMsg == "Node is not running" {
+			// Expected when simulator mode is attached to an external daemon process.
+			sm.app.logToConsole("[INFO] Simulator daemon is external; no embedded process to stop")
+		} else {
+			sm.app.logToConsole(fmt.Sprintf("[WARN] Warning stopping daemon: %v", stopResult["error"]))
+		}
 	}
 
 	sm.isInitialized = false
@@ -520,7 +567,6 @@ func (sm *SimulatorManager) waitForDaemon(timeout time.Duration) error {
 
 	return fmt.Errorf("daemon did not become ready within %v", timeout)
 }
-
 
 // ResetSimulator clears all simulator data and starts fresh
 func (sm *SimulatorManager) ResetSimulator() map[string]interface{} {
