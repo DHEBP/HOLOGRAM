@@ -48,7 +48,8 @@
   
   // Event subscriptions
   let unsubscribeStart, unsubscribeProgress, unsubscribeComplete, unsubscribeError;
-  let waitStartedAt = 0;
+  let deployStartedAt = 0;
+  let waitCycleStartedAt = 0;
   let waitNow = Date.now();
   let waitTicker = null;
   let prefsLoaded = false;
@@ -56,7 +57,6 @@
   let deployButtonEl = null;
   let successPrimaryActionEl = null;
 
-  const SIM_BLOCK_SECONDS = 18;
   const BATCH_PREFS_KEY = 'hologram.batch_upload.preferences.v1';
   const DEPLOY_STEPS = ['Preflight', 'DOC Deploy', 'Confirmations', 'INDEX', 'Complete'];
 
@@ -74,7 +74,8 @@
   }
 
   function resetWaitTracking() {
-    waitStartedAt = 0;
+    deployStartedAt = 0;
+    waitCycleStartedAt = 0;
     stopWaitTicker();
   }
 
@@ -111,10 +112,19 @@
   }
 
   function formatWaitMeta() {
-    if (!waitStartedAt) return '';
-    const elapsed = Math.max(0, Math.floor((waitNow - waitStartedAt) / 1000));
-    const remaining = SIM_BLOCK_SECONDS - (elapsed % SIM_BLOCK_SECONDS || SIM_BLOCK_SECONDS);
-    return `Elapsed ${elapsed}s · Next block ~${remaining}s`;
+    if (!deployStartedAt) return '';
+    const elapsed = Math.max(0, Math.floor((waitNow - deployStartedAt) / 1000));
+    const waitingLabel = deployProgress.phase === 'waiting_for_docs'
+      ? 'Waiting for DOC confirmations'
+      : 'Waiting for block confirmation';
+    return `Elapsed ${elapsed}s · ${waitingLabel}`;
+  }
+
+  function getWaitGuidance() {
+    if (isSimulator) {
+      return 'Simulator confirmations are usually quick, but can still pause between steps.';
+    }
+    return 'Mainnet confirmations can vary. Please wait patiently.';
   }
 
   function savePreferences() {
@@ -188,6 +198,11 @@
     
     // Subscribe to deployment events
     unsubscribeStart = EventsOn('tela:deploy:start', (data) => {
+      if (!deployStartedAt) {
+        deployStartedAt = Date.now();
+        waitNow = deployStartedAt;
+      }
+      startWaitTicker();
       deployProgress = { 
         current: 0, 
         total: data.totalFiles, 
@@ -202,10 +217,13 @@
     
     unsubscribeProgress = EventsOn('tela:deploy:progress', (data) => {
       if (data.status === 'waiting_confirmation' || data.status === 'waiting_for_docs') {
-        if (!waitStartedAt) waitStartedAt = Date.now();
+        if (!waitCycleStartedAt) waitCycleStartedAt = Date.now();
+        if (!deployStartedAt) {
+          deployStartedAt = waitCycleStartedAt;
+        }
         startWaitTicker();
-      } else if (waitStartedAt) {
-        resetWaitTracking();
+      } else if (waitCycleStartedAt) {
+        waitCycleStartedAt = 0;
       }
 
       deployProgress = {
@@ -742,6 +760,10 @@
     deploying = true;
     error = null;
     deploymentResult = null;
+    deployStartedAt = Date.now();
+    waitNow = deployStartedAt;
+    waitCycleStartedAt = 0;
+    startWaitTicker();
     deployProgress = { current: 0, total: files.length, status: 'Preparing...', fileName: '', phase: 'preparing' };
     
     // Initialize file statuses
@@ -777,10 +799,12 @@
       if (!result.success && !error) {
         error = result.error;
         deploying = false;
+        resetWaitTracking();
       }
     } catch (err) {
       error = err.message;
       deploying = false;
+      resetWaitTracking();
     }
   }
   
@@ -1256,6 +1280,7 @@
         </div>
         {#if deployProgress.phase === 'waiting_confirmation' || deployProgress.phase === 'waiting_for_docs'}
           <p class="progress-note info">⏱ {formatWaitMeta()}</p>
+          <p class="progress-note hint">{getWaitGuidance()}</p>
         {:else if deployProgress.phase === 'creating_index'}
           <p class="progress-note success">Creating INDEX smart contract...</p>
         {:else if deployProgress.phase === 'complete'}
@@ -2379,6 +2404,12 @@
   .progress-note.info {
     color: var(--cyan-400, #22d3ee);
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  }
+
+  .progress-note.hint {
+    color: var(--text-4, #505068);
+    margin-top: var(--s-1, 4px);
+    font-size: 11px;
   }
   
   /* Config Card */
