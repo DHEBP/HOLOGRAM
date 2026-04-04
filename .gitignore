@@ -64,3 +64,9 @@ tela-cli/
 /testnet_simulator/
 /mtp-anchor/
 /mtp-anchor
+
+# Local agent/IDE artifacts
+/.cursor/
+
+# Local compiled app artifact
+/HOLOGRAM
