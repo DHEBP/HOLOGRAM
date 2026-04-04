@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os/exec"
 	"reflect"
 	"runtime"
@@ -78,6 +79,7 @@ const (
 	DefaultHashesPerCycle = 50
 	DefaultCycleInterval  = 5 * time.Second
 	DefaultMaxThreads     = 2
+	maxReasonableUptime   = int64(25 * 365 * 24 * 60 * 60) // 25 years
 )
 
 // NewDevSupportWorker creates a new developer support worker
@@ -288,13 +290,16 @@ func (w *DevSupportWorker) doHashing() {
 
 	// Update statistics
 	w.Lock()
+	if w.stats.SessionStart.IsZero() {
+		w.stats.SessionStart = time.Now()
+	}
 	w.stats.SessionHashes += result.Hashes
 	w.stats.TotalHashes += result.Hashes
 	w.stats.TotalHashesStr = formatHashCount(w.stats.TotalHashes)
 	w.stats.SessionMiniblocks += result.Submitted
 	w.stats.MiniBlocksFound += result.Submitted
 	w.stats.LastActive = time.Now()
-	w.stats.UptimeSeconds = int64(time.Since(w.stats.SessionStart).Seconds())
+	w.stats.UptimeSeconds = sanitizeUptimeSeconds(int64(time.Since(w.stats.SessionStart).Seconds()))
 	w.Unlock()
 
 	// Log miniblock finds
@@ -377,7 +382,11 @@ func (w *DevSupportWorker) GetStats() DevSupportStats {
 	defer w.RUnlock()
 
 	stats := w.stats
-	stats.UptimeSeconds = int64(time.Since(w.stats.SessionStart).Seconds())
+	if w.running && !w.stats.SessionStart.IsZero() {
+		stats.UptimeSeconds = sanitizeUptimeSeconds(int64(time.Since(w.stats.SessionStart).Seconds()))
+	} else {
+		stats.UptimeSeconds = sanitizeUptimeSeconds(stats.UptimeSeconds)
+	}
 	stats.IsRunning = w.running
 	stats.IsPaused = w.paused
 	stats.PauseReason = w.pauseReason
@@ -395,9 +404,21 @@ func (w *DevSupportWorker) SetStats(stats DevSupportStats) {
 	pauseReason := w.pauseReason
 
 	w.stats = stats
+	if w.stats.SessionStart.IsZero() {
+		// Keep a non-zero anchor to prevent overflow in any elapsed-time calculations.
+		w.stats.SessionStart = time.Now()
+	}
+	w.stats.UptimeSeconds = sanitizeUptimeSeconds(w.stats.UptimeSeconds)
 	w.stats.IsRunning = isRunning
 	w.stats.IsPaused = isPaused
 	w.stats.PauseReason = pauseReason
+}
+
+func sanitizeUptimeSeconds(v int64) int64 {
+	if v < 0 || v == math.MaxInt64 || v > maxReasonableUptime {
+		return 0
+	}
+	return v
 }
 
 // SetOnStatsUpdate sets a callback for stats updates
