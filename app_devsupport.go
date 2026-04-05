@@ -158,6 +158,13 @@ func (a *App) GetEpochStats() map[string]interface{} {
 		result["max_threads"] = stats.MaxThreads
 		result["address"] = stats.Address
 		result["is_processing"] = stats.IsProcessing
+		result["tracked_apps"] = stats.TrackedApps
+		result["total_requests"] = stats.TotalRequests
+		result["last_requester"] = stats.LastRequester
+		result["last_request_at"] = stats.LastRequestAt
+		result["top_requester"] = stats.TopRequester
+		result["top_requester_hashes"] = stats.TopRequesterHashes
+		result["top_requester_miniblocks"] = stats.TopRequesterMiniblocks
 	}
 
 	if a.devSupportWorker != nil {

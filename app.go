@@ -446,7 +446,7 @@ func (a *App) CallXSWD(methodJSON string) map[string]interface{} {
 			return a.routeDaemonCall(request.Method, request.Params)
 
 		case isEpochMethod(request.Method):
-			return a.routeEpochCall(request.Method, request.Params)
+			return a.routeEpochCall(request.Method, request.Params, "")
 
 		case isTELAMethod(request.Method):
 			return a.routeTELACall(request.Method, request.Params)

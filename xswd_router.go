@@ -49,10 +49,12 @@ func (a *App) routeDaemonCall(method string, params map[string]interface{}) XSWD
 	return xswdSuccess(result)
 }
 
-// routeEpochCall handles EPOCH-related methods
-func (a *App) routeEpochCall(method string, params map[string]interface{}) XSWDResponse {
+// routeEpochCall handles EPOCH-related methods.
+// requesterHint is used for attribution/rate-limit tracking (e.g. websocket origin).
+func (a *App) routeEpochCall(method string, params map[string]interface{}, requesterHint string) XSWDResponse {
 	switch method {
 	case "AttemptEPOCH", "AttemptEPOCHWithAddr":
+		appID := resolveEpochRequester(params, requesterHint)
 		hashes := 100 // default
 		if h, ok := params["hashes"].(float64); ok && h > 0 {
 			hashes = int(h)
@@ -78,7 +80,7 @@ func (a *App) routeEpochCall(method string, params map[string]interface{}) XSWDR
 		}
 
 		// Compute hashes (rewards go to current EPOCH address - either app dev or default)
-		epochResult := a.HandleEpochRequest(hashes, "")
+		epochResult := a.HandleEpochRequest(hashes, appID)
 		if epochResult["success"] == true {
 			return xswdSuccess(map[string]interface{}{
 				"epochHashes":        epochResult["hashes"],
@@ -98,6 +100,37 @@ func (a *App) routeEpochCall(method string, params map[string]interface{}) XSWDR
 	default:
 		return xswdError(fmt.Sprintf("Unknown EPOCH method: %s", method))
 	}
+}
+
+func resolveEpochRequester(params map[string]interface{}, requesterHint string) string {
+	candidates := []string{
+		requesterHint,
+	}
+
+	if params != nil {
+		lookupKeys := []string{
+			"app_scid",
+			"appSCID",
+			"scid",
+			"origin",
+			"durl",
+			"name",
+		}
+		for _, key := range lookupKeys {
+			if raw, ok := params[key]; ok {
+				if value, ok := raw.(string); ok && strings.TrimSpace(value) != "" {
+					candidates = append(candidates, value)
+				}
+			}
+		}
+	}
+
+	for _, candidate := range candidates {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "unknown"
 }
 
 // routeTELACall handles TELA-specific methods
@@ -356,4 +389,3 @@ func isEpochMethod(method string) bool {
 func isTELAMethod(method string) bool {
 	return method == "HandleTELALinks"
 }
-

@@ -595,7 +595,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 
 		// Delegate to the router which handles both variants correctly,
 		// including the address-switch logic for AttemptEPOCHWithAddr.
-		epochResp := s.app.routeEpochCall(method, params)
+		epochResp := s.app.routeEpochCall(method, params, origin)
 		if errMsg, ok := epochResp["error"].(string); ok && errMsg != "" {
 			errRes = &JSONRPCError{Code: -32000, Message: errMsg}
 		} else {
