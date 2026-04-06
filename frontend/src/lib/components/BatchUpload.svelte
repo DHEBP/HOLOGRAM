@@ -1081,7 +1081,7 @@
     <div class="files-container">
       <div class="files-header">
         <span class="files-count">{files.length} files • {formatSize(totalSize)}</span>
-        <span class="files-gas">~{totalGas.toLocaleString()} gas</span>
+        <span class="files-gas">~{totalGas.toLocaleString()} rough gas</span>
         {#if isSimulator}
           <span class="files-free-badge" title="Gas is free in simulator mode">FREE</span>
         {/if}
@@ -1117,7 +1117,7 @@
               <div class="preflight-stat-plus">•</div>
               <div class="preflight-stat">
                 <span class="preflight-stat-value">~{preflightExpansion.summary.estimatedGas.toLocaleString()}</span>
-                <span class="preflight-stat-label">Est. Gas</span>
+                <span class="preflight-stat-label">Rough Est. Gas</span>
               </div>
             {/if}
           </div>
@@ -1583,7 +1583,7 @@
           <span class="simulator-badge">SIMULATOR</span>
           <span class="free-badge">FREE</span>
         {:else}
-          Estimated cost: <span class="cost-value">~{totalGas.toLocaleString()} gas</span>
+          Rough estimated cost: <span class="cost-value">~{totalGas.toLocaleString()} gas</span>
         {/if}
       </div>
       
@@ -1725,7 +1725,7 @@
             <span class="confirm-value">{formatSize(totalSize)}</span>
           </div>
           <div class="confirm-row">
-            <span class="confirm-label">Estimated Gas</span>
+            <span class="confirm-label">Rough Gas Estimate</span>
             <span class="confirm-value confirm-value-amount">~{totalGas.toLocaleString()}</span>
           </div>
           <div class="confirm-row">
@@ -1733,6 +1733,9 @@
             <span class="confirm-value">{ringsize === 2 ? 'Updateable (Ring 2)' : 'Immutable (Ring 16)'}</span>
           </div>
         </div>
+        <p class="deploy-warn-text" style="margin-top:8px; opacity:0.85;">
+          Final fees are recalculated during mainnet precheck and may be higher than this rough estimate.
+        </p>
       </div>
 
       <div class="modal-footer">
