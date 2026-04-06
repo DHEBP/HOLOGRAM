@@ -496,9 +496,32 @@ func (a *App) precheckMainnetBatchBudget(wallet *walletapi.Wallet_Disk, batch *B
 	defer a.disconnectWalletAPI()
 
 	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-		return nil, fmt.Errorf("failed to sync wallet for precheck: %w", err)
+		a.logToConsole(fmt.Sprintf("[WARN] Mainnet precheck wallet sync failed: %v", err))
+
+		// One-shot reconnect + retry to smooth transient websocket drops.
+		endpoint := strings.TrimSpace(walletapi.Daemon_Endpoint_Active)
+		if endpoint != "" {
+			a.disconnectWalletAPI()
+			time.Sleep(150 * time.Millisecond)
+			if connErr := walletapi.Connect(endpoint); connErr == nil {
+				err = wallet.Sync_Wallet_Memory_With_Daemon()
+			} else {
+				a.logToConsole(fmt.Sprintf("[WARN] Mainnet precheck reconnect failed: %v", connErr))
+			}
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("could not verify wallet balance during mainnet precheck. Please try deploy again")
+		}
 	}
-	mature, _ := wallet.Get_Balance()
+	// Prefer decrypted-at-topo balance to avoid stale in-memory values.
+	var mature uint64
+	var zerohash [32]byte
+	if bal, _, err := wallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, wallet.GetAddress().String()); err == nil {
+		mature = bal
+	} else {
+		mature, _ = wallet.Get_Balance()
+	}
 
 	_, destAddr := tela.GetDefaultNetworkAddress()
 	transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
@@ -560,8 +583,10 @@ func (a *App) precheckMainnetBatchBudget(wallet *walletapi.Wallet_Disk, batch *B
 	}
 	if mature < requiredWithBuffer {
 		return budget, fmt.Errorf(
-			"insufficient wallet balance for safe batch deploy (balance=%d, estimated=%d, required_with_buffer=%d)",
-			mature, estimated, requiredWithBuffer,
+			"insufficient wallet balance for safe batch deploy: balance=%s DERO, estimated=%s DERO, required_with_buffer=%s DERO",
+			fmt.Sprintf("%.5f", float64(mature)/100000.0),
+			fmt.Sprintf("%.5f", float64(estimated)/100000.0),
+			fmt.Sprintf("%.5f", float64(requiredWithBuffer)/100000.0),
 		)
 	}
 	return budget, nil

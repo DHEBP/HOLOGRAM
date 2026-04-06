@@ -306,6 +306,9 @@
         errorDetails = null;
       }
       deploying = false;
+      if (data?.error) {
+        toast.error(data.error);
+      }
       if (data.fileName) {
         fileStatuses[data.fileName] = 'failed';
         fileStatuses = fileStatuses;
