@@ -107,7 +107,21 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 
 		height, err = boltDB.GetLastIndexHeight()
 		if err != nil {
-			height = 0
+			// Gnomon DB is a rebuildable cache; if it is unreadable, reset it now to
+			// avoid StartDaemonMode hitting logger.Fatalf() on the same path.
+			g.log(fmt.Sprintf("[Gnomon] BoltDB read failed (%v). Resetting cache at %s", err, basePath))
+			g.cleanDBPath(basePath)
+			boltDB, boltErr = storage.NewBBoltDB(basePath, "gnomon")
+			if boltErr != nil {
+				if !strings.HasPrefix(boltErr.Error(), "[") {
+					boltErr = fmt.Errorf("[NewBBoltDB] %s", boltErr)
+				}
+				return boltErr
+			}
+			height, err = boltDB.GetLastIndexHeight()
+			if err != nil {
+				return fmt.Errorf("[Gnomon] BoltDB recovery failed: %w", err)
+			}
 		}
 	default: // gravdb
 		if gravErr != nil {
@@ -116,7 +130,18 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 
 		height, err = gravDB.GetLastIndexHeight()
 		if err != nil {
-			height = 0
+			// Gnomon DB is a rebuildable cache; if it is unreadable, reset it now to
+			// avoid StartDaemonMode hitting logger.Fatalf() on the same path.
+			g.log(fmt.Sprintf("[Gnomon] GravDB read failed (%v). Resetting cache at %s", err, basePath))
+			g.cleanDBPath(basePath)
+			gravDB, gravErr = storage.NewGravDB(basePath, "25ms")
+			if gravErr != nil {
+				return fmt.Errorf("[NewGravDB] %s", gravErr)
+			}
+			height, err = gravDB.GetLastIndexHeight()
+			if err != nil {
+				return fmt.Errorf("[Gnomon] GravDB recovery failed: %w", err)
+			}
 		}
 	}
 
