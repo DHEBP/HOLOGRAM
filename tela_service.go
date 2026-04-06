@@ -1120,6 +1120,12 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		return map[string]interface{}{"success": false, "error": "Invalid batch format", "technicalError": err.Error()}
 	}
 
+	// Use ringsize from batch, default to 2 (updateable)
+	ringsize := batch.Ringsize
+	if ringsize == 0 {
+		ringsize = 2
+	}
+
 	// CRITICAL: Sort files to ensure entry point (index.html) is deployed FIRST
 	// The first DOC deployed becomes DOC1 in the INDEX, which is the application entrypoint.
 	// Without this sort, alphabetical ordering could make blocks.js the entrypoint instead of index.html.
@@ -1157,6 +1163,24 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		return map[string]interface{}{"success": false, "error": err.Error()}
 	}
 
+	// MAINNET SAFETY GATE: estimate total batch gas up front and ensure the wallet
+	// has enough headroom before sending the first transaction. This avoids partial
+	// deployments where early DOCs land on-chain but later DOC/INDEX sends fail.
+	if !isSimulator {
+		budget, err := a.precheckMainnetBatchBudget(wallet, &batch, ringsize)
+		if err != nil {
+			errMsg := "Mainnet precheck failed: " + err.Error()
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{"error": errMsg})
+			return map[string]interface{}{"success": false, "error": errMsg}
+		}
+		a.logToConsole(fmt.Sprintf(
+			"[CHECK] Mainnet budget gate passed: wallet=%d, estimated=%d, required(with 20%% buffer)=%d",
+			budget.WalletBalance,
+			budget.EstimatedGas,
+			budget.RequiredWithBuffer,
+		))
+	}
+
 	// NOTE: Pre-deployment balance check REMOVED for simulator mode (Session 103)
 	// Reason: The hardcoded SimulatorGasFee (100,000) was overly conservative and blocked
 	// deployments that would have succeeded. Gas is FREE in simulator mode anyway.
@@ -1168,12 +1192,6 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		"totalFiles": len(batch.Files),
 		"indexName":  batch.IndexName,
 	})
-
-	// Use ringsize from batch, default to 2 (updateable)
-	ringsize := batch.Ringsize
-	if ringsize == 0 {
-		ringsize = 2
-	}
 
 	// Deploy each DOC
 	docScids := []string{}

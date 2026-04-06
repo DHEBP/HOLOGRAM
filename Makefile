@@ -15,7 +15,8 @@
 .PHONY: all hologram release derod simulator mtp-anchor clean dev test-mtp test-mtp-integration help
 
 # Build metadata - injected into the binary via ldflags
-VERSION  := $(shell grep 'AppVersion' version.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+# Match the actual variable assignment, not the example comment above it.
+VERSION  := $(shell sed -n 's/^[[:space:]]*AppVersion[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' version.go | sed -n '1p')
 COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE     := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  := -X main.AppVersion=$(VERSION) -X main.BuildDate=$(DATE) -X main.GitCommit=$(COMMIT)

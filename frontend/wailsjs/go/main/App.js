@@ -118,12 +118,12 @@ export function ConnectXSWD() {
   return window['go']['main']['App']['ConnectXSWD']();
 }
 
-export function ConsumeLaunchURL() {
-  return window['go']['main']['App']['ConsumeLaunchURL']();
-}
-
 export function ConstructFromShards(arg1) {
   return window['go']['main']['App']['ConstructFromShards'](arg1);
+}
+
+export function ConsumeLaunchURL() {
+  return window['go']['main']['App']['ConsumeLaunchURL']();
 }
 
 export function CreatePaymentRequest(arg1, arg2) {

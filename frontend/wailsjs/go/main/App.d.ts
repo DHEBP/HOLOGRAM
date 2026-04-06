@@ -61,9 +61,9 @@ export function CompareSCStateAtHeights(arg1:string,arg2:number,arg3:number):Pro
 
 export function ConnectXSWD():Promise<Record<string, any>>;
 
-export function ConsumeLaunchURL():Promise<string>;
-
 export function ConstructFromShards(arg1:string):Promise<Record<string, any>>;
+
+export function ConsumeLaunchURL():Promise<string>;
 
 export function CreatePaymentRequest(arg1:number,arg2:string):Promise<Record<string, any>>;
 

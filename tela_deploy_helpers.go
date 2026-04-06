@@ -133,6 +133,13 @@ type PreparedDOC struct {
 	Original DOCInfo
 }
 
+// MainnetBatchBudget summarizes a pre-deployment balance gate for paid deploys.
+type MainnetBatchBudget struct {
+	EstimatedGas       uint64
+	RequiredWithBuffer uint64
+	WalletBalance      uint64
+}
+
 // setupNetworkForDeployment configures network and wallet for TELA deployment
 // NOTE: For simulator mode, we DO NOT keep websocket open - the simulator daemon
 // crashes when persistent connections are maintained. Instead, each transaction
@@ -467,6 +474,97 @@ func (a *App) CheckBalanceForBatchDeployment(wallet *walletapi.Wallet_Disk, file
 	}
 
 	return true, mature, requiredBalance, nil
+}
+
+// precheckMainnetBatchBudget estimates gas for all DOCs + INDEX before sending any
+// transaction and verifies the wallet has enough headroom. This prevents partial
+// deploys where early DOCs are paid for but later steps fail due to low balance.
+func (a *App) precheckMainnetBatchBudget(wallet *walletapi.Wallet_Disk, batch *BatchDeployConfig, ringsize uint64) (*MainnetBatchBudget, error) {
+	if wallet == nil {
+		return nil, fmt.Errorf("no wallet is currently open")
+	}
+	if batch == nil || len(batch.Files) == 0 {
+		return nil, fmt.Errorf("batch is empty")
+	}
+	if ringsize == 0 {
+		ringsize = 2
+	}
+
+	// Ensure we don't carry a stale long-lived websocket into estimation calls.
+	// The deploy path reconnects fresh per tx anyway.
+	a.disconnectWalletAPI()
+	defer a.disconnectWalletAPI()
+
+	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+		return nil, fmt.Errorf("failed to sync wallet for precheck: %w", err)
+	}
+	mature, _ := wallet.Get_Balance()
+
+	_, destAddr := tela.GetDefaultNetworkAddress()
+	transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
+
+	var estimated uint64
+
+	// Estimate each DOC install using the exact prepared payload (including compression/signature).
+	for i, docInfo := range batch.Files {
+		prepared, err := a.prepareDOCForDeployment(docInfo, wallet)
+		if err != nil {
+			return nil, fmt.Errorf("precheck failed while preparing %q: %w", docInfo.Name, err)
+		}
+		args, err := tela.NewInstallArgs(prepared.DOC)
+		if err != nil {
+			return nil, fmt.Errorf("precheck failed while building args for %q: %w", docInfo.Name, err)
+		}
+		gas, err := tela.GetGasEstimate(wallet, ringsize, transfers, args)
+		if err != nil {
+			return nil, fmt.Errorf("gas estimate failed for %q (%d/%d): %w", docInfo.Name, i+1, len(batch.Files), err)
+		}
+		estimated += gas
+	}
+
+	// Estimate INDEX gas using placeholder DOC SCIDs (real SCIDs are unknown pre-deploy).
+	// SCID width/shape stays identical, so this is a practical estimate for budget gating.
+	placeholderDocs := make([]string, len(batch.Files))
+	for i := range placeholderDocs {
+		placeholderDocs[i] = strings.Repeat("0", 64)
+	}
+	indexPreview := tela.INDEX{
+		DURL: batch.IndexDURL,
+		DOCs: placeholderDocs,
+		Mods: batch.Mods,
+		Headers: tela.Headers{
+			NameHdr:  batch.IndexName,
+			DescrHdr: batch.Description,
+			IconHdr:  batch.IconURL,
+		},
+	}
+	indexArgs, err := tela.NewInstallArgs(&indexPreview)
+	if err != nil {
+		return nil, fmt.Errorf("precheck failed while building INDEX args: %w", err)
+	}
+	indexGas, err := tela.GetGasEstimate(wallet, ringsize, transfers, indexArgs)
+	if err != nil {
+		return nil, fmt.Errorf("gas estimate failed for INDEX: %w", err)
+	}
+	estimated += indexGas
+
+	// Safety cushion for mempool/estimation drift so users don't get stranded mid-batch.
+	// 20% + a small fixed floor keeps this conservative without being excessive.
+	buffer := estimated / 5
+	requiredWithBuffer := estimated + buffer + 10000
+
+	budget := &MainnetBatchBudget{
+		EstimatedGas:       estimated,
+		RequiredWithBuffer: requiredWithBuffer,
+		WalletBalance:      mature,
+	}
+	if mature < requiredWithBuffer {
+		return budget, fmt.Errorf(
+			"insufficient wallet balance for safe batch deploy (balance=%d, estimated=%d, required_with_buffer=%d)",
+			mature, estimated, requiredWithBuffer,
+		)
+	}
+	return budget, nil
 }
 
 // deployDOC installs a single prepared DOC and returns the SCID
