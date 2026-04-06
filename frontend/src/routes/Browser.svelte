@@ -691,7 +691,7 @@ let addressInput = '';
   
   // Check if an app is favorited (pass $favorites to make it reactive)
   function isAppFavorited(app, favList) {
-    return favList.some(f => f.scid === app.scid || (f.durl && f.durl === app.durl));
+    return favList.some(f => (app.scid && f.scid === app.scid) || (app.durl && f.durl === app.durl));
   }
   
   onMount(async () => {
