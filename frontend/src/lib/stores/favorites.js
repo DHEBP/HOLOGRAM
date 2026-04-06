@@ -31,7 +31,7 @@ function createFavoritesStore() {
     add: (app) => {
       update(favorites => {
         // Don't add duplicates
-        const exists = favorites.some(f => f.scid === app.scid || (f.durl && f.durl === app.durl));
+        const exists = favorites.some(f => (app.scid && f.scid === app.scid) || (app.durl && f.durl === app.durl));
         if (exists) return favorites;
         
         const newFavorite = {
@@ -51,8 +51,10 @@ function createFavoritesStore() {
     // Remove a favorite by scid or durl
     remove: (identifier) => {
       update(favorites => {
+        // Clean identifier if it has dero:// prefix
+        const cleanId = identifier.startsWith('dero://') ? identifier.slice(7) : identifier;
         const updated = favorites.filter(f => 
-          f.scid !== identifier && f.durl !== identifier
+          f.scid !== cleanId && f.durl !== cleanId
         );
         persist(updated);
         return updated;
@@ -64,7 +66,8 @@ function createFavoritesStore() {
       const favorites = get({ subscribe });
       return favorites.some(f => 
         f.scid === identifier || f.durl === identifier || 
-        `dero://${f.durl}` === identifier
+        `dero://${f.durl}` === identifier ||
+        `dero://${f.scid}` === identifier
       );
     },
     
@@ -72,13 +75,13 @@ function createFavoritesStore() {
     toggle: (app) => {
       const favorites = get({ subscribe });
       const exists = favorites.some(f => 
-        f.scid === app.scid || (f.durl && f.durl === app.durl)
+        (app.scid && f.scid === app.scid) || (app.durl && f.durl === app.durl)
       );
       
       if (exists) {
         update(favs => {
           const updated = favs.filter(f => 
-            f.scid !== app.scid && f.durl !== app.durl
+            !( (app.scid && f.scid === app.scid) || (app.durl && f.durl === app.durl) )
           );
           persist(updated);
           return updated;

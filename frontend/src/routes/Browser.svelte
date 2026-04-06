@@ -352,7 +352,7 @@ let addressInput = '';
   let showBlockedApps = false; // Toggle to show blocked apps
   
   // Check if current address is favorited
-  $: currentIsFavorited = addressInput && favorites.isFavorite(addressInput);
+  $: currentIsFavorited = addressInput && $favorites && favorites.isFavorite(addressInput);
   
   async function loadApps() {
     // Only load apps if Gnomon is already running - don't auto-start
