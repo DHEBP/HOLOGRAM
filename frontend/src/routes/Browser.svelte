@@ -236,6 +236,11 @@ let addressInput = '';
   let filteredApps = [];
   let appsLoading = false;
   let appsLoaded = false; // Track if we've attempted to load apps (prevents infinite loop when 0 apps found)
+  let waitingForInitialApps = false;
+  let appDiscoveryRetryCount = 0;
+  let appDiscoveryRetryTimer = null;
+  const APP_DISCOVERY_RETRY_DELAY_MS = 5000;
+  const APP_DISCOVERY_MAX_RETRIES = 12;
   let selectedCategory = 'top';
   let sortBy = 'rating';
   
@@ -251,6 +256,13 @@ let addressInput = '';
   // Check if icon should be shown (exists and hasn't failed)
   function shouldShowIcon(iconUrl) {
     return iconUrl && !failedIcons.has(iconUrl);
+  }
+
+  function clearAppDiscoveryRetryTimer() {
+    if (appDiscoveryRetryTimer) {
+      clearTimeout(appDiscoveryRetryTimer);
+      appDiscoveryRetryTimer = null;
+    }
   }
   
   // Gnomon auto-start preference
@@ -355,14 +367,23 @@ let addressInput = '';
   $: currentIsFavorited = addressInput && $favorites && favorites.isFavorite(addressInput);
   
   async function loadApps() {
+    if (appsLoading) {
+      return;
+    }
+
     // Only load apps if Gnomon is already running - don't auto-start
     if (!$appState.gnomonRunning) {
+      clearAppDiscoveryRetryTimer();
       appsLoading = false;
+      waitingForInitialApps = false;
+      appDiscoveryRetryCount = 0;
       setAppDiscoveryState({ loading: false });
       return;
     }
     
     appsLoading = true;
+    waitingForInitialApps = false;
+    clearAppDiscoveryRetryTimer();
     setAppDiscoveryState({ loading: true });
     try {
       // Load content filter config first
@@ -401,26 +422,44 @@ let addressInput = '';
         availableTags = [];
       }
       
-      appsLoaded = true; // Mark as loaded even if 0 apps found
-      
-      // If we found 0 apps but Gnomon just started (fastsync), retry after a delay
-      // This handles the case where block sync is instant but app discovery takes time
-      if (apps.length === 0 && get(appState).gnomonRunning) {
-        console.log('[Browser] No apps found yet, will retry in 5 seconds...');
-        setTimeout(() => {
-          if (get(appState).gnomonRunning && apps.length === 0) {
-            console.log('[Browser] Retrying app discovery...');
-            appsLoaded = false; // Reset to allow reload
-            loadApps();
-          }
-        }, 5000);
+      if (apps.length > 0) {
+        appsLoaded = true;
+        waitingForInitialApps = false;
+        appDiscoveryRetryCount = 0;
+      } else if (get(appState).gnomonRunning) {
+        appsLoaded = false;
+        if (appDiscoveryRetryCount < APP_DISCOVERY_MAX_RETRIES) {
+          appDiscoveryRetryCount += 1;
+          waitingForInitialApps = true;
+          const retryAttempt = appDiscoveryRetryCount;
+          console.log(`[Browser] No apps found yet, retrying discovery in 5 seconds (${retryAttempt}/${APP_DISCOVERY_MAX_RETRIES})`);
+          appDiscoveryRetryTimer = setTimeout(() => {
+            appDiscoveryRetryTimer = null;
+            if (get(appState).gnomonRunning && apps.length === 0) {
+              console.log('[Browser] Retrying app discovery...');
+              loadApps();
+            } else {
+              waitingForInitialApps = false;
+            }
+          }, APP_DISCOVERY_RETRY_DELAY_MS);
+        } else {
+          waitingForInitialApps = false;
+          appsLoaded = true;
+          console.log('[Browser] App discovery retry budget exhausted; showing empty state');
+        }
+      } else {
+        waitingForInitialApps = false;
+        appsLoaded = true;
       }
     } catch (error) {
       console.error('Failed to load apps:', error);
+      waitingForInitialApps = false;
+      appDiscoveryRetryCount = 0;
+      clearAppDiscoveryRetryTimer();
       appsLoaded = true; // Mark as loaded to prevent retry loop
     } finally {
       appsLoading = false;
-      setAppDiscoveryState({ loading: false, loaded: appsLoaded });
+      setAppDiscoveryState({ loading: appsLoading || waitingForInitialApps, loaded: appsLoaded });
       if (appsLoaded && apps.length > 0) {
         const currentIndexedHeight = get(appState).gnomonIndexedHeight || 0;
         appState.update(state => ({
@@ -462,8 +501,12 @@ let addressInput = '';
   }
   
   // Reset appsLoaded when Gnomon stops (so it can reload when restarted)
-  $: if (!$appState.gnomonRunning && appsLoaded) {
+  $: if (!$appState.gnomonRunning && (appsLoaded || appsLoading || waitingForInitialApps)) {
+    clearAppDiscoveryRetryTimer();
+    waitingForInitialApps = false;
+    appDiscoveryRetryCount = 0;
     appsLoaded = false;
+    appsLoading = false;
     apps = [];
     filteredApps = [];
     setAppDiscoveryState({ loading: false, loaded: false });
@@ -471,7 +514,7 @@ let addressInput = '';
   
   // Reactive: reload apps when Gnomon starts running (if not yet loaded)
   // Uses appsLoaded flag to prevent infinite loop when 0 apps are found
-  $: if ($appState.gnomonRunning && !appsLoaded && !appsLoading) {
+  $: if ($appState.gnomonRunning && !appsLoaded && !appsLoading && !waitingForInitialApps) {
     loadApps();
   }
   
@@ -1111,7 +1154,7 @@ let addressInput = '';
     // Try to restore last loaded TELA session for fast back-navigation
     await restoreTelaSession();
 
-    if ($appState.gnomonRunning && !appsLoaded && !appsLoading) {
+    if ($appState.gnomonRunning && !appsLoaded && !appsLoading && !waitingForInitialApps) {
       loadApps();
     }
     
@@ -1126,6 +1169,7 @@ let addressInput = '';
     if (unsubscribePending) unsubscribePending();
     if (unsubscribeConsole) unsubscribeConsole();
     if (unsubscribeWalletRequests) unsubscribeWalletRequests();
+    clearAppDiscoveryRetryTimer();
     EventsOff('localdev:reload');
     stopXSWDSubscriptionPolling();
     saveBrowserSession();
@@ -3122,7 +3166,7 @@ let addressInput = '';
                 <span class="checkbox-label">Start at app launch (before opening Browser)</span>
               </label>
             </div>
-          {:else if $appState.gnomonProgress < 95 && filteredApps.length === 0}
+          {:else if $appState.gnomonProgress < 95 && apps.length === 0}
             <!-- Gnomon is syncing - show progress instead of "No Apps Found" -->
             <div class="browser-empty-state">
               <div class="browser-loading-spinner"></div>
@@ -3138,10 +3182,17 @@ let addressInput = '';
               </div>
               <p class="browser-empty-hint">Apps will appear as they are discovered...</p>
             </div>
-          {:else if appsLoading}
+          {:else if appsLoading || waitingForInitialApps}
             <div class="browser-empty-state">
               <div class="browser-loading-spinner"></div>
-              <p class="browser-empty-text">Loading apps from blockchain index...</p>
+              <p class="browser-empty-text">
+                {waitingForInitialApps
+                  ? 'Building app index in background... apps will appear shortly.'
+                  : 'Loading apps from blockchain index...'}
+              </p>
+              {#if waitingForInitialApps}
+                <p class="browser-empty-hint">Discovery pass {appDiscoveryRetryCount}/{APP_DISCOVERY_MAX_RETRIES}</p>
+              {/if}
             </div>
           {:else if filteredApps.length === 0}
             <div class="browser-empty-state">
