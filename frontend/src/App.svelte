@@ -12,8 +12,8 @@
   import Settings from './routes/Settings.svelte';
   // Mining tab removed - Developer Support now in Settings > Developer Support
   // Network tab removed - node controls moved to Settings > Node
-  import { appState, walletState, settingsState, updateStatus, addExternalRequest, dismissWalletRequest, toast, loadSettings, syncNetworkMode } from './lib/stores/appState.js';
-  import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions, NotifyWizardComplete } from '../wailsjs/go/main/App.js';
+  import { appState, walletState, settingsState, updateStatus, addExternalRequest, dismissWalletRequest, toast, loadSettings, syncNetworkMode, navigateTo } from './lib/stores/appState.js';
+  import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions, NotifyWizardComplete, ConsumeLaunchURL } from '../wailsjs/go/main/App.js';
   import { EventsOn } from '../wailsjs/runtime/runtime.js';
   import { waitForWails } from './lib/utils/wails.js';
   
@@ -140,6 +140,20 @@
     
     // Load settings from backend on app startup
     await loadSettings();
+
+    // Handle launch deep links (e.g. dero://example.tela) captured by backend.
+    // We enqueue navigation and switch to Browser so the existing Browser startup flow
+    // can resolve and open the link consistently.
+    try {
+      const launchURL = await ConsumeLaunchURL();
+      if (launchURL && launchURL.toLowerCase().startsWith('dero://')) {
+        const cleanURL = launchURL.slice(7);
+        navigateTo(cleanURL);
+        currentTab = 'browser';
+      }
+    } catch (e) {
+      console.error('Failed to consume launch URL:', e);
+    }
     
     // Check if wizard has been completed
     try {

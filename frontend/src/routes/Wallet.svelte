@@ -4702,8 +4702,6 @@
   }
 
   .tx-label { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: rgba(82, 200, 219, 0.15); border: 1px solid rgba(82, 200, 219, 0.3); border-radius: 4px; font-size: 0.75rem; color: #52c8db; }
-  .tx-label button { background: none; border: none; color: rgba(255,255,255,0.4); cursor: pointer; padding: 0 2px; font-size: 0.85rem; }
-  .tx-label button:hover { color: #ff6b6b; }
 
   /* Decoded Payment Info (Send - Integrated Address Detection) */
   .decoded-payment-info { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; background: rgba(82, 200, 219, 0.1); border: 1px solid rgba(82, 200, 219, 0.2); border-radius: 8px; font-size: 0.8rem; margin-top: 8px; }

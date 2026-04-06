@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 )
 
 // Navigation Functions
@@ -54,6 +55,31 @@ func (a *App) Navigate(scid string) map[string]interface{} {
 		"input":   input,
 		"message": "Navigation initiated",
 	}
+}
+
+func (a *App) captureLaunchURLFromArgs(args []string) {
+	for _, raw := range args {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(trimmed), "dero://") {
+			a.launchURLMu.Lock()
+			a.launchURL = trimmed
+			a.launchURLMu.Unlock()
+			a.logToConsole(fmt.Sprintf("[LINK] Startup deep link captured: %s", trimmed))
+			return
+		}
+	}
+}
+
+func (a *App) ConsumeLaunchURL() string {
+	a.launchURLMu.Lock()
+	defer a.launchURLMu.Unlock()
+
+	url := strings.TrimSpace(a.launchURL)
+	a.launchURL = ""
+	return url
 }
 
 func (a *App) GoBack() map[string]interface{} {

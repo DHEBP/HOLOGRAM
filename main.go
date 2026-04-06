@@ -16,6 +16,14 @@ import (
 var assets embed.FS
 
 func main() {
+	originalArgs := append([]string(nil), os.Args...)
+
+	// Capture launch args (e.g., dero:// links) before clearing Wails/CLI flags.
+	launchArgs := []string{}
+	if len(originalArgs) > 1 {
+		launchArgs = append(launchArgs, originalArgs[1:]...)
+	}
+
 	// Clear args to prevent DERO globals from picking up Wails flags
 	os.Args = []string{os.Args[0]}
 
@@ -31,6 +39,7 @@ func main() {
 
 	// Create an instance of the app structure
 	app := NewApp()
+	app.captureLaunchURLFromArgs(launchArgs)
 
 	// Create application with options
 	err := wails.Run(&options.App{

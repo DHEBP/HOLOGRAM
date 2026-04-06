@@ -43,6 +43,7 @@ type App struct {
 	settings     map[string]interface{}
 	history      []string
 	consoleLogs  []ConsoleLog
+	launchURL    string
 
 	// EPOCH (Developer Support)
 	epochHandler     *EpochHandler
@@ -71,6 +72,7 @@ type App struct {
 	// Status broadcast
 	statusBroadcaster     *StatusBroadcaster
 	statusBroadcasterOnce sync.Once
+	launchURLMu           sync.Mutex
 
 	// Wizard / startup gating
 	wizardComplete        bool
