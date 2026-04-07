@@ -1,6 +1,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
   import { appState } from '../lib/stores/appState.js';
+  import { recentSearchesKey, migrateLegacyExplorerSearchStorage } from '../lib/recentSearchStorage.js';
   import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline, GetBlockByHash, GetCoinbaseMiner, GetAddressSCIDReferences, IsInSimulatorMode } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
@@ -219,11 +221,19 @@
     omniSearchComponent?.focus();
   }
   
+  function explorerNetwork() {
+    return get(appState)?.network || 'mainnet';
+  }
+  
   function loadRecentSearches() {
+    migrateLegacyExplorerSearchStorage();
     try {
-      const stored = localStorage.getItem('recentSearches');
+      const key = recentSearchesKey(explorerNetwork());
+      const stored = localStorage.getItem(key);
       if (stored) {
         recentSearches = JSON.parse(stored).slice(0, 5);
+      } else {
+        recentSearches = [];
       }
     } catch (e) {
       recentSearches = [];
@@ -234,7 +244,7 @@
     const entry = { query, type, timestamp: Date.now() };
     recentSearches = [entry, ...recentSearches.filter(s => s.query !== query)].slice(0, 5);
     try {
-      localStorage.setItem('recentSearches', JSON.stringify(recentSearches));
+      localStorage.setItem(recentSearchesKey(explorerNetwork()), JSON.stringify(recentSearches));
     } catch (e) {}
   }
   
@@ -246,8 +256,13 @@
   
   function clearRecentSearches() {
     recentSearches = [];
-    localStorage.removeItem('recentSearches');
+    try {
+      localStorage.removeItem(recentSearchesKey(explorerNetwork()));
+    } catch (e) {}
   }
+  
+  // Reload recent searches when switching mainnet ↔ simulator (separate history per network)
+  $: $appState.network, loadRecentSearches();
   
   async function handleHistorySelect(event) {
     const search = event.detail;

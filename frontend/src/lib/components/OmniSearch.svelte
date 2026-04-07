@@ -1,5 +1,8 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
+  import { appState } from '../stores/appState.js';
+  import { recentSearchesKey, migrateLegacyExplorerSearchStorage } from '../recentSearchStorage.js';
   import { GetNameSuggestions, ResolveDeroName, SearchApps, SearchByKey, SearchByValue, SearchCodeLine, FilterSearchResults, GetAllClasses, GetSCIDsByClass, GetSCIDsByTag } from '../../../wailsjs/go/main/App.js';
   import { Blocks, Zap, FileText, Globe, User, Search, Link, Package, Key, Database, Code } from 'lucide-svelte';
   
@@ -25,6 +28,10 @@
   // Input type detection
   $: detectedType = detectInputType(value);
   
+  function omniNetwork() {
+    return get(appState)?.network || 'mainnet';
+  }
+  
   // Load recent searches from localStorage
   onMount(() => {
     mountedAt = Date.now();
@@ -32,15 +39,20 @@
   });
   
   function loadRecentSearches() {
+    migrateLegacyExplorerSearchStorage();
     try {
-      const stored = localStorage.getItem('recentSearches');
+      const stored = localStorage.getItem(recentSearchesKey(omniNetwork()));
       if (stored) {
         recentSearches = JSON.parse(stored).slice(0, 8);
+      } else {
+        recentSearches = [];
       }
     } catch (e) {
       recentSearches = [];
     }
   }
+  
+  $: $appState.network, loadRecentSearches();
   
   // Fetch suggestions when input changes
   async function fetchSuggestions(query) {

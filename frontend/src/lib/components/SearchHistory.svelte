@@ -1,5 +1,8 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
+  import { get } from 'svelte/store';
+  import { appState } from '../stores/appState.js';
+  import { recentSearchesKey, pinnedSearchesKey, migrateLegacyExplorerSearchStorage } from '../recentSearchStorage.js';
   import { Search, Inbox, Pin, Clock, X } from 'lucide-svelte';
   
   const dispatch = createEventDispatcher();
@@ -10,20 +13,23 @@
   let pinnedSearches = [];
   let filter = ''; // Filter by query
   
-  const STORAGE_KEY = 'recentSearches';
-  const PINNED_KEY = 'pinnedSearches';
   const MAX_HISTORY = 50;
+  
+  function historyNetwork() {
+    return get(appState)?.network || 'mainnet';
+  }
   
   onMount(() => {
     loadSearches();
   });
   
   function loadSearches() {
+    migrateLegacyExplorerSearchStorage();
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(recentSearchesKey(historyNetwork()));
       searches = stored ? JSON.parse(stored).slice(0, MAX_HISTORY) : [];
       
-      const pinned = localStorage.getItem(PINNED_KEY);
+      const pinned = localStorage.getItem(pinnedSearchesKey(historyNetwork()));
       pinnedSearches = pinned ? JSON.parse(pinned) : [];
     } catch (e) {
       searches = [];
@@ -33,12 +39,14 @@
   
   function saveSearches() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(searches));
-      localStorage.setItem(PINNED_KEY, JSON.stringify(pinnedSearches));
+      localStorage.setItem(recentSearchesKey(historyNetwork()), JSON.stringify(searches));
+      localStorage.setItem(pinnedSearchesKey(historyNetwork()), JSON.stringify(pinnedSearches));
     } catch (e) {
       // Ignore storage errors
     }
   }
+  
+  $: $appState.network, loadSearches();
   
   function isPinned(query) {
     return pinnedSearches.includes(query);
