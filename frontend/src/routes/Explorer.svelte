@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { appState } from '../lib/stores/appState.js';
-  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline, GetBlockByHash, GetCoinbaseMiner, GetAddressSCIDReferences } from '../../wailsjs/go/main/App.js';
+  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline, GetBlockByHash, GetCoinbaseMiner, GetAddressSCIDReferences, IsInSimulatorMode } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -155,6 +155,11 @@
   let showHistoryModal = false;
   let omniSearchComponent;
   
+  // Simulator detection
+  let isSimulator = false;
+  let simulatorChainHeight = 0;
+  let simulatorLowChainBannerVisible = true;
+  
   // DVM BASIC syntax highlighting
   function highlightDVMBasic(code) {
     if (!code) return '';
@@ -258,6 +263,14 @@
   onMount(async () => {
     // Load recent searches for landing view
     loadRecentSearches();
+    
+    // Detect simulator mode
+    try {
+      const simResult = await IsInSimulatorMode();
+      isSimulator = simResult === true;
+    } catch (e) {
+      isSimulator = false;
+    }
     
     await loadRecentData(0);
     
@@ -693,6 +706,13 @@
             searchResult = null;
             return;
           }
+          // Auto-pivot: SC deployment TXs share TXID == SCID — load as smart contract directly
+          if (txData.tx_type === 'SC' || txData.txType === 'SC') {
+            loading = false;
+            toast.info('This is a smart contract deployment — loading contract…', 2000);
+            await searchSCDirectly(query);
+            return;
+          }
           searchResult = {
             type: 'tx',
             data: txData.tx || txData,
@@ -919,10 +939,19 @@
         return;
       }
       
+      // Map all fields the template expects from the backend response
       searchResult = {
         type: 'tx',
         data: response,
         hex: response.hex || '',
+        // Extract fields used by the template
+        txType: response.tx_type || 'NORMAL',
+        isCoinbase: response.is_coinbase || false,
+        ringMembers: response.rings || [],
+        sizeKb: response.size_kb || '0',
+        assets: response.assets || [],
+        burnValue: response.burn_value || 0,
+        minerAddress: response.miner_address || null,
       };
       
       // Add to navigation history
@@ -1460,7 +1489,19 @@
           {#if $appState.chainHeight}
             <div class="landing-status-item">
               <Package size={12} strokeWidth={1.5} class="landing-status-icon" />
-              <span class="landing-status-label">Block #{$appState.chainHeight.toLocaleString()}</span>
+              <span class="landing-status-label">
+                {#if isSimulator && $appState.chainHeight < 20}
+                  Simulator Block #{$appState.chainHeight.toLocaleString()} (fresh chain)
+                {:else}
+                  Block #{$appState.chainHeight.toLocaleString()}
+                {/if}
+              </span>
+            </div>
+          {/if}
+          {#if isSimulator}
+            <div class="landing-status-item landing-status-simulator">
+              <AlertTriangle size={12} strokeWidth={1.5} class="landing-status-icon" />
+              <span class="landing-status-label">Simulator Mode</span>
             </div>
           {/if}
         </div>
@@ -1495,6 +1536,42 @@
       </div>
     </div>
   </div>
+  
+  <!-- Simulator Mode Banner -->
+  {#if isSimulator}
+  <div class="simulator-banner">
+    <div class="simulator-banner-inner">
+      <AlertTriangle size={14} strokeWidth={1.5} class="simulator-banner-icon" />
+      <div class="simulator-banner-text">
+        <strong>Simulator Mode</strong> — Blockchain is ephemeral and resets on restart.
+        {#if $appState.chainHeight > 0}
+          Current height: <strong>#{$appState.chainHeight.toLocaleString()}</strong>.
+        {/if}
+        {#if $appState.chainHeight < 20}
+          Chain is still initializing — this is normal.
+        {/if}
+      </div>
+    </div>
+  </div>
+  
+  <!-- Fresh Simulator Chain Banner (shown when chain height is very low) -->
+  {#if $appState.chainHeight > 0 && $appState.chainHeight < 20 && simulatorLowChainBannerVisible}
+  <div class="simulator-fresh-chain-banner">
+    <div class="simulator-fresh-chain-inner">
+      <div class="simulator-fresh-chain-icon">
+        <Loader2 size={14} strokeWidth={1.5} class="simulator-fresh-chain-spinner" />
+      </div>
+      <div class="simulator-fresh-chain-text">
+        <strong>Fresh Simulator Chain</strong> — Block #{$appState.chainHeight.toLocaleString()} of a new ephemeral chain.
+        Gnomon is indexing — the explorer will populate as blocks are mined.
+      </div>
+      <button class="simulator-fresh-chain-dismiss" on:click={() => simulatorLowChainBannerVisible = false}>
+        <X size={12} strokeWidth={1.5} />
+      </button>
+    </div>
+  </div>
+  {/if}
+  {/if}
   
     <!-- v6.2 Unified Page Body (Simplified Sidebar) -->
   <div class="page-body">
@@ -2007,6 +2084,19 @@
                   <div class="cmd-metadata-row">
                     <span class="cmd-metadata-label">BLID Reference</span>
                     <span class="cmd-metadata-value mono">{formatHash(searchResult.blid)}</span>
+                  </div>
+                {/if}
+                
+                <!-- SC TX: Quick link to view as Smart Contract (TXID == SCID for deployments) -->
+                {#if searchResult.txType === 'SC' || searchResult.data?.tx_type === 'SC'}
+                  <div class="cmd-metadata-row sc-tx-redirect-row">
+                    <span class="cmd-metadata-label"><FileCode size={12} strokeWidth={1.5} /> Smart Contract</span>
+                    <button 
+                      class="cmd-metadata-value cmd-clickable sc-tx-redirect-btn"
+                      on:click={() => searchSCDirectly(searchQuery)}
+                    >
+                      View Smart Contract →
+                    </button>
                   </div>
                 {/if}
               </div>
@@ -6482,5 +6572,116 @@
   @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+  }
+  
+  /* === Simulator Banner === */
+  .simulator-banner {
+    width: 100%;
+    padding: 0 var(--s-4, 16px);
+    margin-bottom: var(--s-3, 12px);
+  }
+  
+  .simulator-banner-inner {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.2);
+    border-radius: var(--r-sm, 6px);
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  
+  .simulator-banner-icon {
+    color: var(--status-warn, #fbbf24);
+    flex-shrink: 0;
+  }
+  
+  .simulator-banner-text {
+    line-height: 1.4;
+  }
+  
+  .simulator-banner-text strong {
+    color: var(--text-1);
+    font-weight: 500;
+  }
+
+  /* === Fresh Simulator Chain Banner === */
+  .simulator-fresh-chain-banner {
+    width: 100%;
+    padding: 0 var(--s-4, 16px);
+    margin-bottom: var(--s-3, 12px);
+  }
+
+  .simulator-fresh-chain-inner {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: var(--r-sm, 6px);
+    font-size: 12px;
+    color: var(--text-3);
+  }
+
+  .simulator-fresh-chain-icon {
+    color: var(--status-info, #6366f1);
+    flex-shrink: 0;
+  }
+
+  .simulator-fresh-chain-spinner {
+    animation: spin 1s linear infinite;
+  }
+
+  .simulator-fresh-chain-text {
+    line-height: 1.4;
+    flex: 1;
+  }
+
+  .simulator-fresh-chain-text strong {
+    color: var(--text-1);
+    font-weight: 500;
+  }
+
+  .simulator-fresh-chain-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-3);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: var(--r-sm, 4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .simulator-fresh-chain-dismiss:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-1);
+  }
+
+  /* === SC TX Redirect === */
+  .sc-tx-redirect-row {
+    background: rgba(99, 102, 241, 0.06);
+    border-radius: var(--r-sm, 6px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    border: 1px solid rgba(99, 102, 241, 0.15);
+  }
+
+  .sc-tx-redirect-btn {
+    color: var(--status-info, #6366f1) !important;
+    font-weight: 500;
+  }
+
+  /* === Simulator Status in Landing Footer === */
+  .landing-status-simulator {
+    color: var(--status-warn, #fbbf24);
+  }
+
+  .landing-status-simulator .landing-status-icon {
+    color: var(--status-warn, #fbbf24);
   }
 </style>
