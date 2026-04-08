@@ -878,6 +878,10 @@ export function OpenSimulatorTestWallet(arg1) {
   return window['go']['main']['App']['OpenSimulatorTestWallet'](arg1);
 }
 
+export function OpenURLInBrowserIfAllowed(arg1) {
+  return window['go']['main']['App']['OpenURLInBrowserIfAllowed'](arg1);
+}
+
 export function OpenWallet(arg1, arg2) {
   return window['go']['main']['App']['OpenWallet'](arg1, arg2);
 }

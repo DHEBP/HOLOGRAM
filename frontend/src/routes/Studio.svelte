@@ -22,9 +22,9 @@
     IsInSimulatorMode, GetSimulatorDeploymentInfo, CloneTELA, GetClonePath,
     StartLocalDevServer, StopLocalDevServer, GetLocalDevServerStatus, RefreshLocalDevServer,
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus, SetNetworkMode,
-    ShardFile, ConstructFromShards
+    ShardFile, ConstructFromShards, OpenURLInBrowserIfAllowed
   } from '../../wailsjs/go/main/App.js';
-  import { BrowserOpenURL, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
+  import { ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
   import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff } from '../../wailsjs/runtime/runtime.js';
   import { 
     Globe, FlaskConical, Gamepad2, FileText, FolderUp, FolderDown, Layers, RefreshCw, 
@@ -357,9 +357,8 @@
   
   async function openCloneFolder() {
     if (cloneResult?.directory) {
-      // Use the shell to open the folder
       try {
-        BrowserOpenURL(`file://${cloneResult.directory}`);
+        await OpenURLInBrowserIfAllowed(`file://${cloneResult.directory}`);
       } catch (e) {
         console.error('Failed to open folder:', e);
       }

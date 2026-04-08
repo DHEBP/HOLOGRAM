@@ -377,6 +377,34 @@ func (a *App) RequestInterceptor(urlStr string) map[string]interface{} {
 	}
 }
 
+// OpenURLInBrowserIfAllowed runs Privacy Mode for remote URLs, then opens the system browser when allowed.
+// file:// and wails:// skip the network policy (no outbound HTTP).
+func (a *App) OpenURLInBrowserIfAllowed(urlStr string) map[string]interface{} {
+	trimmed := strings.TrimSpace(urlStr)
+	if trimmed == "" {
+		return map[string]interface{}{"success": false, "error": "empty URL"}
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": "invalid URL"}
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme == "file" || scheme == "wails" {
+		runtime.BrowserOpenURL(a.ctx, trimmed)
+		return map[string]interface{}{"success": true, "allowed": true, "reason": "local scheme"}
+	}
+
+	res := a.RequestInterceptor(trimmed)
+	allowed, _ := res["allowed"].(bool)
+	if !allowed {
+		reason, _ := res["reason"].(string)
+		return map[string]interface{}{"success": false, "allowed": false, "reason": reason}
+	}
+	runtime.BrowserOpenURL(a.ctx, trimmed)
+	reason, _ := res["reason"].(string)
+	return map[string]interface{}{"success": true, "allowed": true, "reason": reason}
+}
+
 // GetActiveConnections returns information about active network connections
 func (a *App) GetActiveConnections() map[string]interface{} {
 	connections := []map[string]interface{}{}

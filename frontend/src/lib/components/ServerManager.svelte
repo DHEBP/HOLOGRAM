@@ -2,10 +2,10 @@
   import { onMount, onDestroy } from 'svelte';
   import { 
     ListActiveServers, ShutdownServer, ShutdownAllServers,
-    GetServerPortRange, SetServerPortStart, SetMaxServers
+    GetServerPortRange, SetServerPortStart, SetMaxServers,
+    OpenURLInBrowserIfAllowed
   } from '../../../wailsjs/go/main/App.js';
   import { toast } from '../stores/appState.js';
-  import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime.js';
   
   let servers = [];
   let loading = false;
@@ -113,9 +113,15 @@
     }
   }
   
-  function openServerURL(url) {
-    if (url) {
-      BrowserOpenURL(url);
+  async function openServerURL(url) {
+    if (!url) return;
+    try {
+      const res = await OpenURLInBrowserIfAllowed(url);
+      if (!res?.success) {
+        return;
+      }
+    } catch (e) {
+      toast.error(e.message || 'Failed to open URL');
     }
   }
   

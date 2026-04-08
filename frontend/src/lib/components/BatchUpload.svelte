@@ -3,7 +3,7 @@
   import { walletState, settingsState, toast } from '../stores/appState.js';
   import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList, GetMetadataFiles, PreflightExpand } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
-  import { BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
+  import { ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
   import { Copy, Eye, AlertTriangle, Search, Clock, Check, X, Puzzle } from 'lucide-svelte';
   
   export let folderPath = '';

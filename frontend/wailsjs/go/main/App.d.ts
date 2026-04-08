@@ -441,6 +441,8 @@ export function OmniSearch(arg1:string):Promise<main.SearchResult>;
 
 export function OpenSimulatorTestWallet(arg1:number):Promise<Record<string, any>>;
 
+export function OpenURLInBrowserIfAllowed(arg1:string):Promise<Record<string, any>>;
+
 export function OpenWallet(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function ParseFolderForTELA(arg1:string):Promise<Record<string, any>>;
