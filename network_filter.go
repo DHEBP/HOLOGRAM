@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // NetworkFilter implements Privacy Mode - blocking non-DERO network connections
@@ -309,16 +313,62 @@ func getCurrentTimestamp() int64 {
 	return time.Now().Unix()
 }
 
-// RequestInterceptor is called by the WebView to check requests
-// This would be integrated with Wails' custom request handler
+// Dedupe rapid identical host toasts (e.g. many assets from one domain).
+var (
+	blockToastMu       sync.Mutex
+	blockToastLastHost string
+	blockToastLastTime time.Time
+)
+
+func emitPrivacyBlockedToast(ctx context.Context, urlStr, host, reason string) {
+	if ctx == nil {
+		return
+	}
+	displayHost := host
+	if displayHost == "" {
+		displayHost = urlStr
+		if len(displayHost) > 64 {
+			displayHost = displayHost[:61] + "…"
+		}
+	}
+
+	blockToastMu.Lock()
+	now := time.Now()
+	if displayHost == blockToastLastHost && now.Sub(blockToastLastTime) < 3*time.Second {
+		blockToastMu.Unlock()
+		return
+	}
+	blockToastLastHost, blockToastLastTime = displayHost, now
+	blockToastMu.Unlock()
+
+	msg := fmt.Sprintf("Privacy Mode blocked a connection to %s.", displayHost)
+	if reason != "" && reason != "Blocked by Privacy Mode" {
+		msg = fmt.Sprintf("Privacy Mode blocked %s (%s).", displayHost, reason)
+	}
+
+	runtime.EventsEmit(ctx, "toast:show", map[string]interface{}{
+		"type":    "warning",
+		"message": msg,
+	})
+}
+
+// RequestInterceptor evaluates Privacy Mode for a URL, logs it, and notifies the UI when blocked.
+// Call from the frontend before opening external URLs (and eventually from native request hooks).
 func (a *App) RequestInterceptor(urlStr string) map[string]interface{} {
 	allowed, reason := checkRequestAllowed(urlStr)
-	
+
+	parsed, _ := url.Parse(urlStr)
+	host := ""
+	if parsed != nil {
+		host = parsed.Hostname()
+	}
+
 	// Log the connection
 	logConnection(urlStr, allowed, reason)
 
 	if !allowed {
 		a.logToConsole("[SHIELD] Blocked: " + urlStr + " (" + reason + ")")
+		emitPrivacyBlockedToast(a.ctx, urlStr, host, reason)
 	}
 
 	return map[string]interface{}{

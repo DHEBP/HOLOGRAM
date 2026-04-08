@@ -3,17 +3,26 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog } from '../../wailsjs/go/main/App.js';
-  import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, RequestInterceptor } from '../../wailsjs/go/main/App.js';
+  import { EventsOn, EventsOff, BrowserOpenURL, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
 import RatingsBreakdown from '../lib/components/RatingsBreakdown.svelte';
 import VersionHistory from '../lib/components/VersionHistory.svelte';
-import { Star, History, GitBranch, Heart } from 'lucide-svelte';
+import { Star, History, GitBranch, Heart, Link2, X } from 'lucide-svelte';
 import deroIconFallback from '../assets/dero-icon-fallback.svg';
 import OmniSearch from '../lib/components/OmniSearch.svelte';
 
 // Permission helpers for XSWD connection requests
+function isAllowedExternalWebUrl(s) {
+  try {
+    const u = new URL(s);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function getPermissionName(permId) {
   const names = {
     'read_public_data': 'Read Public Blockchain Data',
@@ -34,6 +43,35 @@ function getPermissionDescription(permId) {
     'sc_invoke': 'Can request smart contract interactions (requires approval each time)'
   };
   return descriptions[permId] || 'Unknown permission';
+}
+
+function closeExternalLinkModal() {
+  showExternalLinkModal = false;
+  externalLinkUrl = '';
+}
+
+async function copyExternalLinkToClipboard() {
+  if (!externalLinkUrl) return;
+  try {
+    await ClipboardSetText(externalLinkUrl);
+    toast.success('Link copied');
+  } catch {
+    toast.error('Could not copy link');
+  }
+}
+
+async function openExternalLinkInSystemBrowser() {
+  if (!externalLinkUrl || !isAllowedExternalWebUrl(externalLinkUrl)) return;
+  try {
+    const res = await RequestInterceptor(externalLinkUrl);
+    if (!res || res.allowed === false) {
+      return;
+    }
+    BrowserOpenURL(externalLinkUrl);
+    closeExternalLinkModal();
+  } catch {
+    toast.error('Could not check Privacy Mode');
+  }
 }
 
 function resetXSWDSubscriptions() {
@@ -296,6 +334,9 @@ let addressInput = '';
   // Ratings breakdown state
   let showRatingsBreakdown = false;
   let breakdownScid = '';
+
+  let showExternalLinkModal = false;
+  let externalLinkUrl = '';
   
   function openRatingModal(app, event) {
     event.stopPropagation();
@@ -866,6 +907,16 @@ let addressInput = '';
         }
         return;
       }
+
+      if (event.data && event.data.type === 'hologram-external-link') {
+        const url = typeof event.data.url === 'string' ? event.data.url.trim() : '';
+        if (url && isAllowedExternalWebUrl(url)) {
+          externalLinkUrl = url;
+          showExternalLinkModal = true;
+        }
+        return;
+      }
+
       if (!event.data || event.data.type !== 'xswd-request') {
         return;
       }
@@ -1584,8 +1635,9 @@ let addressInput = '';
       // The bridge proxies WebSocket calls through postMessage to the parent Browser.svelte
       const bridgeScript = getXSWDBridgeScript();
       html = injectIntoHtmlDocument(html, bridgeScript);
+      html = injectIntoHtmlDocument(html, getExternalLinkGuardScript());
       
-      addConsoleLog('[OK] Injected XSWD bridge and telaHost placeholder into HTML');
+      addConsoleLog('[OK] Injected XSWD bridge, external-link guard, and telaHost placeholder into HTML');
       
       currentMeta = {
         name: dirName,
@@ -2263,6 +2315,35 @@ let addressInput = '';
 <\/script>`;
   }
 
+  /** Intercepts http(s) anchor navigation inside srcdoc/injected HTML and defers to the host modal. */
+  function getExternalLinkGuardScript() {
+    return `<script>
+(function() {
+  'use strict';
+  document.addEventListener('click', function(e) {
+    if (e.defaultPrevented) return;
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var a = t.closest('a[href]');
+    if (!a || a.hasAttribute('download')) return;
+    var raw = a.getAttribute('href');
+    if (!raw) return;
+    var trimmed = raw.trim();
+    if (!trimmed || trimmed === '#' || /^javascript:/i.test(trimmed)) return;
+    if (/^(mailto:|tel:|sms:|data:)/i.test(trimmed)) return;
+    try {
+      var u = new URL(trimmed, document.baseURI);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      window.parent.postMessage({ type: 'hologram-external-link', url: u.href }, '*');
+    } catch (err) {}
+  }, true);
+})();
+<\/script>`;
+  }
+
   function injectIntoHtmlDocument(html, snippet) {
     if (!snippet) return html;
 
@@ -2298,6 +2379,7 @@ let addressInput = '';
         // Preserve <!DOCTYPE html> so srcdoc stays in standards mode.
         const bridgeScript = getXSWDBridgeScript();
         injectedHtml = injectIntoHtmlDocument(html, bridgeScript);
+        injectedHtml = injectIntoHtmlDocument(injectedHtml, getExternalLinkGuardScript());
       }
       
       // Remove src attribute - we're using srcdoc for inline content
@@ -3384,6 +3466,45 @@ let addressInput = '';
     {/if}
   </div>
 </div>
+
+{#if showExternalLinkModal}
+  <div class="modal-overlay" on:click={closeExternalLinkModal} role="presentation">
+    <div class="modal-content modal-content-wide" on:click|stopPropagation role="dialog" aria-modal="true" aria-labelledby="external-link-title">
+      <div class="modal-header">
+        <div class="modal-header-left">
+          <div class="modal-icon warning">
+            <Link2 size={16} />
+          </div>
+          <div>
+            <h2 id="external-link-title" class="modal-title">Leaving the in-app browser</h2>
+            <p class="modal-subtitle">This app linked to a classic web (HTTPS) address. HOLOGRAM does not open it automatically. Copy the URL and paste it into a browser you trust, or open it in your system browser if you choose.</p>
+          </div>
+        </div>
+        <button type="button" class="modal-close" on:click={closeExternalLinkModal} aria-label="Close">
+          <X size={16} />
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="modal-form-label" for="external-link-url">URL</label>
+        <textarea
+          id="external-link-url"
+          class="modal-input"
+          readonly
+          rows="3"
+          bind:value={externalLinkUrl}
+          style="resize: vertical; min-height: 4.5rem;"
+        ></textarea>
+      </div>
+      <div class="modal-footer modal-footer-spread">
+        <button type="button" class="modal-btn modal-btn-secondary" on:click={closeExternalLinkModal}>Close</button>
+        <div style="display: flex; gap: var(--s-3);">
+          <button type="button" class="modal-btn modal-btn-secondary" on:click={openExternalLinkInSystemBrowser}>Open in default browser</button>
+          <button type="button" class="modal-btn modal-btn-primary" on:click={copyExternalLinkToClipboard}>Copy link</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Rating Modal -->
 <RatingModal 
