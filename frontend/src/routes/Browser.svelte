@@ -916,6 +916,16 @@ let addressInput = '';
         return;
       }
 
+      // TELA / in-app HTML: open HOLOGRAM Block Explorer (OmniSearch) with a 64-hex SCID or other query
+      if (event.data && event.data.type === 'hologram-explorer-search') {
+        const query = typeof event.data.query === 'string' ? event.data.query.trim() : '';
+        if (!query) return;
+        window.dispatchEvent(new CustomEvent('search-navigate', {
+          detail: { tab: 'explorer', type: 'hash', query, result: null }
+        }));
+        return;
+      }
+
       if (!event.data || event.data.type !== 'xswd-request') {
         return;
       }
