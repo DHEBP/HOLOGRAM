@@ -156,23 +156,16 @@ func (a *App) reconcileDaemonEndpoint() {
 	}
 
 	// Step 2: Try to reach the daemon at the loaded endpoint.
-	// If it responds, check chain height to infer the actual network.
+	// If it responds, infer network from GetInfo() (daemon "network" field first, then height).
 	if err := a.daemonClient.TestConnection(); err == nil {
 		info, infoErr := a.daemonClient.GetInfo()
 		if infoErr == nil {
-			if h, ok := info["height"].(float64); ok {
-				chainHeight := int64(h)
-				var inferredNetwork string
-				if chainHeight > 10000 {
-					inferredNetwork = "mainnet"
-				} else if chainHeight > 0 {
-					inferredNetwork = "simulator"
-				}
-
-				if inferredNetwork != "" && inferredNetwork != loadedNetwork {
+			if inferredMode, ok := inferNetworkModeFromDaemonInfo(info, loadedEndpoint); ok {
+				inferredNetwork := string(inferredMode)
+				if inferredNetwork != loadedNetwork {
 					// Network mismatch — update network label and, for localhost
 					// endpoints, correct the port to match the detected network.
-					netConfig := GetNetworkConfig(NetworkMode(inferredNetwork))
+					netConfig := GetNetworkConfig(inferredMode)
 					correctEndpoint := loadedEndpoint
 					if isLocalhostEndpoint(loadedEndpoint) {
 						correctEndpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
@@ -186,7 +179,7 @@ func (a *App) reconcileDaemonEndpoint() {
 					a.daemonClient.SetEndpoint(correctEndpoint)
 
 					nodeManager.Lock()
-					nodeManager.networkMode = NetworkMode(inferredNetwork)
+					nodeManager.networkMode = inferredMode
 					nodeManager.rpcPort = netConfig.RPCPort
 					nodeManager.p2pPort = netConfig.P2PPort
 					nodeManager.getworkPort = netConfig.GetWorkPort

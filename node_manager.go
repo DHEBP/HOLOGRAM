@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1197,6 +1199,91 @@ func (a *App) GetNodeAdvancedConfig() map[string]interface{} {
 
 // ================== Network Mode Management ==================
 
+func daemonInfoHeight(info map[string]interface{}) (int64, bool) {
+	if info == nil {
+		return 0, false
+	}
+	v, ok := info["height"]
+	if !ok {
+		return 0, false
+	}
+	switch val := v.(type) {
+	case float64:
+		return int64(val), true
+	case int64:
+		return val, true
+	case int:
+		return int64(val), true
+	default:
+		return 0, false
+	}
+}
+
+// inferRPCPortFromEndpoint returns the port from an http(s) URL, or host:port strings.
+func inferRPCPortFromEndpoint(endpoint string) int {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return 0
+	}
+	if !strings.Contains(endpoint, "://") {
+		if _, portStr, err := net.SplitHostPort(endpoint); err == nil {
+			if p, err := strconv.Atoi(portStr); err == nil {
+				return p
+			}
+		}
+		return 0
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return 0
+	}
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// inferNetworkModeFromDaemonInfo maps DERO.GetInfo to HOLOGRAM's NetworkMode.
+// Prefer the daemon-reported "network" field so long-lived simulator chains (>10k blocks)
+// are not misclassified as mainnet by height heuristics (which would repoint RPC to :10102).
+// connectedEndpoint is the URL the client is actually using (e.g. settings daemon_endpoint);
+// when the JSON omits "network", localhost :20000 / :10102 disambiguates before height fallback.
+func inferNetworkModeFromDaemonInfo(info map[string]interface{}, connectedEndpoint string) (NetworkMode, bool) {
+	if info == nil {
+		return "", false
+	}
+	if n, ok := info["network"].(string); ok {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			switch strings.ToLower(n) {
+			case "simulator":
+				return NetworkSimulator, true
+			case "mainnet":
+				return NetworkMainnet, true
+			}
+		}
+	}
+	if connectedEndpoint != "" && isLocalhostEndpoint(connectedEndpoint) {
+		switch inferRPCPortFromEndpoint(connectedEndpoint) {
+		case 20000:
+			return NetworkSimulator, true
+		case 10102:
+			return NetworkMainnet, true
+		}
+	}
+	if h, ok := daemonInfoHeight(info); ok {
+		if h > 10000 {
+			return NetworkMainnet, true
+		}
+		if h > 0 {
+			return NetworkSimulator, true
+		}
+	}
+	return "", false
+}
+
 // SetNetworkMode sets the network mode for the next node start
 // This must be called BEFORE starting the node
 func (a *App) SetNetworkMode(network string) map[string]interface{} {
@@ -1232,9 +1319,11 @@ func (a *App) SetNetworkMode(network string) map[string]interface{} {
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
 	a.daemonClient = NewDaemonClient(endpoint)
 
-	// Update settings (used by Gnomon and other services)
+	// Update settings (used by Gnomon and other services) and persist immediately
+	// so the status broadcaster and reconcileDaemonEndpoint see the new network.
 	a.settings["network"] = string(mode)
 	a.settings["daemon_endpoint"] = endpoint
+	a.saveSettings()
 
 	// If Gnomon is running on a different network, stop it and inform user
 	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
@@ -1267,8 +1356,8 @@ func (a *App) SetNetworkMode(network string) map[string]interface{} {
 }
 
 // GetNetworkMode returns the current network mode.
-// When daemon is connected, infers effective network from chain height (simulator < 10k blocks)
-// to avoid "Simulator" label with mainnet block height on restart.
+// When daemon is connected, reconciles with GetInfo(): prefers the daemon "network" field,
+// then falls back to height heuristics only if that field is missing.
 // If a mismatch is detected, persists the corrected settings so they survive the next restart.
 func (a *App) GetNetworkMode() map[string]interface{} {
 	nodeManager.RLock()
@@ -1284,40 +1373,37 @@ func (a *App) GetNetworkMode() map[string]interface{} {
 		endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
 	}
 
+	inferEndpoint := endpoint
+	if a.daemonClient != nil {
+		if ep := a.daemonClient.GetEndpoint(); ep != "" {
+			inferEndpoint = ep
+		}
+	}
+
 	// Reconcile with actual daemon connection
 	if info, err := a.daemonClient.GetInfo(); err == nil {
-		if h, ok := info["height"].(float64); ok {
-			chainHeight := int64(h)
-			var inferred NetworkMode
-			if chainHeight > 10000 {
-				inferred = NetworkMainnet
-			} else if chainHeight > 0 {
-				inferred = NetworkSimulator
+		if inferred, hasInference := inferNetworkModeFromDaemonInfo(info, inferEndpoint); hasInference && inferred != mode {
+			mode = inferred
+			netConfig = GetNetworkConfig(inferred)
+			// For localhost endpoints only, correct the port to match the
+			// detected network. Remote endpoints are left untouched.
+			if isLocalhostEndpoint(endpoint) {
+				endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
 			}
 
-			if inferred != "" && inferred != mode {
-				mode = inferred
-				netConfig = GetNetworkConfig(inferred)
-				// For localhost endpoints only, correct the port to match the
-				// detected network. Remote endpoints are left untouched.
-				if isLocalhostEndpoint(endpoint) {
-					endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
-				}
+			nodeManager.Lock()
+			nodeManager.networkMode = inferred
+			nodeManager.rpcPort = netConfig.RPCPort
+			nodeManager.p2pPort = netConfig.P2PPort
+			nodeManager.getworkPort = netConfig.GetWorkPort
+			nodeManager.Unlock()
 
-				nodeManager.Lock()
-				nodeManager.networkMode = inferred
-				nodeManager.rpcPort = netConfig.RPCPort
-				nodeManager.p2pPort = netConfig.P2PPort
-				nodeManager.getworkPort = netConfig.GetWorkPort
-				nodeManager.Unlock()
-
-				a.settings["network"] = string(inferred)
-				a.settings["daemon_endpoint"] = endpoint
-				a.daemonClient.SetEndpoint(endpoint)
-				a.saveSettings()
-			} else if inferred != "" {
-				netConfig = GetNetworkConfig(inferred)
-			}
+			a.settings["network"] = string(inferred)
+			a.settings["daemon_endpoint"] = endpoint
+			a.daemonClient.SetEndpoint(endpoint)
+			a.saveSettings()
+		} else if hasInference {
+			netConfig = GetNetworkConfig(inferred)
 		}
 	}
 

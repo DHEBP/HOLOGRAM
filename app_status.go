@@ -106,12 +106,15 @@ func (a *App) getFullStatus() map[string]interface{} {
 		if h, ok := info["height"].(float64); ok {
 			chainHeight = int64(h)
 		}
-		// Reconcile network with actual connection: simulator chains are small (<10k blocks),
-		// mainnet is millions. Prevents "Simulator" label with mainnet block height on restart.
-		if chainHeight > 10000 {
-			networkType = "mainnet"
-		} else if chainHeight > 0 && chainHeight <= 10000 {
-			networkType = "simulator"
+		// Reconcile network with actual connection using daemon-reported "network" field,
+		// with localhost-port and height fallbacks.  This replaces the old height-only
+		// heuristic that misclassified long-lived simulators (>10k blocks) as mainnet.
+		connEndpoint := ""
+		if a.daemonClient != nil {
+			connEndpoint = a.daemonClient.GetEndpoint()
+		}
+		if inferred, ok := inferNetworkModeFromDaemonInfo(info, connEndpoint); ok {
+			networkType = string(inferred)
 		}
 		if t, ok := info["topoheight"].(float64); ok {
 			topoHeight = int64(t)
