@@ -901,7 +901,7 @@ func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 	// Load transaction labels for quick lookup
 	labelMap := getTransactionLabelsMap()
 
-	// Convert to frontend-friendly format
+	// Convert to frontend-friendly format with full transaction details
 	entries := make([]map[string]interface{}, 0, len(rpcEntries))
 	for _, e := range rpcEntries {
 		entry := map[string]interface{}{
@@ -909,11 +909,38 @@ func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 			"height":      e.Height,
 			"topoheight":  e.TopoHeight,
 			"amount":      e.Amount,
+			"fees":        e.Fees,
+			"burn":        e.Burn,
 			"incoming":    e.Incoming,
 			"coinbase":    e.Coinbase,
 			"destination": e.Destination,
-			"timestamp":   e.Time.Unix(),
+			"sender":      e.Sender,
+			"proof":       e.Proof,
+			"status":      e.Status,
+			"time":        e.Time.Unix(),
 		}
+
+		// Extract payload comment if available
+		if e.Payload_RPC.HasValue(rpc.RPC_COMMENT, rpc.DataString) {
+			if comment, ok := e.Payload_RPC.Value(rpc.RPC_COMMENT, rpc.DataString).(string); ok {
+				entry["comment"] = comment
+			}
+		}
+
+		// Extract destination port if available
+		if e.Payload_RPC.HasValue(rpc.RPC_DESTINATION_PORT, rpc.DataUint64) {
+			if port, ok := e.Payload_RPC.Value(rpc.RPC_DESTINATION_PORT, rpc.DataUint64).(uint64); ok {
+				entry["destination_port"] = port
+			}
+		}
+
+		// Extract source port if available
+		if e.Payload_RPC.HasValue(rpc.RPC_SOURCE_PORT, rpc.DataUint64) {
+			if port, ok := e.Payload_RPC.Value(rpc.RPC_SOURCE_PORT, rpc.DataUint64).(uint64); ok {
+				entry["source_port"] = port
+			}
+		}
+
 		// Include label if one exists for this transaction
 		if label, ok := labelMap[e.TXID]; ok && label != "" {
 			entry["label"] = label
@@ -921,9 +948,13 @@ func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 		entries = append(entries, entry)
 	}
 
-	// Limit results (return most recent)
+	// Limit results and reverse so newest are first
 	if limit > 0 && len(entries) > limit {
 		entries = entries[len(entries)-limit:]
+	}
+	// Reverse: Show_Transfers returns oldest-first; UI expects newest-first
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
 	}
 
 	return map[string]interface{}{

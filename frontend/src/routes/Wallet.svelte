@@ -1393,6 +1393,14 @@
     copyToClipboard($walletState.address, 'Address copied!');
   }
   
+  function viewInExplorer(txid) {
+    if (!txid) return;
+    // Navigate to Explorer with the TXID as search query
+    window.dispatchEvent(new CustomEvent('search-navigate', {
+      detail: { tab: 'explorer', type: 'hash', query: txid, result: null }
+    }));
+  }
+  
   async function selectWalletFile() {
     try {
       const selected = await SelectWalletFile();
@@ -1666,7 +1674,7 @@
             </div>
             <div class="recent-tx-list">
               {#each transactionHistory.slice(0, 5) as tx}
-                <div class="tx-row">
+                <div class="tx-row" on:click={() => { activeSection = 'history'; expandedTxId = tx.txid; }} role="button" tabindex="0" on:keydown={(e) => e.key === 'Enter' && (activeSection = 'history', expandedTxId = tx.txid)}>
                   <div class="tx-left">
                     <span class="tx-icon" class:tx-in={tx.incoming || tx.coinbase} class:tx-out={!tx.incoming && !tx.coinbase}>
                       {#if tx.coinbase}
@@ -2161,17 +2169,20 @@
                     <div class="tx-icon-wrap">
                       <span class="tx-icon" class:tx-in={tx.incoming || tx.coinbase} class:tx-out={!tx.incoming && !tx.coinbase}>
                         {#if tx.coinbase}
-                          <Pickaxe size={14} />
+                          <Pickaxe size={16} />
                         {:else if tx.incoming}
-                          <ArrowDown size={14} />
+                          <ArrowDown size={16} />
                         {:else}
-                          <ArrowUp size={14} />
+                          <ArrowUp size={16} />
                         {/if}
                       </span>
                     </div>
                     <div class="tx-details">
                       <div class="tx-type-row">
                         <span class="tx-type">{tx.coinbase ? 'Mining Reward' : tx.incoming ? 'Received' : 'Sent'}</span>
+                        {#if tx.destination_port === 1337}
+                          <span class="tx-msg-badge">MSG</span>
+                        {/if}
                         {#if tx.label && editingLabelTxid !== tx.txid}
                           <span class="tx-label-badge">{tx.label}</span>
                         {/if}
@@ -2201,7 +2212,7 @@
                           </button>
                         </div>
                       {:else}
-                        <span class="tx-id">{tx.txid?.slice(0, 20)}...</span>
+                        <span class="tx-id">{tx.txid?.slice(0, 24)}...</span>
                       {/if}
                     </div>
                     <div class="tx-meta">
@@ -2221,43 +2232,133 @@
                   </div>
                   {#if expandedTxId === tx.txid}
                     <div class="tx-detail-panel">
+                      <!-- Transaction ID -->
                       <div class="tx-detail-row">
                         <span class="tx-detail-label">Transaction ID</span>
                         <div class="tx-detail-value-row">
-                          <code class="tx-detail-value">{tx.txid}</code>
-                          <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.txid, 'TXID copied!')}>
+                          <code class="tx-detail-value tx-detail-txid">{tx.txid}</code>
+                          <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.txid, 'TXID copied!')} title="Copy TXID">
                             <Copy size={12} />
                           </button>
                         </div>
                       </div>
+
+                      <!-- Direction -->
+                      <div class="tx-detail-row">
+                        <span class="tx-detail-label">Direction</span>
+                        <span class="tx-detail-value tx-detail-direction" class:tx-direction-in={tx.incoming || tx.coinbase} class:tx-direction-out={!tx.incoming && !tx.coinbase}>
+                          {tx.coinbase ? 'Mining Reward' : tx.incoming ? 'Received' : 'Sent'}
+                        </span>
+                      </div>
+
+                      <!-- Amount -->
                       <div class="tx-detail-row">
                         <span class="tx-detail-label">Amount</span>
-                        <span class="tx-detail-value">{$settingsState.hideBalance ? '••••••' : `${formatBalance(tx.amount)} DERO`}</span>
+                        <span class="tx-detail-value tx-detail-amount" class:positive={tx.incoming || tx.coinbase} class:negative={!tx.incoming && !tx.coinbase}>
+                          {$settingsState.hideBalance ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
+                        </span>
                       </div>
-                      {#if tx.fees}
+
+                      <!-- Fee -->
+                      {#if tx.fees && tx.fees > 0}
                         <div class="tx-detail-row">
-                          <span class="tx-detail-label">Fee</span>
+                          <span class="tx-detail-label">Transaction Fee</span>
                           <span class="tx-detail-value">{$settingsState.hideBalance ? '••••••' : `${formatBalance(tx.fees)} DERO`}</span>
                         </div>
                       {/if}
+
+                      <!-- Burn -->
+                      {#if tx.burn && tx.burn > 0}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Burned</span>
+                          <span class="tx-detail-value tx-detail-burn">{$settingsState.hideBalance ? '••••••' : `${formatBalance(tx.burn)} DERO`}</span>
+                        </div>
+                      {/if}
+
+                      <!-- Block Height -->
                       {#if tx.height}
                         <div class="tx-detail-row">
                           <span class="tx-detail-label">Block Height</span>
-                          <span class="tx-detail-value">{tx.height}</span>
+                          <span class="tx-detail-value">{tx.height.toLocaleString()}</span>
                         </div>
                       {/if}
+
+                      <!-- Timestamp -->
                       {#if tx.time}
                         <div class="tx-detail-row">
-                          <span class="tx-detail-label">Date</span>
-                          <span class="tx-detail-value">{new Date(tx.time * 1000).toLocaleString()}</span>
+                          <span class="tx-detail-label">Date & Time</span>
+                          <span class="tx-detail-value">{new Date(tx.time * 1000).toLocaleString()} <span class="tx-detail-relative">({formatTime(tx.time)})</span></span>
                         </div>
                       {/if}
-                      {#if tx.destination}
+
+                      <!-- Sender (for incoming) -->
+                      {#if tx.incoming && tx.sender}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Sender</span>
+                          <div class="tx-detail-value-row">
+                            <code class="tx-detail-value tx-detail-address">{tx.sender}</code>
+                            <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.sender, 'Sender address copied!')} title="Copy address">
+                              <Copy size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      {/if}
+
+                      <!-- Destination (for outgoing) -->
+                      {#if !tx.incoming && tx.destination}
                         <div class="tx-detail-row">
                           <span class="tx-detail-label">Destination</span>
-                          <code class="tx-detail-value tx-detail-address">{tx.destination}</code>
+                          <div class="tx-detail-value-row">
+                            <code class="tx-detail-value tx-detail-address">{tx.destination}</code>
+                            <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.destination, 'Destination address copied!')} title="Copy address">
+                              <Copy size={12} />
+                            </button>
+                          </div>
                         </div>
                       {/if}
+
+                      <!-- Ports (for service transactions) -->
+                      {#if tx.destination_port}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Destination Port</span>
+                          <span class="tx-detail-value tx-detail-port">{tx.destination_port}</span>
+                        </div>
+                      {/if}
+                      {#if tx.source_port}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Source Port</span>
+                          <span class="tx-detail-value tx-detail-port">{tx.source_port}</span>
+                        </div>
+                      {/if}
+
+                      <!-- Comment/Payload -->
+                      {#if tx.comment}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Comment</span>
+                          <span class="tx-detail-value tx-detail-comment">{tx.comment}</span>
+                        </div>
+                      {/if}
+
+                      <!-- Transaction Proof -->
+                      {#if tx.proof}
+                        <div class="tx-detail-row tx-detail-proof-row">
+                          <span class="tx-detail-label">Transaction Proof</span>
+                          <div class="tx-detail-value-row">
+                            <code class="tx-detail-value tx-detail-proof">{tx.proof}</code>
+                            <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.proof, 'Proof copied!')} title="Copy proof">
+                              <Copy size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      {/if}
+
+                      <!-- View in Explorer Action -->
+                      <div class="tx-detail-actions">
+                        <button class="btn btn-secondary btn-sm" on:click={() => viewInExplorer(tx.txid)}>
+                          <ExternalLink size={14} />
+                          View in Explorer
+                        </button>
+                      </div>
                     </div>
                   {/if}
                 </div>
@@ -3815,6 +3916,7 @@
     padding: var(--s-3) var(--s-4);
     border-bottom: 1px solid var(--border-dim);
     transition: background 150ms ease;
+    cursor: pointer;
   }
   
   .tx-row:last-child { border-bottom: none; }
@@ -3823,20 +3925,21 @@
   .tx-left { display: flex; align-items: center; gap: var(--s-3); }
   
   .tx-icon {
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     display: flex;
     align-items: center;
     justify-content: center;
     border-radius: 50%;
     background: var(--void-deep);
+    flex-shrink: 0;
   }
   
-  .tx-icon.tx-in { color: var(--status-ok); background: rgba(52, 211, 153, 0.1); }
-  .tx-icon.tx-out { color: var(--status-err); background: rgba(248, 113, 113, 0.1); }
+  .tx-icon.tx-in { color: var(--status-ok); background: rgba(52, 211, 153, 0.15); }
+  .tx-icon.tx-out { color: var(--status-err); background: rgba(248, 113, 113, 0.15); }
   
   .tx-info { display: flex; flex-direction: column; gap: 2px; }
-  .tx-type { font-size: 13px; color: var(--text-1); }
+  .tx-type { font-size: 13px; color: var(--text-1); font-weight: 500; }
   .tx-time { font-size: 11px; color: var(--text-4); }
   
   .tx-amt {
@@ -4178,45 +4281,58 @@
     outline: none;
   }
   
-  .tx-row-detailed {
+  /* tx-row-detailed styles consolidated in the Transaction Detail Panel section below */
+  
+  /* Grid column 1: Icon */
+  .tx-icon-wrap { 
     display: flex;
     align-items: center;
-    gap: var(--s-3);
-    padding: var(--s-3) var(--s-4);
-    border-bottom: 1px solid var(--border-dim);
-    transition: background 150ms ease;
+    justify-content: center;
   }
   
-  .tx-row-detailed:last-child { border-bottom: none; }
-  .tx-row-detailed:hover { background: var(--void-up); }
-  
-  .tx-icon-wrap { flex-shrink: 0; }
-  
+  /* Grid column 2: Type + TXID stacked */
   .tx-details {
-    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 3px;
     min-width: 0;
+    overflow: hidden;
   }
   
   .tx-id {
     font-family: var(--font-mono);
     font-size: 11px;
-    color: var(--text-4);
+    color: var(--text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: -0.02em;
   }
   
+  .tx-msg-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+    background: rgba(167, 139, 250, 0.12);
+    border: 1px solid rgba(167, 139, 250, 0.25);
+    border-radius: var(--r-sm);
+    color: var(--violet-400);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+  }
+  
+  /* Grid column 3: Amount + Timestamp stacked */
   .tx-meta {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 2px;
+    gap: 3px;
   }
   
   .tx-amount {
     font-family: var(--font-mono);
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 600;
+    white-space: nowrap;
   }
   
   .tx-amount.positive { color: var(--status-ok); }
@@ -4225,6 +4341,7 @@
   .tx-timestamp {
     font-size: 11px;
     color: var(--text-4);
+    white-space: nowrap;
   }
   
   /* Transaction Label Styles */
@@ -4299,10 +4416,11 @@
     cursor: not-allowed;
   }
   
+  /* Grid column 4: Actions */
   .tx-actions {
     display: flex;
-    gap: 2px;
-    flex-shrink: 0;
+    justify-content: flex-end;
+    gap: 4px;
   }
   
   .tx-row-detailed:hover .tx-actions .btn-icon-sm {
@@ -4310,8 +4428,12 @@
   }
   
   .tx-actions .btn-icon-sm {
-    opacity: 0;
+    opacity: 0.4;
     transition: opacity 150ms ease;
+  }
+  
+  .tx-actions .btn-icon-sm:hover {
+    opacity: 1;
   }
   
   /* Change Password Styles */
@@ -4817,9 +4939,10 @@
     border-top: 1px solid var(--border-dim);
   }
 
-  /* Transaction Detail Panel */
+  /* Transaction Row - Grid Layout */
   .tx-row-main {
-    display: flex;
+    display: grid;
+    grid-template-columns: 44px 1fr 150px 72px;
     align-items: center;
     gap: var(--s-3);
     padding: var(--s-3) var(--s-4);
@@ -4827,26 +4950,55 @@
     transition: background 150ms ease;
   }
   .tx-row-main:hover { background: var(--void-up); }
-  .tx-row-detailed { border-bottom: 1px solid var(--border-dim); }
-  .tx-row-detailed.tx-expanded { background: rgba(34, 211, 238, 0.03); }
+  
+  /* tx-row-detailed is the outer wrapper; layout handled by tx-row-main grid */
+  .tx-row-detailed { 
+    border-bottom: 1px solid var(--border-dim);
+    border-left: 2px solid transparent;
+    transition: border-color 150ms ease, background 150ms ease;
+  }
+  .tx-row-detailed:last-child { border-bottom: none; }
+  .tx-row-detailed:hover { background: var(--void-up); }
+  .tx-row-detailed.tx-expanded { 
+    background: rgba(34, 211, 238, 0.03);
+    border-left-color: var(--cyan-500);
+  }
   .tx-detail-panel {
-    padding: var(--s-3) var(--s-4) var(--s-4);
-    padding-left: calc(var(--s-4) + 28px + var(--s-3));
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-2);
+    padding: var(--s-4);
+    padding-left: calc(var(--s-4) + 44px + var(--s-3));
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--s-4) var(--s-6);
     border-top: 1px solid var(--border-dim);
+    background: var(--void);
+    animation: slideDown 150ms ease-out;
+  }
+  
+  @keyframes slideDown {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .tx-detail-panel .tx-detail-row:first-child,
+  .tx-detail-panel .tx-detail-proof-row {
+    grid-column: 1 / -1;
   }
   .tx-detail-row {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
   }
   .tx-detail-label {
     font-size: 10px;
     color: var(--text-4);
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    font-weight: 500;
   }
   .tx-detail-value {
     font-family: var(--font-mono);
@@ -4856,11 +5008,81 @@
   }
   .tx-detail-value-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--s-2);
+  }
+  .tx-detail-value-row .btn-icon-sm {
+    flex-shrink: 0;
+    opacity: 0.6;
+  }
+  .tx-detail-value-row .btn-icon-sm:hover {
+    opacity: 1;
+  }
+  .tx-detail-txid {
+    font-size: 11px;
+    line-height: 1.4;
   }
   .tx-detail-address {
     color: var(--pink-400);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .tx-detail-direction {
+    font-weight: 500;
+  }
+  .tx-direction-in {
+    color: var(--status-ok);
+  }
+  .tx-direction-out {
+    color: var(--text-2);
+  }
+  .tx-detail-amount {
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .tx-detail-amount.positive {
+    color: var(--status-ok);
+  }
+  .tx-detail-amount.negative {
+    color: var(--text-2);
+  }
+  .tx-detail-burn {
+    color: var(--status-warn);
+  }
+  .tx-detail-port {
+    font-family: var(--font-mono);
+    color: var(--cyan-400);
+    font-size: 12px;
+  }
+  .tx-detail-comment {
+    color: var(--text-2);
+    font-style: italic;
+    background: var(--void-deep);
+    padding: 6px 10px;
+    border-radius: var(--r-sm);
+    border-left: 2px solid var(--cyan-400);
+    font-size: 12px;
+  }
+  .tx-detail-proof-row .tx-detail-value {
+    font-size: 10px;
+    line-height: 1.4;
+    max-height: 60px;
+    overflow-y: auto;
+    background: var(--void-deep);
+    padding: 6px 8px;
+    border-radius: var(--r-sm);
+  }
+  .tx-detail-relative {
+    color: var(--text-4);
+    font-size: 11px;
+  }
+  .tx-detail-actions {
+    grid-column: 1 / -1;
+    padding-top: var(--s-2);
+    margin-top: var(--s-2);
+    border-top: 1px solid var(--border-dim);
+    display: flex;
+    gap: var(--s-2);
   }
 
   /* Sync Progress Bar */
