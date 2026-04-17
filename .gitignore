@@ -48,8 +48,10 @@ datashards/
 # Checksum files
 *.md5
 
-# Internal documentation (for development, not for peer review)
-docs/
+# Internal documentation (ignored by default; allowlisted docs may be committed)
+docs/*
+!docs/ARCHITECTURE.md
+!docs/DESIGN-SYSTEM-RULEBOOK.md
 
 # Compiled binaries (should be built, not committed)
 TELA-Browser-Wails

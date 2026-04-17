@@ -227,6 +227,8 @@ HOLOGRAM/
 
 ## Documentation
 
+- [Architecture](docs/ARCHITECTURE.md) - Contributor/agent architecture map
+- [Design System Rulebook](docs/DESIGN-SYSTEM-RULEBOOK.md) - Non-negotiable UI implementation spec
 - [Official Docs](https://hologram.derod.org) - Full documentation
 - [TELA Protocol](https://tela.derod.org) - TELA specification  
 - [DERO Docs](https://derod.org) - DERO blockchain reference

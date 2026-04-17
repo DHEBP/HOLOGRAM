@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---------|-----------|
-| Latest (`main`) | ✅ |
+| Latest (`dev`) | ✅ |
 | Older releases | ⚠️ Best-effort only |
 
 ---
@@ -63,7 +63,7 @@ HOLOGRAM's security depends on several layers worth understanding:
 - **XSWD permissions** — all wallet operations requested by TELA apps require explicit user approval via native modals; apps cannot silently access wallet functions
 - **Iframe sandboxing** — TELA apps run in sandboxed iframes; they communicate with HOLOGRAM only through the telaHost postMessage bridge, not via direct Go bindings
 - **Local-only RPC** — the embedded XSWD server listens on `127.0.0.1` only; it is not exposed to the network
-- **No telemetry** — HOLOGRAM does not phone home, track usage, or collect analytics
+- **Privacy-first networking** — HOLOGRAM does not collect usage analytics or tracking telemetry; optional GitHub update checks may be enabled via settings
 
 ---
 

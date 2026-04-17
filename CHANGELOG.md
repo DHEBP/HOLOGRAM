@@ -7,9 +7,31 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.0.0] - 2026-04-01
+## [1.0.0] - 2026-04-16
 
-First public release. HOLOGRAM is a native desktop browser and developer studio for the DERO decentralized web (TELA protocol), built with Go + Wails + Svelte.
+First public release.
+
+### Added (post-RC)
+- `hologram-explorer-search` message handler — TELA apps can invoke Explorer searches
+- Privacy Mode enforcement for external link opens (https intercept + user prompt)
+- `dero://` deep link protocol registration and launch URL handling
+
+### Fixed (post-RC)
+- Network classification now uses daemon-reported field (fixes simulator edge cases)
+- Recent search history scoped per-network
+- SC deployment TXIDs auto-pivot to contract view in Explorer
+- Gnomon corrupted cache recovery on startup
+- Batch deploy budget gate and mainnet precheck hardening
+- Simulator network switching and wallet state alignment
+- EPOCH attribution and uptime overflow guards
+- Favorite toggling and offline cache metadata display
+- Active wallet filename kept in sync after operations
+
+---
+
+## [1.0.0-rc] - 2026-04-01
+
+Release candidate — full feature set for testing.
 
 ### Added
 
@@ -161,3 +183,4 @@ First public release. HOLOGRAM is a native desktop browser and developer studio 
 - Copyright year updated to 2026
 
 [1.0.0]: https://github.com/DHEBP/HOLOGRAM/releases/tag/v1.0.0
+[1.0.0-rc]: https://github.com/DHEBP/HOLOGRAM/releases/tag/v1.0.0-rc
