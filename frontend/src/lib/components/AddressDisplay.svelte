@@ -54,7 +54,6 @@
       }
     } catch (e) {
       // Silently fail - just show address without name
-      console.debug('NRS lookup failed:', e);
     } finally {
       loading = false;
     }

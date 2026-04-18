@@ -1,7 +1,9 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
   import { appState } from '../lib/stores/appState.js';
-  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline } from '../../wailsjs/go/main/App.js';
+  import { recentSearchesKey, migrateLegacyExplorerSearchStorage } from '../lib/recentSearchStorage.js';
+  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline, GetBlockByHash, GetCoinbaseMiner, GetAddressSCIDReferences, IsInSimulatorMode } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -83,6 +85,27 @@
   let varType = 'string';  // 'string' or 'uint64'
   let varLoading = false;
   
+  // Hex toggle: tracks which string var keys are currently showing raw hex instead of decoded text
+  let hexViewKeys = {};
+  function toggleHexView(key) { hexViewKeys[key] = !hexViewKeys[key]; hexViewKeys = hexViewKeys; }
+  function tryHexDecode(hex) {
+    if (typeof hex !== 'string') return String(hex);
+    try {
+      const bytes = hex.match(/.{1,2}/g);
+      if (!bytes) return hex;
+      const decoded = new TextDecoder('utf-8', { fatal: true }).decode(
+        new Uint8Array(bytes.map(b => parseInt(b, 16)))
+      );
+      return decoded.replace(/\0+$/, '');
+    } catch { return hex; }
+  }
+  function isHexEncoded(str) {
+    if (typeof str !== 'string' || str.length === 0 || str.length % 2 !== 0) return false;
+    if (!/^[0-9a-fA-F]+$/.test(str)) return false;
+    const decoded = tryHexDecode(str);
+    return decoded !== str;
+  }
+  
   // SC Discovery state
   let showSCDiscoveryModal = false;
   let discoveredSCs = [];
@@ -123,10 +146,21 @@
   let changeTimelineLoading = false;
   let showChangeTimeline = false;
   
+  // Block miner attribution state (2B)
+  let blockMinerAddress = '';
+  
+  // Address SCID cross-references state (2C)
+  let addressSCIDRefs = [];
+  
   // Landing view state (merged from Search.svelte)
   let recentSearches = [];
   let showHistoryModal = false;
   let omniSearchComponent;
+  
+  // Simulator detection
+  let isSimulator = false;
+  let simulatorChainHeight = 0;
+  let simulatorLowChainBannerVisible = true;
   
   // DVM BASIC syntax highlighting
   function highlightDVMBasic(code) {
@@ -187,11 +221,19 @@
     omniSearchComponent?.focus();
   }
   
+  function explorerNetwork() {
+    return get(appState)?.network || 'mainnet';
+  }
+  
   function loadRecentSearches() {
+    migrateLegacyExplorerSearchStorage();
     try {
-      const stored = localStorage.getItem('recentSearches');
+      const key = recentSearchesKey(explorerNetwork());
+      const stored = localStorage.getItem(key);
       if (stored) {
         recentSearches = JSON.parse(stored).slice(0, 5);
+      } else {
+        recentSearches = [];
       }
     } catch (e) {
       recentSearches = [];
@@ -202,7 +244,7 @@
     const entry = { query, type, timestamp: Date.now() };
     recentSearches = [entry, ...recentSearches.filter(s => s.query !== query)].slice(0, 5);
     try {
-      localStorage.setItem('recentSearches', JSON.stringify(recentSearches));
+      localStorage.setItem(recentSearchesKey(explorerNetwork()), JSON.stringify(recentSearches));
     } catch (e) {}
   }
   
@@ -214,8 +256,13 @@
   
   function clearRecentSearches() {
     recentSearches = [];
-    localStorage.removeItem('recentSearches');
+    try {
+      localStorage.removeItem(recentSearchesKey(explorerNetwork()));
+    } catch (e) {}
   }
+  
+  // Reload recent searches when switching mainnet ↔ simulator (separate history per network)
+  $: $appState.network, loadRecentSearches();
   
   async function handleHistorySelect(event) {
     const search = event.detail;
@@ -231,6 +278,14 @@
   onMount(async () => {
     // Load recent searches for landing view
     loadRecentSearches();
+    
+    // Detect simulator mode
+    try {
+      const simResult = await IsInSimulatorMode();
+      isSimulator = simResult === true;
+    } catch (e) {
+      isSimulator = false;
+    }
     
     await loadRecentData(0);
     
@@ -286,17 +341,22 @@
       console.log('XSWD block subscription not available:', e);
     }
     
-    // Listen for search results from Search landing page
+    // Listen for search results from Search landing page or cross-tab navigation
     const handleSearchResult = (e) => {
       const { type, query, result } = e.detail;
       if (result && result.success) {
-        console.log('📍 Explorer received search result:', { type, query });
+        console.log('[Explorer] Received search result:', { type, query });
         searchQuery = query;
         searchResult = result;
         
         // Add to nav history
         navHistory = [...navHistory.slice(0, currentNavIndex + 1), { type, query }];
         currentNavIndex = navHistory.length - 1;
+      } else if (query) {
+        // No pre-fetched result (e.g. block/address search from Browser) - run the search
+        searchQuery = query;
+        showLanding = false;
+        performSearch(query, type, true);
       }
     };
     window.addEventListener('search-result', handleSearchResult);
@@ -496,6 +556,31 @@
   }
   
   /**
+   * Fetch coinbase miner address for a given txid (2B)
+   */
+  async function fetchCoinbaseMiner(txid) {
+    try {
+      const result = await GetCoinbaseMiner(txid);
+      if (result.success && result.isCoinbase && result.minerAddress) {
+        return result.minerAddress;
+      }
+    } catch (e) { /* not coinbase */ }
+    return null;
+  }
+  
+  /**
+   * Load SCID cross-references for an address (2C)
+   */
+  async function loadAddressSCIDRefs(address) {
+    try {
+      const result = await GetAddressSCIDReferences(address);
+      if (result.success && result.references) {
+        addressSCIDRefs = result.references;
+      }
+    } catch (e) { addressSCIDRefs = []; }
+  }
+  
+  /**
    * Perform search using OmniSearch backend
    */
   async function performSearch(query, detectedType, addToHistory = true) {
@@ -509,6 +594,56 @@
       const result = await OmniSearch(query);
       
       if (!result.success) {
+        // 2A: If hash didn't resolve via OmniSearch, try as block hash
+        const isHex64 = /^[a-fA-F0-9]{64}$/.test(query);
+        if (isHex64) {
+          try {
+            const blockResult = await GetBlockByHash(query);
+            if (blockResult.success && blockResult.block) {
+              const bd = blockResult.block;
+              searchResult = {
+                type: 'block',
+                data: bd,
+                height: bd.height,
+                topoheight: bd.topoheight,
+                hash: bd.hash || query,
+                tips: bd.tips || [],
+                nonce: bd.nonce,
+                depth: bd.depth,
+                difficulty: bd.difficulty,
+                miners: bd.miners || [],
+                minerAddress: bd.miner_address,
+                reward: bd.reward,
+                totalFees: bd.total_fees,
+                sizeKb: bd.size_kb,
+                sizeBytes: bd.size_bytes,
+                txCount: bd.tx_count,
+                txHashes: bd.tx_hashes || [],
+                txs: bd.txs || [],
+                orphanStatus: bd.orphan_status,
+                syncBlock: bd.sync_block,
+                sideBlock: bd.side_block,
+                timestamp: bd.timestamp,
+                age: bd.age,
+                blockTime: bd.block_time,
+              };
+              toast.info('Found block by hash', 2000);
+              // Fetch miner for the block's coinbase TX
+              if (searchResult.txHashes?.length > 0 && !searchResult.minerAddress) {
+                fetchCoinbaseMiner(searchResult.txHashes[0]).then(addr => {
+                  if (addr) { blockMinerAddress = addr; searchResult.minerAddress = addr; searchResult = searchResult; }
+                });
+              }
+              if (addToHistory) {
+                navHistory = navHistory.slice(0, currentNavIndex + 1);
+                navHistory.push({ type: 'block', query });
+                currentNavIndex = navHistory.length - 1;
+              }
+              loading = false;
+              return;
+            }
+          } catch (e) { /* not a block hash either */ }
+        }
         console.error('Search failed:', result.error);
         toast.error(result.error || 'Search failed. Please try again.');
         loading = false;
@@ -568,6 +703,13 @@
             age: result.data.age,
             blockTime: result.data.block_time,
           };
+          // 2B: Fetch miner attribution from coinbase TX if not already present
+          blockMinerAddress = '';
+          if (searchResult.txHashes?.length > 0 && !searchResult.minerAddress) {
+            fetchCoinbaseMiner(searchResult.txHashes[0]).then(addr => {
+              if (addr) { blockMinerAddress = addr; searchResult.minerAddress = addr; searchResult = searchResult; }
+            });
+          }
           break;
           
         case 'tx':
@@ -577,6 +719,13 @@
             toast.error('Transaction not found or invalid transaction data.');
             loading = false;
             searchResult = null;
+            return;
+          }
+          // Auto-pivot: SC deployment TXs share TXID == SCID — load as smart contract directly
+          if (txData.tx_type === 'SC' || txData.txType === 'SC') {
+            loading = false;
+            toast.info('This is a smart contract deployment — loading contract…', 2000);
+            await searchSCDirectly(query);
             return;
           }
           searchResult = {
@@ -621,6 +770,9 @@
             data: result.data,
             address: query,
           };
+          // 2C: Load SCID cross-references for this address
+          addressSCIDRefs = [];
+          loadAddressSCIDRefs(query);
           break;
           
         case 'durl':
@@ -802,10 +954,19 @@
         return;
       }
       
+      // Map all fields the template expects from the backend response
       searchResult = {
         type: 'tx',
         data: response,
         hex: response.hex || '',
+        // Extract fields used by the template
+        txType: response.tx_type || 'NORMAL',
+        isCoinbase: response.is_coinbase || false,
+        ringMembers: response.rings || [],
+        sizeKb: response.size_kb || '0',
+        assets: response.assets || [],
+        burnValue: response.burn_value || 0,
+        minerAddress: response.miner_address || null,
       };
       
       // Add to navigation history
@@ -1343,11 +1504,24 @@
           {#if $appState.chainHeight}
             <div class="landing-status-item">
               <Package size={12} strokeWidth={1.5} class="landing-status-icon" />
-              <span class="landing-status-label">Block #{$appState.chainHeight.toLocaleString()}</span>
+              <span class="landing-status-label">
+                {#if isSimulator && $appState.chainHeight < 20}
+                  Simulator Block #{$appState.chainHeight.toLocaleString()} (fresh chain)
+                {:else}
+                  Block #{$appState.chainHeight.toLocaleString()}
+                {/if}
+              </span>
+            </div>
+          {/if}
+          {#if isSimulator}
+            <div class="landing-status-item landing-status-simulator">
+              <AlertTriangle size={12} strokeWidth={1.5} class="landing-status-icon" />
+              <span class="landing-status-label">Simulator Mode</span>
             </div>
           {/if}
         </div>
       </div>
+      
     </div>
   </div>
 {:else}
@@ -1377,6 +1551,42 @@
       </div>
     </div>
   </div>
+  
+  <!-- Simulator Mode Banner -->
+  {#if isSimulator}
+  <div class="simulator-banner">
+    <div class="simulator-banner-inner">
+      <AlertTriangle size={14} strokeWidth={1.5} class="simulator-banner-icon" />
+      <div class="simulator-banner-text">
+        <strong>Simulator Mode</strong> — Blockchain is ephemeral and resets on restart.
+        {#if $appState.chainHeight > 0}
+          Current height: <strong>#{$appState.chainHeight.toLocaleString()}</strong>.
+        {/if}
+        {#if $appState.chainHeight < 20}
+          Chain is still initializing — this is normal.
+        {/if}
+      </div>
+    </div>
+  </div>
+  
+  <!-- Fresh Simulator Chain Banner (shown when chain height is very low) -->
+  {#if $appState.chainHeight > 0 && $appState.chainHeight < 20 && simulatorLowChainBannerVisible}
+  <div class="simulator-fresh-chain-banner">
+    <div class="simulator-fresh-chain-inner">
+      <div class="simulator-fresh-chain-icon">
+        <Loader2 size={14} strokeWidth={1.5} class="simulator-fresh-chain-spinner" />
+      </div>
+      <div class="simulator-fresh-chain-text">
+        <strong>Fresh Simulator Chain</strong> — Block #{$appState.chainHeight.toLocaleString()} of a new ephemeral chain.
+        Gnomon is indexing — the explorer will populate as blocks are mined.
+      </div>
+      <button class="simulator-fresh-chain-dismiss" on:click={() => simulatorLowChainBannerVisible = false}>
+        <X size={12} strokeWidth={1.5} />
+      </button>
+    </div>
+  </div>
+  {/if}
+  {/if}
   
     <!-- v6.2 Unified Page Body (Simplified Sidebar) -->
   <div class="page-body">
@@ -1891,6 +2101,19 @@
                     <span class="cmd-metadata-value mono">{formatHash(searchResult.blid)}</span>
                   </div>
                 {/if}
+                
+                <!-- SC TX: Quick link to view as Smart Contract (TXID == SCID for deployments) -->
+                {#if searchResult.txType === 'SC' || searchResult.data?.tx_type === 'SC'}
+                  <div class="cmd-metadata-row sc-tx-redirect-row">
+                    <span class="cmd-metadata-label"><FileCode size={12} strokeWidth={1.5} /> Smart Contract</span>
+                    <button 
+                      class="cmd-metadata-value cmd-clickable sc-tx-redirect-btn"
+                      on:click={() => searchSCDirectly(searchQuery)}
+                    >
+                      View Smart Contract →
+                    </button>
+                  </div>
+                {/if}
               </div>
             </div>
             
@@ -2098,7 +2321,7 @@
                     Copy Code
                   </button>
                 </div>
-                <pre class="cmd-code-preview">{@html highlightDVMBasic(searchResult.data.code)}</pre>
+                <pre class="cmd-code-preview">{searchResult.data.code}</pre>
               </div>
             {/if}
             
@@ -2114,10 +2337,26 @@
                 </div>
                 <div class="cmd-vars-list">
                   {#each Object.entries(searchResult.data.stringkeys) as [key, value]}
+                    {@const strVal = String(value)}
+                    {@const decodedKey = isHexEncoded(key) ? tryHexDecode(key) : key}
+                    {@const decodedVal = isHexEncoded(strVal) ? tryHexDecode(strVal) : strVal}
+                    {@const keyWasDecoded = decodedKey !== key}
+                    {@const valWasDecoded = decodedVal !== strVal}
+                    {@const showingRaw = hexViewKeys[key]}
                     <div class="cmd-var-row">
-                      <span class="cmd-var-key string">{key}</span>
+                      <span class="cmd-var-key string">{showingRaw ? key : decodedKey}</span>
                       <div class="cmd-var-value-row">
-                        <span class="cmd-var-value" title={value}>{value}</span>
+                        <span class="cmd-var-value" class:cmd-var-hex={showingRaw} title={showingRaw ? strVal : decodedVal}>
+                          {showingRaw ? strVal : decodedVal}
+                        </span>
+                        {#if keyWasDecoded || valWasDecoded}
+                          <button
+                            class="cmd-hex-toggle"
+                            class:active={showingRaw}
+                            on:click={() => toggleHexView(key)}
+                            title={showingRaw ? 'Show decoded value' : 'Show raw hex (on-chain storage)'}
+                          >hex</button>
+                        {/if}
                         {#if showVarEditor}
                           <button
                             on:click={() => handleDeleteVar(key)}
@@ -2726,6 +2965,31 @@
                 <div class="cmd-empty-state">
                   <Package size={20} strokeWidth={1.5} class="cmd-empty-icon" />
                   <span class="cmd-empty-text">No TELA apps owned by this address</span>
+                </div>
+              </div>
+            {/if}
+            
+            <!-- 2C: Address SCID Cross-References -->
+            {#if addressSCIDRefs.length > 0}
+              <div class="cmd-stats-panel" style="margin-top: var(--s-4);">
+                <div class="cmd-panel-header">
+                  <div class="cmd-panel-title">
+                    <span class="cmd-panel-icon">⬡</span>
+                    REFERENCED IN SMART CONTRACTS
+                  </div>
+                  <span class="cmd-badge">{addressSCIDRefs.length} refs</span>
+                </div>
+                <div class="cmd-list-content">
+                  {#each addressSCIDRefs as ref}
+                    <button
+                      on:click={() => goToSC(ref.scid || ref)}
+                      class="cmd-list-item"
+                    >
+                      <span class="cmd-list-hash">{(ref.scid || ref).slice(0, 16)}...{(ref.scid || ref).slice(-8)}</span>
+                      {#if ref.name}<span class="cmd-list-type">{ref.name}</span>{/if}
+                      <ChevronRight size={12} strokeWidth={1.5} class="cmd-list-arrow" />
+                    </button>
+                  {/each}
                 </div>
               </div>
             {/if}
@@ -3481,6 +3745,12 @@
   /* Explorer Search in Header */
   .explorer-search-wrapper {
     min-width: 360px;
+    display: flex;
+    align-items: center;
+    background: var(--void-mid);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-lg);
+    padding: var(--s-1) var(--s-2);
   }
   
   /* Page header wrapper removed - now using flat .content-section-title / .content-section-desc pattern */
@@ -4540,6 +4810,39 @@
   .cmd-var-delete:hover {
     background: rgba(248, 113, 113, 0.2);
     border-color: rgba(248, 113, 113, 0.5);
+  }
+  
+  .cmd-hex-toggle {
+    padding: 1px 5px;
+    background: rgba(34, 211, 238, 0.08);
+    border: 1px solid rgba(34, 211, 238, 0.2);
+    border-radius: var(--r-xs);
+    color: var(--text-4);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 100ms ease;
+    flex-shrink: 0;
+  }
+  
+  .cmd-hex-toggle:hover {
+    background: rgba(34, 211, 238, 0.15);
+    border-color: rgba(34, 211, 238, 0.4);
+    color: var(--cyan-400);
+  }
+  
+  .cmd-hex-toggle.active {
+    background: rgba(34, 211, 238, 0.2);
+    border-color: rgba(34, 211, 238, 0.5);
+    color: var(--cyan-400);
+  }
+  
+  .cmd-var-hex {
+    color: var(--text-4);
+    font-size: 11px;
   }
   
   /* v6.1 Address icon */
@@ -6284,5 +6587,116 @@
   @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+  }
+  
+  /* === Simulator Banner === */
+  .simulator-banner {
+    width: 100%;
+    padding: 0 var(--s-4, 16px);
+    margin-bottom: var(--s-3, 12px);
+  }
+  
+  .simulator-banner-inner {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.2);
+    border-radius: var(--r-sm, 6px);
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  
+  .simulator-banner-icon {
+    color: var(--status-warn, #fbbf24);
+    flex-shrink: 0;
+  }
+  
+  .simulator-banner-text {
+    line-height: 1.4;
+  }
+  
+  .simulator-banner-text strong {
+    color: var(--text-1);
+    font-weight: 500;
+  }
+
+  /* === Fresh Simulator Chain Banner === */
+  .simulator-fresh-chain-banner {
+    width: 100%;
+    padding: 0 var(--s-4, 16px);
+    margin-bottom: var(--s-3, 12px);
+  }
+
+  .simulator-fresh-chain-inner {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: var(--r-sm, 6px);
+    font-size: 12px;
+    color: var(--text-3);
+  }
+
+  .simulator-fresh-chain-icon {
+    color: var(--status-info, #6366f1);
+    flex-shrink: 0;
+  }
+
+  .simulator-fresh-chain-spinner {
+    animation: spin 1s linear infinite;
+  }
+
+  .simulator-fresh-chain-text {
+    line-height: 1.4;
+    flex: 1;
+  }
+
+  .simulator-fresh-chain-text strong {
+    color: var(--text-1);
+    font-weight: 500;
+  }
+
+  .simulator-fresh-chain-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-3);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: var(--r-sm, 4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .simulator-fresh-chain-dismiss:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-1);
+  }
+
+  /* === SC TX Redirect === */
+  .sc-tx-redirect-row {
+    background: rgba(99, 102, 241, 0.06);
+    border-radius: var(--r-sm, 6px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    border: 1px solid rgba(99, 102, 241, 0.15);
+  }
+
+  .sc-tx-redirect-btn {
+    color: var(--status-info, #6366f1) !important;
+    font-weight: 500;
+  }
+
+  /* === Simulator Status in Landing Footer === */
+  .landing-status-simulator {
+    color: var(--status-warn, #fbbf24);
+  }
+
+  .landing-status-simulator .landing-status-icon {
+    color: var(--status-warn, #fbbf24);
   }
 </style>

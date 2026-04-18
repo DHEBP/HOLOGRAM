@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,20 +43,31 @@ type rateLimitEntry struct {
 	lastRequest time.Time
 	hashCount   uint64
 	window      time.Duration
+	// Local support metrics retained across rolling rate-limit windows.
+	totalRequests   uint64
+	totalHashes     uint64
+	totalMiniBlocks int
 }
 
 // EpochStats represents EPOCH session statistics for frontend display
 type EpochStats struct {
-	Active       bool    `json:"active"`
-	Enabled      bool    `json:"enabled"`
-	Hashes       uint64  `json:"hashes"`
-	HashesStr    string  `json:"hashes_str"`
-	MiniBlocks   int     `json:"miniblocks"`
-	Version      string  `json:"version"`
-	MaxHashes    int     `json:"max_hashes"`
-	MaxThreads   int     `json:"max_threads"`
-	Address      string  `json:"address"`
-	IsProcessing bool    `json:"is_processing"`
+	Active                 bool      `json:"active"`
+	Enabled                bool      `json:"enabled"`
+	Hashes                 uint64    `json:"hashes"`
+	HashesStr              string    `json:"hashes_str"`
+	MiniBlocks             int       `json:"miniblocks"`
+	Version                string    `json:"version"`
+	MaxHashes              int       `json:"max_hashes"`
+	MaxThreads             int       `json:"max_threads"`
+	Address                string    `json:"address"`
+	IsProcessing           bool      `json:"is_processing"`
+	TrackedApps            int       `json:"tracked_apps"`
+	TotalRequests          uint64    `json:"total_requests"`
+	LastRequester          string    `json:"last_requester"`
+	LastRequestAt          time.Time `json:"last_request_at"`
+	TopRequester           string    `json:"top_requester"`
+	TopRequesterHashes     uint64    `json:"top_requester_hashes"`
+	TopRequesterMiniblocks int       `json:"top_requester_miniblocks"`
 }
 
 // EpochResult represents the result of an EPOCH hash attempt
@@ -70,16 +82,16 @@ type EpochResult struct {
 
 const (
 	// Default settings for EPOCH
-	DEFAULT_EPOCH_MAX_HASHES  = 100  // Conservative default for per-request limit
-	DEFAULT_EPOCH_MAX_THREADS = 2    // Conservative CPU usage
-	
+	DEFAULT_EPOCH_MAX_HASHES  = 100 // Conservative default for per-request limit
+	DEFAULT_EPOCH_MAX_THREADS = 2   // Conservative CPU usage
+
 	// Rate limiting
-	RATE_LIMIT_WINDOW        = 10 * time.Second // Window for rate limiting
-	RATE_LIMIT_MAX_HASHES    = 500              // Max hashes per app per window
-	
+	RATE_LIMIT_WINDOW     = 10 * time.Second // Window for rate limiting
+	RATE_LIMIT_MAX_HASHES = 500              // Max hashes per app per window
+
 	// Address switching
 	STICKY_TIMEOUT = 30 * time.Second // How long to stay on app developer's address after last request
-	
+
 	// EPOCH Developer Support Address
 	// This is the default address where EPOCH mining rewards are sent when idle.
 	// When a TELA app requests EPOCH with their developer address, we temporarily switch to that address.
@@ -267,6 +279,32 @@ func (e *EpochHandler) GetStats() EpochStats {
 		}
 	}
 
+	e.rateLimitLock.Lock()
+	stats.TrackedApps = len(e.rateLimits)
+	for appID, entry := range e.rateLimits {
+		if entry == nil {
+			continue
+		}
+		stats.TotalRequests += entry.totalRequests
+		if entry.totalHashes > stats.TopRequesterHashes {
+			stats.TopRequester = appID
+			stats.TopRequesterHashes = entry.totalHashes
+			stats.TopRequesterMiniblocks = entry.totalMiniBlocks
+		}
+		if entry.lastRequest.After(stats.LastRequestAt) {
+			stats.LastRequestAt = entry.lastRequest
+			stats.LastRequester = appID
+		}
+	}
+	e.rateLimitLock.Unlock()
+
+	if stats.LastRequester == "" {
+		stats.LastRequester = "none"
+	}
+	if stats.TopRequester == "" {
+		stats.TopRequester = "none"
+	}
+
 	return stats
 }
 
@@ -280,6 +318,7 @@ func (e *EpochHandler) HandleRequest(requestedHashes int, appSCID string) EpochR
 	e.RUnlock()
 
 	result := EpochResult{}
+	appID := normalizeAppIdentifier(appSCID)
 
 	// Check if enabled
 	if !enabled {
@@ -302,7 +341,7 @@ func (e *EpochHandler) HandleRequest(requestedHashes int, appSCID string) EpochR
 	}
 
 	// Rate limiting per app
-	if e.isRateLimited(appSCID, uint64(requestedHashes)) {
+	if e.isRateLimited(appID, uint64(requestedHashes)) {
 		result.Error = "Rate limited"
 		return result
 	}
@@ -315,7 +354,7 @@ func (e *EpochHandler) HandleRequest(requestedHashes int, appSCID string) EpochR
 	}
 
 	// Record for rate limiting
-	e.recordRequest(appSCID, epochResult.Hashes)
+	e.recordRequest(appID, epochResult.Hashes, epochResult.Submitted)
 
 	result.Success = true
 	result.Hashes = epochResult.Hashes
@@ -324,7 +363,7 @@ func (e *EpochHandler) HandleRequest(requestedHashes int, appSCID string) EpochR
 	result.HashPerSec = epochResult.HashPerSec
 
 	if epochResult.Submitted > 0 {
-		e.log(fmt.Sprintf("[EPOCH] Found %d miniblock(s) for app %s!", epochResult.Submitted, appSCID[:16]))
+		e.log(fmt.Sprintf("[EPOCH] Found %d miniblock(s) for app %s!", epochResult.Submitted, previewAppIdentifier(appID)))
 	}
 
 	return result
@@ -332,6 +371,8 @@ func (e *EpochHandler) HandleRequest(requestedHashes int, appSCID string) EpochR
 
 // isRateLimited checks if an app has exceeded its rate limit
 func (e *EpochHandler) isRateLimited(appSCID string, requestedHashes uint64) bool {
+	appSCID = normalizeAppIdentifier(appSCID)
+
 	e.rateLimitLock.Lock()
 	defer e.rateLimitLock.Unlock()
 
@@ -360,7 +401,9 @@ func (e *EpochHandler) isRateLimited(appSCID string, requestedHashes uint64) boo
 }
 
 // recordRequest records a request for rate limiting
-func (e *EpochHandler) recordRequest(appSCID string, hashes uint64) {
+func (e *EpochHandler) recordRequest(appSCID string, hashes uint64, submitted int) {
+	appSCID = normalizeAppIdentifier(appSCID)
+
 	e.rateLimitLock.Lock()
 	defer e.rateLimitLock.Unlock()
 
@@ -369,9 +412,12 @@ func (e *EpochHandler) recordRequest(appSCID string, hashes uint64) {
 
 	if !exists {
 		e.rateLimits[appSCID] = &rateLimitEntry{
-			lastRequest: now,
-			hashCount:   hashes,
-			window:      RATE_LIMIT_WINDOW,
+			lastRequest:     now,
+			hashCount:       hashes,
+			window:          RATE_LIMIT_WINDOW,
+			totalRequests:   1,
+			totalHashes:     hashes,
+			totalMiniBlocks: submitted,
 		}
 		return
 	}
@@ -383,6 +429,9 @@ func (e *EpochHandler) recordRequest(appSCID string, hashes uint64) {
 	} else {
 		entry.hashCount += hashes
 	}
+	entry.totalRequests++
+	entry.totalHashes += hashes
+	entry.totalMiniBlocks += submitted
 }
 
 // GetConfig returns the current EPOCH configuration
@@ -453,7 +502,7 @@ func (e *EpochHandler) SwitchToAddress(newAddress string) error {
 	err := epoch.StartGetWork(newAddress, e.daemonEndpoint)
 	if err != nil {
 		// Try to restore default connection
-		e.log(fmt.Sprintf("[EPOCH] Failed to switch to %s...%s: %v", 
+		e.log(fmt.Sprintf("[EPOCH] Failed to switch to %s...%s: %v",
 			newAddress[:12], newAddress[len(newAddress)-8:], err))
 		epoch.StartGetWork(e.defaultAddress, e.daemonEndpoint)
 		e.address = e.defaultAddress
@@ -469,7 +518,7 @@ func (e *EpochHandler) SwitchToAddress(newAddress string) error {
 	e.currentAppAddress = newAddress
 	e.lastAppRequest = time.Now()
 
-	e.log(fmt.Sprintf("[EPOCH] Switched to app developer: %s...%s", 
+	e.log(fmt.Sprintf("[EPOCH] Switched to app developer: %s...%s",
 		newAddress[:12], newAddress[len(newAddress)-8:]))
 
 	return nil
@@ -562,3 +611,21 @@ func (e *EpochHandler) SetDaemonEndpoint(endpoint string) {
 	e.daemonEndpoint = endpoint
 }
 
+func normalizeAppIdentifier(appID string) string {
+	normalized := strings.TrimSpace(appID)
+	if normalized == "" {
+		return "unknown"
+	}
+	if len(normalized) > 128 {
+		return normalized[:128]
+	}
+	return normalized
+}
+
+func previewAppIdentifier(appID string) string {
+	normalized := normalizeAppIdentifier(appID)
+	if normalized == "unknown" || len(normalized) <= 16 {
+		return normalized
+	}
+	return normalized[:16] + "..."
+}

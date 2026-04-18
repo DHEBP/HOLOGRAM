@@ -1,10 +1,10 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { walletState, settingsState, toast } from '../stores/appState.js';
-  import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList } from '../../../wailsjs/go/main/App.js';
+  import { ScanFolder, EstimateBatchGas, DeployTELABatch, IsInSimulatorMode, GetMODsList, GetMetadataFiles, PreflightExpand } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
-  import { BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
-  import { Copy, Eye } from 'lucide-svelte';
+  import { ClipboardSetText } from '../../../wailsjs/runtime/runtime.js';
+  import { Copy, Eye, AlertTriangle, Search, Clock, Check, X, Puzzle } from 'lucide-svelte';
   
   export let folderPath = '';
   
@@ -28,9 +28,11 @@
   let indexDescription = '';
   let indexIcon = '';
   
-  // New: Ringsize, compression, and confirmation
+  // New: Ringsize, compression, auto-shard, and confirmation
   let ringsize = 2; // 2 = updateable, 16+ = immutable
   let enableCompression = false; // Global compression toggle (matching tela-cli)
+  let enableAutoShard = false;   // Opt-in: expand oversized files into shards during preflight
+  let preflightExpansion = null; // Result from PreflightExpand when auto-shard is on
   let isSimulator = false;
   let showConfirmModal = false;
   
@@ -46,8 +48,146 @@
   
   // Event subscriptions
   let unsubscribeStart, unsubscribeProgress, unsubscribeComplete, unsubscribeError;
+  let deployStartedAt = 0;
+  let waitCycleStartedAt = 0;
+  let waitNow = Date.now();
+  let waitTicker = null;
+  let prefsLoaded = false;
+  let indexConfigCardEl = null;
+  let deployButtonEl = null;
+  let successPrimaryActionEl = null;
+
+  const BATCH_PREFS_KEY = 'hologram.batch_upload.preferences.v1';
+  const DEPLOY_STEPS = ['Preflight', 'DOC Deploy', 'Confirmations', 'INDEX', 'Complete'];
+
+  function startWaitTicker() {
+    if (waitTicker) return;
+    waitTicker = setInterval(() => {
+      waitNow = Date.now();
+    }, 1000);
+  }
+
+  function stopWaitTicker() {
+    if (!waitTicker) return;
+    clearInterval(waitTicker);
+    waitTicker = null;
+  }
+
+  function resetWaitTracking() {
+    deployStartedAt = 0;
+    waitCycleStartedAt = 0;
+    stopWaitTicker();
+  }
+
+  function getCurrentStepIndex(phase) {
+    switch (phase) {
+      case 'starting':
+      case 'preparing':
+      case 'idle':
+        return 0;
+      case 'deploying':
+      case 'completed':
+      case 'verifying':
+      case 'verify_warning':
+        return 1;
+      case 'waiting_confirmation':
+      case 'waiting_for_docs':
+        return 2;
+      case 'creating_index':
+        return 3;
+      case 'complete':
+        return 4;
+      case 'error':
+      default:
+        return 0;
+    }
+  }
+
+  function getStepClass(stepIndex, phase) {
+    const current = getCurrentStepIndex(phase);
+    if (phase === 'error' && stepIndex === current) return 'error';
+    if (stepIndex < current) return 'done';
+    if (stepIndex === current) return 'active';
+    return 'pending';
+  }
+
+  function formatWaitMeta() {
+    if (!deployStartedAt) return '';
+    const elapsed = Math.max(0, Math.floor((waitNow - deployStartedAt) / 1000));
+    const waitingLabel = deployProgress.phase === 'waiting_for_docs'
+      ? 'Waiting for DOC confirmations'
+      : 'Waiting for block confirmation';
+    return `Elapsed ${elapsed}s · ${waitingLabel}`;
+  }
+
+  function getWaitGuidance() {
+    if (isSimulator) {
+      return 'Simulator confirmations are usually quick, but can still pause between steps.';
+    }
+    return 'Mainnet confirmations can vary. Please wait patiently.';
+  }
+
+  function savePreferences() {
+    if (!prefsLoaded || typeof localStorage === 'undefined') return;
+    const prefs = {
+      indexName,
+      indexDURL,
+      indexDescription,
+      indexIcon,
+      ringsize,
+      enableCompression,
+      enableAutoShard,
+      enableMods,
+      selectedVsMod,
+      selectedTxMods,
+    };
+    try {
+      localStorage.setItem(BATCH_PREFS_KEY, JSON.stringify(prefs));
+    } catch (e) {
+      // Ignore storage failures in constrained environments.
+    }
+  }
+
+  function loadPreferences() {
+    if (typeof localStorage === 'undefined') {
+      prefsLoaded = true;
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(BATCH_PREFS_KEY);
+      if (!raw) {
+        prefsLoaded = true;
+        return;
+      }
+      const prefs = JSON.parse(raw);
+      indexName = prefs.indexName || '';
+      indexDURL = prefs.indexDURL || '';
+      indexDescription = prefs.indexDescription || '';
+      indexIcon = prefs.indexIcon || '';
+      ringsize = prefs.ringsize || 2;
+      enableCompression = prefs.enableCompression === true;
+      enableAutoShard = prefs.enableAutoShard === true;
+      enableMods = prefs.enableMods === true;
+      selectedVsMod = prefs.selectedVsMod || '';
+      selectedTxMods = Array.isArray(prefs.selectedTxMods) ? prefs.selectedTxMods : [];
+    } catch (e) {
+      // Ignore corrupt preference payloads and continue with defaults.
+    } finally {
+      prefsLoaded = true;
+    }
+  }
+
+  function focusIndexConfig() {
+    indexConfigCardEl?.focus();
+  }
+
+  function focusDeployAction() {
+    deployButtonEl?.focus();
+  }
   
   onMount(async () => {
+    loadPreferences();
+
     // Check if we're in simulator mode
     try {
       const result = await IsInSimulatorMode();
@@ -58,6 +198,11 @@
     
     // Subscribe to deployment events
     unsubscribeStart = EventsOn('tela:deploy:start', (data) => {
+      if (!deployStartedAt) {
+        deployStartedAt = Date.now();
+        waitNow = deployStartedAt;
+      }
+      startWaitTicker();
       deployProgress = { 
         current: 0, 
         total: data.totalFiles, 
@@ -71,6 +216,16 @@
     });
     
     unsubscribeProgress = EventsOn('tela:deploy:progress', (data) => {
+      if (data.status === 'waiting_confirmation' || data.status === 'waiting_for_docs') {
+        if (!waitCycleStartedAt) waitCycleStartedAt = Date.now();
+        if (!deployStartedAt) {
+          deployStartedAt = waitCycleStartedAt;
+        }
+        startWaitTicker();
+      } else if (waitCycleStartedAt) {
+        waitCycleStartedAt = 0;
+      }
+
       deployProgress = {
         current: data.current,
         total: data.total,
@@ -79,7 +234,7 @@
                 data.status === 'waiting_confirmation' ? `Waiting for block confirmation...` :
                 data.status === 'waiting_for_docs' ? 'Waiting for DOC confirmations...' :
                 data.status === 'verifying' ? `Verifying ${data.fileName}...` :
-                data.status === 'verify_warning' ? `⚠️ ${data.fileName} may need re-deploy` :
+                data.status === 'verify_warning' ? `[WARN] ${data.fileName} may need re-deploy` :
                 data.status === 'creating_index' ? 'Creating INDEX...' : data.status,
         fileName: data.fileName,
         phase: data.status,
@@ -102,6 +257,7 @@
     });
     
     unsubscribeComplete = EventsOn('tela:deploy:complete', (data) => {
+      resetWaitTracking();
       deployProgress = {
         current: data.totalFiles,
         total: data.totalFiles,
@@ -118,8 +274,13 @@
         durl: data.durl,
       };
       
-      // Show success toast
-      toast.success(`Deployment complete! INDEX: ${data.indexScid?.substring(0, 16)}...`);
+      // Keep this concise; full SCID is available in the result panel and copy action.
+      toast.success('Deployment complete!');
+
+      // Move keyboard focus to primary success action for faster follow-up operations.
+      setTimeout(() => {
+        successPrimaryActionEl?.focus();
+      }, 0);
       
       dispatch('complete', {
         indexScid: data.indexScid,
@@ -129,6 +290,7 @@
     });
     
     unsubscribeError = EventsOn('tela:deploy:error', (data) => {
+      resetWaitTracking();
       // Check if this is a detailed TELA error with fix guidance
       if (data.isTELAError && data.description) {
         error = data.error;
@@ -144,6 +306,9 @@
         errorDetails = null;
       }
       deploying = false;
+      if (data?.error) {
+        toast.error(data.error);
+      }
       if (data.fileName) {
         fileStatuses[data.fileName] = 'failed';
         fileStatuses = fileStatuses;
@@ -153,11 +318,16 @@
   });
   
   onDestroy(() => {
+    resetWaitTracking();
     if (unsubscribeStart) unsubscribeStart();
     if (unsubscribeProgress) unsubscribeProgress();
     if (unsubscribeComplete) unsubscribeComplete();
     if (unsubscribeError) unsubscribeError();
   });
+
+  $: if (prefsLoaded) {
+    savePreferences();
+  }
   
   // Load MODs data when MODs are enabled
   async function loadModsData() {
@@ -247,12 +417,12 @@
   // Reactive icon validation
   $: iconValidation = validateIconURL(indexIcon);
   
-  // dURL Tag Detection
+  // dURL Tag Detection (suffixes must match backend conventions in blockchain.go)
   const DURL_TAGS = {
-    '.lib': { name: 'Library', icon: 'lib', description: 'A collection of reusable DOCs', color: 'violet' },
-    '.shard': { name: 'DocShard', icon: '🧩', description: 'A shard DOC (part of a larger file)', color: 'cyan' },
-    '.shards': { name: 'DocShards', icon: 'shards', description: 'DocShards INDEX that requires reconstruction', color: 'cyan' },
-    '.bootstrap': { name: 'Bootstrap', icon: 'bootstrap', description: 'A collection of TELA apps for bootstrapping', color: 'amber' }
+    '.tela.lib': { name: 'Library', icon: 'lib', description: 'A collection of reusable DOCs', color: 'violet' },
+    '.tela.shard': { name: 'DocShard', icon: 'shard', description: 'A shard DOC (part of a larger file)', color: 'cyan' },
+    '.tela.shards': { name: 'DocShards', icon: 'shards', description: 'DocShards INDEX that requires reconstruction', color: 'cyan' },
+    '.tela.bootstrap': { name: 'Bootstrap', icon: 'bootstrap', description: 'A collection of TELA apps for bootstrapping', color: 'amber' }
   };
   
   function detectDurlTag(durl) {
@@ -268,7 +438,198 @@
   }
   
   $: durlTag = detectDurlTag(indexDURL);
+
+  // Detect shard folder and warn if dURL suffix is wrong
+  $: isShardFolder = (() => {
+    if (!folderPath) return false;
+    const parts = folderPath.split(/[/\\]/);
+    const folderName = (parts[parts.length - 1] || '').toLowerCase();
+    return folderName.endsWith('.shards') || folderName.endsWith('.shard');
+  })();
+
+  $: hasAutoShardGroups = enableAutoShard && preflightExpansion
+    && preflightExpansion.shardGroups && preflightExpansion.shardGroups.length > 0;
+
+  // Auto-adjust dURL when auto-shard produces shard groups
+  $: if (hasAutoShardGroups && indexDURL && !indexDURL.toLowerCase().endsWith('.tela.shards')) {
+    const base = indexDURL.replace(/\.tela(?:\.\w+)?$/, '');
+    indexDURL = base + '.tela.shards';
+  }
+
+  $: shardDurlWarning = (() => {
+    const needsShardSuffix = isShardFolder || hasAutoShardGroups;
+    if (!needsShardSuffix) return null;
+    const d = (indexDURL || '').trim().toLowerCase();
+    if (!d) return 'Shards detected — dURL should end with .tela.shards for reconstruction to work';
+    if (d.endsWith('.tela.shards')) return null;
+    if (d.endsWith('.shards') || d.endsWith('.shard'))
+      return 'dURL needs full .tela.shards suffix for shard reconstruction (not just .' + d.split('.').pop() + ')';
+    return 'Shards detected — dURL should end with .tela.shards for reconstruction to work';
+  })();
+
+  // =====================================================
+  // Metadata Auto-Inference (from tela-dragdrop-autoshard-plugin)
+  // =====================================================
   
+  const GENERIC_HTML_TITLES = new Set(['app', 'index', 'untitled', 'vite app', 'react app', 'document']);
+
+  function extractHtmlTitle(content) {
+    const match = String(content || '').match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    return match ? match[1].replace(/\s+/g, ' ').trim() : '';
+  }
+
+  function extractHtmlMetaDescription(content) {
+    const match = String(content || '').match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["'][^>]*>/i)
+        || String(content || '').match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["'][^>]*>/i);
+    return match ? match[1].trim() : '';
+  }
+
+  function extractHtmlIcon(content) {
+    const matches = String(content || '').matchAll(/<link[^>]+rel=["'][^"']*icon[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>/gi);
+    for (const match of matches) {
+      const value = String(match[1] || '').trim();
+      if (value && (value.startsWith('http') || /^[0-9a-fA-F]{64}$/.test(value))) {
+        return value;
+      }
+    }
+    return '';
+  }
+
+  function firstMarkdownHeading(content) {
+    const match = String(content || '').match(/^\s*#\s+(.+)$/m);
+    return match ? match[1].trim() : '';
+  }
+
+  function parseJsonSafe(content) {
+    try {
+      return JSON.parse(String(content || ''));
+    } catch {
+      return null;
+    }
+  }
+
+  function humanizeImportName(value) {
+    const normalized = String(value || '')
+      .replace(/^@[^/]+\//, '')
+      .split('/')
+      .at(-1) || '';
+    return normalized.replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim() || 'imported-app';
+  }
+
+  function defaultDurl(name) {
+    const slug = String(name || 'tela-app')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'tela-app';
+    return `${slug}.tela`;
+  }
+
+  async function inferMetadataFromFolder() {
+    if (!folderPath) return;
+    
+    try {
+      const meta = await GetMetadataFiles(folderPath);
+      if (!meta.success) return;
+
+      let inferredName = '';
+      let inferredDescription = '';
+      let inferredIcon = '';
+
+      // 1. Parse package.json
+      const packageJson = parseJsonSafe(meta.packageJson);
+      if (packageJson && typeof packageJson === 'object') {
+        if (typeof packageJson.displayName === 'string' && packageJson.displayName.trim()) {
+          inferredName = packageJson.displayName.trim();
+        } else if (typeof packageJson.name === 'string' && packageJson.name.trim()) {
+          inferredName = humanizeImportName(packageJson.name);
+        }
+        if (typeof packageJson.description === 'string' && packageJson.description.trim()) {
+          inferredDescription = packageJson.description.trim();
+        }
+        if (typeof packageJson.icon === 'string') {
+          const iconVal = packageJson.icon.trim();
+          if (iconVal.startsWith('http') || /^[0-9a-fA-F]{64}$/.test(iconVal)) {
+            inferredIcon = iconVal;
+          }
+        }
+      }
+
+      // 2. Parse index.html (can override name if better)
+      const htmlContent = meta.indexHtml || '';
+      const htmlTitle = extractHtmlTitle(htmlContent);
+      if (htmlTitle && !GENERIC_HTML_TITLES.has(htmlTitle.toLowerCase())) {
+        inferredName = htmlTitle;
+      }
+      if (!inferredDescription) {
+        inferredDescription = extractHtmlMetaDescription(htmlContent);
+      }
+      if (!inferredIcon) {
+        inferredIcon = extractHtmlIcon(htmlContent);
+      }
+
+      // 3. Parse README for description fallback
+      if (!inferredDescription && meta.readme) {
+        inferredDescription = firstMarkdownHeading(meta.readme);
+      }
+
+      // Apply inferred values (only if fields are currently empty)
+      if (inferredName && !indexName) {
+        indexName = inferredName;
+      }
+      if (!indexDURL && indexName) {
+        indexDURL = defaultDurl(indexName);
+      }
+      if (inferredDescription && !indexDescription) {
+        indexDescription = inferredDescription;
+      }
+      if (inferredIcon && !indexIcon) {
+        indexIcon = inferredIcon;
+      }
+
+    } catch (e) {
+      console.warn('[BatchUpload] Metadata inference failed:', e);
+    }
+  }
+
+  // =====================================================
+  // Preflight Analysis (inspired by tela-dragdrop-autoshard-plugin)
+  // =====================================================
+  
+  const MAX_DOC_SIZE_KB = 18; // Files larger than this would need sharding
+  const MAX_DOC_SIZE_BYTES = MAX_DOC_SIZE_KB * 1024;
+  // Conservative estimate: GZIP typically achieves ~45% reduction on text/code assets.
+  // Using 0.55 as the compression factor avoids false-positive "too large" warnings
+  // for files that will compress below the limit. Binary/already-compressed files
+  // compress poorly, so this heuristic errs on the side of letting them through too —
+  // the backend enforces the hard limit at deploy time regardless.
+  const GZIP_COMPRESSION_FACTOR = 0.55;
+
+  $: preflightStats = (() => {
+    if (!files || files.length === 0) {
+      return { sourceFiles: 0, deployDocs: 0, oversizedFiles: [], hasOversized: false };
+    }
+
+    const effectiveMax = enableCompression
+      ? MAX_DOC_SIZE_BYTES / GZIP_COMPRESSION_FACTOR
+      : MAX_DOC_SIZE_BYTES;
+
+    const oversizedFiles = files.filter(f => f.size > effectiveMax);
+    let deployDocs = files.length;
+
+    // Each oversized file would become multiple shards
+    for (const file of oversizedFiles) {
+      const shardCount = Math.ceil(file.size / effectiveMax);
+      deployDocs += (shardCount - 1); // -1 because original file is already counted
+    }
+
+    return {
+      sourceFiles: files.length,
+      deployDocs,
+      oversizedFiles,
+      hasOversized: oversizedFiles.length > 0
+    };
+  })();
+
   // Watch for MODs toggle to load MODs and force ringsize
   $: if (enableMods) {
     if (allMods.length === 0 && !modsLoading) {
@@ -289,22 +650,54 @@
     
     loading = true;
     error = null;
+    preflightExpansion = null;
     
     try {
-      const result = await ScanFolder(folderPath);
-      if (result.success) {
-        files = result.files || [];
-        totalSize = result.totalSize || 0;
-        totalGas = result.totalGas || 0;
-        estimatedGas = result.estimatedGas || result.totalGas || 0;
+      let scanSuccess = false;
+
+      if (enableAutoShard) {
+        const config = JSON.stringify({ autoShard: true, compress: enableCompression });
+        const result = await PreflightExpand(folderPath, config);
+        if (result.success) {
+          files = result.deployFiles || [];
+          preflightExpansion = {
+            deployFiles: result.deployFiles || [],
+            shardGroups: result.shardGroups || [],
+            warnings: result.warnings || [],
+            summary: result.summary || {},
+          };
+          totalSize = preflightExpansion.summary.totalSourceBytes || 0;
+          totalGas = preflightExpansion.summary.estimatedGas || 0;
+          estimatedGas = totalGas;
+          scanSuccess = true;
+        } else {
+          error = result.error;
+        }
+      } else {
+        const result = await ScanFolder(folderPath);
+        if (result.success) {
+          files = result.files || [];
+          totalSize = result.totalSize || 0;
+          totalGas = result.totalGas || 0;
+          estimatedGas = result.estimatedGas || result.totalGas || 0;
+          scanSuccess = true;
+        } else {
+          error = result.error;
+        }
+      }
+
+      if (scanSuccess) {
+        // Auto-infer metadata from package.json, index.html, README
+        await inferMetadataFromFolder();
         
-        // Auto-populate index name from folder name
+        // Fallback: if metadata inference didn't find a name, use folder name
         if (!indexName) {
           const parts = folderPath.split(/[/\\]/);
           indexName = parts[parts.length - 1] || 'My TELA App';
+          if (!indexDURL) {
+            indexDURL = defaultDurl(indexName);
+          }
         }
-      } else {
-        error = result.error;
       }
     } catch (err) {
       error = err.message;
@@ -370,6 +763,10 @@
     deploying = true;
     error = null;
     deploymentResult = null;
+    deployStartedAt = Date.now();
+    waitNow = deployStartedAt;
+    waitCycleStartedAt = 0;
+    startWaitTicker();
     deployProgress = { current: 0, total: files.length, status: 'Preparing...', fileName: '', phase: 'preparing' };
     
     // Initialize file statuses
@@ -380,11 +777,14 @@
       const batchData = {
         files: files.map(f => ({
           name: f.name,
-          path: f.path,
+          path: f.path || '',
+          data: f.data || '',  // populated for virtual shard DOCs from PreflightExpand
           subDir: f.subDir,
           docType: f.docType,
           size: f.size,
-          compressed: enableCompression && f.canCompress, // Only compress if toggle enabled AND file is compressible
+          // For virtual shards, compression was already applied by PreflightExpand — trust f.compressed.
+          // For regular entries, derive from the toggle.
+          compressed: f.data ? (f.compressed || false) : (enableCompression && (f.canCompress || false)),
           ringsize: ringsize,
         })),
         indexName: indexName,
@@ -402,10 +802,12 @@
       if (!result.success && !error) {
         error = result.error;
         deploying = false;
+        resetWaitTracking();
       }
     } catch (err) {
       error = err.message;
       deploying = false;
+      resetWaitTracking();
     }
   }
   
@@ -413,6 +815,42 @@
   function copyScid(scid, label = 'SCID') {
     ClipboardSetText(scid);
     toast.success(`${label} copied to clipboard`);
+  }
+
+  function copyText(value, label = 'Value') {
+    if (!value) return;
+    ClipboardSetText(value);
+    toast.success(`${label} copied to clipboard`);
+  }
+
+  function copyAllDocScids() {
+    if (!deploymentResult?.deployedDocs?.length) return;
+    const payload = deploymentResult.deployedDocs
+      .map((doc) => `${doc.name}: ${doc.scid}`)
+      .join('\n');
+    ClipboardSetText(payload);
+    toast.success('All DOC SCIDs copied to clipboard');
+  }
+
+  function copyErrorDiagnostics() {
+    const diagnostics = [
+      `Source Folder: ${folderPath || '(unknown)'}`,
+      `Error: ${error || '(none)'}`,
+      `Phase: ${deployProgress?.phase || 'idle'}`,
+      `Status: ${deployProgress?.status || '(none)'}`,
+      `Current/Total: ${deployProgress?.current || 0}/${deployProgress?.total || 0}`,
+      '',
+      'Settings:',
+      `- autoShard: ${enableAutoShard}`,
+      `- compression: ${enableCompression}`,
+      `- ringsize: ${ringsize}`,
+      `- mods: ${enableMods ? getModTags() || '(enabled, none selected)' : '(disabled)'}`,
+      '',
+      'Details:',
+      JSON.stringify(errorDetails || {}, null, 2),
+    ].join('\n');
+    ClipboardSetText(diagnostics);
+    toast.success('Diagnostics copied to clipboard');
   }
   
   // Preview deployed INDEX in browser
@@ -431,6 +869,7 @@
     deploymentResult = null;
     deployProgress = { current: 0, total: 0, status: '', fileName: '', phase: 'idle' };
     fileStatuses = {};
+    resetWaitTracking();
   }
   
   function getFileStatus(fileName) {
@@ -443,9 +882,9 @@
       case 'deploying': return '◎';
       case 'completed': return '✓';
       case 'failed': return '✗';
-      case 'waiting': return '⏳';
-      case 'verifying': return '🔍';
-      case 'warning': return '⚠️';
+      case 'waiting': return '●';
+      case 'verifying': return '◎';
+      case 'warning': return '⚠';
       default: return '○';
     }
   }
@@ -568,6 +1007,15 @@
 </script>
 
 <div class="batch-upload">
+  <div class="keyboard-quick-nav" aria-label="Batch upload keyboard shortcuts">
+    <button type="button" class="quick-nav-btn" on:click={focusIndexConfig}>
+      Skip to INDEX config
+    </button>
+    <button type="button" class="quick-nav-btn" on:click={focusDeployAction}>
+      Skip to deploy action
+    </button>
+  </div>
+
   <!-- Folder Info -->
   <div class="folder-info">
     <div class="folder-info-content">
@@ -616,6 +1064,9 @@
         <button class="error-dismiss" on:click={() => { error = null; errorDetails = null; }}>
           Dismiss
         </button>
+        <button class="error-dismiss" on:click={copyErrorDiagnostics}>
+          Copy diagnostics
+        </button>
       </div>
     {/if}
   {/if}
@@ -630,11 +1081,87 @@
     <div class="files-container">
       <div class="files-header">
         <span class="files-count">{files.length} files • {formatSize(totalSize)}</span>
-        <span class="files-gas">~{totalGas.toLocaleString()} gas</span>
+        <span class="files-gas">~{totalGas.toLocaleString()} rough gas</span>
         {#if isSimulator}
           <span class="files-free-badge" title="Gas is free in simulator mode">FREE</span>
         {/if}
       </div>
+      
+      <!-- Preflight Summary Panel -->
+      {#if !deploying && !deploymentResult}
+        <div class="preflight-summary">
+          <div class="preflight-stats">
+            <div class="preflight-stat">
+              <span class="preflight-stat-value">
+                {enableAutoShard && preflightExpansion
+                  ? (preflightExpansion.summary.sourceFileCount ?? preflightStats.sourceFiles)
+                  : preflightStats.sourceFiles}
+              </span>
+              <span class="preflight-stat-label">Source Files</span>
+            </div>
+            <div class="preflight-stat-arrow">→</div>
+            <div class="preflight-stat">
+              <span class="preflight-stat-value">
+                {enableAutoShard && preflightExpansion
+                  ? (preflightExpansion.summary.deployDocCount ?? preflightStats.deployDocs)
+                  : preflightStats.deployDocs}
+              </span>
+              <span class="preflight-stat-label">DOC Contracts</span>
+            </div>
+            <div class="preflight-stat-plus">+</div>
+            <div class="preflight-stat">
+              <span class="preflight-stat-value">1</span>
+              <span class="preflight-stat-label">INDEX Contract</span>
+            </div>
+            {#if enableAutoShard && preflightExpansion && preflightExpansion.summary.estimatedGas}
+              <div class="preflight-stat-plus">•</div>
+              <div class="preflight-stat">
+                <span class="preflight-stat-value">~{preflightExpansion.summary.estimatedGas.toLocaleString()}</span>
+                <span class="preflight-stat-label">Rough Est. Gas</span>
+              </div>
+            {/if}
+          </div>
+          
+          {#if enableAutoShard && preflightExpansion}
+            {#if preflightExpansion.shardGroups && preflightExpansion.shardGroups.length > 0}
+              <div class="preflight-shard-callout">
+                <span class="preflight-shard-icon">◈</span>
+                <span>
+                  {preflightExpansion.shardGroups.length} file{preflightExpansion.shardGroups.length > 1 ? 's' : ''} will be split into shards:
+                  {preflightExpansion.shardGroups.map(g => `${g.originalName} → ${g.shardCount} shards`).join(', ')}
+                </span>
+              </div>
+            {/if}
+            {#if preflightExpansion.warnings && preflightExpansion.warnings.length > 0}
+              {#each preflightExpansion.warnings as warn}
+                <div class="preflight-warning">
+                  <AlertTriangle size={14} />
+                  <span>{warn}</span>
+                </div>
+              {/each}
+            {/if}
+          {:else if preflightStats.hasOversized}
+            <div class="preflight-warning">
+              <AlertTriangle size={14} />
+              <span>
+                {preflightStats.oversizedFiles.length} file{preflightStats.oversizedFiles.length > 1 ? 's' : ''} exceed{preflightStats.oversizedFiles.length === 1 ? 's' : ''} 18KB limit:
+                {preflightStats.oversizedFiles.map(f => f.name).join(', ')}
+              </span>
+              <button
+                type="button"
+                class="btn-enable-autoshard"
+                on:click={() => { enableAutoShard = true; scanFolder(); }}
+                disabled={deploying}
+              >
+                Enable Auto-Shard
+              </button>
+            </div>
+            <div class="preflight-hint">
+              Large files will fail deployment. Enable Auto-Shard above to split them automatically, or use DocShard Manager in Studio.
+            </div>
+          {/if}
+        </div>
+      {/if}
       
       <div class="files-list">
         {#each files as file, i}
@@ -731,9 +1258,22 @@
     <!-- Deployment Progress Bar -->
     {#if deploying}
       <div class="progress-card">
+        <div class="progress-live-chip">
+          <span class="progress-chip-dot"></span>
+          <span>Deploy in progress</span>
+          <span class="progress-chip-network">{isSimulator ? 'Simulator FREE' : 'Mainnet paid'}</span>
+        </div>
         <div class="progress-header">
           <span class="progress-status">{deployProgress.status}</span>
           <span class="progress-count">{deployProgress.current}/{deployProgress.total}</span>
+        </div>
+        <div class="progress-steps">
+          {#each DEPLOY_STEPS as label, stepIndex}
+            <div class="progress-step {getStepClass(stepIndex, deployProgress.phase)}">
+              <span class="step-dot"></span>
+              <span>{label}</span>
+            </div>
+          {/each}
         </div>
         <div class="progress-bar-bg">
           <div 
@@ -741,7 +1281,10 @@
             style="width: {deployProgress.total > 0 ? (deployProgress.current / deployProgress.total) * 100 : 0}%"
           ></div>
         </div>
-        {#if deployProgress.phase === 'creating_index'}
+        {#if deployProgress.phase === 'waiting_confirmation' || deployProgress.phase === 'waiting_for_docs'}
+          <p class="progress-note info">⏱ {formatWaitMeta()}</p>
+          <p class="progress-note hint">{getWaitGuidance()}</p>
+        {:else if deployProgress.phase === 'creating_index'}
           <p class="progress-note success">Creating INDEX smart contract...</p>
         {:else if deployProgress.phase === 'complete'}
           <p class="progress-note success">✓ All files deployed successfully!</p>
@@ -750,7 +1293,7 @@
     {/if}
     
     <!-- INDEX Configuration -->
-    <div class="config-card {deploying ? 'disabled' : ''}">
+    <div class="config-card {deploying ? 'disabled' : ''}" bind:this={indexConfigCardEl} tabindex="-1">
       <h3 class="config-title">INDEX Configuration</h3>
       
       <div class="config-grid">
@@ -785,6 +1328,11 @@
           {#if durlTag && durlTag.tag !== '.tela'}
             <p class="durl-hint" class:hint-violet={durlTag.color === 'violet'} class:hint-cyan={durlTag.color === 'cyan'} class:hint-amber={durlTag.color === 'amber'}>
               {durlTag.description}
+            </p>
+          {/if}
+          {#if shardDurlWarning}
+            <p class="durl-hint hint-warning">
+              ⚠ {shardDurlWarning}
             </p>
           {/if}
         </div>
@@ -887,6 +1435,36 @@
           {#if enableCompression}
             <p class="compression-note">
               ◈ HTML, CSS, JS, JSON, MD, and Go files will be gzip compressed before deployment
+            </p>
+          {/if}
+        </div>
+      {/if}
+      
+      <!-- Auto-Shard Toggle -->
+      {#if preflightStats.hasOversized || enableAutoShard}
+        <div class="config-field">
+          <label class="config-label">Auto-Shard</label>
+          <button
+            type="button"
+            class="autoshard-toggle {enableAutoShard ? 'active' : ''}"
+            on:click={() => { enableAutoShard = !enableAutoShard; if (folderPath) scanFolder(); }}
+            disabled={deploying}
+          >
+            <div class="autoshard-track">
+              <div class="autoshard-thumb"></div>
+            </div>
+            <div class="autoshard-content">
+              <span class="autoshard-label">{enableAutoShard ? 'Enabled' : 'Disabled'}</span>
+              <span class="autoshard-desc">
+                {enableAutoShard
+                  ? 'Oversized files will be automatically split into shard DOCs'
+                  : 'Files over 18KB will block deployment'}
+              </span>
+            </div>
+          </button>
+          {#if enableAutoShard}
+            <p class="autoshard-note">
+              ◈ Files larger than 18KB will be split in-memory before deployment — no temp files written to disk
             </p>
           {/if}
         </div>
@@ -1005,11 +1583,12 @@
           <span class="simulator-badge">SIMULATOR</span>
           <span class="free-badge">FREE</span>
         {:else}
-          Estimated cost: <span class="cost-value">~{totalGas.toLocaleString()} gas</span>
+          Rough estimated cost: <span class="cost-value">~{totalGas.toLocaleString()} gas</span>
         {/if}
       </div>
       
       <button
+        bind:this={deployButtonEl}
         on:click={prepareDeploy}
         disabled={deploying || (!$walletState.isOpen && !isSimulator) || !indexName}
         class="btn-deploy"
@@ -1018,7 +1597,7 @@
           <div class="btn-spinner"></div>
           Deploying... ({deployProgress.current}/{deployProgress.total})
         {:else}
-          Deploy {files.length} Files + INDEX
+          Deploy {enableAutoShard && preflightExpansion ? (preflightExpansion.summary.deployDocCount ?? files.length) : files.length} Files + INDEX
         {/if}
       </button>
     </div>
@@ -1076,9 +1655,23 @@
           <button class="btn-reset" on:click={resetDeployment}>
             Deploy Another Batch
           </button>
-          <button class="btn-copy-index" on:click={() => copyScid(deploymentResult.indexScid, 'INDEX SCID')} title="Copy INDEX SCID">
+          <button class="btn-copy-index" on:click={prepareDeploy} title="Deploy same folder and settings again">
+            <Clock size={14} />
+            Re-Deploy Same Config
+          </button>
+          <button bind:this={successPrimaryActionEl} class="btn-copy-index" on:click={() => copyScid(deploymentResult.indexScid, 'INDEX SCID')} title="Copy INDEX SCID">
             <Copy size={14} />
             Copy INDEX SCID
+          </button>
+          {#if deploymentResult.durl}
+            <button class="btn-copy-index" on:click={() => copyText(deploymentResult.durl, 'dURL')} title="Copy dURL">
+              <Copy size={14} />
+              Copy dURL
+            </button>
+          {/if}
+          <button class="btn-copy-index" on:click={copyAllDocScids} title="Copy all DOC SCIDs">
+            <Copy size={14} />
+            Copy all DOC SCIDs
           </button>
           {#if deploymentResult.durl}
             <button class="btn-preview-index" on:click={() => previewIndex(deploymentResult.indexScid)} title="Preview in Browser">
@@ -1101,40 +1694,55 @@
 {#if showConfirmModal}
   <div class="modal-overlay" on:click={cancelDeploy}>
     <div class="modal-content" on:click|stopPropagation>
+
       <div class="modal-header">
-        <span class="modal-icon">⚠</span>
-        <h3 class="modal-title">Confirm Deployment</h3>
-      </div>
-      
-      <div class="modal-body">
-        <p class="modal-warning">
-          You are about to deploy to <strong>Mainnet</strong>. This transaction is <strong>permanent</strong> and will consume DERO.
-        </p>
-        
-        <div class="modal-details">
-          <div class="modal-detail-row">
-            <span class="detail-label">Files</span>
-            <span class="detail-value">{files.length} DOCs + 1 INDEX</span>
+        <div class="modal-header-left">
+          <div class="modal-icon warning">
+            <AlertTriangle size={18} strokeWidth={1.5} />
           </div>
-          <div class="modal-detail-row">
-            <span class="detail-label">Total Size</span>
-            <span class="detail-value">{formatSize(totalSize)}</span>
-          </div>
-          <div class="modal-detail-row">
-            <span class="detail-label">Estimated Gas</span>
-            <span class="detail-value cost">~{totalGas.toLocaleString()}</span>
-          </div>
-          <div class="modal-detail-row">
-            <span class="detail-label">Type</span>
-            <span class="detail-value">{ringsize === 2 ? 'Updateable (Ring 2)' : 'Immutable (Ring 16)'}</span>
+          <div>
+            <h3 class="modal-title">Confirm Deployment</h3>
+            <p class="modal-subtitle">This action is permanent and cannot be undone</p>
           </div>
         </div>
+        <button class="modal-close" on:click={cancelDeploy} aria-label="Close">
+          <X size={16} />
+        </button>
       </div>
-      
-      <div class="modal-actions">
-        <button class="btn-cancel" on:click={cancelDeploy}>Cancel</button>
-        <button class="btn-confirm" on:click={confirmDeploy}>Deploy to Mainnet</button>
+
+      <div class="modal-body">
+        <p class="deploy-warn-text">
+          You are deploying to <strong>Mainnet</strong>. The transaction is <strong>permanent</strong> and will consume DERO.
+        </p>
+
+        <div class="confirm-details">
+          <div class="confirm-row">
+            <span class="confirm-label">Files</span>
+            <span class="confirm-value">{files.length} DOCs + 1 INDEX</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Total Size</span>
+            <span class="confirm-value">{formatSize(totalSize)}</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Rough Gas Estimate</span>
+            <span class="confirm-value confirm-value-amount">~{totalGas.toLocaleString()}</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Type</span>
+            <span class="confirm-value">{ringsize === 2 ? 'Updateable (Ring 2)' : 'Immutable (Ring 16)'}</span>
+          </div>
+        </div>
+        <p class="deploy-warn-text" style="margin-top:8px; opacity:0.85;">
+          Final fees are recalculated during mainnet precheck and may be higher than this rough estimate.
+        </p>
       </div>
+
+      <div class="modal-footer">
+        <button class="modal-btn modal-btn-secondary" on:click={cancelDeploy}>Cancel</button>
+        <button class="modal-btn modal-btn-primary" on:click={confirmDeploy}>Deploy to Mainnet</button>
+      </div>
+
     </div>
   </div>
 {/if}
@@ -1146,6 +1754,37 @@
     display: flex;
     flex-direction: column;
     gap: var(--s-6, 24px);
+  }
+
+  .keyboard-quick-nav {
+    display: flex;
+    gap: var(--s-2, 8px);
+    flex-wrap: wrap;
+  }
+
+  .quick-nav-btn {
+    padding: 4px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text-3, #707088);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 160ms ease;
+  }
+
+  .quick-nav-btn:hover {
+    color: var(--cyan-400, #22d3ee);
+    border-color: rgba(34, 211, 238, 0.35);
+    background: rgba(34, 211, 238, 0.08);
+  }
+
+  .quick-nav-btn:focus-visible {
+    outline: 2px solid var(--cyan-400, #22d3ee);
+    outline-offset: 2px;
+    color: var(--cyan-400, #22d3ee);
+    border-color: rgba(34, 211, 238, 0.35);
+    background: rgba(34, 211, 238, 0.08);
   }
   
   /* Folder Info */
@@ -1163,7 +1802,7 @@
   
   .folder-label {
     font-size: 13px;
-    color: var(--text-4, #505068);
+    color: var(--text-3, #707088);
   }
   
   .folder-path {
@@ -1279,6 +1918,7 @@
     border-radius: var(--r-sm, 4px);
     cursor: pointer;
     transition: all 0.15s ease;
+    margin-right: var(--s-2, 8px);
   }
   
   .error-dismiss:hover {
@@ -1328,7 +1968,7 @@
   
   .files-count {
     font-size: 13px;
-    color: var(--text-4, #505068);
+    color: var(--text-3, #707088);
   }
   
   .files-gas {
@@ -1640,6 +2280,88 @@
     background: var(--void-mid, #12121c);
     border: 1px solid rgba(6, 182, 212, 0.3);
     border-radius: var(--r-xl, 16px);
+    position: sticky;
+    top: var(--s-2, 8px);
+    z-index: 2;
+  }
+
+  .progress-live-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2, 8px);
+    margin-bottom: var(--s-2, 8px);
+    padding: 4px 10px;
+    background: rgba(34, 211, 238, 0.08);
+    border: 1px solid rgba(34, 211, 238, 0.22);
+    border-radius: 999px;
+    font-size: 11px;
+    color: var(--cyan-300, #67e8f9);
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    line-height: 1.2;
+  }
+
+  .progress-chip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--cyan-400, #22d3ee);
+    box-shadow: 0 0 8px rgba(34, 211, 238, 0.8);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+
+  .progress-chip-network {
+    color: var(--text-3, #707088);
+    padding-left: 8px;
+    margin-left: 2px;
+    border-left: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  .progress-steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 6px;
+    margin-bottom: var(--s-2, 8px);
+  }
+
+  .progress-step {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    font-size: 10px;
+    color: var(--text-4, #505068);
+    background: rgba(255, 255, 255, 0.04);
+    min-width: 0;
+  }
+
+  .step-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+    opacity: 0.9;
+  }
+
+  .progress-step span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .progress-step.active {
+    color: var(--cyan-300, #67e8f9);
+    background: rgba(34, 211, 238, 0.08);
+  }
+
+  .progress-step.done {
+    color: var(--status-ok, #34d399);
+    background: rgba(52, 211, 153, 0.1);
+  }
+
+  .progress-step.error {
+    color: var(--status-err, #f87171);
+    background: rgba(248, 113, 113, 0.12);
   }
   
   .progress-header {
@@ -1683,6 +2405,17 @@
   
   .progress-note.success {
     color: var(--status-ok, #34d399);
+  }
+
+  .progress-note.info {
+    color: var(--cyan-400, #22d3ee);
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  }
+
+  .progress-note.hint {
+    color: var(--text-4, #505068);
+    margin-top: var(--s-1, 4px);
+    font-size: 11px;
   }
   
   /* Config Card */
@@ -1855,11 +2588,11 @@
   
   .subdir-display {
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    color: var(--text-5, #404058);
+    color: var(--text-4, #505068);
   }
   
   .file-size {
-    color: var(--text-5, #404058);
+    color: var(--text-4, #505068);
   }
   
   .file-meta {
@@ -2016,7 +2749,7 @@
   
   .compression-desc {
     font-size: 11px;
-    color: var(--text-5, #404058);
+    color: var(--text-4, #505068);
   }
   
   .compression-note {
@@ -2026,6 +2759,139 @@
     border-radius: var(--r-md, 8px);
     font-size: 11px;
     color: var(--cyan-400, #22d3ee);
+  }
+
+  /* Auto-Shard Toggle */
+  .autoshard-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3, 12px);
+    width: 100%;
+    padding: var(--s-3, 12px) var(--s-4, 16px);
+    background: var(--void-deep, #08080e);
+    border: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
+    border-radius: var(--r-lg, 12px);
+    cursor: pointer;
+    transition: all 200ms ease-out;
+    text-align: left;
+  }
+
+  .autoshard-toggle:hover {
+    border-color: var(--border-subtle, rgba(255, 255, 255, 0.06));
+    background: var(--void-up, #181824);
+  }
+
+  .autoshard-toggle.active {
+    border-color: var(--violet-500, #8b5cf6);
+    background: rgba(139, 92, 246, 0.08);
+  }
+
+  .autoshard-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .autoshard-track {
+    width: 36px;
+    height: 20px;
+    background: var(--void-surface, #1e1e2a);
+    border-radius: 10px;
+    position: relative;
+    transition: background 200ms ease-out;
+    flex-shrink: 0;
+  }
+
+  .autoshard-toggle.active .autoshard-track {
+    background: var(--violet-500, #8b5cf6);
+  }
+
+  .autoshard-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: var(--text-4, #505068);
+    border-radius: 50%;
+    transition: all 200ms ease-out;
+  }
+
+  .autoshard-toggle.active .autoshard-thumb {
+    left: 18px;
+    background: #fff;
+  }
+
+  .autoshard-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .autoshard-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-2, #a8a8b8);
+  }
+
+  .autoshard-toggle.active .autoshard-label {
+    color: var(--violet-400, #a78bfa);
+  }
+
+  .autoshard-desc {
+    font-size: 11px;
+    color: var(--text-4, #505068);
+  }
+
+  .autoshard-note {
+    margin-top: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(139, 92, 246, 0.05);
+    border-radius: var(--r-md, 8px);
+    font-size: 11px;
+    color: var(--violet-400, #a78bfa);
+  }
+
+  .preflight-shard-callout {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(139, 92, 246, 0.06);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: var(--r-md, 8px);
+    font-size: 12px;
+    color: var(--violet-400, #a78bfa);
+    margin-top: var(--s-2, 8px);
+  }
+
+  .btn-enable-autoshard {
+    margin-left: auto;
+    flex-shrink: 0;
+    padding: 5px 10px;
+    border-radius: var(--r-sm, 5px);
+    border: 1px solid rgba(139, 92, 246, 0.35);
+    background: rgba(139, 92, 246, 0.12);
+    color: var(--violet-300, #c4b5fd);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 160ms ease;
+  }
+
+  .btn-enable-autoshard:hover {
+    background: rgba(139, 92, 246, 0.22);
+    border-color: rgba(139, 92, 246, 0.55);
+  }
+
+  .btn-enable-autoshard:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .preflight-shard-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+    margin-top: 1px;
   }
   
   /* Simulator & Free Badges */
@@ -2080,7 +2946,8 @@
   
   .result-label {
     font-size: 12px;
-    color: var(--text-4, #505068);
+    color: var(--text-3, #707088);
+    font-weight: 600;
     margin-bottom: var(--s-1, 4px);
   }
   
@@ -2175,7 +3042,7 @@
   .deployed-doc-scid {
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
     font-size: 11px;
-    color: var(--text-4, #505068);
+    color: var(--text-3, #707088);
   }
   
   .btn-copy-sm {
@@ -2204,8 +3071,8 @@
   }
   
   .btn-reset {
-    flex: 1;
-    min-width: 140px;
+    flex: 1 1 200px;
+    min-width: 180px;
     padding: var(--s-3, 12px);
     background: var(--void-up, #181824);
     border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
@@ -2237,6 +3104,49 @@
     transition: all 200ms ease-out;
     white-space: nowrap;
   }
+
+  @media (max-width: 1100px) {
+    .progress-steps {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 760px) {
+    .progress-card {
+      top: 0;
+      padding: var(--s-4, 16px);
+    }
+
+    .progress-live-chip {
+      display: flex;
+      width: 100%;
+      justify-content: space-between;
+    }
+
+    .progress-chip-network {
+      padding-left: 6px;
+      margin-left: auto;
+    }
+
+    .preflight-warning {
+      flex-wrap: wrap;
+    }
+
+    .btn-enable-autoshard {
+      margin-left: 22px;
+    }
+
+    .success-actions {
+      flex-direction: column;
+    }
+
+    .btn-reset,
+    .btn-copy-index,
+    .btn-preview-index {
+      width: 100%;
+      justify-content: center;
+    }
+  }
   
   .btn-copy-index:hover,
   .btn-preview-index:hover {
@@ -2244,130 +3154,58 @@
     border-color: var(--cyan-500, #06b6d4);
     color: var(--cyan-400, #22d3ee);
   }
-  
-  /* Confirmation Modal */
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.8);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    backdrop-filter: blur(4px);
+
+  /* Accessibility: keyboard focus parity with hover states */
+  .btn-rescan:focus-visible,
+  .file-remove-btn:focus-visible,
+  .btn-enable-autoshard:focus-visible,
+  .btn-deploy:focus-visible,
+  .btn-icon-action:focus-visible,
+  .btn-copy-sm:focus-visible,
+  .btn-reset:focus-visible,
+  .btn-copy-index:focus-visible,
+  .btn-preview-index:focus-visible,
+  .ringsize-btn:focus-visible,
+  .compression-toggle:focus-visible,
+  .autoshard-toggle:focus-visible,
+  .mods-toggle:focus-visible,
+  .mod-option:focus-visible,
+  .error-dismiss:focus-visible {
+    outline: 2px solid var(--cyan-400, #22d3ee);
+    outline-offset: 2px;
   }
-  
-  .modal-content {
-    width: 100%;
-    max-width: 420px;
-    padding: var(--s-6, 24px);
-    background: var(--void-mid, #12121c);
-    border: 1px solid var(--border-default, rgba(255, 255, 255, 0.09));
-    border-radius: var(--r-xl, 16px);
-  }
-  
-  .modal-header {
-    display: flex;
-    align-items: center;
-    gap: var(--s-3, 12px);
-    margin-bottom: var(--s-4, 16px);
-  }
-  
-  .modal-icon {
-    font-size: 24px;
-    color: var(--status-warn, #fbbf24);
-  }
-  
-  .modal-title {
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--text-1, #f8f8fc);
-  }
-  
-  .modal-body {
-    margin-bottom: var(--s-5, 20px);
-  }
-  
-  .modal-warning {
-    font-size: 13px;
-    color: var(--text-3, #707088);
-    line-height: 1.5;
-    margin-bottom: var(--s-4, 16px);
-  }
-  
-  .modal-warning strong {
-    color: var(--text-1, #f8f8fc);
-  }
-  
-  .modal-details {
-    background: var(--void-deep, #08080e);
-    border-radius: var(--r-lg, 12px);
-    padding: var(--s-3, 12px);
-  }
-  
-  .modal-detail-row {
-    display: flex;
-    justify-content: space-between;
-    padding: var(--s-2, 8px) 0;
-    border-bottom: 1px solid var(--border-dim, rgba(255, 255, 255, 0.03));
-  }
-  
-  .modal-detail-row:last-child {
-    border-bottom: none;
-  }
-  
-  .detail-label {
-    font-size: 13px;
-    color: var(--text-4, #505068);
-  }
-  
-  .detail-value {
-    font-size: 13px;
-    color: var(--text-2, #a8a8b8);
-  }
-  
-  .detail-value.cost {
-    color: var(--cyan-400, #22d3ee);
-    font-weight: 500;
-  }
-  
-  .modal-actions {
-    display: flex;
-    gap: var(--s-3, 12px);
-  }
-  
-  .btn-cancel {
-    flex: 1;
-    padding: var(--s-3, 12px);
-    background: var(--void-up, #181824);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
-    border-radius: var(--r-lg, 12px);
-    color: var(--text-3, #707088);
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 200ms ease-out;
-  }
-  
-  .btn-cancel:hover {
+
+  .btn-rescan:focus-visible,
+  .btn-icon-action:focus-visible,
+  .btn-copy-sm:focus-visible,
+  .btn-reset:focus-visible,
+  .btn-copy-index:focus-visible,
+  .btn-preview-index:focus-visible {
     background: var(--void-surface, #1e1e2a);
-    color: var(--text-2, #a8a8b8);
+    border-color: var(--cyan-500, #06b6d4);
+    color: var(--cyan-400, #22d3ee);
+  }
+
+  .btn-enable-autoshard:focus-visible {
+    background: rgba(139, 92, 246, 0.22);
+    border-color: rgba(139, 92, 246, 0.55);
+    color: var(--violet-300, #c4b5fd);
+  }
+
+  .file-remove-btn:focus-visible {
+    color: var(--status-err, #f87171);
   }
   
-  .btn-confirm {
-    flex: 1;
-    padding: var(--s-3, 12px);
-    background: var(--cyan-500, #06b6d4);
-    border: none;
-    border-radius: var(--r-lg, 12px);
-    color: var(--void-pure, #000000);
+  /* Confirmation Modal — deploy warning body text */
+  .deploy-warn-text {
     font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 200ms ease-out;
+    color: var(--text-3);
+    line-height: 1.6;
+    margin-bottom: var(--s-4);
   }
-  
-  .btn-confirm:hover {
-    background: var(--cyan-400, #22d3ee);
+
+  .deploy-warn-text strong {
+    color: var(--text-1);
   }
   
   /* === TELA-MODs Styles === */
@@ -2695,6 +3533,84 @@
   
   .durl-hint.hint-amber {
     color: var(--status-warn, #fbbf24);
+  }
+
+  .durl-hint.hint-warning {
+    color: var(--status-warn, #fbbf24);
+  }
+
+  /* Preflight Summary Panel */
+  .preflight-summary {
+    background: var(--surface-1, #14141a);
+    border: 1px solid var(--border-1, #2a2a35);
+    border-radius: var(--radius-2, 8px);
+    padding: var(--s-3, 12px);
+    margin-bottom: var(--s-3, 12px);
+  }
+
+  .preflight-stats {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-3, 12px);
+    padding: var(--s-2, 8px) 0;
+  }
+
+  .preflight-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .preflight-stat-value {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--cyan-400, #22d3ee);
+  }
+
+  .preflight-stat-label {
+    font-size: 11px;
+    color: var(--text-4, #505068);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .preflight-stat-arrow,
+  .preflight-stat-plus {
+    font-size: 16px;
+    color: var(--text-4, #505068);
+    opacity: 0.6;
+  }
+
+  .preflight-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    border-radius: var(--radius-1, 6px);
+    margin-top: var(--s-3, 12px);
+    color: var(--status-warn, #fbbf24);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .preflight-warning :global(svg) {
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .preflight-hint {
+    font-size: 11px;
+    color: var(--text-3, #707088);
+    margin-top: var(--s-2, 8px);
+    padding: var(--s-2, 8px) var(--s-3, 12px);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--r-md, 8px);
+    line-height: 1.4;
   }
 </style>
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/deroproject/derohe/cryptography/bn256"
 	"github.com/deroproject/derohe/cryptography/crypto"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
@@ -57,15 +60,38 @@ func normalizeDaemonEndpointForWallet(endpoint string) string {
 	}
 }
 
+// getDaemonEndpointForWallet returns the daemon endpoint for the current network mode.
+// When simulator is active, uses simulator RPC (20000). Otherwise uses mainnet (10102) or settings.
+func (a *App) getDaemonEndpointForWallet() string {
+	if a.simulatorManager != nil && a.simulatorManager.isInitialized {
+		return fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
+	}
+	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+		return normalizeDaemonEndpointForWallet(ep)
+	}
+	return "127.0.0.1:10102"
+}
+
 func (a *App) ensureWalletDaemonConnectivity(endpoint string) {
 	// Ensure walletapi has an active daemon endpoint and is connected.
 	// Keep_Connectivity() will continue to retry and keep the connection alive.
+	if endpoint == "" {
+		endpoint = a.getDaemonEndpointForWallet()
+	}
 	if endpoint == "" {
 		endpoint = "127.0.0.1:10102"
 	}
 
 	if err := walletapi.Connect(endpoint); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Wallet daemon connect failed: %v", err))
+		a.logToConsole(fmt.Sprintf("[WARN] Wallet daemon connect failed: %v - will retry in background", err))
+		// Emit event to notify frontend of connection issue
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "wallet:daemon_connection_warning", map[string]interface{}{
+				"error":    err.Error(),
+				"endpoint": endpoint,
+				"message":  "Wallet daemon connection failed. Retrying in background...",
+			})
+		}
 	}
 
 	walletConnectivityOnce.Do(func() {
@@ -74,10 +100,42 @@ func (a *App) ensureWalletDaemonConnectivity(endpoint string) {
 	})
 }
 
+// recoverWalletFromBackup attempts to restore a wallet from the .bak copy
+// that the DERO walletapi creates on every save. Returns true if recovery succeeded.
+func recoverWalletFromBackup(filePath string, a *App) bool {
+	bakPath := filePath + ".bak"
+	fi, err := os.Stat(bakPath)
+	if err != nil || fi.Size() == 0 {
+		return false
+	}
+
+	data, err := os.ReadFile(bakPath)
+	if err != nil || len(data) == 0 {
+		return false
+	}
+
+	if err := os.WriteFile(filePath, data, 0600); err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Failed to restore wallet from backup: %v", err))
+		return false
+	}
+
+	a.logToConsole(fmt.Sprintf("[RECOVERED] Wallet restored from backup (%d bytes): %s", len(data), bakPath))
+	return true
+}
+
 // OpenWallet opens a DERO wallet file
 func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	walletManager.Lock()
 	defer walletManager.Unlock()
+
+	// If just a name is provided (no path separators), construct full path
+	// This matches the behavior of CreateWallet for consistency
+	if !strings.Contains(filePath, string(filepath.Separator)) && !strings.Contains(filePath, "/") {
+		// Clean the name - remove any .db extension if user added it
+		name := strings.TrimSuffix(filePath, ".db")
+		// Construct path in wallets directory
+		filePath = filepath.Join(getDatashardsDir(), "wallets", name+".db")
+	}
 
 	// Determine current network mode - check multiple ways for robustness
 	currentNetwork := "mainnet"
@@ -90,12 +148,27 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[WALLET] Opening wallet: %s (network: %s)", filePath, currentNetwork))
 
-	// Check if file exists
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		a.logToConsole(fmt.Sprintf("[ERR] Wallet file not found: %s", filePath))
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet file not found",
+	// Check if file exists and is not empty
+	fi, statErr := os.Stat(filePath)
+	if os.IsNotExist(statErr) {
+		// Primary file missing — try .bak before giving up
+		if recovered := recoverWalletFromBackup(filePath, a); recovered {
+			fi, statErr = os.Stat(filePath)
+		} else {
+			a.logToConsole(fmt.Sprintf("[ERR] Wallet file not found: %s", filePath))
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet file not found",
+			}
+		}
+	}
+	if statErr == nil && fi.Size() == 0 {
+		a.logToConsole(fmt.Sprintf("[WARN] Wallet file is 0 bytes (corrupt): %s — attempting recovery from backup", filePath))
+		if recovered := recoverWalletFromBackup(filePath, a); !recovered {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet file is corrupt (0 bytes) and no backup (.bak) was found. If you have your seed phrase you can restore the wallet.",
+			}
 		}
 	}
 
@@ -156,21 +229,6 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	// Set network mode (mainnet vs simulator) - MUST be called before GetAddress()
 	wallet.SetNetwork(currentNetwork == "mainnet")
 
-	// Get daemon endpoint from settings
-	endpointRaw := "127.0.0.1:10102"
-	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-		endpointRaw = ep
-	}
-	endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
-
-	// Connect wallet to daemon
-	wallet.SetDaemonAddress(endpoint)
-	a.ensureWalletDaemonConnectivity(endpointRaw)
-	wallet.SetOnlineMode()
-	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v", err))
-	}
-
 	// Get wallet info (now with correct network prefix)
 	address := wallet.GetAddress().String()
 
@@ -179,13 +237,63 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[OK] Wallet opened successfully: %s", address[:16]+"..."))
 
+	// Daemon connectivity and initial sync run in the background so we don't
+	// block the UI.  walletapi.Connect() does a WebSocket dial with no timeout
+	// and Sync_Wallet_Memory_With_Daemon makes an RPC call with
+	// context.Background(), either of which can hang for minutes if the daemon
+	// is unreachable.
+	go func() {
+		endpointRaw := "127.0.0.1:10102"
+		if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+			endpointRaw = ep
+		}
+		endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
+
+		wallet.SetDaemonAddress(endpoint)
+
+		a.logToConsole(fmt.Sprintf("[NET] Connecting wallet to daemon at %s ...", endpoint))
+
+		connectDone := make(chan struct{}, 1)
+		go func() {
+			a.ensureWalletDaemonConnectivity(endpointRaw)
+			connectDone <- struct{}{}
+		}()
+		select {
+		case <-connectDone:
+			a.logToConsole("[NET] Wallet daemon connection attempt finished")
+		case <-time.After(15 * time.Second):
+			a.logToConsole("[WARN] Wallet daemon connection timed out (15s) — will keep retrying in background")
+		}
+
+		wallet.SetOnlineMode()
+
+		syncDone := make(chan error, 1)
+		go func() {
+			syncDone <- wallet.Sync_Wallet_Memory_With_Daemon()
+		}()
+		select {
+		case err := <-syncDone:
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v — balance may be outdated until sync completes", err))
+				if a.ctx != nil {
+					runtime.EventsEmit(a.ctx, "wallet:sync_warning", map[string]interface{}{
+						"message": "Initial sync failed. Balance may be outdated until sync completes.",
+					})
+				}
+			} else {
+				a.logToConsole("[OK] Initial wallet sync completed")
+			}
+		case <-time.After(10 * time.Second):
+			a.logToConsole("[WARN] Initial wallet sync timed out (10s) — will continue syncing in background")
+		}
+	}()
+
 	result := map[string]interface{}{
 		"success": true,
 		"address": address,
 		"message": "Wallet opened successfully",
 	}
 
-	// Include network warning if applicable
 	if networkWarning != "" {
 		result["networkWarning"] = networkWarning
 	}
@@ -210,7 +318,6 @@ func (a *App) CloseWallet() map[string]interface{} {
 	walletManager.wallet.Close_Encrypted_Wallet()
 	walletManager.wallet = nil
 	walletManager.isOpen = false
-	walletManager.walletPath = ""
 
 	a.logToConsole("[OK] Wallet closed successfully")
 
@@ -257,8 +364,27 @@ func (a *App) GetBalance() map[string]interface{} {
 
 	wallet := walletManager.wallet
 
-	// Get mature (spendable) and locked balance
-	mature, locked := wallet.Get_Balance()
+	var mature, locked uint64
+
+	// In simulator mode, NEVER open a new WebSocket connection for balance queries.
+	// The simulator can only handle ONE WebSocket at a time -- opening one here
+	// would conflict with Gnomon or an in-progress SC deploy and crash the daemon.
+	// Instead: try GetDecryptedBalanceAtTopoHeight which only works if a WS is
+	// already open (it won't create one), then fall back to the in-memory balance
+	// which was populated by the most recent Sync_Wallet_Memory_With_Daemon call
+	// (done in OpenSimulatorTestWallet).
+	if a.simulatorManager != nil && a.simulatorManager.isInitialized {
+		var zerohash [32]byte
+		addr := wallet.GetAddress().String()
+		if bal, _, err := wallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, addr); err == nil {
+			mature = bal
+		} else {
+			// No active connection -- use cached in-memory balance.
+			mature, locked = wallet.Get_Balance()
+		}
+	} else {
+		mature, locked = wallet.Get_Balance()
+	}
 
 	return map[string]interface{}{
 		"success":       true,
@@ -295,8 +421,9 @@ func (a *App) SyncWallet() map[string]interface{} {
 	// Force an immediate sync pass (otherwise height may never advance)
 	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
 		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Wallet sync failed: %v", err),
+			"success":        false,
+			"error":          "Unable to sync wallet. Check your connection to the daemon.",
+			"technicalError": err.Error(),
 		}
 	}
 
@@ -331,14 +458,14 @@ func (a *App) SyncWallet() map[string]interface{} {
 
 	// Wallet is behind - wait for it to sync (up to 10 seconds)
 	a.logToConsole("[SYNC] Wallet is behind daemon, waiting for sync...")
-	
+
 	maxWait := 10 * time.Second
 	pollInterval := 500 * time.Millisecond
 	startTime := time.Now()
-	
+
 	for time.Since(startTime) < maxWait {
 		time.Sleep(pollInterval)
-		
+
 		walletManager.RLock()
 		if walletManager.wallet == nil {
 			walletManager.RUnlock()
@@ -349,7 +476,7 @@ func (a *App) SyncWallet() map[string]interface{} {
 		}
 		newHeight := walletManager.wallet.Get_Height()
 		walletManager.RUnlock()
-		
+
 		if newHeight >= daemonHeight {
 			a.logToConsole(fmt.Sprintf("[SYNC] Wallet synced to height %d", newHeight))
 			return map[string]interface{}{
@@ -361,21 +488,21 @@ func (a *App) SyncWallet() map[string]interface{} {
 				"message":      "Wallet synced successfully",
 			}
 		}
-		
+
 		// Log progress
 		if newHeight > walletHeight {
 			a.logToConsole(fmt.Sprintf("[SYNC] Progress: %d / %d", newHeight, daemonHeight))
 			walletHeight = newHeight
 		}
 	}
-	
+
 	// Timeout - still syncing
 	walletManager.RLock()
 	finalHeight := wallet.Get_Height()
 	walletManager.RUnlock()
-	
+
 	a.logToConsole(fmt.Sprintf("[SYNC] Sync timeout, wallet at %d / %d", finalHeight, daemonHeight))
-	
+
 	return map[string]interface{}{
 		"success":      true,
 		"synced":       false,
@@ -401,7 +528,7 @@ func (a *App) GetWalletSyncStatus() map[string]interface{} {
 	wallet := walletManager.wallet
 	walletHeight := wallet.Get_Height()
 	daemonHeight := wallet.Get_Daemon_Height()
-	
+
 	synced := daemonHeight > 0 && walletHeight >= daemonHeight
 
 	return map[string]interface{}{
@@ -445,20 +572,14 @@ func (a *App) GetSeedPhrase(password string) map[string]interface{} {
 		}
 	}
 
-	// Verify password by attempting to re-open the wallet
-	// This is a security check to ensure the user has the correct password
-	tempWallet, err := walletapi.Open_Encrypted_Wallet(walletManager.walletPath, password)
-	if err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] Failed to verify password for seed phrase: %v", err))
+	if !walletManager.wallet.Check_Password(password) {
+		a.logToConsole("[ERR] Failed to verify password for seed phrase")
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Invalid password",
 		}
 	}
-	// Close the temporary wallet immediately after verification
-	tempWallet.Close_Encrypted_Wallet()
 
-	// Get the seed phrase from the currently open wallet
 	seed := walletManager.wallet.GetSeed()
 
 	a.logToConsole("[OK] Seed phrase retrieved (password verified)")
@@ -482,19 +603,14 @@ func (a *App) GetWalletKeys(password string) map[string]interface{} {
 		}
 	}
 
-	// Verify password by attempting to re-open the wallet
-	tempWallet, err := walletapi.Open_Encrypted_Wallet(walletManager.walletPath, password)
-	if err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] Failed to verify password for wallet keys: %v", err))
+	if !walletManager.wallet.Check_Password(password) {
+		a.logToConsole("[ERR] Failed to verify password for wallet keys")
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Invalid password",
 		}
 	}
-	// Close the temporary wallet immediately after verification
-	tempWallet.Close_Encrypted_Wallet()
 
-	// Get the keys from the currently open wallet
 	keys := walletManager.wallet.Get_Keys()
 
 	// Format secret key (64 hex characters, matching Engram/dero-wallet-cli format)
@@ -509,15 +625,18 @@ func (a *App) GetWalletKeys(password string) map[string]interface{} {
 	a.logToConsole("[OK] Wallet keys retrieved (password verified)")
 
 	return map[string]interface{}{
-		"success":    true,
-		"secretKey":  secretKey,
-		"publicKey":  publicKey,
-		"message":    "Wallet keys retrieved successfully",
+		"success":   true,
+		"secretKey": secretKey,
+		"publicKey": publicKey,
+		"message":   "Wallet keys retrieved successfully",
 	}
 }
 
-// GetIntegratedAddress generates an integrated address with optional payment ID
-func (a *App) GetIntegratedAddress(paymentID string) map[string]interface{} {
+// GetIntegratedAddress generates an integrated address with optional destination port (payment ID)
+// In DERO, "payment ID" is implemented as a destination port (uint64) embedded in the address.
+// The resulting address changes from dero.../deto... to deroi.../detoi... format.
+// Optional parameters: comment (string), amount (uint64 in atomic units)
+func (a *App) GetIntegratedAddress(destinationPort uint64, comment string, amount uint64) map[string]interface{} {
 	walletManager.RLock()
 	defer walletManager.RUnlock()
 
@@ -528,18 +647,115 @@ func (a *App) GetIntegratedAddress(paymentID string) map[string]interface{} {
 		}
 	}
 
-	// Generate integrated address
-	integrated := walletManager.wallet.GetAddress()
-	if paymentID != "" {
-		// Add payment ID to the address
-		// Note: DERO uses different mechanism for payment IDs
+	// Get the base address
+	baseAddr := walletManager.wallet.GetAddress()
+
+	// Build arguments for the integrated address
+	var arguments rpc.Arguments
+
+	// Add destination port (this is DERO's equivalent of payment ID)
+	// Port 0 is valid and commonly used for simple transfers
+	arguments = append(arguments, rpc.Argument{
+		Name:     rpc.RPC_DESTINATION_PORT,
+		DataType: rpc.DataUint64,
+		Value:    destinationPort,
+	})
+
+	// Add optional comment/message
+	if comment != "" {
+		arguments = append(arguments, rpc.Argument{
+			Name:     rpc.RPC_COMMENT,
+			DataType: rpc.DataString,
+			Value:    comment,
+		})
 	}
+
+	// Add optional requested amount
+	if amount > 0 {
+		arguments = append(arguments, rpc.Argument{
+			Name:     rpc.RPC_VALUE_TRANSFER,
+			DataType: rpc.DataUint64,
+			Value:    amount,
+		})
+	}
+
+	// Clone the address and add arguments to create integrated address
+	integratedAddr := baseAddr.Clone()
+	integratedAddr.Arguments = arguments
+
+	// Validate the integrated address can be encoded
+	_, err := integratedAddr.MarshalText()
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERROR] Failed to create integrated address: %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to create integrated address: %v", err),
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] Generated integrated address with port %d", destinationPort))
 
 	return map[string]interface{}{
 		"success":           true,
-		"integratedAddress": integrated.String(),
-		"paymentID":         paymentID,
+		"integratedAddress": integratedAddr.String(),
+		"baseAddress":       baseAddr.String(),
+		"destinationPort":   destinationPort,
+		"comment":           comment,
+		"amount":            amount,
 	}
+}
+
+// SplitIntegratedAddress decodes an integrated address and returns its components
+// This is useful for understanding what data is embedded in an integrated address
+func (a *App) SplitIntegratedAddress(integratedAddress string) map[string]interface{} {
+	// Parse the address
+	addr, err := rpc.NewAddress(integratedAddress)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Invalid address format: %v", err),
+		}
+	}
+
+	result := map[string]interface{}{
+		"success":      true,
+		"baseAddress":  addr.BaseAddress().String(),
+		"isIntegrated": addr.IsIntegratedAddress(),
+		"isMainnet":    addr.IsMainnet(),
+	}
+
+	// If it's an integrated address, extract the embedded data
+	if addr.IsIntegratedAddress() {
+		// Extract destination port (payment ID)
+		if addr.Arguments.Has(rpc.RPC_DESTINATION_PORT, rpc.DataUint64) {
+			result["destinationPort"] = addr.Arguments.Value(rpc.RPC_DESTINATION_PORT, rpc.DataUint64).(uint64)
+		}
+
+		// Extract comment if present
+		if addr.Arguments.Has(rpc.RPC_COMMENT, rpc.DataString) {
+			result["comment"] = addr.Arguments.Value(rpc.RPC_COMMENT, rpc.DataString).(string)
+		}
+
+		// Extract requested amount if present
+		if addr.Arguments.Has(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64) {
+			result["amount"] = addr.Arguments.Value(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64).(uint64)
+		}
+
+		// Extract expiry if present
+		if addr.Arguments.Has(rpc.RPC_EXPIRY, rpc.DataTime) {
+			result["expiry"] = addr.Arguments.Value(rpc.RPC_EXPIRY, rpc.DataTime)
+		}
+
+		// Extract needs replyback flag if present
+		if addr.Arguments.Has(rpc.RPC_NEEDS_REPLYBACK_ADDRESS, rpc.DataUint64) {
+			result["needsReplyback"] = true
+		}
+
+		// Include raw arguments count
+		result["argumentCount"] = len(addr.Arguments)
+	}
+
+	return result
 }
 
 // ListRecentWallets returns the list of recently opened wallets
@@ -550,7 +766,7 @@ func (a *App) ListRecentWallets() []string {
 }
 
 // Transfer sends DERO to another address
-func (a *App) Transfer(destination string, amount uint64, paymentID string) map[string]interface{} {
+func (a *App) Transfer(destination string, amount uint64, paymentID string, ringsize uint64) map[string]interface{} {
 	walletManager.Lock()
 	defer walletManager.Unlock()
 
@@ -561,17 +777,103 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string) map[
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("[Transfer] Initiating transfer: %d atomic units to %s", amount, destination[:16]+"..."))
+	wallet := walletManager.wallet
 
-	// Build and send the transaction
-	// Note: This is a simplified version. Full implementation would handle
-	// ringsize, fees, integrated addresses, etc.
+	// Validate destination address
+	if destination == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Destination address is required",
+		}
+	}
 
-	// For now, return a placeholder response
-	// Full implementation requires using wallet.TransferPayload0 or similar
+	// Validate amount
+	if amount == 0 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Amount must be greater than 0",
+		}
+	}
+
+	destPreview := destination
+	if len(destination) > 16 {
+		destPreview = destination[:16] + "..."
+	}
+	a.logToConsole(fmt.Sprintf("[Transfer] Initiating transfer: %d atomic units to %s", amount, destPreview))
+
+	// Build the transfer
+	transfers := []rpc.Transfer{
+		{
+			Destination: destination,
+			Amount:      amount,
+		},
+	}
+
+	// Handle payment ID if provided (integrated address or separate)
+	if paymentID != "" {
+		// Payment IDs are typically embedded in integrated addresses
+		// For now, log it - full implementation would handle this
+		a.logToConsole(fmt.Sprintf("[Transfer] Payment ID provided: %s", paymentID))
+	}
+
+	// Pre-flight: verify daemon connectivity before attempting transfer
+	if errResp := checkDaemonConnectivity(wallet); errResp != nil {
+		a.logToConsole("[Transfer] Failed: wallet not connected to daemon")
+		return errResp
+	}
+
+	// Sync wallet with daemon to get fresh nonce and ring members
+	if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Pre-transfer wallet sync failed: %v", syncErr))
+	}
+
+	// Pre-flight: check balance covers the transfer amount
+	mature, _ := wallet.Get_Balance()
+	if mature == 0 || mature < amount {
+		a.logToConsole(fmt.Sprintf("[Transfer] Failed: insufficient balance (%s DERO available, %s DERO required)", formatDEROAmount(mature), formatDEROAmount(amount)))
+		return map[string]interface{}{
+			"success":        false,
+			"error":          fmt.Sprintf("Insufficient balance. You have %s DERO but this transfer requires %s DERO plus gas fees.", formatDEROAmount(mature), formatDEROAmount(amount)),
+			"technicalError": fmt.Sprintf("mature balance %d < required %d", mature, amount),
+		}
+	}
+
+	if ringsize < 2 {
+		ringsize = 16
+	}
+	tx, err := wallet.TransferPayload0(transfers, ringsize, false, rpc.Arguments{}, 0, false)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Transfer build failed, retrying after resync: %v", err))
+		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+		}
+		tx, err = wallet.TransferPayload0(transfers, ringsize, false, rpc.Arguments{}, 0, false)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("[Transfer] Failed: %s", err.Error()))
+			return map[string]interface{}{
+				"success":        false,
+				"error":          FriendlyError(err),
+				"technicalError": err.Error(),
+			}
+		}
+	}
+
+	if err := wallet.SendTransaction(tx); err != nil {
+		a.logToConsole(fmt.Sprintf("[Transfer] Broadcast failed: %s", err.Error()))
+		return map[string]interface{}{
+			"success":        false,
+			"error":          fmt.Sprintf("Transaction built but failed to broadcast: %s", FriendlyError(err)),
+			"technicalError": err.Error(),
+		}
+	}
+
+	txid := tx.GetHash().String()
+	a.logToConsole(fmt.Sprintf("[Transfer] Success! TXID: %s", txid))
+
 	return map[string]interface{}{
-		"success": false,
-		"error":   "Transfer functionality coming soon - use XSWD for transactions",
+		"success": true,
+		"txid":    txid,
+		"hex":     fmt.Sprintf("%x", tx.Serialize()),
 	}
 }
 
@@ -599,7 +901,7 @@ func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 	// Load transaction labels for quick lookup
 	labelMap := getTransactionLabelsMap()
 
-	// Convert to frontend-friendly format
+	// Convert to frontend-friendly format with full transaction details
 	entries := make([]map[string]interface{}, 0, len(rpcEntries))
 	for _, e := range rpcEntries {
 		entry := map[string]interface{}{
@@ -607,11 +909,38 @@ func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 			"height":      e.Height,
 			"topoheight":  e.TopoHeight,
 			"amount":      e.Amount,
+			"fees":        e.Fees,
+			"burn":        e.Burn,
 			"incoming":    e.Incoming,
 			"coinbase":    e.Coinbase,
 			"destination": e.Destination,
-			"timestamp":   e.Time.Unix(),
+			"sender":      e.Sender,
+			"proof":       e.Proof,
+			"status":      e.Status,
+			"time":        e.Time.Unix(),
 		}
+
+		// Extract payload comment if available
+		if e.Payload_RPC.HasValue(rpc.RPC_COMMENT, rpc.DataString) {
+			if comment, ok := e.Payload_RPC.Value(rpc.RPC_COMMENT, rpc.DataString).(string); ok {
+				entry["comment"] = comment
+			}
+		}
+
+		// Extract destination port if available
+		if e.Payload_RPC.HasValue(rpc.RPC_DESTINATION_PORT, rpc.DataUint64) {
+			if port, ok := e.Payload_RPC.Value(rpc.RPC_DESTINATION_PORT, rpc.DataUint64).(uint64); ok {
+				entry["destination_port"] = port
+			}
+		}
+
+		// Extract source port if available
+		if e.Payload_RPC.HasValue(rpc.RPC_SOURCE_PORT, rpc.DataUint64) {
+			if port, ok := e.Payload_RPC.Value(rpc.RPC_SOURCE_PORT, rpc.DataUint64).(uint64); ok {
+				entry["source_port"] = port
+			}
+		}
+
 		// Include label if one exists for this transaction
 		if label, ok := labelMap[e.TXID]; ok && label != "" {
 			entry["label"] = label
@@ -619,9 +948,13 @@ func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 		entries = append(entries, entry)
 	}
 
-	// Limit results (return most recent)
+	// Limit results and reverse so newest are first
 	if limit > 0 && len(entries) > limit {
 		entries = entries[len(entries)-limit:]
+	}
+	// Reverse: Show_Transfers returns oldest-first; UI expects newest-first
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
 	}
 
 	return map[string]interface{}{
@@ -695,13 +1028,13 @@ func (a *App) GetWalletMiningEarnings(limit int) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"success":       true,
-		"earnings":      earnings,
-		"count":         len(earnings),
-		"total_amount":  totalAmount,
-		"formatted":     formatDEROAmount(totalAmount),
-		"blocks_count":  blocksCount,
-		"minis_count":   minisCount,
+		"success":      true,
+		"earnings":     earnings,
+		"count":        len(earnings),
+		"total_amount": totalAmount,
+		"formatted":    formatDEROAmount(totalAmount),
+		"blocks_count": blocksCount,
+		"minis_count":  minisCount,
 	}
 }
 
@@ -860,6 +1193,15 @@ func (a *App) RestoreWallet(filePath, password, seed string) map[string]interfac
 		return ErrorResponse(err)
 	}
 
+	// Set network before GetAddress() so the address prefix is correct
+	// (dero1 for mainnet, deto1 for testnet/simulator)
+	isMainnet := true
+	simArg := globals.Arguments["--simulator"]
+	if simArg == true || simArg == "true" || fmt.Sprintf("%v", simArg) == "true" {
+		isMainnet = false
+	}
+	wallet.SetNetwork(isMainnet)
+
 	address := wallet.GetAddress().String()
 	wallet.Close_Encrypted_Wallet()
 
@@ -889,45 +1231,6 @@ func GetWallet() *walletapi.Wallet_Disk {
 	return nil
 }
 
-// Helper function to add wallet to recent list
-func addToRecentWallets(path string) {
-	// Remove if already exists
-	newRecent := []string{path}
-	for _, p := range walletManager.recentWallets {
-		if p != path {
-			newRecent = append(newRecent, p)
-		}
-	}
-
-	// Keep only last 5
-	if len(newRecent) > 5 {
-		newRecent = newRecent[:5]
-	}
-
-	walletManager.recentWallets = newRecent
-
-	// Save to settings file
-	saveRecentWallets(newRecent)
-}
-
-func saveRecentWallets(wallets []string) {
-	configDir := filepath.Join(getDatashardsDir(), "settings")
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		log.Printf("Failed to create settings directory: %v", err)
-		return
-	}
-
-	data, err := json.Marshal(wallets)
-	if err != nil {
-		log.Printf("Failed to marshal recent wallets: %v", err)
-		return
-	}
-
-	if err := os.WriteFile(filepath.Join(configDir, "recent_wallets.json"), data, 0600); err != nil {
-		log.Printf("Failed to save recent wallets: %v", err)
-	}
-}
-
 func loadRecentWallets() []string {
 	configFile := filepath.Join(getDatashardsDir(), "settings", "recent_wallets.json")
 	data, err := os.ReadFile(configFile)
@@ -954,6 +1257,146 @@ func (a *App) ApproveWalletConnection() map[string]interface{} {
 	return map[string]interface{}{"success": true}
 }
 
+// checkDaemonConnectivity verifies the wallet can reach the daemon before attempting a transaction.
+// Returns nil if connected, or an error response map if not.
+func checkDaemonConnectivity(wallet *walletapi.Wallet_Disk) map[string]interface{} {
+	if wallet.Get_Daemon_Height() == 0 {
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "Wallet is not connected to the daemon. Please check your connection and try again.",
+			"technicalError": "daemon height is 0 — no active daemon connection",
+		}
+	}
+	return nil
+}
+
+// withSimulatorTransactionConnectivity runs a wallet transaction with the simulator-safe
+// connect/disconnect pattern. Test wallets are intentionally left disconnected after opening
+// so the simulator's single WebSocket slot stays free for Gnomon and other services.
+func (a *App) withSimulatorTransactionConnectivity(wallet *walletapi.Wallet_Disk, action string, fn func() map[string]interface{}) map[string]interface{} {
+	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
+
+	// Close any stale walletapi socket first, then pause Gnomon so the simulator has one free slot.
+	a.disconnectWalletAPI()
+	gnomonWasRunning := a.pauseGnomonForSimulator()
+	time.Sleep(300 * time.Millisecond)
+
+	cleanup := func() {
+		a.disconnectWalletAPI()
+		if gnomonWasRunning {
+			time.Sleep(300 * time.Millisecond)
+			a.resumeGnomonForSimulator()
+		}
+	}
+
+	if err := walletapi.Connect(endpoint); err != nil {
+		cleanup()
+		return map[string]interface{}{
+			"success":        false,
+			"error":          fmt.Sprintf("Failed to connect wallet to simulator for %s.", action),
+			"technicalError": err.Error(),
+		}
+	}
+
+	wallet.SetDaemonAddress(endpoint)
+	wallet.SetOnlineMode()
+	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Pre-%s simulator wallet sync failed: %v", action, err))
+	}
+
+	result := fn()
+	cleanup()
+	return result
+}
+
+// sanitizeSCID strips trailing null bytes, whitespace, and quotes from an SCID string.
+// DERO SC storage and some dApp frontends occasionally pad values with \x00.
+func sanitizeSCID(s string) string {
+	return strings.TrimRight(s, "\x00 \t\n\r\"")
+}
+
+// parseXSWDScArgs builds an rpc.Arguments slice from a dApp's XSWD params,
+// prepending SCACTION + SCID and hoisting the entrypoint.
+// Supported datatypes: U (uint64), S (string), H (hash/SCID), I (int64).
+func parseXSWDScArgs(params map[string]interface{}, scid string) rpc.Arguments {
+	scArgs := rpc.Arguments{}
+	hasEntrypointInScRpc := false
+	entrypointFromScRpc := ""
+
+	if args, ok := params["sc_rpc"].([]interface{}); ok {
+		for _, arg := range args {
+			a, ok := arg.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			name, _ := a["name"].(string)
+			dtype, _ := a["datatype"].(string)
+			val := a["value"]
+			if name == "" {
+				continue
+			}
+			if name == "entrypoint" {
+				hasEntrypointInScRpc = true
+				if ep, ok := val.(string); ok {
+					entrypointFromScRpc = ep
+				}
+			}
+			switch dtype {
+			case "U":
+				if v, ok := val.(float64); ok {
+					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+				}
+			case "I":
+				if v, ok := val.(float64); ok {
+					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: int64(v)})
+				}
+			case "S":
+				if v, ok := val.(string); ok {
+					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
+				}
+			case "H":
+				if v, ok := val.(string); ok {
+					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
+				}
+			}
+		}
+	}
+
+	entrypoint := entrypointFromScRpc
+	if entrypoint == "" {
+		if ep, ok := params["entrypoint"].(string); ok {
+			entrypoint = ep
+		}
+	}
+
+	if entrypoint == "" && !hasEntrypointInScRpc {
+		return scArgs
+	}
+
+	hasSCACTION := false
+	hasSCID := false
+	for _, arg := range scArgs {
+		if arg.Name == rpc.SCACTION {
+			hasSCACTION = true
+		}
+		if arg.Name == rpc.SCID {
+			hasSCID = true
+		}
+	}
+
+	prefix := rpc.Arguments{}
+	if !hasSCACTION {
+		prefix = append(prefix, rpc.Argument{Name: rpc.SCACTION, DataType: "U", Value: uint64(rpc.SC_CALL)})
+	}
+	if !hasSCID {
+		prefix = append(prefix, rpc.Argument{Name: rpc.SCID, DataType: "H", Value: crypto.HashHexToHash(scid)})
+	}
+	if entrypoint != "" && !hasEntrypointInScRpc {
+		prefix = append(prefix, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
+	}
+	return append(prefix, scArgs...)
+}
+
 // InternalWalletCall executes a wallet method directly using the embedded wallet
 func (a *App) InternalWalletCall(method string, params map[string]interface{}, password string) map[string]interface{} {
 	walletManager.Lock()
@@ -969,10 +1412,10 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			if err != nil {
 				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
 			}
-			
+
 			walletManager.isOpen = true
 			walletManager.wallet.SetNetwork(!a.IsInSimulatorMode())
-			
+
 			// Set daemon endpoint
 			endpointRaw := "127.0.0.1:10102"
 			if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
@@ -992,32 +1435,65 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 
 	// Handle methods
 	switch method {
-	case "GetAddress", "DERO.GetAddress":
-		// Return the wallet address
+	case "GetAddress", "DERO.GetAddress", "getaddress":
 		address := wallet.GetAddress().String()
 		return map[string]interface{}{
 			"success": true,
 			"result":  map[string]string{"address": address},
 		}
-		
-	case "GetBalance", "DERO.GetBalance":
-		// Return wallet balance
+
+	case "GetBalance", "DERO.GetBalance", "getbalance":
 		balance, lockedBalance := wallet.Get_Balance()
 		return map[string]interface{}{
 			"success": true,
 			"result":  map[string]uint64{"balance": balance, "unlocked_balance": balance - lockedBalance, "locked_balance": lockedBalance},
 		}
-		
-	case "GetHeight", "DERO.GetHeight":
-		// Return wallet height
+
+	case "GetHeight", "DERO.GetHeight", "getheight":
 		height := wallet.Get_Height()
+		result := map[string]interface{}{
+			"height": height,
+		}
+		// Many dApps (e.g. vault.tela) use stableheight as a trigger to fetch SC data.
+		// The raw wallet only knows the current height; stableheight and topoheight come
+		// from the daemon's DERO.GetHeight response, so we augment the result here.
+		if a.daemonClient != nil {
+			if raw, err := a.daemonClient.Call("DERO.GetHeight", nil); err == nil {
+				if daemonResult, ok := raw.(map[string]interface{}); ok {
+					if sh, ok := daemonResult["stableheight"]; ok {
+						result["stableheight"] = sh
+					}
+					if th, ok := daemonResult["topoheight"]; ok {
+						result["topoheight"] = th
+					}
+				}
+			}
+		}
 		return map[string]interface{}{
 			"success": true,
-			"result":  map[string]uint64{"height": height},
+			"result":  result,
 		}
-		
-	case "transfer", "Transfer", "DERO.Transfer":
-		// Parse transfers (with burn support for dev donations)
+
+	case "transfer", "Transfer", "DERO.Transfer", "transfer_split":
+		// Check for SC deployment: dApps can send "sc" param to deploy a new contract.
+		// This matches Engram/TELA CLI behavior where transfer with "sc" deploys a contract.
+		if scCode, ok := params["sc"].(string); ok && scCode != "" {
+			a.logToConsole("[XSWD] SC deployment via transfer detected")
+			ringsize := uint64(2)
+			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
+				ringsize = uint64(rs)
+			}
+			deployResult := a.InstallSmartContract(scCode, ringsize >= 16)
+			if success, ok := deployResult["success"].(bool); ok && success {
+				return map[string]interface{}{
+					"success": true,
+					"result":  map[string]interface{}{"txid": deployResult["txid"]},
+				}
+			}
+			return map[string]interface{}{"success": false, "error": deployResult["error"]}
+		}
+
+		// Parse transfers array -- each entry may carry a token SCID for non-DERO assets.
 		var transfers []rpc.Transfer
 		if t, ok := params["transfers"].([]interface{}); ok {
 			for _, item := range t {
@@ -1026,29 +1502,29 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 					if a, ok := tf["amount"].(float64); ok {
 						amount = uint64(a)
 					}
-					
 					burn := uint64(0)
 					if b, ok := tf["burn"].(float64); ok {
 						burn = uint64(b)
 					}
-					
 					dest := ""
 					if d, ok := tf["destination"].(string); ok {
 						dest = d
 					}
-					
-					// Include transfer if it has destination, amount, or burn
+					var tokenSCID crypto.Hash
+					if s, ok := tf["scid"].(string); ok && s != "" {
+						tokenSCID = crypto.HashHexToHash(sanitizeSCID(s))
+					}
 					if dest != "" || amount > 0 || burn > 0 {
 						transfers = append(transfers, rpc.Transfer{
 							Destination: dest,
 							Amount:      amount,
 							Burn:        burn,
+							SCID:        tokenSCID,
 						})
 					}
 				}
 			}
 		} else {
-			// Try single destination/amount if provided at top level
 			amount := uint64(0)
 			if a, ok := params["amount"].(float64); ok {
 				amount = uint64(a)
@@ -1057,221 +1533,126 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			if d, ok := params["destination"].(string); ok {
 				dest = d
 			}
-			
 			if dest != "" {
-				transfers = append(transfers, rpc.Transfer{
-					Destination: dest,
-					Amount:      amount,
-				})
+				transfers = append(transfers, rpc.Transfer{Destination: dest, Amount: amount})
 			}
 		}
-		
-		// Check if this transfer includes SC call parameters (scid + sc_rpc)
-		// Some dApps (like Villager) send SC calls via the transfer method
+
+		// Check if this transfer also carries an SC call (scid + sc_rpc).
+		// Some dApps (e.g. Villager) send SC invocations via the transfer method.
 		scArgs := rpc.Arguments{}
 		scid := ""
 		if s, ok := params["scid"].(string); ok {
-			scid = s
+			scid = sanitizeSCID(s)
 		}
-		
-		// If scid and sc_rpc are present, parse SC arguments
 		if scid != "" {
-			if args, ok := params["sc_rpc"].([]interface{}); ok && len(args) > 0 {
-				hasEntrypointInScRpc := false
-				entrypointFromScRpc := ""
-				
-				for _, arg := range args {
-					if a, ok := arg.(map[string]interface{}); ok {
-						name, _ := a["name"].(string)
-						type_, _ := a["datatype"].(string)
-						val := a["value"]
-						
-						if name != "" {
-							// Track if entrypoint is in sc_rpc
-							if name == "entrypoint" {
-								hasEntrypointInScRpc = true
-								if ep, ok := val.(string); ok {
-									entrypointFromScRpc = ep
-								}
-							}
-							
-							switch type_ {
-							case "U":
-								if v, ok := val.(float64); ok {
-									scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
-								}
-							case "S":
-								if v, ok := val.(string); ok {
-									scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
-								}
-							case "H":
-								// Handle hash type (SCID)
-								if v, ok := val.(string); ok {
-									scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
-								}
-							}
-						}
-					}
-				}
-				
-				// Determine entrypoint: check sc_rpc first, then separate param
-				entrypoint := entrypointFromScRpc
-				if entrypoint == "" {
-					if ep, ok := params["entrypoint"].(string); ok {
-						entrypoint = ep
-					}
-				}
-				
-				// For SC invocation, SCACTION and SCID must be prepended if entrypoint exists
-				if entrypoint != "" || hasEntrypointInScRpc {
-					// Check if SCACTION and SCID are already in scArgs (avoid duplicates)
-					hasSCACTION := false
-					hasSCID := false
-					for _, arg := range scArgs {
-						if arg.Name == rpc.SCACTION {
-							hasSCACTION = true
-						}
-						if arg.Name == rpc.SCID {
-							hasSCID = true
-						}
-					}
-					
-					// Prepend SCACTION and SCID if not already present
-					newArgs := rpc.Arguments{}
-					if !hasSCACTION {
-						newArgs = append(newArgs, rpc.Argument{Name: rpc.SCACTION, DataType: "U", Value: uint64(rpc.SC_CALL)})
-					}
-					if !hasSCID {
-						newArgs = append(newArgs, rpc.Argument{Name: rpc.SCID, DataType: "H", Value: crypto.HashHexToHash(scid)})
-					}
-					
-					// Add entrypoint if it was specified as a separate param (not in sc_rpc)
-					if entrypoint != "" && !hasEntrypointInScRpc {
-						newArgs = append(newArgs, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
-					}
-					
-					// Prepend new args to existing scArgs
-					scArgs = append(newArgs, scArgs...)
-				}
-				
+			scArgs = parseXSWDScArgs(params, scid)
+			if len(scArgs) > 0 {
 				scidPreview := scid
 				if len(scid) > 16 {
 					scidPreview = scid[:16] + "..."
 				}
-				a.logToConsole(fmt.Sprintf("[XSWD] Transfer with SC call detected: scid=%s, entrypoint=%s", scidPreview, entrypoint))
+				a.logToConsole(fmt.Sprintf("[XSWD] Transfer with SC call: scid=%s", scidPreview))
 			}
 		}
-		
-		// For pure transfers (no SC), we still need at least one transfer
+
 		if len(transfers) == 0 && len(scArgs) == 0 {
-			return map[string]interface{}{"success": false, "error": "No transfers or SC call specified"}
+			return map[string]interface{}{"success": false, "error": "Please specify a transfer amount and destination, or a smart contract call."}
 		}
-		
-		// Execute transfer (with optional SC arguments)
-		tx, err := wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
-		if err != nil {
-			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+
+		runTransfer := func() map[string]interface{} {
+			if !a.IsInSimulatorMode() {
+				if errResp := checkDaemonConnectivity(wallet); errResp != nil {
+					return errResp
+				}
+			}
+			if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Pre-transfer wallet sync failed: %v", syncErr))
+			}
+
+			mature, _ := wallet.Get_Balance()
+			var totalTransferAmount uint64
+			for _, t := range transfers {
+				totalTransferAmount += t.Amount + t.Burn
+			}
+			if mature == 0 || (totalTransferAmount > 0 && mature < totalTransferAmount) {
+				return map[string]interface{}{
+					"success":        false,
+					"error":          fmt.Sprintf("Insufficient balance. You have %s DERO but this transaction requires at least %s DERO plus gas fees.", formatDEROAmount(mature), formatDEROAmount(totalTransferAmount)),
+					"technicalError": fmt.Sprintf("mature balance %d < required %d", mature, totalTransferAmount),
+				}
+			}
+
+			ringsize := uint64(2)
+			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
+				ringsize = uint64(rs)
+			}
+			// dApp-requested fee (0 = let daemon pick)
+			fees := uint64(0)
+			if f, ok := params["fees"].(float64); ok && f > 0 {
+				fees = uint64(f)
+			}
+			a.logToConsole(fmt.Sprintf("[XSWD] Building transfer TX with ringsize=%d fees=%d", ringsize, fees))
+
+			tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Transfer build failed, retrying after resync: %v", err))
+				if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+				}
+				tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+				if err != nil {
+					return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+				}
+			}
+
+			if err := wallet.SendTransaction(tx); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] Transfer broadcast failed: %s", err.Error()))
+				return map[string]interface{}{"success": false, "error": fmt.Sprintf("Transaction built but failed to broadcast: %s", FriendlyError(err)), "technicalError": err.Error()}
+			}
+
+			txid := tx.GetHash().String()
+			a.logToConsole(fmt.Sprintf("[OK] Transfer TX sent: %s (ringsize=%d)", txid, ringsize))
+			return map[string]interface{}{
+				"success": true,
+				"result":  map[string]interface{}{"txid": txid},
+			}
 		}
-		
-		return map[string]interface{}{
-			"success": true,
-			"txid":    tx.GetHash().String(),
-			"hex":     fmt.Sprintf("%x", tx.Serialize()),
+
+		if a.IsInSimulatorMode() {
+			return a.withSimulatorTransactionConnectivity(wallet, "transfer", runTransfer)
 		}
+		return runTransfer()
 
 	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
 		scid := ""
 		if s, ok := params["scid"].(string); ok {
-			scid = s
+			scid = sanitizeSCID(s)
 		}
-		
 		if scid == "" {
-			return map[string]interface{}{"success": false, "error": "Missing scid"}
+			return map[string]interface{}{"success": false, "error": "Smart Contract ID (SCID) is required for this operation."}
 		}
-		
-		// Parse SC arguments and track if entrypoint is in sc_rpc
-		scArgs := rpc.Arguments{}
-		hasEntrypointInScRpc := false
-		entrypointFromScRpc := ""
-		
-		if args, ok := params["sc_rpc"].([]interface{}); ok {
-			for _, arg := range args {
-				if a, ok := arg.(map[string]interface{}); ok {
-					name, _ := a["name"].(string)
-					type_, _ := a["datatype"].(string)
-					val := a["value"]
-					
-					if name != "" {
-						// Track if entrypoint is in sc_rpc (feed.tela sends it this way)
-						if name == "entrypoint" {
-							hasEntrypointInScRpc = true
-							if ep, ok := val.(string); ok {
-								entrypointFromScRpc = ep
-							}
-						}
-						
-						switch type_ {
-						case "U":
-							if v, ok := val.(float64); ok {
-								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
-							}
-						case "S":
-							if v, ok := val.(string); ok {
-								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
-							}
-						case "H":
-							// Handle hash type (SCID)
-							if v, ok := val.(string); ok {
-								scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
-							}
-						}
-					}
-				}
-			}
+
+		// Parse SC arguments (shared helper handles all datatypes including I, U, S, H)
+		scArgs := parseXSWDScArgs(params, scid)
+
+		// sc_dero_deposit / sc_token_deposit -- amount attached to the SC call.
+		// These are top-level params distinct from the transfers array.
+		var scDeposit []rpc.Transfer
+		if deroDeposit, ok := params["sc_dero_deposit"].(float64); ok && deroDeposit > 0 {
+			scDeposit = append(scDeposit, rpc.Transfer{Amount: uint64(deroDeposit)})
 		}
-		
-		// Determine entrypoint: check sc_rpc first, then separate param
-		entrypoint := entrypointFromScRpc
-		if entrypoint == "" {
-			if ep, ok := params["entrypoint"].(string); ok {
-				entrypoint = ep
+		if tokenDeposit, ok := params["sc_token_deposit"].(float64); ok && tokenDeposit > 0 {
+			tokenSCIDStr, _ := params["sc_token_deposit_scid"].(string)
+			var tokenSCID crypto.Hash
+			if tokenSCIDStr != "" {
+				tokenSCID = crypto.HashHexToHash(tokenSCIDStr)
 			}
+			scDeposit = append(scDeposit, rpc.Transfer{Amount: uint64(tokenDeposit), SCID: tokenSCID})
 		}
-		
-		// For SC invocation, SCACTION and SCID must be prepended if entrypoint exists
-		// This is required regardless of where entrypoint was specified
-		if entrypoint != "" || hasEntrypointInScRpc {
-			// Check if SCACTION and SCID are already in scArgs (avoid duplicates)
-			hasSCACTION := false
-			hasSCID := false
-			for _, arg := range scArgs {
-				if arg.Name == rpc.SCACTION {
-					hasSCACTION = true
-				}
-				if arg.Name == rpc.SCID {
-					hasSCID = true
-				}
-			}
-			
-			// Prepend SCACTION and SCID if not already present
-			newArgs := rpc.Arguments{}
-			if !hasSCACTION {
-				newArgs = append(newArgs, rpc.Argument{Name: rpc.SCACTION, DataType: "U", Value: uint64(rpc.SC_CALL)})
-			}
-			if !hasSCID {
-				newArgs = append(newArgs, rpc.Argument{Name: rpc.SCID, DataType: "H", Value: crypto.HashHexToHash(scid)})
-			}
-			
-			// Add entrypoint if it was specified as a separate param (not in sc_rpc)
-			if entrypoint != "" && !hasEntrypointInScRpc {
-				newArgs = append(newArgs, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
-			}
-			
-			// Prepend new args to existing scArgs
-			scArgs = append(newArgs, scArgs...)
-		}
-		
-		// Check for transfers attached to SC call (including burns for dev donations)
+
+		// Transfers attached to the SC call (burns for dev donations, etc.)
+		// Each entry may carry a per-transfer token SCID.
 		var transfers []rpc.Transfer
 		if t, ok := params["transfers"].([]interface{}); ok {
 			for _, item := range t {
@@ -1280,89 +1661,347 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 					if a, ok := tf["amount"].(float64); ok {
 						amt = uint64(a)
 					}
-					
 					burn := uint64(0)
 					if b, ok := tf["burn"].(float64); ok {
 						burn = uint64(b)
 					}
-					
 					dest := ""
 					if d, ok := tf["destination"].(string); ok {
 						dest = d
 					}
-					
-					// Include transfer if it has amount OR burn (burn is used for dev donations)
+					var tokenSCID crypto.Hash
+					if s, ok := tf["scid"].(string); ok && s != "" {
+						tokenSCID = crypto.HashHexToHash(sanitizeSCID(s))
+					}
 					if amt > 0 || burn > 0 {
 						transfers = append(transfers, rpc.Transfer{
 							Destination: dest,
 							Amount:      amt,
 							Burn:        burn,
+							SCID:        tokenSCID,
 						})
 					}
 				}
 			}
 		}
+		// Merge deposit entries in front of any explicit transfers
+		transfers = append(scDeposit, transfers...)
 
-		// Execute SC Invoke
-		// Note: WalletAPI might differ on SC invoke method signature
-		// Using TransferPayload0 with SC args
-		// For SC invoke, destination is usually random burn address or handled via rpc args
-		
-		// For SC invocation, we generally use TransferPayload0 with Arguments
-		// If we are sending DERO to the SC, we include it in transfers
-		
-		tx, err := wallet.TransferPayload0(transfers, 16, false, scArgs, 0, false)
-		if err != nil {
-			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+		runSCInvoke := func() map[string]interface{} {
+			if !a.IsInSimulatorMode() {
+				if errResp := checkDaemonConnectivity(wallet); errResp != nil {
+					return errResp
+				}
+			}
+			if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Pre-scinvoke wallet sync failed: %v", syncErr))
+			}
+
+			mature, _ := wallet.Get_Balance()
+			if mature == 0 {
+				return map[string]interface{}{
+					"success":        false,
+					"error":          "Insufficient balance. Even a smart contract call requires gas fees — please fund your wallet first.",
+					"technicalError": "wallet mature balance is 0",
+				}
+			}
+
+			ringsize := uint64(2)
+			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
+				ringsize = uint64(rs)
+			}
+			fees := uint64(0)
+			if f, ok := params["fees"].(float64); ok && f > 0 {
+				fees = uint64(f)
+			}
+			a.logToConsole(fmt.Sprintf("[XSWD] Building scinvoke TX with ringsize=%d fees=%d", ringsize, fees))
+
+			tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] scinvoke build failed, retrying after resync: %v", err))
+				if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+				}
+				tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+				if err != nil {
+					return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+				}
+			}
+
+			if err := wallet.SendTransaction(tx); err != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] scinvoke broadcast failed: %s", err.Error()))
+				return map[string]interface{}{"success": false, "error": fmt.Sprintf("SC call built but failed to broadcast: %s", FriendlyError(err)), "technicalError": err.Error()}
+			}
+
+			txid := tx.GetHash().String()
+			a.logToConsole(fmt.Sprintf("[OK] scinvoke TX sent: %s (ringsize=%d)", txid, ringsize))
+			return map[string]interface{}{
+				"success": true,
+				"result": map[string]interface{}{
+					"txid": txid,
+				},
+			}
 		}
-		
+
+		if a.IsInSimulatorMode() {
+			return a.withSimulatorTransactionConnectivity(wallet, "scinvoke", runSCInvoke)
+		}
+		return runSCInvoke()
+
+	case "GetTransfers", "get_transfers":
+		coinbase, in, out := true, true, true
+		if v, ok := params["coinbase"].(bool); ok {
+			coinbase = v
+		}
+		if v, ok := params["in"].(bool); ok {
+			in = v
+		}
+		if v, ok := params["out"].(bool); ok {
+			out = v
+		}
+		minH := uint64(0)
+		maxH := uint64(0)
+		if v, ok := params["min_height"].(float64); ok {
+			minH = uint64(v)
+		}
+		if v, ok := params["max_height"].(float64); ok {
+			maxH = uint64(v)
+		}
+		var scid crypto.Hash
+		entries := wallet.Show_Transfers(scid, coinbase, in, out, minH, maxH, "", "", 0, 0)
 		return map[string]interface{}{
 			"success": true,
-			"txid":    tx.GetHash().String(),
-			"hex":     fmt.Sprintf("%x", tx.Serialize()),
+			"result":  map[string]interface{}{"entries": entries},
 		}
-		
+
+	case "GetTransferbyTXID", "get_transfer_by_txid":
+		txid, _ := params["txid"].(string)
+		if len(txid) != 64 {
+			return map[string]interface{}{"success": false, "error": "txid must be 64 hex characters"}
+		}
+		var scid crypto.Hash
+		foundSCID, entry := wallet.Get_Payments_TXID(scid, txid)
+		if entry.Height == 0 {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Transaction not found: %s", txid)}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"entry": entry, "scid": foundSCID.String()},
+		}
+
+	case "MakeIntegratedAddress", "make_integrated_address":
+		addr := wallet.GetAddress()
+		addrCopy := addr.Clone()
+		var payload rpc.Arguments
+		if payloadRaw, ok := params["payload_rpc"].([]interface{}); ok {
+			for _, item := range payloadRaw {
+				if a, ok := item.(map[string]interface{}); ok {
+					name, _ := a["name"].(string)
+					dtype, _ := a["datatype"].(string)
+					val := a["value"]
+					if name == "" {
+						continue
+					}
+					switch dtype {
+					case "S":
+						if v, ok := val.(string); ok {
+							payload = append(payload, rpc.Argument{Name: name, DataType: "S", Value: v})
+						}
+					case "U":
+						if v, ok := val.(float64); ok {
+							payload = append(payload, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+						}
+					case "H":
+						if v, ok := val.(string); ok {
+							payload = append(payload, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
+						}
+					}
+				}
+			}
+		}
+		addrCopy.Arguments = payload
+		if _, err := addrCopy.MarshalText(); err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Failed to create integrated address: %v", err)}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"integrated_address": addrCopy.String(), "payload_rpc": payload},
+		}
+
+	case "SplitIntegratedAddress", "split_integrated_address":
+		intAddr, _ := params["integrated_address"].(string)
+		if intAddr == "" {
+			return map[string]interface{}{"success": false, "error": "integrated_address parameter required"}
+		}
+		addr, err := rpc.NewAddress(intAddr)
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Invalid address: %v", err)}
+		}
+		if !addr.IsIntegratedAddress() {
+			return map[string]interface{}{"success": false, "error": "Address is not an integrated address"}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"address": addr.BaseAddress().String(), "payload_rpc": addr.Arguments},
+		}
+
+	case "QueryKey", "query_key":
+		keyType, _ := params["key_type"].(string)
+		switch strings.ToLower(keyType) {
+		case "mnemonic":
+			return map[string]interface{}{
+				"success": true,
+				"result":  map[string]interface{}{"key": wallet.GetSeed()},
+			}
+		default:
+			return map[string]interface{}{"success": false, "error": "Invalid key type, must be mnemonic"}
+		}
+
+	// GetPublicKey returns the wallet's bn256 G1 public key as a 66-char compressed hex
+	// string. This is pure public data — the cryptographic counterpart to GetAddress.
+	// It is needed by any service that wants to encrypt data to this wallet using ECDH
+	// (e.g. Dead Drop document delivery) without requiring the user to hold a session.
+	case "GetPublicKey":
+		keys := wallet.Get_Keys()
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"public_key": keys.Public.StringHex()},
+		}
+
+	case "SignData":
+		data, _ := params["data"].(string)
+		if data == "" {
+			return map[string]interface{}{"success": false, "error": "data parameter required"}
+		}
+		signature := wallet.SignData([]byte(data))
+		if len(signature) == 0 {
+			return map[string]interface{}{"success": false, "error": "Failed to sign data"}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"signature": string(signature)},
+		}
+
+	case "CheckSignature":
+		signedData, _ := params["signed_data"].(string)
+		if signedData == "" {
+			return map[string]interface{}{"success": false, "error": "signed_data parameter required"}
+		}
+		signer, message, err := wallet.CheckSignature([]byte(signedData))
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("Verification failed: %v", err)}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"signer": signer.String(), "message": strings.TrimSpace(string(message))},
+		}
+
+	// DecryptPayload decrypts a Dead Drop document ciphertext encrypted to this
+	// wallet's public key via ECDH + XChaCha20.
+	//
+	// Encryption scheme (server-side, matching this decryption):
+	//   1. Parse recipient's wallet address → extract bn256 G1 public key
+	//   2. Generate ephemeral keypair: ephemeral_secret (random scalar), ephemeral_pub = ephemeral_secret × G
+	//   3. Shared secret = GenerateSharedSecret(ephemeral_secret, recipient_pubkey)
+	//      → shared_key = Keccak256(EncodeCompressed(ephemeral_secret × recipient_pubkey))
+	//   4. Encrypt plaintext with EncryptDecryptUserData(shared_key, plaintext)
+	//   5. Wire format: hex(EncodeCompressed(ephemeral_pub)) + ":" + hex(ciphertext)
+	//
+	// Decryption (here):
+	//   1. Split ciphertext on ":" → ephemeral_pub_hex, ciphertext_hex
+	//   2. Decode ephemeral_pub_hex → bn256.G1 point
+	//   3. Shared secret = GenerateSharedSecret(wallet.Secret, ephemeral_pub)
+	//      → mathematically identical: secret × ephemeral_secret × G = ephemeral_secret × secret × G
+	//   4. XOR-decrypt ciphertext with shared_key
+	//   5. Return base64-encoded plaintext (caller decodes as needed)
+	case "DecryptPayload":
+		ciphertext, _ := params["ciphertext"].(string)
+		if ciphertext == "" {
+			return map[string]interface{}{"success": false, "error": "ciphertext parameter required"}
+		}
+
+		// Split wire format: "<ephemeral_pub_hex>:<ciphertext_hex>"
+		parts := strings.SplitN(ciphertext, ":", 2)
+		if len(parts) != 2 {
+			return map[string]interface{}{"success": false, "error": "invalid ciphertext format: expected '<ephemeral_pub_hex>:<ciphertext_hex>'"}
+		}
+
+		ephemeralPubBytes, err := hex.DecodeString(parts[0])
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("invalid ephemeral public key hex: %v", err)}
+		}
+		ciphertextBytes, err := hex.DecodeString(parts[1])
+		if err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("invalid ciphertext hex: %v", err)}
+		}
+
+		// Decode the ephemeral public key (33-byte compressed bn256 G1 point)
+		ephemeralPub := new(bn256.G1)
+		if err := ephemeralPub.DecodeCompressed(ephemeralPubBytes); err != nil {
+			return map[string]interface{}{"success": false, "error": fmt.Sprintf("failed to decode ephemeral public key: %v", err)}
+		}
+
+		// Derive the shared secret using this wallet's private scalar
+		keys := wallet.Get_Keys()
+		sharedKey := crypto.GenerateSharedSecret(keys.Secret.BigInt(), ephemeralPub)
+
+		// Decrypt in-place (XChaCha20 XOR — symmetric operation)
+		plaintext := make([]byte, len(ciphertextBytes))
+		copy(plaintext, ciphertextBytes)
+		crypto.EncryptDecryptUserData(sharedKey, plaintext)
+
+		a.logToConsole("[DecryptPayload] Document decrypted successfully")
+		return map[string]interface{}{
+			"success": true,
+			"result":  map[string]interface{}{"plaintext": base64.StdEncoding.EncodeToString(plaintext)},
+		}
+
 	case "GetTrackedAssets", "gettrackedassets":
 		// Return tracked asset balances
 		// For the internal wallet, we return DERO balance at minimum
 		// The wallet's Balance map is private, so we access what we can
 		balance, lockedBalance := wallet.Get_Balance()
-		
+
 		// SCID "0000...0000" (zero SCID) represents native DERO
-		zeroScid := "0000000000000000000000000000000000000000000000000000000000000000"
-		
+		zeroScid := deroSCID
+
 		balances := map[string]uint64{
 			zeroScid: balance,
 		}
-		
+
 		// Check for only_positive_balances param
 		onlyPositive := true // default
 		if opb, ok := params["only_positive_balances"].(bool); ok {
 			onlyPositive = opb
 		}
-		
+
 		// Filter zero balances if only_positive_balances is true
 		if onlyPositive && balance == 0 {
 			balances = map[string]uint64{}
 		}
-		
+
 		return map[string]interface{}{
 			"success": true,
 			"result": map[string]interface{}{
-				"balances":        balances,
-				"locked_balance":  lockedBalance,
+				"balances":       balances,
+				"locked_balance": lockedBalance,
 			},
 		}
-		
+
 	default:
-		return map[string]interface{}{"success": false, "error": "Method not supported internally yet"}
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("Method '%s' is not available. Use XSWD for this operation.", method)}
 	}
 }
 
 // SelectWalletFile opens a file dialog to select a wallet file
 func (a *App) SelectWalletFile() string {
+	walletsDir := filepath.Join(getDatashardsDir(), "wallets")
+	os.MkdirAll(walletsDir, 0700)
+
 	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "Select Wallet File",
+		DefaultDirectory: walletsDir,
+		Title:            "Select Wallet File",
+		ShowHiddenFiles:  true,
 		Filters: []runtime.FileFilter{
 			{
 				DisplayName: "DERO Wallet (*.db)",
@@ -1398,11 +2037,24 @@ func (a *App) SwitchWallet(filePath, password string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[SYNC] Switching wallet to: %s", filepath.Base(filePath)))
 
-	// Check if file exists
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet file not found",
+	// Check if file exists and is not empty; try .bak recovery if needed
+	fi, statErr := os.Stat(filePath)
+	if os.IsNotExist(statErr) {
+		if recovered := recoverWalletFromBackup(filePath, a); !recovered {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet file not found",
+			}
+		}
+		fi, _ = os.Stat(filePath)
+	}
+	if fi != nil && fi.Size() == 0 {
+		a.logToConsole(fmt.Sprintf("[WARN] Wallet file is 0 bytes (corrupt): %s — attempting recovery", filePath))
+		if recovered := recoverWalletFromBackup(filePath, a); !recovered {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet file is corrupt (0 bytes) and no backup (.bak) was found.",
+			}
 		}
 	}
 
@@ -1428,21 +2080,6 @@ func (a *App) SwitchWallet(filePath, password string) map[string]interface{} {
 	// Set network mode (mainnet vs simulator) - MUST be called before GetAddress()
 	wallet.SetNetwork(!a.IsInSimulatorMode())
 
-	// Get daemon endpoint from settings
-	endpointRaw := "127.0.0.1:10102"
-	if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-		endpointRaw = ep
-	}
-	endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
-
-	// Connect wallet to daemon
-	wallet.SetDaemonAddress(endpoint)
-	a.ensureWalletDaemonConnectivity(endpointRaw)
-	wallet.SetOnlineMode()
-	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v", err))
-	}
-
 	// Add to recent wallets with updated timestamp (now with correct network prefix)
 	addToRecentWalletsWithInfo(filePath, wallet.GetAddress().String())
 
@@ -1450,6 +2087,43 @@ func (a *App) SwitchWallet(filePath, password string) map[string]interface{} {
 	mature, locked := wallet.Get_Balance()
 
 	a.logToConsole(fmt.Sprintf("[OK] Switched to wallet: %s", address[:16]+"..."))
+
+	// Background daemon connectivity and sync (same pattern as OpenWallet)
+	go func() {
+		endpointRaw := "127.0.0.1:10102"
+		if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
+			endpointRaw = ep
+		}
+		endpoint := normalizeDaemonEndpointForWallet(endpointRaw)
+
+		wallet.SetDaemonAddress(endpoint)
+
+		connectDone := make(chan struct{}, 1)
+		go func() {
+			a.ensureWalletDaemonConnectivity(endpointRaw)
+			connectDone <- struct{}{}
+		}()
+		select {
+		case <-connectDone:
+		case <-time.After(15 * time.Second):
+			a.logToConsole("[WARN] Wallet daemon connection timed out (15s) during switch")
+		}
+
+		wallet.SetOnlineMode()
+
+		syncDone := make(chan error, 1)
+		go func() {
+			syncDone <- wallet.Sync_Wallet_Memory_With_Daemon()
+		}()
+		select {
+		case err := <-syncDone:
+			if err != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed after switch: %v", err))
+			}
+		case <-time.After(10 * time.Second):
+			a.logToConsole("[WARN] Initial wallet sync timed out (10s) after switch")
+		}
+	}()
 
 	return map[string]interface{}{
 		"success":       true,
@@ -1712,7 +2386,7 @@ func (a *App) GetTrackedTokens() map[string]interface{} {
 		walletManager.RUnlock()
 
 		result = append(result, map[string]interface{}{
-			"scid":    "0000000000000000000000000000000000000000000000000000000000000000",
+			"scid":    deroSCID,
 			"name":    "DERO",
 			"symbol":  "DERO",
 			"balance": mature,
@@ -1809,7 +2483,7 @@ func (a *App) AddTrackedToken(scid, name, symbol string) map[string]interface{} 
 	tokens = append(tokens, newToken)
 	saveTrackedTokens(tokens)
 
-	a.logToConsole(fmt.Sprintf("📌 Added tracked token: %s (%s)", name, scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[Wallet] Added tracked token: %s (%s)", name, scid[:16]+"..."))
 
 	return map[string]interface{}{
 		"success": true,
@@ -1848,7 +2522,7 @@ func (a *App) RemoveTrackedToken(scid string) map[string]interface{} {
 }
 
 // TransferToken sends a token (non-native asset) to another address
-func (a *App) TransferToken(scid, destination string, amount uint64, password string) map[string]interface{} {
+func (a *App) TransferToken(scid, destination string, amount uint64, password string, ringsize uint64) map[string]interface{} {
 	walletManager.Lock()
 	defer walletManager.Unlock()
 
@@ -1861,14 +2535,14 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 				return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
 			}
 			walletManager.isOpen = true
-			endpoint := "127.0.0.1:10102"
+			walletManager.wallet.SetNetwork(!a.IsInSimulatorMode())
+			endpointRaw := "127.0.0.1:10102"
 			if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
-				endpoint = ep
-				if len(endpoint) > 7 && endpoint[:7] == "http://" {
-					endpoint = endpoint[7:]
-				}
+				endpointRaw = ep
 			}
-			walletManager.wallet.SetDaemonAddress(endpoint)
+			walletManager.wallet.SetDaemonAddress(normalizeDaemonEndpointForWallet(endpointRaw))
+			a.ensureWalletDaemonConnectivity(endpointRaw)
+			walletManager.wallet.SetOnlineMode()
 		} else {
 			return map[string]interface{}{"success": false, "error": "Please open a wallet first."}
 		}
@@ -1883,19 +2557,30 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 	transfers := []rpc.Transfer{
 		{
 			Destination: destination,
-			Amount:      0,         // DERO amount (0 for pure token transfer)
-			Burn:        amount,    // Token amount to transfer
+			Amount:      0,      // DERO amount (0 for pure token transfer)
+			Burn:        amount, // Token amount to transfer
 			SCID:        crypto.HashHexToHash(scid),
 		},
 	}
 
-	// Execute transfer
-	tx, err := wallet.TransferPayload0(transfers, 16, false, rpc.Arguments{}, 0, false)
+	if ringsize < 2 {
+		ringsize = 16
+	}
+	tx, err := wallet.TransferPayload0(transfers, ringsize, false, rpc.Arguments{}, 0, false)
 	if err != nil {
 		return ErrorResponse(err)
 	}
 
-	a.logToConsole(fmt.Sprintf("[OK] Token transfer successful! TXID: %s", tx.GetHash().String()))
+	if err := wallet.SendTransaction(tx); err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] Token transfer broadcast failed: %s", err.Error()))
+		return map[string]interface{}{
+			"success":        false,
+			"error":          fmt.Sprintf("Token transfer built but failed to broadcast: %s", FriendlyError(err)),
+			"technicalError": err.Error(),
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] Token transfer successful! TXID: %s (ringsize=%d)", tx.GetHash().String(), ringsize))
 
 	return map[string]interface{}{
 		"success": true,
@@ -2006,7 +2691,7 @@ func (a *App) AddContact(label, address, notes string) map[string]interface{} {
 	contacts = append(contacts, newContact)
 	saveAddressBook(contacts)
 
-	a.logToConsole(fmt.Sprintf("📒 Added contact: %s", label))
+	a.logToConsole(fmt.Sprintf("[AddressBook] Added contact: %s", label))
 
 	return map[string]interface{}{
 		"success": true,
@@ -2140,20 +2825,15 @@ func (a *App) ChangeWalletPassword(currentPassword, newPassword string) map[stri
 		}
 	}
 
-	// Verify current password by attempting to re-open the wallet
-	tempWallet, err := walletapi.Open_Encrypted_Wallet(walletManager.walletPath, currentPassword)
-	if err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] Password verification failed: %v", err))
+	if !walletManager.wallet.Check_Password(currentPassword) {
+		a.logToConsole("[ERR] Password verification failed")
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Current password is incorrect",
 		}
 	}
-	// Close the temporary wallet immediately after verification
-	tempWallet.Close_Encrypted_Wallet()
 
-	// Change the password on the currently open wallet
-	err = walletManager.wallet.Set_Encrypted_Wallet_Password(newPassword)
+	err := walletManager.wallet.Set_Encrypted_Wallet_Password(newPassword)
 	if err != nil {
 		a.logToConsole(fmt.Sprintf("[ERR] Failed to change password: %v", err))
 		return ErrorResponse(err)
@@ -2366,7 +3046,7 @@ func (a *App) SignMessage(message string) map[string]interface{} {
 
 	address := wallet.GetAddress().String()
 
-	a.logToConsole("✍️ Message signed successfully")
+	a.logToConsole("[Wallet] Message signed successfully")
 
 	return map[string]interface{}{
 		"success":   true,
@@ -2408,7 +3088,7 @@ func (a *App) VerifySignature(signedData string) map[string]interface{} {
 		}
 	}
 
-	a.logToConsole("✓ Signature verified successfully")
+	a.logToConsole("OK Signature verified successfully")
 
 	return map[string]interface{}{
 		"success": true,
@@ -2417,4 +3097,3 @@ func (a *App) VerifySignature(signedData string) map[string]interface{} {
 		"message": string(message),
 	}
 }
-

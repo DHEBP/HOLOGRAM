@@ -12,8 +12,8 @@
   import Settings from './routes/Settings.svelte';
   // Mining tab removed - Developer Support now in Settings > Developer Support
   // Network tab removed - node controls moved to Settings > Node
-  import { appState, settingsState, updateStatus, addExternalRequest, toast, loadSettings } from './lib/stores/appState.js';
-  import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions } from '../wailsjs/go/main/App.js';
+  import { appState, walletState, settingsState, updateStatus, addExternalRequest, dismissWalletRequest, toast, loadSettings, syncNetworkMode, navigateTo } from './lib/stores/appState.js';
+  import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions, NotifyWizardComplete, ConsumeLaunchURL } from '../wailsjs/go/main/App.js';
   import { EventsOn } from '../wailsjs/runtime/runtime.js';
   import { waitForWails } from './lib/utils/wails.js';
   
@@ -31,6 +31,9 @@
   // Section navigation state for Settings
   let pendingSection = null;
   
+  // Noise overlay element (texture generated once via canvas for WebKitGTK performance)
+  let noiseOverlay;
+  
   const tabs = [
     { id: 'explorer', label: 'Explorer', icon: 'search' },
     { id: 'browser', label: 'Browser', icon: 'globe' },
@@ -43,12 +46,47 @@
     currentTab = tabId;
   }
   
-  function handleWizardComplete() {
+  async function handleWizardComplete() {
     showWizard = false;
+    // Notify the backend so it can start background services
+    // (EPOCH, StatusBroadcaster, block monitoring, etc.)
+    try {
+      await NotifyWizardComplete();
+    } catch (err) {
+      console.error('Failed to notify backend of wizard completion:', err);
+    }
+  }
+
+  // Generate static noise texture as a tiled background (runs once, no per-frame cost).
+  // Replaces SVG feTurbulence which is expensive on Linux/WebKitGTK.
+  function generateNoiseTexture() {
+    if (!noiseOverlay) return;
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const imageData = ctx.createImageData(size, size);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const v = Math.random() * 255;
+      data[i] = v;       // R
+      data[i + 1] = v;   // G
+      data[i + 2] = v;   // B
+      data[i + 3] = 255; // A
+    }
+    ctx.putImageData(imageData, 0, 0);
+    noiseOverlay.style.backgroundImage = `url(${canvas.toDataURL('image/png')})`;
+    noiseOverlay.style.backgroundRepeat = 'repeat';
+    noiseOverlay.style.backgroundSize = `${size}px ${size}px`;
   }
 
   onMount(async () => {
     console.log('Hologram initializing...');
+    
+    // Generate noise texture once (replaces expensive SVG feTurbulence filter)
+    generateNoiseTexture();
     
     // Fix for Wails/WebView scroll focus issue on macOS
     // When the app loses and regains focus, scroll events may not work until
@@ -77,6 +115,18 @@
       }, 50);
     };
     window.addEventListener('focus', handleWindowFocus);
+
+    // Secondary defense against webview navigating to dropped files.
+    // Primary fix is DisableWebViewDrop: true in main.go (Go/native level).
+    // This JS layer catches any edge cases the native flag might miss.
+    const preventFileDrop = (e) => {
+      if (e.dataTransfer && e.dataTransfer.types.includes('Files')) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener('dragover', preventFileDrop, true);
+    window.addEventListener('drop', preventFileDrop, true);
     
     // Minimum splash duration (allows animation to complete)
     const splashMinTime = new Promise(resolve => setTimeout(resolve, 3500));
@@ -90,6 +140,20 @@
     
     // Load settings from backend on app startup
     await loadSettings();
+
+    // Handle launch deep links (e.g. dero://example.tela) captured by backend.
+    // We enqueue navigation and switch to Browser so the existing Browser startup flow
+    // can resolve and open the link consistently.
+    try {
+      const launchURL = await ConsumeLaunchURL();
+      if (launchURL && launchURL.toLowerCase().startsWith('dero://')) {
+        const cleanURL = launchURL.slice(7);
+        navigateTo(cleanURL);
+        currentTab = 'browser';
+      }
+    } catch (e) {
+      console.error('Failed to consume launch URL:', e);
+    }
     
     // Check if wizard has been completed
     try {
@@ -104,8 +168,9 @@
     await splashMinTime;
     wizardChecked = true;
     
-    // Initial status fetch
+    // Initial status fetch and network sync (reconciles persisted "simulator" with actual mainnet connection on restart)
     updateStatus();
+    syncNetworkMode();
     
     // Listen for status updates from backend (replaces polling)
     EventsOn("status:update", (status) => {
@@ -147,6 +212,14 @@
           walletOpen: status.wallet.open,
           walletAddress: status.wallet.address || '',
           walletBalance: status.wallet.balance || 0,
+        }));
+        walletState.update(state => ({
+          ...state,
+          isOpen: !!status.wallet.open,
+          address: status.wallet.address || '',
+          balance: status.wallet.balance || 0,
+          lockedBalance: status.wallet.lockedBalance || 0,
+          walletPath: status.wallet.open ? state.walletPath : '',
         }));
       }
     });
@@ -252,18 +325,57 @@
       const requestType = req.type || (req.method ? 'sign' : 'connect');
       const appName = req.appName || 'External dApp';
       
-      const payload = requestType === 'connect'
-        ? {
-            appName: appName,
-            description: req.description,
-            origin: req.origin || 'XSWD',
+      // Build payload for signing requests with comprehensive SC and transfer parsing
+      let payload;
+      if (requestType === 'connect') {
+        payload = {
+          appName: appName,
+          description: req.description,
+          origin: req.origin || 'XSWD',
+        };
+      } else {
+        // Parse SC data from sc_rpc array
+        const scRpc = req.params?.sc_rpc || req.params?.sc_data || [];
+        
+        // Extract entrypoint from sc_rpc if present
+        let entrypoint = req.params?.entrypoint;
+        if (!entrypoint && Array.isArray(scRpc)) {
+          const entrypointArg = scRpc.find(arg => arg.name === 'entrypoint');
+          if (entrypointArg) {
+            entrypoint = entrypointArg.value;
           }
-        : {
-            transfers: req.params?.transfers,
-            sc_data: req.params?.sc_rpc || req.params?.sc_data,
-            scid: req.params?.scid,
-            entrypoint: req.params?.entrypoint,
-          };
+        }
+        
+        // Parse transfers - handle both array and single transfer formats
+        let transfers = req.params?.transfers;
+        
+        // For scinvoke without explicit transfers, check if there's a DERO amount
+        // being sent with the SC call (common pattern for SC interactions)
+        if (!transfers && req.params?.scid) {
+          // SC invoke without transfers - may still have implicit value
+          transfers = [];
+        }
+        
+        // Extract SC arguments (excluding entrypoint) for display
+        let scArgs = [];
+        if (Array.isArray(scRpc)) {
+          scArgs = scRpc.filter(arg => arg.name !== 'entrypoint').map(arg => ({
+            name: arg.name,
+            type: arg.datatype,
+            value: arg.value
+          }));
+        }
+        
+        payload = {
+          method: req.method,
+          transfers: transfers,
+          sc_data: scRpc,
+          sc_args: scArgs,
+          scid: req.params?.scid,
+          entrypoint: entrypoint,
+          ringsize: req.params?.ringsize,
+        };
+      }
 
       // Show toast notification for incoming request
       const toastMessage = requestType === 'connect'
@@ -301,6 +413,20 @@
       });
     });
     
+    // Listen for request timeout (backend timed out waiting for user approval)
+    EventsOn("xswd:request_timeout", (data) => {
+      console.log('XSWD request timed out:', data.id);
+      dismissWalletRequest(data.id, 'timed out');
+      toast.warning('Transaction request timed out. The dApp can retry.', 5000);
+    });
+    
+    // Listen for request cancellation (dApp disconnected while request was pending)
+    EventsOn("xswd:request_cancelled", (data) => {
+      console.log('XSWD request cancelled:', data.id, 'reason:', data.reason);
+      dismissWalletRequest(data.id, data.reason || 'cancelled');
+      toast.info('Transaction request cancelled — dApp disconnected.', 4000);
+    });
+    
     return () => {
       if (statusPollingInterval) {
         clearInterval(statusPollingInterval);
@@ -331,8 +457,8 @@
 <!-- Toast Notifications -->
 <Toast />
 
-<!-- v6.1 Noise Overlay (subtle film grain) -->
-<div class="noise-overlay"></div>
+<!-- v6.1 Noise Overlay (subtle film grain - canvas-generated for WebKitGTK performance) -->
+<div bind:this={noiseOverlay} class="noise-overlay"></div>
 
 <!-- SVG Definitions for gradients -->
 <svg width="0" height="0" style="position: absolute;">
@@ -376,7 +502,7 @@
       {:else if currentTab === 'studio'}
         <Studio />
       {:else if currentTab === 'settings'}
-        <Settings key={pendingSection || 'settings'} />
+        <Settings initialSection={pendingSection || ''} />
       {/if}
       {/key}
     </main>

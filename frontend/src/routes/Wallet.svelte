@@ -1,20 +1,20 @@
 <script>
-  import { walletState, appState, settingsState, walletRequestHistory, clearRequestHistory, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
+  import { walletState, appState, settingsState, saveSetting, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { 
-    Copy, ArrowUp, ArrowDown, ArrowLeftRight, Eye, EyeOff,
+    Copy, ArrowUp, ArrowDown, ArrowLeftRight,
     Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe,
     LayoutDashboard, QrCode, History, Coins, Users, FileSignature, RefreshCw,
     Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield,
-    Key, User
+    Key, Eye, EyeOff
   } from 'lucide-svelte';
   
   import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
   import QRCodeComponent from '../lib/components/QRCode.svelte';
   import AddContactModal from '../lib/components/AddContactModal.svelte';
-  import AvatarEditor from '../lib/components/AvatarEditor.svelte';
+  import PasswordInput from '../lib/components/PasswordInput.svelte';
   
   // ============================================
   // NAVIGATION STATE
@@ -24,9 +24,6 @@
   const sidebarSections = {
     overview: [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    ],
-    identity: [
-      { id: 'avatar', label: 'My Identity', icon: User },
     ],
     transactions: [
       { id: 'send', label: 'Send', icon: ArrowUp },
@@ -52,7 +49,6 @@
   // Open wallet form
   let walletPath = '';
   let password = '';
-  let showPassword = false;
   let loading = false;
   let error = null;
   let recentWallets = [];
@@ -69,7 +65,6 @@
   let createPath = '';
   let createPassword = '';
   let createPasswordConfirm = '';
-  let showCreatePassword = false;
   let createdSeed = null;
   let seedConfirmed = false;
   let createLoading = false;
@@ -80,7 +75,6 @@
   let restorePassword = '';
   let restorePasswordConfirm = '';
   let restoreSeed = '';
-  let showRestorePassword = false;
   let restoreLoading = false;
   let restoreError = null;
   
@@ -88,6 +82,8 @@
   // WALLET DATA STATE
   // ============================================
   let transactionHistory = [];
+  let transactionLabels = {};
+  let dashboardLoading = true;
   
   // ============================================
   // SEND SECTION STATE (3-step flow)
@@ -95,11 +91,13 @@
   let sendStep = 1; // 1: Enter, 2: Review, 3: Success
   let sendDest = '';
   let sendAmount = '';
+  let sendRingsize = 16;
   let sendPassword = '';
-  let showSendPassword = false;
   let sendError = null;
   let sendTxid = null;
   let sendLoading = false;
+  let showContactPicker = false;
+  let showFullSendAddress = false;
   
   // ============================================
   // RECEIVE SECTION STATE
@@ -107,18 +105,41 @@
   let addressType = 'standard'; // 'standard' | 'integrated'
   let integratedAddress = '';
   let integratedLoading = false;
+  let integratedPort = '';
+  let integratedComment = '';
   
   // ============================================
   // REQUEST PAYMENT STATE
   // ============================================
   let requestAmount = '';
   let requestDesc = '';
+  let requestComment = '';
+  
+  // ============================================
+  // SEND - INTEGRATED ADDRESS DETECTION
+  // ============================================
+  let decodedPaymentInfo = null;
+  
+  // ============================================
+  // MINING EARNINGS STATE
+  // ============================================
+  let miningEarnings = [];
+  let miningEarningsSummary = null;
+  
+  // ============================================
+  // WALLET PATH & EVENTS STATE
+  // ============================================
+  let currentWalletPath = '';
   
   // ============================================
   // HISTORY SECTION STATE
   // ============================================
   let historyFilter = 'all'; // 'all' | 'in' | 'out' | 'mining'
   let historySearch = '';
+  let historyLimit = 50;
+  let historyHasMore = false;
+  let historyLoadingMore = false;
+  let expandedTxId = null;
   
   // ============================================
   // SYNC STATUS
@@ -134,6 +155,7 @@
   let showAddContact = false;
   let editingContact = null;
   let contactSearch = '';
+  let confirmDeleteContactId = null;
   
   // ============================================
   // SIGN/VERIFY STATE
@@ -150,7 +172,6 @@
   // BACKUP & SECURITY STATE
   // ============================================
   let backupPassword = '';
-  let showBackupPassword = false;
   let seedRevealed = false;
   let revealedSeed = '';
   let backupLoading = false;
@@ -158,7 +179,6 @@
   
   // Keys state
   let keysPassword = '';
-  let showKeysPassword = false;
   let keysRevealed = false;
   let revealedSecretKey = '';
   let revealedPublicKey = '';
@@ -169,8 +189,6 @@
   let changePasswordCurrent = '';
   let changePasswordNew = '';
   let changePasswordConfirm = '';
-  let showChangePasswordCurrent = false;
-  let showChangePasswordNew = false;
   let changePasswordLoading = false;
   let changePasswordError = null;
   let changePasswordSuccess = false;
@@ -183,24 +201,28 @@
   // ============================================
   // COMPUTED VALUES
   // ============================================
-  $: balanceValue = $walletState.balance ? Math.min(($walletState.balance / 100000) % 100, 100) : 0;
   $: createPasswordsMatch = createPassword === createPasswordConfirm && createPassword.length > 0;
+  $: passwordStrength = getPasswordStrength(createPassword);
   $: restorePasswordsMatch = restorePassword === restorePasswordConfirm && restorePassword.length > 0;
   $: seedWordCount = restoreSeed.trim().split(/\s+/).filter(w => w.length > 0).length;
   $: isValidSeed = seedWordCount === 25;
   $: changePasswordsMatch = changePasswordNew === changePasswordConfirm && changePasswordNew.length > 0;
   $: canChangePassword = changePasswordCurrent.trim() && changePasswordsMatch;
+  $: walletDisplayPath = $walletState.walletPath || currentWalletPath;
   
   // Send validation
   $: availableBalance = $walletState.balance / 100000;
-  $: sendAmountAtomic = Math.floor(parseFloat(sendAmount || '0') * 100000);
+  $: sendAmountAtomic = Math.round(parseFloat(sendAmount || '0') * 100000);
   $: isValidSendAmount = !isNaN(sendAmountAtomic) && sendAmountAtomic > 0 && sendAmountAtomic <= $walletState.balance;
-  $: isValidSendAddress = sendDest.startsWith('dero1') || sendDest.startsWith('deto1');
+  $: isValidSendAddress = sendDest.startsWith('dero1') || sendDest.startsWith('deroi1') || sendDest.startsWith('deto1') || sendDest.startsWith('detoi1');
   $: canSend = isValidSendAmount && isValidSendAddress;
   
+  // Reactive display address for Receive section
+  $: displayAddress = (addressType === 'integrated' && integratedAddress) ? integratedAddress : $walletState.address;
+
   // Payment URI
   $: paymentUri = requestAmount && parseFloat(requestAmount) > 0
-    ? `dero://${$walletState.address}?amount=${parseFloat(requestAmount) * 100000}${requestDesc ? '&desc=' + encodeURIComponent(requestDesc) : ''}`
+    ? `dero://${$walletState.address}?amount=${Math.round(parseFloat(requestAmount) * 100000)}${requestDesc ? '&desc=' + encodeURIComponent(requestDesc) : ''}`
     : '';
   
   // Filtered history
@@ -213,14 +235,42 @@
     }
     return true;
   });
+
+  // Grouped history by date
+  $: groupedHistory = (() => {
+    const groups = [];
+    let currentGroup = null;
+    for (const tx of filteredHistory) {
+      const label = getDateGroupLabel(tx.time);
+      if (!currentGroup || currentGroup.label !== label) {
+        currentGroup = { label, transactions: [] };
+        groups.push(currentGroup);
+      }
+      currentGroup.transactions.push(tx);
+    }
+    return groups;
+  })();
   
   // Seed words display
   $: seedWords = createdSeed ? createdSeed.split(' ') : [];
+  
+  // Load mining earnings when mining filter is selected
+  $: if (historyFilter === 'mining') {
+    loadMiningEarnings();
+  }
+  
+  // Detect integrated addresses when send destination changes
+  $: checkIntegratedAddress(sendDest);
   
   // Scroll to top when section changes
   let pageContentEl;
   $: if (activeSection && pageContentEl) {
     pageContentEl.scrollTop = 0;
+  }
+
+  // Load contacts when entering send section (for contact picker)
+  $: if (activeSection === 'send' && contacts.length === 0) {
+    loadContacts();
   }
   
   // ============================================
@@ -252,7 +302,12 @@
         walletPath = status.path || '';
         await refreshBalance();
         await loadTransactionHistory();
+        dashboardLoading = false;
         startPolling();
+        loadWalletPath();
+        SubscribeToWalletEvents().catch(() => {});
+      } else {
+        dashboardLoading = false;
       }
       
       // Load enhanced wallet info for recent wallets
@@ -269,7 +324,7 @@
           recentWallets = recents;
           recentWalletsInfo = recents.map(p => ({ 
             path: p, 
-            filename: p.split('/').pop(), 
+            filename: getWalletFilename(p), 
             addressPrefix: '' 
           }));
         }
@@ -282,14 +337,22 @@
       
       // Listen for simulator mode activation
       EventsOn('simulator:complete', async (data) => {
-        console.log('[WALLET] Simulator complete event received, loading test wallets...');
         await syncNetworkMode();
         await loadTestWallets();
       });
       
+      // Listen for background sync warnings (daemon connectivity / initial sync timeout)
+      EventsOn('wallet:sync_warning', (data) => {
+        if (data?.message) {
+          toast.warning(data.message);
+        }
+      });
+      EventsOn('wallet:daemon_connection_warning', (data) => {
+        console.warn('[WALLET] Daemon connection warning:', data);
+      });
+
       // Listen for network mode changes
       EventsOn('network-mode-changed', async () => {
-        console.log('[WALLET] Network mode changed, checking for test wallets...');
         await syncNetworkMode();
         if ($settingsState.network === 'simulator') {
           await loadTestWallets();
@@ -300,7 +363,7 @@
         }
       });
       
-      // Listen for section navigation from Sidebar (e.g., avatar click → My Identity)
+      // Listen for section navigation from Sidebar
       const handleNavigateSection = (e) => {
         const { section } = e.detail;
         if (section && Object.values(sidebarSections).flat().find(s => s.id === section)) {
@@ -319,6 +382,9 @@
     stopPolling();
     EventsOff('simulator:complete');
     EventsOff('network-mode-changed');
+    EventsOff('wallet:sync_warning');
+    EventsOff('wallet:daemon_connection_warning');
+    UnsubscribeFromEvents();
     // Clean up section navigation listener
     if (window._walletNavigateHandler) {
       window.removeEventListener('navigate-section', window._walletNavigateHandler);
@@ -446,6 +512,8 @@
         await refreshBalance();
         await loadTransactionHistory();
         startPolling();
+        loadWalletPath();
+        SubscribeToWalletEvents().catch(() => {});
         toast.success(`Connected to test wallet #${wallet.index}`);
       } else {
         error = result.error || 'Failed to open test wallet';
@@ -530,14 +598,46 @@
     }
   }
   
-  async function loadTransactionHistory() {
+  async function loadTransactionHistory(limit = historyLimit) {
     try {
-      const result = await GetTransactionHistory(100);
+      const result = await GetTransactionHistory(limit + 1);
       if (result.success && result.transactions) {
-        transactionHistory = result.transactions;
+        historyHasMore = result.transactions.length > limit;
+        transactionHistory = result.transactions.slice(0, limit);
       }
+      await loadTransactionLabels();
     } catch (err) {
       console.error('Error fetching transaction history:', err);
+    }
+  }
+
+  async function loadMoreHistory() {
+    historyLoadingMore = true;
+    historyLimit += 50;
+    await loadTransactionHistory(historyLimit);
+    historyLoadingMore = false;
+  }
+
+  async function loadTransactionLabels() {
+    try {
+      const result = await GetAllTransactionLabels();
+      if (result.success && result.labels) {
+        transactionLabels = result.labels;
+      }
+    } catch (e) {
+      console.error('Failed to load transaction labels:', e);
+    }
+  }
+
+  async function deleteTransactionLabel(txid) {
+    try {
+      const result = await DeleteTransactionLabel(txid);
+      if (result.success) {
+        delete transactionLabels[txid];
+        transactionLabels = transactionLabels; // trigger reactivity
+      }
+    } catch (e) {
+      console.error('Failed to delete label:', e);
     }
   }
   
@@ -558,8 +658,17 @@
   // WALLET MANAGEMENT
   // ============================================
   async function openWallet() {
-    if (!walletPath || !password) {
+    // Context-aware validation messages (Bug #33 fix)
+    if (!walletPath && !password) {
       error = 'Please provide wallet path and password';
+      return;
+    }
+    if (!walletPath) {
+      error = 'Please provide wallet path';
+      return;
+    }
+    if (!password) {
+      error = 'Please provide password';
       return;
     }
     
@@ -569,6 +678,7 @@
     try {
       const result = await OpenWallet(walletPath, password);
       if (result.success) {
+        dashboardLoading = true;
         walletState.update(state => ({
           ...state,
           isOpen: true,
@@ -585,7 +695,10 @@
         
         await refreshBalance();
         await loadTransactionHistory();
+        dashboardLoading = false;
         startPolling();
+        loadWalletPath();
+        SubscribeToWalletEvents().catch(() => {});
         
         const recents = await ListRecentWallets();
         if (recents) recentWallets = recents;
@@ -615,6 +728,10 @@
         }));
         transactionHistory = [];
         activeSection = 'dashboard';
+        addressType = 'standard';
+        integratedAddress = '';
+        integratedPort = '';
+        integratedComment = '';
         resetSendForm();
       }
     } catch (err) {
@@ -744,7 +861,10 @@
   // SEND FUNCTIONS
   // ============================================
   function setMaxAmount() {
-    const maxAmount = Math.max(0, ($walletState.balance - 100) / 100000);
+    // Reserve 0.01 DERO (1000 atomic) for network fees — a standard ringsize-16
+    // transfer costs ~60-80 atomic but the wallet needs headroom for proof construction.
+    const feeReserve = 1000;
+    const maxAmount = Math.max(0, ($walletState.balance - feeReserve) / 100000);
     sendAmount = maxAmount.toFixed(5);
   }
   
@@ -752,10 +872,13 @@
     sendStep = 1;
     sendDest = '';
     sendAmount = '';
+    sendRingsize = 16;
     sendPassword = '';
     sendError = null;
     sendTxid = null;
     sendLoading = false;
+    showFullSendAddress = false;
+    showContactPicker = false;
   }
   
   async function executeSend() {
@@ -772,13 +895,14 @@
         transfers: [{
           destination: sendDest,
           amount: sendAmountAtomic
-        }]
+        }],
+        ringsize: sendRingsize
       };
       
       const result = await InternalWalletCall('transfer', params, sendPassword);
       
       if (result.success) {
-        sendTxid = result.txid;
+        sendTxid = result.result?.txid || result.txid;
         sendStep = 3;
         toast.success('Transaction sent successfully!');
         await refreshBalance();
@@ -798,30 +922,82 @@
   // RECEIVE FUNCTIONS
   // ============================================
   async function generateIntegratedAddress() {
-    addressType = 'integrated';
-    if (integratedAddress) return;
-    
     integratedLoading = true;
+    integratedAddress = '';
     try {
-      const result = await GetIntegratedAddress('');
+      const port = integratedPort ? parseInt(integratedPort, 10) : 0;
+      const comment = integratedComment || '';
+      const result = await GetIntegratedAddress(isNaN(port) ? 0 : port, comment, 0);
       if (result.success) {
-        integratedAddress = result.address;
+        integratedAddress = result.integratedAddress;
       } else {
-        toast.error('Failed to generate integrated address');
-        addressType = 'standard';
+        toast.error(result.error || 'Failed to generate integrated address');
       }
     } catch (err) {
       console.error('Failed to generate integrated address:', err);
-      addressType = 'standard';
+      toast.error('Failed to generate integrated address');
     } finally {
       integratedLoading = false;
     }
   }
   
-  function getCurrentAddress() {
-    return addressType === 'integrated' && integratedAddress 
-      ? integratedAddress 
-      : $walletState.address;
+  // ============================================
+  // PAYMENT REQUEST (INTEGRATED ADDRESS)
+  // ============================================
+  async function createPaymentRequest() {
+    if (!requestAmount && !requestComment) return;
+    try {
+      const amountAtomic = Math.round(parseFloat(requestAmount || '0') * 100000);
+      const result = await CreatePaymentRequest(amountAtomic, requestComment || '');
+      if (result.success && result.integrated_address) {
+        // Use the integrated address for display/QR
+        integratedAddress = result.integrated_address;
+      }
+    } catch (e) {
+      console.error('Failed to create payment request:', e);
+    }
+  }
+  
+  // ============================================
+  // SEND - INTEGRATED ADDRESS DETECTION
+  // ============================================
+  async function checkIntegratedAddress(addr) {
+    if (!addr || addr.length < 100) return; // Integrated addresses are longer
+    try {
+      const result = await DecodeIntegratedAddress(addr);
+      if (result.success && result.decoded) {
+        decodedPaymentInfo = result.decoded;
+      } else {
+        decodedPaymentInfo = null;
+      }
+    } catch (e) {
+      decodedPaymentInfo = null;
+    }
+  }
+  
+  // ============================================
+  // MINING EARNINGS
+  // ============================================
+  async function loadMiningEarnings() {
+    try {
+      const [summaryResult, earningsResult] = await Promise.all([
+        GetMiningEarningsSummary(),
+        GetWalletMiningEarnings(50)
+      ]);
+      if (summaryResult.success) miningEarningsSummary = summaryResult;
+      if (earningsResult.success) miningEarnings = earningsResult.earnings || [];
+    } catch (e) {
+      console.error('Failed to load mining earnings:', e);
+    }
+  }
+  
+  // ============================================
+  // WALLET PATH
+  // ============================================
+  async function loadWalletPath() {
+    try {
+      currentWalletPath = await GetCurrentWalletPath() || '';
+    } catch (e) { currentWalletPath = ''; }
   }
   
   // ============================================
@@ -868,6 +1044,11 @@
   }
   
   async function deleteContact(id) {
+    if (confirmDeleteContactId !== id) {
+      confirmDeleteContactId = id;
+      return;
+    }
+    confirmDeleteContactId = null;
     try {
       const result = await DeleteContact(id);
       if (result.success) {
@@ -1144,13 +1325,49 @@
   // ============================================
   // UTILITY FUNCTIONS
   // ============================================
+  function getDateGroupLabel(timestamp) {
+    if (!timestamp) return 'Unknown';
+    const date = new Date(timestamp * 1000);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today.getTime() - 86400000);
+    const weekAgo = new Date(today.getTime() - 604800000);
+    const txDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+    if (txDate.getTime() === today.getTime()) return 'Today';
+    if (txDate.getTime() === yesterday.getTime()) return 'Yesterday';
+    if (txDate > weekAgo) return 'This Week';
+    if (txDate.getMonth() === now.getMonth() && txDate.getFullYear() === now.getFullYear()) return 'This Month';
+    return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  }
+
+  function getPasswordStrength(pwd) {
+    if (!pwd) return { level: 0, label: '', color: '' };
+    let score = 0;
+    if (pwd.length >= 8) score++;
+    if (pwd.length >= 12) score++;
+    if (/[A-Z]/.test(pwd)) score++;
+    if (/[0-9]/.test(pwd)) score++;
+    if (/[^A-Za-z0-9]/.test(pwd)) score++;
+    if (score <= 1) return { level: 1, label: 'Weak', color: 'var(--status-err)' };
+    if (score <= 2) return { level: 2, label: 'Fair', color: 'var(--status-warn)' };
+    if (score <= 3) return { level: 3, label: 'Good', color: 'var(--cyan-400)' };
+    return { level: 4, label: 'Strong', color: 'var(--status-ok)' };
+  }
+
   function formatBalance(atomic) {
-    return (atomic / 100000).toFixed(5);
+    const value = atomic / 100000;
+    return value.toLocaleString(undefined, { minimumFractionDigits: 5, maximumFractionDigits: 5 });
   }
   
   function formatAddress(addr) {
     if (!addr) return '';
     return addr.slice(0, 12) + '...' + addr.slice(-8);
+  }
+
+  function getWalletFilename(path) {
+    if (!path) return '';
+    return path.split(/[\\/]/).pop() || path;
   }
   
   function formatTime(timestamp) {
@@ -1174,6 +1391,14 @@
   
   function copyAddress() {
     copyToClipboard($walletState.address, 'Address copied!');
+  }
+  
+  function viewInExplorer(txid) {
+    if (!txid) return;
+    // Navigate to Explorer with the TXID as search query
+    window.dispatchEvent(new CustomEvent('search-navigate', {
+      detail: { tab: 'explorer', type: 'hash', query: txid, result: null }
+    }));
   }
   
   async function selectWalletFile() {
@@ -1201,6 +1426,11 @@
     } catch (err) {
       console.error('File dialog error:', err);
     }
+  }
+
+  // Keep wallet path display synced when wallet is switched outside this route
+  $: if ($walletState.walletPath && $walletState.walletPath !== currentWalletPath) {
+    currentWalletPath = $walletState.walletPath;
   }
 </script>
 
@@ -1275,6 +1505,50 @@
           <div class="content-section-title">Wallet Dashboard</div>
           <p class="content-section-desc">Your wallet at a glance</p>
 
+          {#if dashboardLoading}
+            <!-- Loading Skeletons -->
+            <div class="cmd-stats-panel">
+              <div class="cmd-panel-header">
+                <div class="cmd-panel-title">
+                  <span class="cmd-panel-icon">◆</span>
+                  BALANCE
+                </div>
+              </div>
+              <div class="wallet-balance-display">
+                <div class="skeleton-line skeleton-lg" style="width: 200px; margin: 0 auto;"></div>
+                <div class="skeleton-line skeleton-sm" style="width: 160px; margin: var(--s-3) auto 0;"></div>
+              </div>
+            </div>
+
+            <div class="quick-actions-grid">
+              {#each [1,2,3,4] as _}
+                <div class="quick-action-btn skeleton-block"></div>
+              {/each}
+            </div>
+
+            <div class="cmd-stats-panel">
+              <div class="cmd-panel-header">
+                <div class="cmd-panel-title">
+                  <span class="cmd-panel-icon">◎</span>
+                  RECENT ACTIVITY
+                </div>
+              </div>
+              <div class="recent-tx-list">
+                {#each [1,2,3] as _}
+                  <div class="tx-row">
+                    <div class="tx-left">
+                      <div class="skeleton-circle"></div>
+                      <div class="tx-info">
+                        <div class="skeleton-line skeleton-sm" style="width: 80px;"></div>
+                        <div class="skeleton-line skeleton-xs" style="width: 50px;"></div>
+                      </div>
+                    </div>
+                    <div class="skeleton-line skeleton-sm" style="width: 100px;"></div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {:else}
           <!-- Balance Panel -->
           <div class="cmd-stats-panel">
             <div class="cmd-panel-header">
@@ -1296,22 +1570,70 @@
                 {/if}
               </div>
             </div>
+            {#if syncStatus && !syncStatus.synced && syncStatus.daemonHeight > 0}
+              {@const syncPercent = Math.min(100, Math.round((syncStatus.walletHeight / syncStatus.daemonHeight) * 100))}
+              <div class="sync-progress-wrap">
+                <div class="sync-progress-bar">
+                  <div class="sync-progress-fill" style="width: {syncPercent}%"></div>
+                </div>
+                <span class="sync-progress-text">{syncPercent}% synced ({syncStatus.walletHeight.toLocaleString()} / {syncStatus.daemonHeight.toLocaleString()})</span>
+              </div>
+            {/if}
             <div class="wallet-balance-display">
               <div class="balance-main">
-                <span class="balance-value">{formatBalance($walletState.balance)}</span>
-                <span class="balance-unit">DERO</span>
+                <div class="balance-main-left">
+                  <span class="balance-value">
+                    {$settingsState.hideBalance ? '••••••••' : formatBalance($walletState.balance)}
+                  </span>
+                  <span class="balance-unit">DERO</span>
+                </div>
+                <button
+                  class="hide-toggle-btn fixed-right"
+                  class:active={$settingsState.hideBalance}
+                  on:click={() => saveSetting('hideBalance', !$settingsState.hideBalance)}
+                  title={$settingsState.hideBalance ? 'Show balance' : 'Hide balance'}
+                >
+                  {#if $settingsState.hideBalance}
+                    <EyeOff size={13} />
+                  {:else}
+                    <Eye size={13} />
+                  {/if}
+                </button>
               </div>
-              {#if $walletState.lockedBalance > 0}
+              {#if $walletState.lockedBalance > 0 && !$settingsState.hideBalance}
                 <div class="balance-locked">
                   + {formatBalance($walletState.lockedBalance)} locked
                 </div>
               {/if}
               <div class="wallet-address-row">
-                <span class="address-text">{formatAddress($walletState.address)}</span>
-                <button class="btn-icon-sm" on:click={copyAddress} title="Copy address">
-                  <Copy size={12} />
+                <div class="address-row-content">
+                  <span class="address-text">
+                    {$settingsState.hideAddress ? '••••••••••••••••' : formatAddress($walletState.address)}
+                  </span>
+                  {#if !$settingsState.hideAddress}
+                    <button class="btn-icon-sm" on:click={copyAddress} title="Copy address">
+                      <Copy size={12} />
+                    </button>
+                  {/if}
+                </div>
+                <button
+                  class="hide-toggle-btn fixed-right"
+                  class:active={$settingsState.hideAddress}
+                  on:click={() => saveSetting('hideAddress', !$settingsState.hideAddress)}
+                  title={$settingsState.hideAddress ? 'Show address' : 'Hide address'}
+                >
+                  {#if $settingsState.hideAddress}
+                    <EyeOff size={13} />
+                  {:else}
+                    <Eye size={13} />
+                  {/if}
                 </button>
               </div>
+              {#if walletDisplayPath}
+                <div class="wallet-path" title={walletDisplayPath}>
+                  {getWalletFilename(walletDisplayPath)}
+                </div>
+              {/if}
             </div>
           </div>
 
@@ -1352,7 +1674,7 @@
             </div>
             <div class="recent-tx-list">
               {#each transactionHistory.slice(0, 5) as tx}
-                <div class="tx-row">
+                <div class="tx-row" on:click={() => { activeSection = 'history'; expandedTxId = tx.txid; }} role="button" tabindex="0" on:keydown={(e) => e.key === 'Enter' && (activeSection = 'history', expandedTxId = tx.txid)}>
                   <div class="tx-left">
                     <span class="tx-icon" class:tx-in={tx.incoming || tx.coinbase} class:tx-out={!tx.incoming && !tx.coinbase}>
                       {#if tx.coinbase}
@@ -1369,8 +1691,11 @@
                     </div>
                   </div>
                   <span class="tx-amt" class:tx-amt-in={tx.incoming || tx.coinbase} class:tx-amt-out={!tx.incoming && !tx.coinbase}>
-                    {tx.incoming || tx.coinbase ? '+' : '-'}{formatBalance(tx.amount)} DERO
+                    {$settingsState.hideBalance ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
                   </span>
+                  {#if tx.label}
+                    <span class="tx-label">{tx.label}</span>
+                  {/if}
                 </div>
               {:else}
                 <div class="cmd-empty-state">
@@ -1380,6 +1705,7 @@
               {/each}
             </div>
           </div>
+          {/if}
         {/if}
 
         <!-- ============================================
@@ -1405,15 +1731,48 @@
                 <!-- STEP 1: Enter Details -->
                 <div class="form-group">
                   <label class="form-label">Recipient Address</label>
-                  <input 
-                    type="text" 
-                    class="input" 
-                    class:input-error={sendDest && !isValidSendAddress}
-                    bind:value={sendDest} 
-                    placeholder="dero1..." 
-                  />
+                  <div class="input-with-action">
+                    <input 
+                      type="text" 
+                      class="input" 
+                      class:input-error={sendDest && !isValidSendAddress}
+                      bind:value={sendDest} 
+                      placeholder="dero1..." 
+                    />
+                    <button 
+                      class="btn btn-ghost btn-sm" 
+                      on:click={() => { showContactPicker = !showContactPicker; if (contacts.length === 0) loadContacts(); }}
+                      title="Select from Address Book"
+                    >
+                      <Users size={14} />
+                    </button>
+                  </div>
+                  {#if showContactPicker && contacts.length > 0}
+                    <div class="contact-picker-dropdown">
+                      {#each contacts as contact}
+                        <button 
+                          class="contact-picker-item" 
+                          on:click={() => { sendDest = contact.address; showContactPicker = false; }}
+                        >
+                          <span class="contact-picker-label">{contact.label}</span>
+                          <span class="contact-picker-addr">{formatAddress(contact.address)}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  {:else if showContactPicker}
+                    <div class="contact-picker-dropdown">
+                      <div class="contact-picker-empty">No saved contacts</div>
+                    </div>
+                  {/if}
                   {#if sendDest && !isValidSendAddress}
                     <span class="form-error">Invalid DERO address</span>
+                  {/if}
+                  {#if decodedPaymentInfo}
+                    <div class="decoded-payment-info">
+                      <span class="decoded-label">Payment Request Detected</span>
+                      {#if decodedPaymentInfo.amount}<span>Amount: {decodedPaymentInfo.amount}</span>{/if}
+                      {#if decodedPaymentInfo.comment}<span>Note: {decodedPaymentInfo.comment}</span>{/if}
+                    </div>
                   {/if}
                 </div>
                 
@@ -1441,6 +1800,18 @@
                   {/if}
                 </div>
                 
+                <div class="form-group">
+                  <label class="form-label">Ring Size</label>
+                  <select class="select" bind:value={sendRingsize}>
+                    <option value={2}>2 (Non-anonymous, SIGNER visible)</option>
+                    <option value={16}>16 (Standard)</option>
+                    <option value={32}>32</option>
+                    <option value={64}>64</option>
+                    <option value={128}>128</option>
+                  </select>
+                  <span class="form-hint">Ring size 2 is required for smart contracts that use SIGNER(). Higher values increase anonymity.</span>
+                </div>
+
                 <div class="form-actions">
                   <button class="btn btn-primary" disabled={!canSend} on:click={() => sendStep = 2}>
                     Review Transaction
@@ -1455,32 +1826,26 @@
                     <span class="confirm-label">Sending</span>
                     <span class="confirm-value confirm-value-amount">{sendAmount} DERO</span>
                   </div>
-                  <div class="confirm-row">
+                  <div class="confirm-row" style="flex-direction: column; align-items: flex-start; gap: var(--s-1);">
                     <span class="confirm-label">To</span>
-                    <span class="confirm-value confirm-value-address">{formatAddress(sendDest)}</span>
+                    {#if showFullSendAddress}
+                      <span class="confirm-address-full">{sendDest}</span>
+                    {:else}
+                      <span class="confirm-value confirm-value-address">{formatAddress(sendDest)}</span>
+                    {/if}
+                    <button class="confirm-address-toggle" on:click={() => showFullSendAddress = !showFullSendAddress}>
+                      {showFullSendAddress ? 'Hide full address' : 'Show full address'}
+                    </button>
                   </div>
                   <div class="confirm-row">
-                    <span class="confirm-label">Est. Fee</span>
-                    <span class="confirm-value">~0.00001 DERO</span>
+                    <span class="confirm-label">Ring Size</span>
+                    <span class="confirm-value">{sendRingsize}{sendRingsize === 2 ? ' (non-anonymous)' : ''}</span>
                   </div>
                 </div>
                 
                 <div class="form-group">
                   <label class="form-label">Wallet Password</label>
-                  <div class="input-wrap">
-                    {#if showSendPassword}
-                      <input type="text" class="input" bind:value={sendPassword} placeholder="Enter password" />
-                    {:else}
-                      <input type="password" class="input" bind:value={sendPassword} placeholder="Enter password" />
-                    {/if}
-                    <button type="button" class="input-action" on:click={() => showSendPassword = !showSendPassword}>
-                      {#if showSendPassword}
-                        <EyeOff size={16} strokeWidth={1.5} />
-                      {:else}
-                        <Eye size={16} strokeWidth={1.5} />
-                      {/if}
-                    </button>
-                  </div>
+                  <PasswordInput bind:value={sendPassword} placeholder="Enter password" />
                 </div>
                 
                 {#if sendError}
@@ -1553,46 +1918,78 @@
                 <button 
                   class="toggle-btn" 
                   class:active={addressType === 'standard'}
-                  on:click={() => addressType = 'standard'}
+                  on:click={() => { addressType = 'standard'; integratedAddress = ''; }}
                 >
                   Standard
                 </button>
                 <button 
                   class="toggle-btn" 
                   class:active={addressType === 'integrated'}
-                  on:click={generateIntegratedAddress}
-                  disabled={integratedLoading}
+                  on:click={() => { addressType = 'integrated'; }}
                 >
-                  {#if integratedLoading}
-                    <Loader2 size={12} class="spin" />
-                  {/if}
                   Integrated
                 </button>
               </div>
               
               {#if addressType === 'integrated'}
-                <p class="address-hint">Integrated addresses include a unique payment ID for tracking</p>
+                <p class="address-hint">Integrated addresses embed a payment ID and optional memo for tracking incoming payments</p>
+
+                <div class="integrated-form">
+                  <div class="form-group">
+                    <label class="form-label">Payment ID (Port)</label>
+                    <input 
+                      type="number" 
+                      class="input" 
+                      bind:value={integratedPort}
+                      placeholder="0 (default)"
+                      min="0"
+                    />
+                    <span class="form-hint">A numeric identifier to distinguish payments. Use 0 for general receiving.</span>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Memo / Comment</label>
+                    <input 
+                      type="text" 
+                      class="input" 
+                      bind:value={integratedComment}
+                      placeholder="Optional message or reference"
+                    />
+                    <span class="form-hint">An optional note embedded in the address for the sender to see.</span>
+                  </div>
+                  <button 
+                    class="btn btn-secondary" 
+                    on:click={generateIntegratedAddress} 
+                    disabled={integratedLoading}
+                    style="align-self: center;"
+                  >
+                    {#if integratedLoading}
+                      <Loader2 size={14} class="spin" />
+                    {/if}
+                    {integratedAddress ? 'Regenerate Address' : 'Generate Integrated Address'}
+                  </button>
+                </div>
               {/if}
               
-              <!-- QR Code -->
-              <div class="qr-display">
-                <QRCodeComponent 
-                  value={getCurrentAddress()} 
-                  size={200} 
-                />
-              </div>
-              
-              <!-- Address Display -->
-              <div class="address-display">
-                <code class="address-full">{getCurrentAddress()}</code>
-              </div>
-              
-              <div class="receive-actions">
-                <button class="btn btn-primary" on:click={() => copyToClipboard(getCurrentAddress(), 'Address copied!')}>
-                  <Copy size={14} />
-                  Copy Address
-                </button>
-              </div>
+              <!-- QR Code + Address (show standard always, or integrated once generated) -->
+              {#if addressType === 'standard' || integratedAddress}
+                <div class="qr-display">
+                  <QRCodeComponent 
+                    value={displayAddress} 
+                    size={200} 
+                  />
+                </div>
+                
+                <div class="address-display">
+                  <code class="address-full">{displayAddress}</code>
+                </div>
+                
+                <div class="receive-actions">
+                  <button class="btn btn-primary" on:click={() => copyToClipboard(displayAddress, 'Address copied!')}>
+                    <Copy size={14} />
+                    Copy Address
+                  </button>
+                </div>
+              {/if}
               
               <div class="receive-warning">
                 <AlertTriangle size={14} />
@@ -1640,6 +2037,22 @@
                 />
               </div>
               
+              <div class="form-group">
+                <label class="form-label">Comment for Integrated Address (optional)</label>
+                <input 
+                  type="text" 
+                  class="input" 
+                  bind:value={requestComment} 
+                  placeholder="Note to embed in address..." 
+                />
+              </div>
+              
+              <div class="request-actions" style="margin-bottom: 12px;">
+                <button class="btn btn-secondary" on:click={createPaymentRequest} disabled={!requestAmount && !requestComment}>
+                  Generate Integrated Address
+                </button>
+              </div>
+              
               {#if paymentUri}
                 <!-- QR Code with URI -->
                 <div class="qr-display">
@@ -1659,10 +2072,24 @@
                     Copy URI
                   </button>
                 </div>
+              {:else if integratedAddress && !requestAmount}
+                <!-- Integrated address generated without amount (comment only) -->
+                <div class="uri-display">
+                  <label class="form-label">Integrated Address</label>
+                  <div class="uri-box">
+                    <code class="uri-value">{integratedAddress}</code>
+                  </div>
+                </div>
+                <div class="request-actions">
+                  <button class="btn btn-primary" on:click={() => copyToClipboard(integratedAddress, 'Address copied!')}>
+                    <Copy size={14} />
+                    Copy Address
+                  </button>
+                </div>
               {:else}
                 <div class="request-placeholder">
                   <QrCode size={48} strokeWidth={1} />
-                  <p>Enter an amount to generate a payment QR code</p>
+                  <p>Enter an amount for a payment QR code, or a comment for an integrated address</p>
                 </div>
               {/if}
             </div>
@@ -1710,6 +2137,14 @@
             </div>
           </div>
 
+          {#if historyFilter === 'mining' && miningEarningsSummary}
+            <div class="mining-summary">
+              <span class="mining-stat">Total: {miningEarningsSummary.formatted || '0'} DERO</span>
+              <span class="mining-stat">Blocks: {miningEarningsSummary.blocks_count || 0}</span>
+              <span class="mining-stat">Miniblocks: {miningEarningsSummary.minis_count || 0}</span>
+            </div>
+          {/if}
+
           <!-- Transaction List -->
           <div class="cmd-stats-panel">
             <div class="cmd-panel-header">
@@ -1724,75 +2159,228 @@
             
             <!-- tabindex="-1" makes container focusable for scroll events without tab navigation -->
             <div class="tx-list-full" tabindex="-1">
-              {#each filteredHistory as tx}
-                <div class="tx-row-detailed">
-                  <div class="tx-icon-wrap">
-                    <span class="tx-icon" class:tx-in={tx.incoming || tx.coinbase} class:tx-out={!tx.incoming && !tx.coinbase}>
-                      {#if tx.coinbase}
-                        <Pickaxe size={14} />
-                      {:else if tx.incoming}
-                        <ArrowDown size={14} />
+              {#each groupedHistory as group}
+                <div class="tx-date-group">
+                  <div class="tx-date-label">{group.label}</div>
+                </div>
+                {#each group.transactions as tx}
+                <div class="tx-row-detailed" class:tx-expanded={expandedTxId === tx.txid}>
+                  <div class="tx-row-main" on:click={() => expandedTxId = expandedTxId === tx.txid ? null : tx.txid}>
+                    <div class="tx-icon-wrap">
+                      <span class="tx-icon" class:tx-in={tx.incoming || tx.coinbase} class:tx-out={!tx.incoming && !tx.coinbase}>
+                        {#if tx.coinbase}
+                          <Pickaxe size={16} />
+                        {:else if tx.incoming}
+                          <ArrowDown size={16} />
+                        {:else}
+                          <ArrowUp size={16} />
+                        {/if}
+                      </span>
+                    </div>
+                    <div class="tx-details">
+                      <div class="tx-type-row">
+                        <span class="tx-type">{tx.coinbase ? 'Mining Reward' : tx.incoming ? 'Received' : 'Sent'}</span>
+                        {#if tx.destination_port === 1337}
+                          <span class="tx-msg-badge">MSG</span>
+                        {/if}
+                        {#if tx.label && editingLabelTxid !== tx.txid}
+                          <span class="tx-label-badge">{tx.label}</span>
+                        {/if}
+                      </div>
+                      {#if editingLabelTxid === tx.txid}
+                        <div class="tx-label-edit">
+                          <input 
+                            type="text" 
+                            class="tx-label-input" 
+                            bind:value={editingLabelValue}
+                            placeholder="Add a note..."
+                            maxlength="50"
+                            on:keydown={(e) => {
+                              if (e.key === 'Enter') saveTransactionLabel();
+                              if (e.key === 'Escape') cancelEditLabel();
+                            }}
+                          />
+                          <button class="btn-icon-xs" on:click|stopPropagation={saveTransactionLabel} disabled={savingLabel} title="Save">
+                            {#if savingLabel}
+                              <Loader2 size={10} class="spin" />
+                            {:else}
+                              <Check size={10} />
+                            {/if}
+                          </button>
+                          <button class="btn-icon-xs" on:click|stopPropagation={cancelEditLabel} title="Cancel">
+                            ✕
+                          </button>
+                        </div>
                       {:else}
-                        <ArrowUp size={14} />
-                      {/if}
-                    </span>
-                  </div>
-                  <div class="tx-details">
-                    <div class="tx-type-row">
-                      <span class="tx-type">{tx.coinbase ? 'Mining Reward' : tx.incoming ? 'Received' : 'Sent'}</span>
-                      {#if tx.label && editingLabelTxid !== tx.txid}
-                        <span class="tx-label-badge">{tx.label}</span>
+                        <span class="tx-id">{tx.txid?.slice(0, 24)}...</span>
                       {/if}
                     </div>
-                    {#if editingLabelTxid === tx.txid}
-                      <div class="tx-label-edit">
-                        <input 
-                          type="text" 
-                          class="tx-label-input" 
-                          bind:value={editingLabelValue}
-                          placeholder="Add a note..."
-                          maxlength="50"
-                          on:keydown={(e) => {
-                            if (e.key === 'Enter') saveTransactionLabel();
-                            if (e.key === 'Escape') cancelEditLabel();
-                          }}
-                        />
-                        <button class="btn-icon-xs" on:click={saveTransactionLabel} disabled={savingLabel} title="Save">
-                          {#if savingLabel}
-                            <Loader2 size={10} class="spin" />
-                          {:else}
-                            <Check size={10} />
-                          {/if}
-                        </button>
-                        <button class="btn-icon-xs" on:click={cancelEditLabel} title="Cancel">
-                          ✕
+                    <div class="tx-meta">
+                      <span class="tx-amount" class:positive={tx.incoming || tx.coinbase} class:negative={!tx.incoming && !tx.coinbase}>
+                        {$settingsState.hideBalance ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
+                      </span>
+                      <span class="tx-timestamp">{formatTime(tx.time)}</span>
+                    </div>
+                    <div class="tx-actions">
+                      <button class="btn-icon-sm" on:click|stopPropagation={() => startEditLabel(tx)} title="Add/edit note">
+                        <Edit size={12} />
+                      </button>
+                      <button class="btn-icon-sm" on:click|stopPropagation={() => copyToClipboard(tx.txid, 'TXID copied!')} title="Copy TXID">
+                        <Copy size={12} />
+                      </button>
+                    </div>
+                  </div>
+                  {#if expandedTxId === tx.txid}
+                    <div class="tx-detail-panel">
+                      <!-- Transaction ID -->
+                      <div class="tx-detail-row">
+                        <span class="tx-detail-label">Transaction ID</span>
+                        <div class="tx-detail-value-row">
+                          <code class="tx-detail-value tx-detail-txid">{tx.txid}</code>
+                          <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.txid, 'TXID copied!')} title="Copy TXID">
+                            <Copy size={12} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <!-- Direction -->
+                      <div class="tx-detail-row">
+                        <span class="tx-detail-label">Direction</span>
+                        <span class="tx-detail-value tx-detail-direction" class:tx-direction-in={tx.incoming || tx.coinbase} class:tx-direction-out={!tx.incoming && !tx.coinbase}>
+                          {tx.coinbase ? 'Mining Reward' : tx.incoming ? 'Received' : 'Sent'}
+                        </span>
+                      </div>
+
+                      <!-- Amount -->
+                      <div class="tx-detail-row">
+                        <span class="tx-detail-label">Amount</span>
+                        <span class="tx-detail-value tx-detail-amount" class:positive={tx.incoming || tx.coinbase} class:negative={!tx.incoming && !tx.coinbase}>
+                          {$settingsState.hideBalance ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
+                        </span>
+                      </div>
+
+                      <!-- Fee -->
+                      {#if tx.fees && tx.fees > 0}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Transaction Fee</span>
+                          <span class="tx-detail-value">{$settingsState.hideBalance ? '••••••' : `${formatBalance(tx.fees)} DERO`}</span>
+                        </div>
+                      {/if}
+
+                      <!-- Burn -->
+                      {#if tx.burn && tx.burn > 0}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Burned</span>
+                          <span class="tx-detail-value tx-detail-burn">{$settingsState.hideBalance ? '••••••' : `${formatBalance(tx.burn)} DERO`}</span>
+                        </div>
+                      {/if}
+
+                      <!-- Block Height -->
+                      {#if tx.height}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Block Height</span>
+                          <span class="tx-detail-value">{tx.height.toLocaleString()}</span>
+                        </div>
+                      {/if}
+
+                      <!-- Timestamp -->
+                      {#if tx.time}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Date & Time</span>
+                          <span class="tx-detail-value">{new Date(tx.time * 1000).toLocaleString()} <span class="tx-detail-relative">({formatTime(tx.time)})</span></span>
+                        </div>
+                      {/if}
+
+                      <!-- Sender (for incoming) -->
+                      {#if tx.incoming && tx.sender}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Sender</span>
+                          <div class="tx-detail-value-row">
+                            <code class="tx-detail-value tx-detail-address">{tx.sender}</code>
+                            <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.sender, 'Sender address copied!')} title="Copy address">
+                              <Copy size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      {/if}
+
+                      <!-- Destination (for outgoing) -->
+                      {#if !tx.incoming && tx.destination}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Destination</span>
+                          <div class="tx-detail-value-row">
+                            <code class="tx-detail-value tx-detail-address">{tx.destination}</code>
+                            <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.destination, 'Destination address copied!')} title="Copy address">
+                              <Copy size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      {/if}
+
+                      <!-- Ports (for service transactions) -->
+                      {#if tx.destination_port}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Destination Port</span>
+                          <span class="tx-detail-value tx-detail-port">{tx.destination_port}</span>
+                        </div>
+                      {/if}
+                      {#if tx.source_port}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Source Port</span>
+                          <span class="tx-detail-value tx-detail-port">{tx.source_port}</span>
+                        </div>
+                      {/if}
+
+                      <!-- Comment/Payload -->
+                      {#if tx.comment}
+                        <div class="tx-detail-row">
+                          <span class="tx-detail-label">Comment</span>
+                          <span class="tx-detail-value tx-detail-comment">{tx.comment}</span>
+                        </div>
+                      {/if}
+
+                      <!-- Transaction Proof -->
+                      {#if tx.proof}
+                        <div class="tx-detail-row tx-detail-proof-row">
+                          <span class="tx-detail-label">Transaction Proof</span>
+                          <div class="tx-detail-value-row">
+                            <code class="tx-detail-value tx-detail-proof">{tx.proof}</code>
+                            <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.proof, 'Proof copied!')} title="Copy proof">
+                              <Copy size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      {/if}
+
+                      <!-- View in Explorer Action -->
+                      <div class="tx-detail-actions">
+                        <button class="btn btn-secondary btn-sm" on:click={() => viewInExplorer(tx.txid)}>
+                          <ExternalLink size={14} />
+                          View in Explorer
                         </button>
                       </div>
-                    {:else}
-                      <span class="tx-id">{tx.txid?.slice(0, 20)}...</span>
-                    {/if}
-                  </div>
-                  <div class="tx-meta">
-                    <span class="tx-amount" class:positive={tx.incoming || tx.coinbase} class:negative={!tx.incoming && !tx.coinbase}>
-                      {tx.incoming || tx.coinbase ? '+' : '-'}{formatBalance(tx.amount)} DERO
-                    </span>
-                    <span class="tx-timestamp">{formatTime(tx.time)}</span>
-                  </div>
-                  <div class="tx-actions">
-                    <button class="btn-icon-sm" on:click={() => startEditLabel(tx)} title="Add/edit note">
-                      <Edit size={12} />
-                    </button>
-                    <button class="btn-icon-sm" on:click={() => copyToClipboard(tx.txid, 'TXID copied!')} title="Copy TXID">
-                      <Copy size={12} />
-                    </button>
-                  </div>
+                    </div>
+                  {/if}
                 </div>
+                {/each}
               {:else}
                 <div class="cmd-empty-state">
                   <span class="cmd-empty-icon">◎</span>
                   <span class="cmd-empty-text">No transactions found</span>
                 </div>
               {/each}
+              {#if historyHasMore}
+                <div class="load-more-row">
+                  <button class="btn btn-ghost btn-sm" on:click={loadMoreHistory} disabled={historyLoadingMore}>
+                    {#if historyLoadingMore}
+                      <Loader2 size={12} class="spin" />
+                      Loading...
+                    {:else}
+                      Load More
+                    {/if}
+                  </button>
+                </div>
+              {/if}
             </div>
           </div>
         {/if}
@@ -1805,16 +2393,6 @@
           <p class="content-section-desc">View and manage your token holdings</p>
           
           <TokenPortfolio />
-        {/if}
-
-        <!-- ============================================
-             MY IDENTITY / AVATAR SECTION
-             ============================================ -->
-        {#if activeSection === 'avatar'}
-          <div class="content-section-title">My Identity</div>
-          <p class="content-section-desc">Create and customize your Villager avatar</p>
-          
-          <AvatarEditor />
         {/if}
 
         <!-- ============================================
@@ -1879,9 +2457,18 @@
                     <button class="action-btn" on:click={() => editContact(contact)} title="Edit">
                       <Edit size={12} />
                     </button>
-                    <button class="action-btn action-btn-danger" on:click={() => deleteContact(contact.id)} title="Delete">
-                      <Trash2 size={12} />
-                    </button>
+                    {#if confirmDeleteContactId === contact.id}
+                      <button class="action-btn action-btn-danger confirm-delete-btn" on:click={() => deleteContact(contact.id)} title="Confirm delete">
+                        <Check size={12} />
+                      </button>
+                      <button class="action-btn" on:click={() => confirmDeleteContactId = null} title="Cancel">
+                        ✕
+                      </button>
+                    {:else}
+                      <button class="action-btn action-btn-danger" on:click={() => deleteContact(contact.id)} title="Delete">
+                        <Trash2 size={12} />
+                      </button>
+                    {/if}
                   </div>
                 </div>
               {:else}
@@ -2074,36 +2661,7 @@
                 
                 <div class="form-group">
                   <label class="form-label">Wallet Password</label>
-                  <div class="input-wrap">
-                    {#if showBackupPassword}
-                      <input 
-                        type="text" 
-                        class="input" 
-                        bind:value={backupPassword} 
-                        placeholder="Enter wallet password" 
-                        autocomplete="off"
-                      />
-                    {:else}
-                      <input 
-                        type="password" 
-                        class="input" 
-                        bind:value={backupPassword} 
-                        placeholder="Enter wallet password" 
-                        autocomplete="off"
-                      />
-                    {/if}
-                    <button 
-                      type="button" 
-                      class="input-action" 
-                      on:click={() => showBackupPassword = !showBackupPassword}
-                    >
-                      {#if showBackupPassword}
-                        <EyeOff size={16} strokeWidth={1.5} />
-                      {:else}
-                        <Eye size={16} strokeWidth={1.5} />
-                      {/if}
-                    </button>
-                  </div>
+                  <PasswordInput bind:value={backupPassword} placeholder="Enter wallet password" />
                 </div>
                 
                 {#if backupError}
@@ -2198,36 +2756,7 @@
                 
                 <div class="form-group">
                   <label class="form-label">Wallet Password</label>
-                  <div class="input-wrap">
-                    {#if showKeysPassword}
-                      <input 
-                        type="text" 
-                        class="input" 
-                        bind:value={keysPassword} 
-                        placeholder="Enter wallet password" 
-                        autocomplete="off"
-                      />
-                    {:else}
-                      <input 
-                        type="password" 
-                        class="input" 
-                        bind:value={keysPassword} 
-                        placeholder="Enter wallet password" 
-                        autocomplete="off"
-                      />
-                    {/if}
-                    <button 
-                      type="button" 
-                      class="input-action" 
-                      on:click={() => showKeysPassword = !showKeysPassword}
-                    >
-                      {#if showKeysPassword}
-                        <EyeOff size={16} strokeWidth={1.5} />
-                      {:else}
-                        <Eye size={16} strokeWidth={1.5} />
-                      {/if}
-                    </button>
-                  </div>
+                  <PasswordInput bind:value={keysPassword} placeholder="Enter wallet password" />
                 </div>
                 
                 {#if keysError}
@@ -2333,95 +2862,17 @@
                 
                 <div class="form-group">
                   <label class="form-label">Current Password</label>
-                  <div class="input-wrap">
-                    {#if showChangePasswordCurrent}
-                      <input 
-                        type="text" 
-                        class="input" 
-                        bind:value={changePasswordCurrent} 
-                        placeholder="Enter current password" 
-                        autocomplete="off"
-                      />
-                    {:else}
-                      <input 
-                        type="password" 
-                        class="input" 
-                        bind:value={changePasswordCurrent} 
-                        placeholder="Enter current password" 
-                        autocomplete="off"
-                      />
-                    {/if}
-                    <button 
-                      type="button" 
-                      class="input-action" 
-                      on:click={() => showChangePasswordCurrent = !showChangePasswordCurrent}
-                    >
-                      {#if showChangePasswordCurrent}
-                        <EyeOff size={16} strokeWidth={1.5} />
-                      {:else}
-                        <Eye size={16} strokeWidth={1.5} />
-                      {/if}
-                    </button>
-                  </div>
+                  <PasswordInput bind:value={changePasswordCurrent} placeholder="Enter current password" />
                 </div>
                 
                 <div class="form-group">
                   <label class="form-label">New Password</label>
-                  <div class="input-wrap">
-                    {#if showChangePasswordNew}
-                      <input 
-                        type="text" 
-                        class="input" 
-                        bind:value={changePasswordNew} 
-                        placeholder="Enter new password" 
-                        autocomplete="off"
-                      />
-                    {:else}
-                      <input 
-                        type="password" 
-                        class="input" 
-                        bind:value={changePasswordNew} 
-                        placeholder="Enter new password" 
-                        autocomplete="off"
-                      />
-                    {/if}
-                    <button 
-                      type="button" 
-                      class="input-action" 
-                      on:click={() => showChangePasswordNew = !showChangePasswordNew}
-                    >
-                      {#if showChangePasswordNew}
-                        <EyeOff size={16} strokeWidth={1.5} />
-                      {:else}
-                        <Eye size={16} strokeWidth={1.5} />
-                      {/if}
-                    </button>
-                  </div>
+                  <PasswordInput bind:value={changePasswordNew} placeholder="Enter new password" />
                 </div>
                 
                 <div class="form-group">
                   <label class="form-label">Confirm New Password</label>
-                  <div class="input-wrap">
-                    {#if showChangePasswordNew}
-                      <input 
-                        type="text" 
-                        class="input" 
-                        bind:value={changePasswordConfirm} 
-                        placeholder="Confirm new password" 
-                        autocomplete="off"
-                        class:input-error={changePasswordConfirm && !changePasswordsMatch}
-                      />
-                    {:else}
-                      <input 
-                        type="password" 
-                        class="input" 
-                        bind:value={changePasswordConfirm} 
-                        placeholder="Confirm new password" 
-                        autocomplete="off"
-                        class:input-error={changePasswordConfirm && !changePasswordsMatch}
-                      />
-                    {/if}
-                  </div>
+                  <PasswordInput bind:value={changePasswordConfirm} placeholder="Confirm new password" hasError={changePasswordConfirm && !changePasswordsMatch} />
                   {#if changePasswordConfirm && !changePasswordsMatch}
                     <span class="form-hint error">Passwords do not match</span>
                   {/if}
@@ -2751,20 +3202,7 @@
                 
                 <div class="form-group">
                   <label class="form-label">Password</label>
-                  <div class="input-wrap">
-                    {#if showPassword}
-                      <input type="text" bind:value={password} placeholder="Enter wallet password" class="input" on:keydown={(e) => e.key === 'Enter' && !loading && walletPath && openWallet()} />
-                    {:else}
-                      <input type="password" bind:value={password} placeholder="Enter wallet password" class="input" on:keydown={(e) => e.key === 'Enter' && !loading && walletPath && openWallet()} />
-                    {/if}
-                    <button type="button" on:click={() => showPassword = !showPassword} class="input-action">
-                      {#if showPassword}
-                        <EyeOff size={16} strokeWidth={1.5} />
-                      {:else}
-                        <Eye size={16} strokeWidth={1.5} />
-                      {/if}
-                    </button>
-                  </div>
+                  <PasswordInput bind:value={password} placeholder="Enter wallet password" onEnter={() => { if (!loading && walletPath) openWallet(); }} />
                 </div>
                 
                 {#if error}
@@ -2787,20 +3225,17 @@
                 
                 <div class="form-group">
                   <label class="form-label">Password</label>
-                  <div class="input-wrap">
-                    {#if showCreatePassword}
-                      <input type="text" bind:value={createPassword} placeholder="Create a strong password" class="input" />
-                    {:else}
-                      <input type="password" bind:value={createPassword} placeholder="Create a strong password" class="input" />
-                    {/if}
-                    <button type="button" on:click={() => showCreatePassword = !showCreatePassword} class="input-action">
-                      {#if showCreatePassword}
-                        <EyeOff size={16} strokeWidth={1.5} />
-                      {:else}
-                        <Eye size={16} strokeWidth={1.5} />
-                      {/if}
-                    </button>
-                  </div>
+                  <PasswordInput bind:value={createPassword} placeholder="Create a strong password" />
+                  {#if createPassword}
+                    <div class="password-strength">
+                      <div class="strength-bar">
+                        {#each [1,2,3,4] as level}
+                          <div class="strength-segment" style="background: {passwordStrength.level >= level ? passwordStrength.color : 'var(--void-deep)'}"></div>
+                        {/each}
+                      </div>
+                      <span class="strength-label" style="color: {passwordStrength.color}">{passwordStrength.label}</span>
+                    </div>
+                  {/if}
                 </div>
                 
                 <div class="form-group">
@@ -2855,20 +3290,7 @@
                 
                 <div class="form-group">
                   <label class="form-label">New Password</label>
-                  <div class="input-wrap">
-                    {#if showRestorePassword}
-                      <input type="text" bind:value={restorePassword} placeholder="Create a password" class="input" />
-                    {:else}
-                      <input type="password" bind:value={restorePassword} placeholder="Create a password" class="input" />
-                    {/if}
-                    <button type="button" on:click={() => showRestorePassword = !showRestorePassword} class="input-action">
-                      {#if showRestorePassword}
-                        <EyeOff size={16} strokeWidth={1.5} />
-                      {:else}
-                        <Eye size={16} strokeWidth={1.5} />
-                      {/if}
-                    </button>
-                  </div>
+                  <PasswordInput bind:value={restorePassword} placeholder="Create a password" />
                 </div>
                 
                 <div class="form-group">
@@ -3339,9 +3761,10 @@
   
   .balance-main {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: center;
     gap: var(--s-2);
+    position: relative;
   }
   
   .balance-value {
@@ -3361,6 +3784,51 @@
     color: var(--text-4);
     margin-top: var(--s-2);
   }
+
+  .balance-main-left {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+  }
+
+  .address-row-content {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+
+  .hide-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: 1px solid var(--border-1, #2a2a3a);
+    border-radius: var(--r-1);
+    color: var(--text-4);
+    cursor: pointer;
+    padding: 0;
+    transition: border-color 0.15s, color 0.15s;
+    flex-shrink: 0;
+  }
+
+  .hide-toggle-btn:hover {
+    border-color: var(--cyan-400);
+    color: var(--cyan-400);
+  }
+
+  .hide-toggle-btn.active {
+    border-color: var(--cyan-400);
+    color: var(--cyan-400);
+  }
+
+  .hide-toggle-btn.fixed-right {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+  }
   
   .wallet-address-row {
     display: flex;
@@ -3371,6 +3839,7 @@
     padding: var(--s-2) var(--s-3);
     background: var(--void-deep);
     border-radius: var(--r-sm);
+    position: relative;
   }
   
   .address-text {
@@ -3447,6 +3916,7 @@
     padding: var(--s-3) var(--s-4);
     border-bottom: 1px solid var(--border-dim);
     transition: background 150ms ease;
+    cursor: pointer;
   }
   
   .tx-row:last-child { border-bottom: none; }
@@ -3455,20 +3925,21 @@
   .tx-left { display: flex; align-items: center; gap: var(--s-3); }
   
   .tx-icon {
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     display: flex;
     align-items: center;
     justify-content: center;
     border-radius: 50%;
     background: var(--void-deep);
+    flex-shrink: 0;
   }
   
-  .tx-icon.tx-in { color: var(--status-ok); background: rgba(52, 211, 153, 0.1); }
-  .tx-icon.tx-out { color: var(--status-err); background: rgba(248, 113, 113, 0.1); }
+  .tx-icon.tx-in { color: var(--status-ok); background: rgba(52, 211, 153, 0.15); }
+  .tx-icon.tx-out { color: var(--status-err); background: rgba(248, 113, 113, 0.15); }
   
   .tx-info { display: flex; flex-direction: column; gap: 2px; }
-  .tx-type { font-size: 13px; color: var(--text-1); }
+  .tx-type { font-size: 13px; color: var(--text-1); font-weight: 500; }
   .tx-time { font-size: 11px; color: var(--text-4); }
   
   .tx-amt {
@@ -3601,7 +4072,7 @@
   }
   
   /* Receive Content */
-  .receive-content { padding: var(--s-4); }
+  .receive-content { padding: var(--s-4); text-align: center; }
   
   .address-type-toggle {
     display: flex;
@@ -3636,7 +4107,19 @@
     font-size: 11px;
     color: var(--text-4);
     text-align: center;
+    margin-bottom: var(--s-3);
+  }
+
+  .integrated-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
     margin-bottom: var(--s-4);
+    padding: var(--s-4);
+    background: var(--void-deep);
+    border-radius: var(--r-md);
+    border: 1px solid var(--border-dim);
+    text-align: left;
   }
   
   .qr-display {
@@ -3798,45 +4281,58 @@
     outline: none;
   }
   
-  .tx-row-detailed {
+  /* tx-row-detailed styles consolidated in the Transaction Detail Panel section below */
+  
+  /* Grid column 1: Icon */
+  .tx-icon-wrap { 
     display: flex;
     align-items: center;
-    gap: var(--s-3);
-    padding: var(--s-3) var(--s-4);
-    border-bottom: 1px solid var(--border-dim);
-    transition: background 150ms ease;
+    justify-content: center;
   }
   
-  .tx-row-detailed:last-child { border-bottom: none; }
-  .tx-row-detailed:hover { background: var(--void-up); }
-  
-  .tx-icon-wrap { flex-shrink: 0; }
-  
+  /* Grid column 2: Type + TXID stacked */
   .tx-details {
-    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 3px;
     min-width: 0;
+    overflow: hidden;
   }
   
   .tx-id {
     font-family: var(--font-mono);
     font-size: 11px;
-    color: var(--text-4);
+    color: var(--text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: -0.02em;
   }
   
+  .tx-msg-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+    background: rgba(167, 139, 250, 0.12);
+    border: 1px solid rgba(167, 139, 250, 0.25);
+    border-radius: var(--r-sm);
+    color: var(--violet-400);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+  }
+  
+  /* Grid column 3: Amount + Timestamp stacked */
   .tx-meta {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 2px;
+    gap: 3px;
   }
   
   .tx-amount {
     font-family: var(--font-mono);
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 600;
+    white-space: nowrap;
   }
   
   .tx-amount.positive { color: var(--status-ok); }
@@ -3845,6 +4341,7 @@
   .tx-timestamp {
     font-size: 11px;
     color: var(--text-4);
+    white-space: nowrap;
   }
   
   /* Transaction Label Styles */
@@ -3919,10 +4416,11 @@
     cursor: not-allowed;
   }
   
+  /* Grid column 4: Actions */
   .tx-actions {
     display: flex;
-    gap: 2px;
-    flex-shrink: 0;
+    justify-content: flex-end;
+    gap: 4px;
   }
   
   .tx-row-detailed:hover .tx-actions .btn-icon-sm {
@@ -3930,8 +4428,12 @@
   }
   
   .tx-actions .btn-icon-sm {
-    opacity: 0;
+    opacity: 0.4;
     transition: opacity 150ms ease;
+  }
+  
+  .tx-actions .btn-icon-sm:hover {
+    opacity: 1;
   }
   
   /* Change Password Styles */
@@ -4319,5 +4821,334 @@
     height: 1px;
     background: var(--border-dim);
     margin: var(--s-2) 0;
+  }
+
+  .tx-label { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: rgba(82, 200, 219, 0.15); border: 1px solid rgba(82, 200, 219, 0.3); border-radius: 4px; font-size: 0.75rem; color: #52c8db; }
+
+  /* Decoded Payment Info (Send - Integrated Address Detection) */
+  .decoded-payment-info { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; background: rgba(82, 200, 219, 0.1); border: 1px solid rgba(82, 200, 219, 0.2); border-radius: 8px; font-size: 0.8rem; margin-top: 8px; }
+  .decoded-label { color: #52c8db; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  /* Mining Earnings Summary */
+  .mining-summary { display: flex; gap: 16px; padding: 10px 16px; background: rgba(82, 200, 219, 0.08); border: 1px solid rgba(82, 200, 219, 0.15); border-radius: 8px; margin-bottom: 12px; font-size: 0.8rem; }
+  .mining-stat { color: rgba(255,255,255,0.7); }
+  .mining-stat:first-child { color: #52c8db; font-weight: 600; }
+
+  /* Wallet Path Display */
+  .wallet-path { font-size: 0.7rem; color: rgba(255,255,255,0.35); font-family: var(--font-mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; margin: var(--s-1) auto 0 auto; text-align: center; }
+
+  /* Contact Picker Dropdown */
+  .contact-picker-dropdown {
+    position: relative;
+    margin-top: var(--s-1);
+    background: var(--void-deep);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-md);
+    max-height: 180px;
+    overflow-y: auto;
+    z-index: 10;
+  }
+  .contact-picker-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: var(--s-2) var(--s-3);
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border-dim);
+    cursor: pointer;
+    transition: background 150ms ease;
+    text-align: left;
+  }
+  .contact-picker-item:last-child { border-bottom: none; }
+  .contact-picker-item:hover { background: var(--void-up); }
+  .contact-picker-label { font-size: 12px; color: var(--text-1); font-weight: 500; }
+  .contact-picker-addr { font-size: 11px; color: var(--text-4); font-family: var(--font-mono); }
+  .contact-picker-empty { padding: var(--s-3); text-align: center; font-size: 12px; color: var(--text-4); }
+
+  /* Send Confirm Full Address */
+  .confirm-address-full {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--pink-400);
+    word-break: break-all;
+    line-height: 1.5;
+    padding: var(--s-2) var(--s-3);
+    background: var(--void-deep);
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border-dim);
+  }
+  .confirm-address-toggle {
+    background: none;
+    border: none;
+    color: var(--cyan-400);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    margin-top: var(--s-1);
+  }
+  .confirm-address-toggle:hover { text-decoration: underline; }
+
+  /* Inline Confirm Delete */
+  .confirm-delete-btn {
+    animation: confirmPulse 1s ease-in-out infinite;
+  }
+  @keyframes confirmPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+
+  /* Loading Skeletons */
+  .skeleton-line {
+    height: 14px;
+    background: linear-gradient(90deg, var(--void-deep) 25%, var(--void-up) 50%, var(--void-deep) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+    border-radius: var(--r-sm);
+  }
+  .skeleton-lg { height: 36px; }
+  .skeleton-sm { height: 12px; }
+  .skeleton-xs { height: 10px; }
+  .skeleton-circle {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(90deg, var(--void-deep) 25%, var(--void-up) 50%, var(--void-deep) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+  .skeleton-block {
+    background: linear-gradient(90deg, var(--void-deep) 25%, var(--void-up) 50%, var(--void-deep) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+    min-height: 60px;
+    border-radius: var(--r-md);
+  }
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Load More */
+  .load-more-row {
+    display: flex;
+    justify-content: center;
+    padding: var(--s-3);
+    border-top: 1px solid var(--border-dim);
+  }
+
+  /* Transaction Row - Grid Layout */
+  .tx-row-main {
+    display: grid;
+    grid-template-columns: 44px 1fr 150px 72px;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
+    cursor: pointer;
+    transition: background 150ms ease;
+  }
+  .tx-row-main:hover { background: var(--void-up); }
+  
+  /* tx-row-detailed is the outer wrapper; layout handled by tx-row-main grid */
+  .tx-row-detailed { 
+    border-bottom: 1px solid var(--border-dim);
+    border-left: 2px solid transparent;
+    transition: border-color 150ms ease, background 150ms ease;
+  }
+  .tx-row-detailed:last-child { border-bottom: none; }
+  .tx-row-detailed:hover { background: var(--void-up); }
+  .tx-row-detailed.tx-expanded { 
+    background: rgba(34, 211, 238, 0.03);
+    border-left-color: var(--cyan-500);
+  }
+  .tx-detail-panel {
+    padding: var(--s-4);
+    padding-left: calc(var(--s-4) + 44px + var(--s-3));
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--s-4) var(--s-6);
+    border-top: 1px solid var(--border-dim);
+    background: var(--void);
+    animation: slideDown 150ms ease-out;
+  }
+  
+  @keyframes slideDown {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .tx-detail-panel .tx-detail-row:first-child,
+  .tx-detail-panel .tx-detail-proof-row {
+    grid-column: 1 / -1;
+  }
+  .tx-detail-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tx-detail-label {
+    font-size: 10px;
+    color: var(--text-4);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+  }
+  .tx-detail-value {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-2);
+    word-break: break-all;
+  }
+  .tx-detail-value-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+  }
+  .tx-detail-value-row .btn-icon-sm {
+    flex-shrink: 0;
+    opacity: 0.6;
+  }
+  .tx-detail-value-row .btn-icon-sm:hover {
+    opacity: 1;
+  }
+  .tx-detail-txid {
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .tx-detail-address {
+    color: var(--pink-400);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .tx-detail-direction {
+    font-weight: 500;
+  }
+  .tx-direction-in {
+    color: var(--status-ok);
+  }
+  .tx-direction-out {
+    color: var(--text-2);
+  }
+  .tx-detail-amount {
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .tx-detail-amount.positive {
+    color: var(--status-ok);
+  }
+  .tx-detail-amount.negative {
+    color: var(--text-2);
+  }
+  .tx-detail-burn {
+    color: var(--status-warn);
+  }
+  .tx-detail-port {
+    font-family: var(--font-mono);
+    color: var(--cyan-400);
+    font-size: 12px;
+  }
+  .tx-detail-comment {
+    color: var(--text-2);
+    font-style: italic;
+    background: var(--void-deep);
+    padding: 6px 10px;
+    border-radius: var(--r-sm);
+    border-left: 2px solid var(--cyan-400);
+    font-size: 12px;
+  }
+  .tx-detail-proof-row .tx-detail-value {
+    font-size: 10px;
+    line-height: 1.4;
+    max-height: 60px;
+    overflow-y: auto;
+    background: var(--void-deep);
+    padding: 6px 8px;
+    border-radius: var(--r-sm);
+  }
+  .tx-detail-relative {
+    color: var(--text-4);
+    font-size: 11px;
+  }
+  .tx-detail-actions {
+    grid-column: 1 / -1;
+    padding-top: var(--s-2);
+    margin-top: var(--s-2);
+    border-top: 1px solid var(--border-dim);
+    display: flex;
+    gap: var(--s-2);
+  }
+
+  /* Sync Progress Bar */
+  .sync-progress-wrap {
+    padding: 0 var(--s-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  .sync-progress-bar {
+    height: 3px;
+    background: var(--void-deep);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .sync-progress-fill {
+    height: 100%;
+    background: var(--cyan-400);
+    border-radius: 2px;
+    transition: width 500ms ease;
+  }
+  .sync-progress-text {
+    font-size: 10px;
+    color: var(--text-4);
+    text-align: center;
+  }
+
+  /* Transaction Date Group */
+  .tx-date-group {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  .tx-date-label {
+    padding: var(--s-2) var(--s-4);
+    background: var(--void-deep);
+    border-bottom: 1px solid var(--border-dim);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-4);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Password Strength Indicator */
+  .password-strength {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    margin-top: var(--s-1);
+  }
+  .strength-bar {
+    display: flex;
+    gap: 3px;
+    flex: 1;
+  }
+  .strength-segment {
+    height: 3px;
+    flex: 1;
+    border-radius: 2px;
+    transition: background 200ms ease;
+  }
+  .strength-label {
+    font-size: 11px;
+    font-weight: 500;
+    min-width: 45px;
+    text-align: right;
   }
 </style>

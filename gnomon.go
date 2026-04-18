@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/civilware/Gnomon/indexer"
 	"github.com/civilware/Gnomon/storage"
@@ -13,17 +19,19 @@ import (
 	"github.com/deroproject/derohe/globals"
 )
 
+const gnomonSCID = "bb43c3eb626ee767c9f305772a6666f7c7300441a0ad8538a0799eb4f12ebcd2"
+
 // GnomonClient manages the Gnomon indexer for TELA content discovery
 type GnomonClient struct {
-	Indexer          *indexer.Indexer
-	fastsync         bool
-	parallelBlocks   int
-	dbPath           string
-	dbType           string
-	running          bool
-	disableFastsync  bool  // Temporary flag to disable fastsync for next start (used after resync)
-	startFromHeight  int64 // If > 0, start indexing from this height instead of 0 or current
-	appsLoaded       bool  // True when GetDiscoveredApps() has completed at least once
+	Indexer         *indexer.Indexer
+	fastsync        bool
+	parallelBlocks  int
+	dbPath          string
+	dbType          string
+	running         bool
+	disableFastsync bool  // Temporary flag to disable fastsync for next start (used after resync)
+	startFromHeight int64 // If > 0, start indexing from this height instead of 0 or current
+	appsLoaded      bool  // True when GetDiscoveredApps() has completed at least once
 }
 
 const maxParallelBlocks = 10
@@ -99,7 +107,21 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 
 		height, err = boltDB.GetLastIndexHeight()
 		if err != nil {
-			height = 0
+			// Gnomon DB is a rebuildable cache; if it is unreadable, reset it now to
+			// avoid StartDaemonMode hitting logger.Fatalf() on the same path.
+			g.log(fmt.Sprintf("[Gnomon] BoltDB read failed (%v). Resetting cache at %s", err, basePath))
+			g.cleanDBPath(basePath)
+			boltDB, boltErr = storage.NewBBoltDB(basePath, "gnomon")
+			if boltErr != nil {
+				if !strings.HasPrefix(boltErr.Error(), "[") {
+					boltErr = fmt.Errorf("[NewBBoltDB] %s", boltErr)
+				}
+				return boltErr
+			}
+			height, err = boltDB.GetLastIndexHeight()
+			if err != nil {
+				return fmt.Errorf("[Gnomon] BoltDB recovery failed: %w", err)
+			}
 		}
 	default: // gravdb
 		if gravErr != nil {
@@ -108,13 +130,48 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 
 		height, err = gravDB.GetLastIndexHeight()
 		if err != nil {
+			// Gnomon DB is a rebuildable cache; if it is unreadable, reset it now to
+			// avoid StartDaemonMode hitting logger.Fatalf() on the same path.
+			g.log(fmt.Sprintf("[Gnomon] GravDB read failed (%v). Resetting cache at %s", err, basePath))
+			g.cleanDBPath(basePath)
+			gravDB, gravErr = storage.NewGravDB(basePath, "25ms")
+			if gravErr != nil {
+				return fmt.Errorf("[NewGravDB] %s", gravErr)
+			}
+			height, err = gravDB.GetLastIndexHeight()
+			if err != nil {
+				return fmt.Errorf("[Gnomon] GravDB recovery failed: %w", err)
+			}
+		}
+	}
+
+	// Sanity check: if the stored height is beyond the daemon's chain height
+	// the chain was reset (e.g. simulator restart).  Clean the DB and start
+	// from 0 so Gnomon doesn't sit idle waiting for blocks that will never come.
+	if height > 0 {
+		if chainHeight := queryDaemonHeight(endpoint); chainHeight >= 0 && height > chainHeight {
+			g.log(fmt.Sprintf("[Gnomon] Stored height %d exceeds chain height %d — resetting DB", height, chainHeight))
+			g.cleanDBPath(basePath)
 			height = 0
+			// Re-open storage after clean
+			switch g.dbType {
+			case "boltdb":
+				boltDB, boltErr = storage.NewBBoltDB(basePath, "gnomon")
+				if boltErr != nil {
+					return fmt.Errorf("[NewBBoltDB] %s", boltErr)
+				}
+			default:
+				gravDB, gravErr = storage.NewGravDB(basePath, "25ms")
+				if gravErr != nil {
+					return fmt.Errorf("[NewGravDB] %s", gravErr)
+				}
+			}
 		}
 	}
 
 	// Known exclusions (if any)
-	exclusions := []string{"bb43c3eb626ee767c9f305772a6666f7c7300441a0ad8538a0799eb4f12ebcd2"}
-	
+	exclusions := []string{gnomonSCID}
+
 	// Search filter for TELA apps
 	filter := []string{gnomonSearchFilter}
 
@@ -128,7 +185,7 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 		useFastsync = false
 		forceFastsync = false
 	}
-	
+
 	// If disableFastsync flag is set (e.g., after a resync), disable fastsync
 	// This ensures we index from the stored height (or 0 if DB was cleaned)
 	if g.disableFastsync {
@@ -136,13 +193,13 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 		forceFastsync = false
 		g.disableFastsync = false // Reset the flag after use
 	}
-	
+
 	// If a specific start height is set, use it instead of the stored height
 	if g.startFromHeight > 0 {
 		height = g.startFromHeight
 		g.startFromHeight = 0 // Reset after use
 	}
-	
+
 	config := &structures.FastSyncConfig{
 		Enabled:           useFastsync,
 		SkipFSRecheck:     false,
@@ -189,35 +246,25 @@ func (g *GnomonClient) Stop() {
 
 // SetDisableFastsync sets a flag to disable fastsync on the next start
 // This is used after a resync to ensure we index from block 0
-func (g *GnomonClient) SetDisableFastsync(disable bool) {
-	g.disableFastsync = disable
-}
+func (g *GnomonClient) SetDisableFastsync(disable bool) { g.disableFastsync = disable }
 
 // SetStartFromHeight sets a specific height to start indexing from
 // This is useful for resyncing recent contracts without indexing the entire chain
-func (g *GnomonClient) SetStartFromHeight(height int64) {
-	g.startFromHeight = height
-}
+func (g *GnomonClient) SetStartFromHeight(height int64) { g.startFromHeight = height }
 
 // SetAppsLoaded sets the appsLoaded flag (called by App.GetDiscoveredApps)
-func (g *GnomonClient) SetAppsLoaded(loaded bool) {
-	g.appsLoaded = loaded
-}
+func (g *GnomonClient) SetAppsLoaded(loaded bool) { g.appsLoaded = loaded }
 
 // IsAppsLoaded returns whether apps have been loaded at least once
-func (g *GnomonClient) IsAppsLoaded() bool {
-	return g.appsLoaded
-}
+func (g *GnomonClient) IsAppsLoaded() bool { return g.appsLoaded }
 
 // IsRunning returns whether Gnomon is running
-func (g *GnomonClient) IsRunning() bool {
-	return g.running && g.Indexer != nil
-}
+func (g *GnomonClient) IsRunning() bool { return g.running && g.Indexer != nil }
 
 // GetStatus returns the current indexing status
-func (g *GnomonClient) GetStatus() map[string]interface{} {
+func (g *GnomonClient) GetStatus() map[string]any {
 	if !g.IsRunning() {
-		return map[string]interface{}{
+		return map[string]any{
 			"running":        false,
 			"connecting":     false,
 			"indexed_height": 0,
@@ -226,19 +273,21 @@ func (g *GnomonClient) GetStatus() map[string]interface{} {
 		}
 	}
 
-	indexed := g.Indexer.LastIndexedHeight
-	chain := g.Indexer.ChainHeight
+	var (
+		indexed, chain = g.Indexer.LastIndexedHeight, g.Indexer.ChainHeight
 
-	// If chain height is 0, Gnomon is still trying to connect to the daemon
-	// This happens when the connection loop in StartDaemonMode is retrying
-	connecting := chain == 0
+		// If chain height is 0, Gnomon is still trying to connect to the daemon
+		// This happens when the connection loop in StartDaemonMode is retrying
+		connecting = chain == 0
 
-	progress := 0.0
+		progress = 0.0
+	)
+
 	if chain > 0 {
 		progress = (float64(indexed) / float64(chain)) * 100.0
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"running":        true,
 		"connecting":     connecting,
 		"indexed_height": indexed,
@@ -283,7 +332,7 @@ func (g *GnomonClient) GetAllSCIDVariableDetails(scid string) []*structures.SCID
 }
 
 // GetSCIDValuesByKey returns values for a specific key in a smart contract
-func (g *GnomonClient) GetSCIDValuesByKey(scid string, key interface{}) (valuesstring []string, valuesuint64 []uint64) {
+func (g *GnomonClient) GetSCIDValuesByKey(scid string, key any) (valuesstring []string, valuesuint64 []uint64) {
 	if !g.IsRunning() {
 		return nil, nil
 	}
@@ -299,7 +348,7 @@ func (g *GnomonClient) GetSCIDValuesByKey(scid string, key interface{}) (valuess
 }
 
 // GetSCIDKeysByValue returns keys for a specific value in a smart contract
-func (g *GnomonClient) GetSCIDKeysByValue(scid string, value interface{}) (valuesstring []string, valuesuint64 []uint64) {
+func (g *GnomonClient) GetSCIDKeysByValue(scid string, value any) (valuesstring []string, valuesuint64 []uint64) {
 	if !g.IsRunning() {
 		return nil, nil
 	}
@@ -315,8 +364,8 @@ func (g *GnomonClient) GetSCIDKeysByValue(scid string, value interface{}) (value
 }
 
 // GetTELAApps returns all discovered TELA INDEX applications (filters out DOCs)
-func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
-	apps := make([]map[string]interface{}, 0)
+func (g *GnomonClient) GetTELAApps() []map[string]any {
+	apps := make([]map[string]any, 0)
 
 	if !g.IsRunning() {
 		return apps
@@ -326,109 +375,75 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 	scids := g.GetAllOwnersAndSCIDs()
 
 	for scid, owner := range scids {
-		// Get variables for this SCID
-		vars := g.GetAllSCIDVariableDetails(scid)
 
-		app := map[string]interface{}{
-			"scid":     scid,
-			"owner":    owner,
-			"is_index": false,
-		}
+		var (
+			// Get variables for this SCID
+			vars = g.GetAllSCIDVariableDetails(scid)
 
-		// Extract TELA-specific variables
-		hasDocRefs := false
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-			
-			switch key {
-		// V2 headers (TELA standard) - check first
-		case "var_header_name":
-				if v.Value != nil {
-					app["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_description":
-				if v.Value != nil {
-					app["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_icon":
-			if v.Value != nil {
-				app["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		// V1 headers (ART-NFA standard) - fallback if V2 not set
-		case "nameHdr":
-			if v.Value != nil && app["name"] == nil {
-				app["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "descrHdr":
-			if v.Value != nil && app["description"] == nil {
-				app["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "iconURLHdr":
-			if v.Value != nil && app["icon"] == nil {
-				app["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-			case "dURL":
-				if v.Value != nil {
-					du := decodeHexString(fmt.Sprintf("%v", v.Value))
-					app["url"] = du
-					app["durl"] = du
-				}
-			case "DOC1", "DOC2", "DOC3", "DOC4", "DOC5", "DOC6", "DOC7", "DOC8", "DOC9", "DOC10":
-				// Mark as TELA INDEX if it has DOC references
-				hasDocRefs = true
-				app["is_index"] = true
-			}
-		}
+			data = map[string]any{"scid": scid, "owner": owner, "is_index": false}
+
+			// Extract TELA-specific variables
+			app, isIndex, _, _ = allocateData(vars, data)
+		)
 
 		// Only include INDEX contracts (apps with DOC references)
 		// This filters out individual DOC files which can't be rendered standalone
-		if hasDocRefs {
-            // Generate clean display name (prefer dURL when present)
-            displayName := ""
-			
-			// Get fields
-			name, hasName := app["name"].(string)
-			description, hasDesc := app["description"].(string)
-			url, hasURL := app["url"].(string)
-			
-			// Helper function to check if a string is a URL/file path
-			isURLFunc := func(s string) bool {
-				if s == "" {
+		if isIndex {
+
+			var (
+				// Generate clean display name (prefer dURL when present)
+				displayName = ""
+
+				// Get fields
+				name, hasName        = app["name"].(string)
+				description, hasDesc = app["description"].(string)
+				url, hasURL          = app["url"].(string)
+
+				// Helper function to check if a string is a URL/file path
+				isURLFunc = func(s string) bool {
+					if s == "" {
+						return false
+					}
+					for _, substr := range []string{
+						"http",
+						"://",
+						".png",
+						".jpg",
+						".jpeg",
+						".svg",
+						".gif",
+						".ico",
+						"/ipfs/",
+						"/images/",
+						"/icons/",
+						"/assets/",
+						"gateway.",
+						"blob/",
+						"i.ibb.",
+						"bafybeih",
+						"avatars.",
+						"raw.github",
+						".world/",
+						".com/",
+						".org/",
+						".io/",
+					} {
+						if strings.Contains(strings.ToLower(s), substr) {
+							return true
+						}
+					}
 					return false
 				}
-				lower := strings.ToLower(s)
-				return strings.Contains(lower, "http") ||
-					strings.Contains(lower, "://") ||
-					strings.Contains(lower, ".png") ||
-					strings.Contains(lower, ".jpg") ||
-					strings.Contains(lower, ".jpeg") ||
-					strings.Contains(lower, ".svg") ||
-					strings.Contains(lower, ".gif") ||
-					strings.Contains(lower, ".ico") ||
-					strings.Contains(lower, "/ipfs/") ||
-					strings.Contains(lower, "/images/") ||
-					strings.Contains(lower, "/icons/") ||
-					strings.Contains(lower, "/assets/") ||
-					strings.Contains(lower, "gateway.") ||
-					strings.Contains(lower, "blob/") ||
-					strings.Contains(lower, "i.ibb.") ||
-					strings.Contains(lower, "bafybeih") ||
-					strings.Contains(lower, "avatars.") ||
-					strings.Contains(lower, "raw.github") ||
-					(strings.Contains(lower, ".world/")) ||
-					(strings.Contains(lower, ".com/")) ||
-					(strings.Contains(lower, ".org/")) ||
-					(strings.Contains(lower, ".io/"))
-			}
-			
-			// Check both description and name for URLs
-			isDescURL := hasDesc && isURLFunc(description)
-			isNameURL := hasName && isURLFunc(name)
-			
-            // Decision tree - prefer dURL if present
-            if du, hasDU := app["durl"].(string); hasDU && du != "" {
-                displayName = du
-            } else if hasDesc && description != "" && !isDescURL {
+
+				// Check both description and name for URLs
+				isDescURL = hasDesc && isURLFunc(description)
+				isNameURL = hasName && isURLFunc(name)
+			)
+
+			// Decision tree - prefer dURL if present
+			if du, hasDU := app["durl"].(string); hasDU && du != "" {
+				displayName = du
+			} else if hasDesc && description != "" && !isDescURL {
 				// Use description if it's NOT a URL
 				displayName = description
 			} else if hasName && name != "" && !isNameURL {
@@ -441,13 +456,13 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 				// Nothing usable - generic name
 				displayName = "TELA App"
 			}
-			
+
 			// Limit to 40 characters for uniformity
 			displayName = strings.TrimSpace(displayName)
 			if len(displayName) > 40 {
 				displayName = displayName[:37] + "..."
 			}
-			
+
 			// Final paranoid safety check - if result still looks like URL, replace it
 			if isURLFunc(displayName) {
 				// It's STILL a URL after all that - use generic name
@@ -463,7 +478,7 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 					displayName = "TELA App"
 				}
 			}
-			
+
 			app["display_name"] = displayName
 			apps = append(apps, app)
 		}
@@ -473,8 +488,8 @@ func (g *GnomonClient) GetTELAApps() []map[string]interface{} {
 }
 
 // GetTELALibraries returns all TELA content tagged as libraries (.lib suffix in dURL)
-func (g *GnomonClient) GetTELALibraries() []map[string]interface{} {
-	libs := make([]map[string]interface{}, 0)
+func (g *GnomonClient) GetTELALibraries() []map[string]any {
+	libs := make([]map[string]any, 0)
 
 	if !g.IsRunning() {
 		return libs
@@ -484,84 +499,15 @@ func (g *GnomonClient) GetTELALibraries() []map[string]interface{} {
 	scids := g.GetAllOwnersAndSCIDs()
 
 	for scid, owner := range scids {
-		vars := g.GetAllSCIDVariableDetails(scid)
 
-		lib := map[string]interface{}{
-			"scid":     scid,
-			"owner":    owner,
-			"is_index": false,
-			"doc_count": 0,
-		}
-
-		hasLibTag := false
-		docCount := 0
-
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-
-			switch key {
-		// V2 headers (TELA standard) - check first
-		case "var_header_name":
-				if v.Value != nil {
-					lib["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_description":
-				if v.Value != nil {
-					lib["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_icon":
-			if v.Value != nil {
-				lib["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		// V1 headers (ART-NFA standard) - fallback if V2 not set
-		case "nameHdr":
-			if v.Value != nil && lib["name"] == nil {
-				lib["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "descrHdr":
-			if v.Value != nil && lib["description"] == nil {
-				lib["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "iconURLHdr":
-			if v.Value != nil && lib["icon"] == nil {
-				lib["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-			case "dURL":
-				if v.Value != nil {
-					du := decodeHexString(fmt.Sprintf("%v", v.Value))
-					lib["durl"] = du
-					// Check for .lib suffix
-					if strings.HasSuffix(du, ".lib") {
-						hasLibTag = true
-					}
-				}
-			case "docType":
-				// This is a DOC (single file library)
-				lib["type"] = "DOC"
-			case "DOC1", "DOC2", "DOC3", "DOC4", "DOC5", "DOC6", "DOC7", "DOC8", "DOC9", "DOC10",
-				"DOC11", "DOC12", "DOC13", "DOC14", "DOC15", "DOC16", "DOC17", "DOC18", "DOC19", "DOC20":
-				// Count DOC references in INDEX
-				lib["is_index"] = true
-				lib["type"] = "INDEX"
-				docCount++
-			}
-		}
-
-		lib["doc_count"] = docCount
+		var (
+			vars                 = g.GetAllSCIDVariableDetails(scid)
+			params               = map[string]any{"scid": scid, "owner": owner, "is_index": false, "doc_count": 0}
+			lib, _, _, hasLibTag = allocateData(vars, params)
+		)
 
 		// Only include content tagged as library
 		if hasLibTag {
-			// Generate display name
-			displayName := ""
-			if durl, ok := lib["durl"].(string); ok && durl != "" {
-				displayName = durl
-			} else if name, ok := lib["name"].(string); ok && name != "" {
-				displayName = name
-			} else {
-				displayName = "TELA Library"
-			}
-			lib["display_name"] = displayName
-			
 			libs = append(libs, lib)
 		}
 	}
@@ -570,11 +516,14 @@ func (g *GnomonClient) GetTELALibraries() []map[string]interface{} {
 }
 
 // SearchTELApps searches for TELA apps by name or description
-func (g *GnomonClient) SearchTELApps(query string) []map[string]interface{} {
-	allApps := g.GetTELAApps()
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) SearchTELApps(query string) []map[string]any {
 
-	query = strings.ToLower(query)
+	var (
+		allApps = g.GetTELAApps()
+		results = make([]map[string]any, 0)
+		q       = strings.ToLower(query)
+		has     = strings.Contains
+	)
 
 	for _, app := range allApps {
 		name := ""
@@ -587,7 +536,7 @@ func (g *GnomonClient) SearchTELApps(query string) []map[string]interface{} {
 			description = strings.ToLower(d)
 		}
 
-		if strings.Contains(name, query) || strings.Contains(description, query) {
+		if has(name, q) || has(description, q) {
 			results = append(results, app)
 		}
 	}
@@ -597,69 +546,71 @@ func (g *GnomonClient) SearchTELApps(query string) []map[string]interface{} {
 
 // LatestInteractionHeight returns the most recent interaction height for a SCID
 func (g *GnomonClient) LatestInteractionHeight(scid string) int64 {
-    if !g.IsRunning() {
-        return 0
-    }
-    heights := g.Indexer.GravDBBackend.GetSCIDInteractionHeight(scid)
-    var max int64 = 0
-    for _, h := range heights {
-        if h > max { max = h }
-    }
-    return max
+	if !g.IsRunning() {
+		return 0
+	}
+	heights := g.Indexer.GravDBBackend.GetSCIDInteractionHeight(scid)
+	var max int64 = 0
+	for _, h := range heights {
+		if h > max {
+			max = h
+		}
+	}
+	return max
 }
 
 // CheckAppSupportsEpoch determines if a TELA app supports EPOCH crowd mining
 // Looks for EPOCH-related variables or functions in the smart contract
 func (g *GnomonClient) CheckAppSupportsEpoch(scid string) bool {
-    if !g.IsRunning() {
-        return false
-    }
+	if !g.IsRunning() {
+		return false
+	}
 
-    vars := g.GetAllSCIDVariableDetails(scid)
-    if vars == nil {
-        return false
-    }
+	vars := g.GetAllSCIDVariableDetails(scid)
+	if vars == nil {
+		return false
+	}
 
-    // Check for EPOCH-related variables
-    epochKeywords := []string{
-        "epoch",
-        "EPOCH",
-        "epochEnabled",
-        "epoch_enabled",
-        "epochSupport",
-        "crowd_mining",
-        "crowdMining",
-    }
+	// Check for EPOCH-related variables
+	epochKeywords := []string{
+		"epoch",
+		"EPOCH",
+		"epochEnabled",
+		"epoch_enabled",
+		"epochSupport",
+		"crowd_mining",
+		"crowdMining",
+	}
 
-    for _, v := range vars {
-        key := fmt.Sprintf("%v", v.Key)
-        keyLower := strings.ToLower(key)
-        
-        for _, keyword := range epochKeywords {
-            if strings.Contains(keyLower, strings.ToLower(keyword)) {
-                return true
-            }
-        }
-    }
+	for _, v := range vars {
+		key := fmt.Sprintf("%v", v.Key)
+		keyLower := strings.ToLower(key)
 
-    return false
+		for _, keyword := range epochKeywords {
+			if strings.Contains(keyLower, strings.ToLower(keyword)) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // GetTELAAppsWithEpochInfo returns all TELA apps with EPOCH support information
-func (g *GnomonClient) GetTELAAppsWithEpochInfo() []map[string]interface{} {
-    apps := g.GetTELAApps()
-    
-    for i, app := range apps {
-        if scid, ok := app["scid"].(string); ok {
-            supportsEpoch := g.CheckAppSupportsEpoch(scid)
-            apps[i]["supports_epoch"] = supportsEpoch
-            if supportsEpoch {
-                apps[i]["epoch_badge"] = "EPOCH Enabled"
-            }
-        }
-    }
-    
-    return apps
+func (g *GnomonClient) GetTELAAppsWithEpochInfo() []map[string]any {
+	apps := g.GetTELAApps()
+
+	for i, app := range apps {
+		if scid, ok := app["scid"].(string); ok {
+			supportsEpoch := g.CheckAppSupportsEpoch(scid)
+			apps[i]["supports_epoch"] = supportsEpoch
+			if supportsEpoch {
+				apps[i]["epoch_badge"] = "EPOCH Enabled"
+			}
+		}
+	}
+
+	return apps
 }
 
 // ResolveName tries to resolve a human-friendly TELA app name to a SCID using the Gnomon index.
@@ -668,80 +619,109 @@ func (g *GnomonClient) GetTELAAppsWithEpochInfo() []map[string]interface{} {
 // 2) Exact match on name (case-insensitive)
 // 3) Prefix match on display_name/name if unique
 func (g *GnomonClient) ResolveName(name string) (string, bool) {
-    if !g.IsRunning() {
-        return "", false
-    }
+	if !g.IsRunning() {
+		return "", false
+	}
 
-    target := strings.ToLower(strings.TrimSpace(name))
-    if target == "" {
-        return "", false
-    }
+	target := strings.ToLower(strings.TrimSpace(name))
+	if target == "" {
+		return "", false
+	}
 
-    apps := g.GetTELAApps()
+	apps := g.GetTELAApps()
 
-    // exact matches first
-    for _, app := range apps {
-        if dn, ok := app["display_name"].(string); ok && strings.ToLower(dn) == target {
-            if scid, ok := app["scid"].(string); ok && scid != "" {
-                return scid, true
-            }
-        }
-        if n, ok := app["name"].(string); ok && strings.ToLower(n) == target {
-            if scid, ok := app["scid"].(string); ok && scid != "" {
-                return scid, true
-            }
-        }
-    }
+	// exact matches first (pick newest if multiple)
+	exactCandidates := make([]string, 0)
+	for _, app := range apps {
+		if dn, ok := app["display_name"].(string); ok && strings.ToLower(dn) == target {
+			if scid, ok := app["scid"].(string); ok && scid != "" {
+				exactCandidates = append(exactCandidates, scid)
+			}
+		}
+		if n, ok := app["name"].(string); ok && strings.ToLower(n) == target {
+			if scid, ok := app["scid"].(string); ok && scid != "" {
+				exactCandidates = append(exactCandidates, scid)
+			}
+		}
+	}
+	if scid, ok := g.pickNewestSCID(exactCandidates); ok {
+		return scid, true
+	}
 
-    // prefix match (collect candidates)
-    candidates := make([]string, 0)
-    for _, app := range apps {
-        if dn, ok := app["display_name"].(string); ok && strings.HasPrefix(strings.ToLower(dn), target) {
-            if scid, ok := app["scid"].(string); ok && scid != "" {
-                candidates = append(candidates, scid)
-            }
-        } else if n, ok := app["name"].(string); ok && strings.HasPrefix(strings.ToLower(n), target) {
-            if scid, ok := app["scid"].(string); ok && scid != "" {
-                candidates = append(candidates, scid)
-            }
-        }
-    }
-    if len(candidates) == 1 {
-        return candidates[0], true
-    }
-    return "", false
+	// prefix match (collect candidates and pick newest)
+	candidates := make([]string, 0)
+	for _, app := range apps {
+		if dn, ok := app["display_name"].(string); ok && strings.HasPrefix(strings.ToLower(dn), target) {
+			if scid, ok := app["scid"].(string); ok && scid != "" {
+				candidates = append(candidates, scid)
+			}
+		} else if n, ok := app["name"].(string); ok && strings.HasPrefix(strings.ToLower(n), target) {
+			if scid, ok := app["scid"].(string); ok && scid != "" {
+				candidates = append(candidates, scid)
+			}
+		}
+	}
+	if scid, ok := g.pickNewestSCID(candidates); ok {
+		return scid, true
+	}
+	return "", false
 }
 
 // ResolveDURL resolves an exact dURL (case-insensitive) to a SCID, or returns false
 // Handles both with and without "dero://" prefix
 func (g *GnomonClient) ResolveDURL(durl string) (string, bool) {
-    if !g.IsRunning() { return "", false }
-    target := strings.ToLower(strings.TrimSpace(durl))
-    if target == "" { return "", false }
-    
-    // Normalize: remove dero:// prefix if present
-    targetNorm := target
-    if strings.HasPrefix(targetNorm, "dero://") {
-        targetNorm = targetNorm[7:]
-    }
-    
-    apps := g.GetTELAApps()
-    for _, app := range apps {
-        if du, ok := app["durl"].(string); ok {
-            // Normalize stored dURL too
-            duNorm := strings.ToLower(strings.TrimSpace(du))
-            if strings.HasPrefix(duNorm, "dero://") {
-                duNorm = duNorm[7:]
-            }
-            
-            if duNorm == targetNorm {
-                if scid, ok := app["scid"].(string); ok && scid != "" {
-                    return scid, true
-                }
-            }
-        }
-    }
-    return "", false
+	if !g.IsRunning() {
+		return "", false
+	}
+	target := strings.ToLower(strings.TrimSpace(durl))
+	if target == "" {
+		return "", false
+	}
+
+	// Normalize: remove dero:// prefix if present
+	targetNorm := target
+	targetNorm = strings.TrimPrefix(targetNorm, "dero://")
+
+	apps := g.GetTELAApps()
+	candidates := make([]string, 0)
+	for _, app := range apps {
+		if du, ok := app["durl"].(string); ok {
+			// Normalize stored dURL too
+			duNorm := strings.ToLower(strings.TrimSpace(du))
+			duNorm = strings.TrimPrefix(duNorm, "dero://")
+
+			if duNorm == targetNorm {
+				if scid, ok := app["scid"].(string); ok && scid != "" {
+					candidates = append(candidates, scid)
+				}
+			}
+		}
+	}
+	if scid, ok := g.pickNewestSCID(candidates); ok {
+		return scid, true
+	}
+	return "", false
+}
+
+// pickNewestSCID returns the candidate with the highest interaction height.
+// Ties fall back to lexicographical SCID order for deterministic results.
+func (g *GnomonClient) pickNewestSCID(candidates []string) (string, bool) {
+	if len(candidates) == 0 {
+		return "", false
+	}
+
+	best := candidates[0]
+	bestHeight := g.LatestInteractionHeight(best)
+
+	for _, scid := range candidates[1:] {
+		h := g.LatestInteractionHeight(scid)
+		if h > bestHeight || (h == bestHeight && scid > best) {
+			best = scid
+			bestHeight = h
+		}
+	}
+
+	return best, true
 }
 
 // GetRating fetches rating data for a SCID from Gnomon indexed data
@@ -765,30 +745,30 @@ func (g *GnomonClient) GetRating(scid string) (*RatingResult, error) {
 	}
 
 	result := &RatingResult{
-		SCID:    scid,
-		Ratings: make([]Rating, 0),
-		Likes:   0,
+		SCID:     scid,
+		Ratings:  make([]Rating, 0),
+		Likes:    0,
 		Dislikes: 0,
-		Average: 0.0,
-		Count:   0,
+		Average:  0.0,
+		Count:    0,
 	}
 
 	// Parse variables
 	for _, v := range vars {
-		key := fmt.Sprintf("%v", v.Key)
-		value := fmt.Sprintf("%v", v.Value)
+		var (
+			key, _, value = parseVars(v)
+			decoded       = decodeHexIfNeeded(value)
+		)
 
 		switch key {
 		case "likes":
 			// Parse likes count
-			decoded := decodeHexIfNeeded(value)
 			if val, err := parseUint64Safe(decoded); err == nil {
 				result.Likes = val
 			}
 
 		case "dislikes":
 			// Parse dislikes count
-			decoded := decodeHexIfNeeded(value)
 			if val, err := parseUint64Safe(decoded); err == nil {
 				result.Dislikes = val
 			}
@@ -797,7 +777,7 @@ func (g *GnomonClient) GetRating(scid string) (*RatingResult, error) {
 			// Check if this is a rating (key is a DERO address)
 			if strings.HasPrefix(strings.ToLower(key), "dero") {
 				// Parse rating string (format: "rating_height")
-				decoded := decodeHexIfNeeded(value)
+
 				parts := strings.Split(decoded, "_")
 				if len(parts) < 2 {
 					continue
@@ -857,8 +837,8 @@ func parseUint64Safe(s string) (uint64, error) {
 
 // SearchByKey searches all indexed SCIDs for those containing a specific key store
 // Returns SCIDs with the key's values
-func (g *GnomonClient) SearchByKey(key string) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) SearchByKey(key string) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() {
 		return results
@@ -870,51 +850,15 @@ func (g *GnomonClient) SearchByKey(key string) []map[string]interface{} {
 	for scid, owner := range scids {
 		// Check if this SCID has the key
 		valuesString, valuesUint64 := g.GetSCIDValuesByKey(scid, key)
-		
+
 		if len(valuesString) > 0 || len(valuesUint64) > 0 {
-			result := map[string]interface{}{
-				"scid":  scid,
-				"owner": owner,
-				"key":   key,
-			}
-			
-			// Get additional info (dURL, name)
-			vars := g.GetAllSCIDVariableDetails(scid)
-			for _, v := range vars {
-				k := fmt.Sprintf("%v", v.Key)
-				switch k {
-				// V2 headers (TELA standard) - check first
-				case "var_header_name":
-					if v.Value != nil {
-						result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				// V1 headers (ART-NFA standard) - fallback if V2 not set
-				case "nameHdr":
-					if v.Value != nil && result["name"] == nil {
-						result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				case "dURL":
-					if v.Value != nil {
-						result["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				case "docType":
-					if v.Value != nil {
-						result["docType"] = fmt.Sprintf("%v", v.Value)
-					}
-				case "DOC1":
-					result["type"] = "INDEX"
-				}
-			}
-			
-			// Set type if not already set
-			if _, hasType := result["type"]; !hasType {
-				if _, hasDocType := result["docType"]; hasDocType {
-					result["type"] = "DOC"
-				} else {
-					result["type"] = "SC"
-				}
-			}
-			
+			var (
+				// Get additional info (dURL, name)
+				vars            = g.GetAllSCIDVariableDetails(scid)
+				params          = map[string]any{"scid": scid, "owner": owner, "key": key}
+				result, _, _, _ = allocateData(vars, params)
+			)
+
 			// Add found values
 			if len(valuesString) > 0 {
 				result["values_string"] = valuesString
@@ -922,7 +866,7 @@ func (g *GnomonClient) SearchByKey(key string) []map[string]interface{} {
 			if len(valuesUint64) > 0 {
 				result["values_uint64"] = valuesUint64
 			}
-			
+
 			results = append(results, result)
 		}
 	}
@@ -932,8 +876,8 @@ func (g *GnomonClient) SearchByKey(key string) []map[string]interface{} {
 
 // SearchByValue searches all indexed SCIDs for those containing a specific value store
 // Returns SCIDs with the value's keys
-func (g *GnomonClient) SearchByValue(value interface{}) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) SearchByValue(value any) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() {
 		return results
@@ -945,51 +889,16 @@ func (g *GnomonClient) SearchByValue(value interface{}) []map[string]interface{}
 	for scid, owner := range scids {
 		// Check if this SCID has the value
 		keysString, keysUint64 := g.GetSCIDKeysByValue(scid, value)
-		
+
 		if len(keysString) > 0 || len(keysUint64) > 0 {
-			result := map[string]interface{}{
-				"scid":  scid,
-				"owner": owner,
-				"value": value,
-			}
-			
-			// Get additional info (dURL, name)
-			vars := g.GetAllSCIDVariableDetails(scid)
-			for _, v := range vars {
-				k := fmt.Sprintf("%v", v.Key)
-				switch k {
-				// V2 headers (TELA standard) - check first
-				case "var_header_name":
-					if v.Value != nil {
-						result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				// V1 headers (ART-NFA standard) - fallback if V2 not set
-				case "nameHdr":
-					if v.Value != nil && result["name"] == nil {
-						result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				case "dURL":
-					if v.Value != nil {
-						result["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-					}
-				case "docType":
-					if v.Value != nil {
-						result["docType"] = fmt.Sprintf("%v", v.Value)
-					}
-				case "DOC1":
-					result["type"] = "INDEX"
-				}
-			}
-			
-			// Set type if not already set
-			if _, hasType := result["type"]; !hasType {
-				if _, hasDocType := result["docType"]; hasDocType {
-					result["type"] = "DOC"
-				} else {
-					result["type"] = "SC"
-				}
-			}
-			
+			var (
+				params = map[string]any{"scid": scid, "owner": owner, "value": value}
+
+				// Get additional info (dURL, name)
+				vars = g.GetAllSCIDVariableDetails(scid)
+
+				result, _, _, _ = allocateData(vars, params)
+			)
 			// Add found keys
 			if len(keysString) > 0 {
 				result["keys_string"] = keysString
@@ -997,7 +906,7 @@ func (g *GnomonClient) SearchByValue(value interface{}) []map[string]interface{}
 			if len(keysUint64) > 0 {
 				result["keys_uint64"] = keysUint64
 			}
-			
+
 			results = append(results, result)
 		}
 	}
@@ -1008,8 +917,8 @@ func (g *GnomonClient) SearchByValue(value interface{}) []map[string]interface{}
 // SearchCodeLine returns all indexed SCIDs for code searching
 // Note: Code search requires daemon calls - this just returns SCIDs for the caller to check
 // The actual code fetching/searching is done by the App layer which has daemon access
-func (g *GnomonClient) SearchCodeLine(line string) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) SearchCodeLine(line string) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() || line == "" {
 		return results
@@ -1019,43 +928,11 @@ func (g *GnomonClient) SearchCodeLine(line string) []map[string]interface{} {
 	scids := g.GetAllOwnersAndSCIDs()
 
 	for scid, owner := range scids {
-		vars := g.GetAllSCIDVariableDetails(scid)
-		
-		result := map[string]interface{}{
-			"scid":  scid,
-			"owner": owner,
-		}
-		
-		// Get additional info from indexed variables
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-			switch key {
-			// V2 headers (TELA standard) - check first
-			case "var_header_name":
-				if v.Value != nil {
-					result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			// V1 headers (ART-NFA standard) - fallback if V2 not set
-			case "nameHdr":
-				if v.Value != nil && result["name"] == nil {
-					result["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			case "dURL":
-				if v.Value != nil {
-					result["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			case "DOC1":
-				result["type"] = "INDEX"
-			case "docType":
-				result["type"] = "DOC"
-			}
-		}
-		
-		// Default type
-		if _, hasType := result["type"]; !hasType {
-			result["type"] = "SC"
-		}
-		
+		var (
+			vars            = g.GetAllSCIDVariableDetails(scid)
+			params          = map[string]any{"scid": scid, "owner": owner}
+			result, _, _, _ = allocateData(vars, params)
+		)
 		results = append(results, result)
 	}
 
@@ -1064,6 +941,42 @@ func (g *GnomonClient) SearchCodeLine(line string) []map[string]interface{} {
 
 // CleanDB deletes the Gnomon database for a specific network
 // Must stop Gnomon first before calling this
+// queryDaemonHeight does a quick JSON-RPC call to get the daemon's chain height.
+// The endpoint is in "host:port" form (no scheme).  Returns -1 on any error.
+func queryDaemonHeight(endpoint string) int64 {
+	url := fmt.Sprintf("http://%s/json_rpc", endpoint)
+	body := []byte(`{"jsonrpc":"2.0","id":"1","method":"DERO.GetInfo"}`)
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return -1
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Result struct {
+			TopoHeight int64 `json:"topoheight"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(data, &result) != nil {
+		return -1
+	}
+	return result.Result.TopoHeight
+}
+
+// cleanDBPath removes all files in a gnomon DB directory.
+func (g *GnomonClient) cleanDBPath(dbPath string) {
+	if err := os.RemoveAll(dbPath); err != nil {
+		log.Printf("[Gnomon] Failed to clean DB at %s: %v", dbPath, err)
+	}
+	os.MkdirAll(dbPath, 0755)
+}
+
+// log prints a message to the standard logger with a [Gnomon] prefix.
+func (g *GnomonClient) log(msg string) {
+	log.Println(msg)
+}
+
 func (g *GnomonClient) CleanDB(network string) error {
 	if g.IsRunning() {
 		return fmt.Errorf("gnomon must be stopped before cleaning database")
@@ -1101,15 +1014,10 @@ func (g *GnomonClient) CleanDB(network string) error {
 	return nil
 }
 
-// GetDBPath returns the current database path
-func (g *GnomonClient) GetDBPath() string {
-	return g.dbPath
-}
-
 // GetMyDOCs returns all DOCs owned by the specified wallet address
 // If docType is non-empty, filters by that specific document type
-func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() || walletAddress == "" {
 		return results
@@ -1123,64 +1031,13 @@ func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[str
 		if !strings.EqualFold(owner, walletAddress) {
 			continue
 		}
+		var (
+			vars = g.GetAllSCIDVariableDetails(scid)
 
-		vars := g.GetAllSCIDVariableDetails(scid)
-		
-		// Check if this is a DOC (has docType variable)
-		isDOC := false
-		var scidDocType string
-		doc := map[string]interface{}{
-			"scid":  scid,
-			"owner": owner,
-			"type":  "DOC",
-		}
-
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-
-			switch key {
-			case "docType":
-				isDOC = true
-				if v.Value != nil {
-					scidDocType = fmt.Sprintf("%v", v.Value)
-					doc["docType"] = scidDocType
-				}
-		// V2 headers (TELA standard) - check first
-		case "var_header_name":
-				if v.Value != nil {
-					doc["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_description":
-				if v.Value != nil {
-					doc["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_icon":
-			if v.Value != nil {
-				doc["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		// V1 headers (ART-NFA standard) - fallback if V2 not set
-		case "nameHdr":
-			if v.Value != nil && doc["name"] == nil {
-				doc["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "descrHdr":
-			if v.Value != nil && doc["description"] == nil {
-				doc["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "iconURLHdr":
-			if v.Value != nil && doc["icon"] == nil {
-				doc["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-			case "dURL":
-				if v.Value != nil {
-					doc["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			case "subDir":
-				if v.Value != nil {
-					doc["subDir"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			}
-		}
+			// Check if this is a DOC (has docType variable)
+			params           = map[string]any{"scid": scid, "owner": owner, "type": "DOC"}
+			doc, _, isDOC, _ = allocateData(vars, params)
+		)
 
 		// Skip if not a DOC
 		if !isDOC {
@@ -1188,21 +1045,12 @@ func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[str
 		}
 
 		// Filter by docType if specified
-		if docType != "" && !strings.EqualFold(scidDocType, docType) {
+		scidDocType := doc["docType"].(string)
+		if docType != "" && scidDocType != docType {
 			continue
 		}
 
 		// Generate display name
-		displayName := ""
-		if durl, ok := doc["durl"].(string); ok && durl != "" {
-			displayName = durl
-		} else if name, ok := doc["name"].(string); ok && name != "" {
-			displayName = name
-		} else {
-			displayName = "DOC"
-		}
-		doc["display_name"] = displayName
-
 		results = append(results, doc)
 	}
 
@@ -1210,8 +1058,8 @@ func (g *GnomonClient) GetMyDOCs(walletAddress string, docType string) []map[str
 }
 
 // GetMyINDEXes returns all INDEXes owned by the specified wallet address
-func (g *GnomonClient) GetMyINDEXes(walletAddress string) []map[string]interface{} {
-	results := make([]map[string]interface{}, 0)
+func (g *GnomonClient) GetMyINDEXes(walletAddress string) []map[string]any {
+	results := make([]map[string]any, 0)
 
 	if !g.IsRunning() || walletAddress == "" {
 		return results
@@ -1226,82 +1074,17 @@ func (g *GnomonClient) GetMyINDEXes(walletAddress string) []map[string]interface
 			continue
 		}
 
-		vars := g.GetAllSCIDVariableDetails(scid)
-
-		// Check if this is an INDEX (has DOC1 or more DOC references)
-		isINDEX := false
-		docCount := 0
-		docSCIDs := make([]string, 0)
-		index := map[string]interface{}{
-			"scid":  scid,
-			"owner": owner,
-			"type":  "INDEX",
-		}
-
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-
-			switch key {
-		// V2 headers (TELA standard) - check first
-		case "var_header_name":
-				if v.Value != nil {
-					index["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_description":
-				if v.Value != nil {
-					index["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "var_header_icon":
-				if v.Value != nil {
-				index["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		// V1 headers (ART-NFA standard) - fallback if V2 not set
-		case "nameHdr":
-			if v.Value != nil && index["name"] == nil {
-				index["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		case "descrHdr":
-			if v.Value != nil && index["description"] == nil {
-				index["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-			case "iconURLHdr":
-			if v.Value != nil && index["icon"] == nil {
-					index["icon"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-		case "dURL":
-			if v.Value != nil {
-				index["durl"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-			default:
-				// Check for DOC references (DOC1, DOC2, ... DOC20)
-				if strings.HasPrefix(key, "DOC") && len(key) <= 5 {
-					isINDEX = true
-					docCount++
-					if v.Value != nil {
-						docSCIDs = append(docSCIDs, fmt.Sprintf("%v", v.Value))
-					}
-				}
-			}
-		}
+		var (
+			vars = g.GetAllSCIDVariableDetails(scid)
+			// Check if this is an INDEX (has DOC1 or more DOC references)
+			params               = map[string]any{"scid": scid, "owner": owner, "type": "INDEX"}
+			index, isINDEX, _, _ = allocateData(vars, params)
+		)
 
 		// Skip if not an INDEX
 		if !isINDEX {
 			continue
 		}
-
-		index["doc_count"] = docCount
-		index["doc_scids"] = docSCIDs
-
-		// Generate display name
-		displayName := ""
-		if durl, ok := index["durl"].(string); ok && durl != "" {
-			displayName = durl
-		} else if name, ok := index["name"].(string); ok && name != "" {
-			displayName = name
-		} else {
-			displayName = "INDEX"
-		}
-		index["display_name"] = displayName
 
 		results = append(results, index)
 	}
@@ -1322,9 +1105,12 @@ func (g *GnomonClient) GetAllDOCTypes() []string {
 	for scid := range scids {
 		vars := g.GetAllSCIDVariableDetails(scid)
 		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-			if key == "docType" && v.Value != nil {
-				docType := fmt.Sprintf("%v", v.Value)
+			var (
+				key, present, value = parseVars(v)
+				isDoc               = key == "docType"
+			)
+			if isDoc && present {
+				docType := value
 				if docType != "" {
 					types[docType] = true
 				}
@@ -1341,27 +1127,30 @@ func (g *GnomonClient) GetAllDOCTypes() []string {
 
 // cleanupAppName cleans up app names for better display
 func cleanupAppName(name string) string {
+	has := strings.Contains
+
 	original := name
-	
+
 	// Remove common URL prefixes
-	name = strings.TrimPrefix(name, "https://")
-	name = strings.TrimPrefix(name, "http://")
-	name = strings.TrimPrefix(name, "www.")
-	
+	trim := strings.TrimPrefix
+	name = trim(name, "https://")
+	name = trim(name, "http://")
+	name = trim(name, "www.")
+
 	// If it looks like a URL or long path, extract domain name only
-	if strings.Contains(name, "/") || strings.Contains(name, ".") {
+	if has(name, "/") || has(name, ".") {
 		parts := strings.Split(name, "/")
-		
+
 		// Get domain (first part before /)
 		domain := parts[0]
-		
+
 		// Extract main domain name (remove subdomains and TLD for cleaner look)
 		domainParts := strings.Split(domain, ".")
 		if len(domainParts) >= 2 {
 			// For things like "gateway.pinata.cloud" -> "Pinata"
 			// For "raw.githubusercontent.com" -> "Github"
 			// For "avatars.githubusercontent.com" -> "Github"
-			
+
 			mainPart := ""
 			if len(domainParts) >= 3 {
 				// Use second-to-last part (before TLD)
@@ -1370,35 +1159,36 @@ func cleanupAppName(name string) string {
 				// Use first part
 				mainPart = domainParts[0]
 			}
-			
+
 			// Special handling for known services
-			if strings.Contains(domain, "github") {
+			switch {
+			case has(domain, "github"):
 				mainPart = "GitHub"
-			} else if strings.Contains(domain, "pinata") {
+			case has(domain, "pinata"):
 				mainPart = "Pinata"
-			} else if strings.Contains(domain, "dero") {
+			case has(domain, "dero"):
 				mainPart = "DERO"
-			} else if strings.Contains(domain, "loc.gov") {
+			case has(domain, "loc.gov"):
 				mainPart = "Library of Congress"
-			} else {
+			default:
 				// Capitalize first letter
 				if len(mainPart) > 0 {
 					mainPart = strings.ToUpper(string(mainPart[0])) + mainPart[1:]
 				}
 			}
-			
+
 			return mainPart
 		}
 	}
-	
+
 	// If not a URL, just clean it up
 	name = strings.TrimSpace(name)
-	
+
 	// Limit length to 40 characters for uniformity
 	if len(name) > 40 {
 		return name[:37] + "..."
 	}
-	
+
 	// If we couldn't clean it up, return first 40 chars of original
 	if name == "" && len(original) > 0 {
 		if len(original) > 40 {
@@ -1406,7 +1196,119 @@ func cleanupAppName(name string) string {
 		}
 		return original
 	}
-	
+
 	return name
 }
 
+func parseVars(v *structures.SCIDVariable) (key string, present bool, val string) {
+	return fmt.Sprintf("%v", v.Key), v.Value != nil, fmt.Sprintf("%v", v.Value)
+}
+
+func allocateData(
+	vars []*structures.SCIDVariable,
+	params map[string]any,
+) (
+	data map[string]any, isIndex, isDOC, hasLibTag bool,
+) {
+
+	data = params
+
+	var (
+		docSCIDs = make([]string, 0)
+		docCount = 0
+	)
+
+	for _, v := range vars {
+		var (
+			key, present, value = parseVars(v)
+			decodedValue        = decodeHexString(value)
+		)
+
+		switch {
+		// V2 headers (TELA standard) - check first
+		case key == "var_header_name":
+			if present {
+				data["name"] = decodedValue
+			}
+		case key == "var_header_description":
+			if present {
+				data["description"] = decodedValue
+			}
+		case key == "var_header_icon":
+			if present {
+				data["icon"] = decodedValue
+			}
+		// V1 headers (ART-NFA standard) - fallback if V2 not set
+		case key == "nameHdr":
+			if present && data["name"] == nil {
+				data["name"] = decodedValue
+			}
+		case key == "descrHdr":
+			if present && data["description"] == nil {
+				data["description"] = decodedValue
+			}
+		case key == "iconURLHdr":
+			if present && data["icon"] == nil {
+				data["icon"] = decodedValue
+			}
+		case key == "dURL":
+			if present {
+				du := decodedValue
+				data["url"] = du
+				data["durl"] = du
+				// Check for .lib suffix
+				if strings.HasSuffix(du, ".lib") {
+					hasLibTag = true
+				}
+			}
+		case key == "subDir":
+			if present {
+				data["subDir"] = decodedValue
+			}
+		case key == "docType":
+			// This is a DOC (single file library)
+			data["type"] = "DOC"
+			isDOC = true
+			if present {
+				data["docType"] = value
+			}
+		case strings.HasPrefix(key, "DOC") && len(key) <= 5:
+			// Mark as TELA INDEX if it has DOC references
+			data["is_index"] = true
+			data["type"] = "INDEX"
+			isIndex = true
+			docCount++
+			if docCount > 0 {
+				docSCIDs = append(docSCIDs, value)
+				data["doc_count"] = docCount
+				data["doc_scids"] = docSCIDs
+			}
+		}
+	}
+
+	// Set type if not already set
+	if _, hasType := data["type"]; !hasType {
+		if _, hasDocType := data["docType"]; hasDocType {
+			data["type"] = "DOC"
+		} else {
+			data["type"] = "SC"
+		}
+	}
+
+	displayName := ""
+	if durl, ok := data["durl"].(string); ok && durl != "" {
+		displayName = durl
+	} else if name, ok := data["name"].(string); ok && name != "" {
+		displayName = name
+	} else if isIndex {
+		displayName = "INDEX"
+	} else if isDOC {
+		displayName = "DOC"
+	} else if hasLibTag {
+		displayName = "TELA Library"
+	}
+
+	data["display_name"] = displayName
+
+	return data, isIndex, isDOC, hasLibTag
+}

@@ -102,15 +102,17 @@
       const deroValueAtomic = deroAmount ? Math.floor(parseFloat(deroAmount) * 100000) : 0;
       const assetValueAtomic = assetAmount ? parseInt(assetAmount) : 0;
 
-      const res = await InvokeSCFunction(
+      // Backend expects a single JSON string with InvokeSCFunctionParams shape
+      const payload = {
         scid,
-        selectedFunction.name,
-        JSON.stringify(params),
-        deroValueAtomic,
-        assetScid || '',
-        assetValueAtomic,
-        anonymous
-      );
+        function: selectedFunction.name,
+        params,
+        deroAmount: deroValueAtomic,
+        assetScid: assetScid || '',
+        assetAmount: assetValueAtomic,
+        anonymous,
+      };
+      const res = await InvokeSCFunction(JSON.stringify(payload));
 
       if (res.success) {
         result = res;

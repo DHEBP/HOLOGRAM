@@ -13,7 +13,7 @@ import (
 type XSWDPermission string
 
 const (
-	PermissionReadPublicData  XSWDPermission = "read_public_data"  // Read-only daemon data (GetInfo, GetBlock, etc.)
+	PermissionReadPublicData  XSWDPermission = "read_public_data" // Read-only daemon data (GetInfo, GetBlock, etc.)
 	PermissionViewAddress     XSWDPermission = "view_address"
 	PermissionViewBalance     XSWDPermission = "view_balance"
 	PermissionSignTransaction XSWDPermission = "sign_transaction"
@@ -24,16 +24,6 @@ const (
 func AllPermissions() []XSWDPermission {
 	return []XSWDPermission{
 		PermissionReadPublicData,
-		PermissionViewAddress,
-		PermissionViewBalance,
-		PermissionSignTransaction,
-		PermissionSCInvoke,
-	}
-}
-
-// WalletPermissions returns permissions that require wallet access
-func WalletPermissions() []XSWDPermission {
-	return []XSWDPermission{
 		PermissionViewAddress,
 		PermissionViewBalance,
 		PermissionSignTransaction,
@@ -99,12 +89,12 @@ func GetPermissionInfo(p XSWDPermission) PermissionInfo {
 
 // ConnectedApp represents a dApp that has connected via XSWD
 type ConnectedApp struct {
-	Origin       string                      `json:"origin"`
-	Name         string                      `json:"name"`
-	Description  string                      `json:"description,omitempty"`
-	Permissions  map[XSWDPermission]bool     `json:"permissions"`
-	GrantedAt    int64                       `json:"grantedAt"`
-	LastAccessed int64                       `json:"lastAccessed"`
+	Origin       string                  `json:"origin"`
+	Name         string                  `json:"name"`
+	Description  string                  `json:"description,omitempty"`
+	Permissions  map[XSWDPermission]bool `json:"permissions"`
+	GrantedAt    int64                   `json:"grantedAt"`
+	LastAccessed int64                   `json:"lastAccessed"`
 }
 
 // PermissionManager handles XSWD permission storage and checking
@@ -123,15 +113,15 @@ func InitPermissionManager(cache *GravitonCache) {
 		apps:          make(map[string]*ConnectedApp),
 		activeClients: make(map[string]bool),
 	}
-	
+
 	// Use the same Graviton store as the cache
 	if cache != nil {
 		pm.store = cache.store
 	}
-	
+
 	// Load persisted permissions
 	pm.loadFromStorage()
-	
+
 	permissionManager = pm
 }
 
@@ -145,24 +135,24 @@ func (pm *PermissionManager) loadFromStorage() {
 	if pm.store == nil {
 		return
 	}
-	
+
 	ss, err := pm.store.LoadSnapshot(0)
 	if err != nil {
 		return
 	}
-	
+
 	tree, _ := ss.GetTree("xswd_permissions")
 	if tree == nil {
 		return
 	}
-	
+
 	// Iterate all keys to load apps
 	cursor := tree.Cursor()
 	for k, v, err := cursor.First(); err == nil; k, v, err = cursor.Next() {
 		if k == nil {
 			break
 		}
-		
+
 		var app ConnectedApp
 		if err := json.Unmarshal(v, &app); err == nil {
 			pm.apps[string(k)] = &app
@@ -175,23 +165,23 @@ func (pm *PermissionManager) saveToStorage(app *ConnectedApp) error {
 	if pm.store == nil {
 		return fmt.Errorf("storage not initialized")
 	}
-	
+
 	ss, err := pm.store.LoadSnapshot(0)
 	if err != nil {
 		return err
 	}
-	
+
 	tree, _ := ss.GetTree("xswd_permissions")
-	
+
 	data, err := json.Marshal(app)
 	if err != nil {
 		return err
 	}
-	
+
 	if err := tree.Put([]byte(app.Origin), data); err != nil {
 		return err
 	}
-	
+
 	_, err = graviton.Commit(tree)
 	return err
 }
@@ -201,18 +191,18 @@ func (pm *PermissionManager) deleteFromStorage(origin string) error {
 	if pm.store == nil {
 		return fmt.Errorf("storage not initialized")
 	}
-	
+
 	ss, err := pm.store.LoadSnapshot(0)
 	if err != nil {
 		return err
 	}
-	
+
 	tree, _ := ss.GetTree("xswd_permissions")
-	
+
 	if err := tree.Delete([]byte(origin)); err != nil {
 		return err
 	}
-	
+
 	_, err = graviton.Commit(tree)
 	return err
 }
@@ -221,9 +211,9 @@ func (pm *PermissionManager) deleteFromStorage(origin string) error {
 func (pm *PermissionManager) GrantPermissions(origin, name, description string, permissions []XSWDPermission) error {
 	pm.Lock()
 	defer pm.Unlock()
-	
+
 	now := time.Now().Unix()
-	
+
 	app, exists := pm.apps[origin]
 	if !exists {
 		app = &ConnectedApp{
@@ -243,13 +233,13 @@ func (pm *PermissionManager) GrantPermissions(origin, name, description string, 
 			app.Description = description
 		}
 	}
-	
+
 	// Grant the specified permissions
 	for _, p := range permissions {
 		app.Permissions[p] = true
 	}
 	app.LastAccessed = now
-	
+
 	return pm.saveToStorage(app)
 }
 
@@ -257,12 +247,12 @@ func (pm *PermissionManager) GrantPermissions(origin, name, description string, 
 func (pm *PermissionManager) RevokePermission(origin string, permission XSWDPermission) error {
 	pm.Lock()
 	defer pm.Unlock()
-	
+
 	app, exists := pm.apps[origin]
 	if !exists {
 		return nil
 	}
-	
+
 	delete(app.Permissions, permission)
 	return pm.saveToStorage(app)
 }
@@ -271,11 +261,11 @@ func (pm *PermissionManager) RevokePermission(origin string, permission XSWDPerm
 func (pm *PermissionManager) RevokeAllPermissions(origin string) error {
 	pm.Lock()
 	defer pm.Unlock()
-	
+
 	if _, exists := pm.apps[origin]; !exists {
 		return nil
 	}
-	
+
 	delete(pm.apps, origin)
 	delete(pm.activeClients, origin)
 	return pm.deleteFromStorage(origin)
@@ -285,15 +275,15 @@ func (pm *PermissionManager) RevokeAllPermissions(origin string) error {
 func (pm *PermissionManager) HasPermission(origin string, permission XSWDPermission) bool {
 	pm.RLock()
 	defer pm.RUnlock()
-	
+
 	app, exists := pm.apps[origin]
 	if !exists {
 		return false
 	}
-	
+
 	// Update last accessed time (best effort, don't lock for write)
 	app.LastAccessed = time.Now().Unix()
-	
+
 	return app.Permissions[permission]
 }
 
@@ -301,7 +291,7 @@ func (pm *PermissionManager) HasPermission(origin string, permission XSWDPermiss
 func (pm *PermissionManager) GetApp(origin string) *ConnectedApp {
 	pm.RLock()
 	defer pm.RUnlock()
-	
+
 	if app, exists := pm.apps[origin]; exists {
 		// Return a copy to avoid race conditions
 		appCopy := *app
@@ -319,7 +309,7 @@ func (pm *PermissionManager) GetApp(origin string) *ConnectedApp {
 func (pm *PermissionManager) GetAllApps() []*ConnectedApp {
 	pm.RLock()
 	defer pm.RUnlock()
-	
+
 	apps := make([]*ConnectedApp, 0, len(pm.apps))
 	for _, app := range pm.apps {
 		// Return copies
@@ -338,7 +328,7 @@ func (pm *PermissionManager) GetAllApps() []*ConnectedApp {
 func (pm *PermissionManager) SetActiveClient(origin string, active bool) {
 	pm.Lock()
 	defer pm.Unlock()
-	
+
 	if active {
 		pm.activeClients[origin] = true
 	} else {
@@ -350,7 +340,7 @@ func (pm *PermissionManager) SetActiveClient(origin string, active bool) {
 func (pm *PermissionManager) IsClientActive(origin string) bool {
 	pm.RLock()
 	defer pm.RUnlock()
-	
+
 	return pm.activeClients[origin]
 }
 
@@ -358,7 +348,7 @@ func (pm *PermissionManager) IsClientActive(origin string) bool {
 func (pm *PermissionManager) GetActiveClients() []string {
 	pm.RLock()
 	defer pm.RUnlock()
-	
+
 	clients := make([]string, 0, len(pm.activeClients))
 	for origin := range pm.activeClients {
 		clients = append(clients, origin)
@@ -369,14 +359,21 @@ func (pm *PermissionManager) GetActiveClients() []string {
 // GetRequiredPermission returns the permission required for a given XSWD method
 func GetRequiredPermission(method string) XSWDPermission {
 	switch method {
-	case "GetAddress", "DERO.GetAddress":
+	case "GetAddress", "DERO.GetAddress",
+		"GetPublicKey",
+		"MakeIntegratedAddress", "SplitIntegratedAddress",
+		"GetDaemon", "DERO.GetDaemon":
 		return PermissionViewAddress
-	case "GetBalance", "DERO.GetBalance":
+	case "GetBalance", "DERO.GetBalance",
+		"GetHeight", "DERO.GetHeight",
+		"GetTransfers", "GetTransferbyTXID":
 		return PermissionViewBalance
 	case "transfer", "Transfer", "DERO.Transfer":
 		return PermissionSignTransaction
 	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
 		return PermissionSCInvoke
+	case "QueryKey", "SignData", "DecryptPayload":
+		return PermissionSignTransaction
 	// Read-only daemon methods - no wallet needed
 	case "DERO.GetInfo", "GetInfo",
 		"DERO.GetBlock", "GetBlock",
@@ -392,12 +389,6 @@ func GetRequiredPermission(method string) XSWDPermission {
 	default:
 		return ""
 	}
-}
-
-// IsReadOnlyMethod returns true if the method only reads public blockchain data (no wallet needed)
-func IsReadOnlyMethod(method string) bool {
-	perm := GetRequiredPermission(method)
-	return perm == PermissionReadPublicData || perm == ""
 }
 
 // RequiresWallet returns true if the permission requires wallet access
@@ -418,18 +409,6 @@ func DefaultRequestedPermissions() []XSWDPermission {
 	}
 }
 
-// FullAccessPermissions returns all permissions including wallet access
-// Used when an app explicitly requests full access
-func FullAccessPermissions() []XSWDPermission {
-	return []XSWDPermission{
-		PermissionReadPublicData,
-		PermissionViewAddress,
-		PermissionViewBalance,
-		PermissionSignTransaction,
-		PermissionSCInvoke,
-	}
-}
-
 // HasAnyWalletPermission returns true if the permission list includes any wallet-related permissions
 func HasAnyWalletPermission(perms []XSWDPermission) bool {
 	for _, p := range perms {
@@ -439,4 +418,3 @@ func HasAnyWalletPermission(perms []XSWDPermission) bool {
 	}
 	return false
 }
-

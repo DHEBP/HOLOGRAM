@@ -1,6 +1,9 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
-  import { GetNameSuggestions, ResolveDeroName } from '../../../wailsjs/go/main/App.js';
+  import { get } from 'svelte/store';
+  import { appState } from '../stores/appState.js';
+  import { recentSearchesKey, migrateLegacyExplorerSearchStorage } from '../recentSearchStorage.js';
+  import { GetNameSuggestions, ResolveDeroName, SearchApps, SearchByKey, SearchByValue, SearchCodeLine, FilterSearchResults, GetAllClasses, GetSCIDsByClass, GetSCIDsByTag } from '../../../wailsjs/go/main/App.js';
   import { Blocks, Zap, FileText, Globe, User, Search, Link, Package, Key, Database, Code } from 'lucide-svelte';
   
   export let placeholder = 'Search blocks, transactions, addresses, smart contracts...';
@@ -19,25 +22,37 @@
   let selectedIndex = -1;
   let showSuggestions = false;
   let debounceTimer;
+  let mountedAt = 0;
+  let initialFocusSkipped = false;
   
   // Input type detection
   $: detectedType = detectInputType(value);
   
+  function omniNetwork() {
+    return get(appState)?.network || 'mainnet';
+  }
+  
   // Load recent searches from localStorage
   onMount(() => {
+    mountedAt = Date.now();
     loadRecentSearches();
   });
   
   function loadRecentSearches() {
+    migrateLegacyExplorerSearchStorage();
     try {
-      const stored = localStorage.getItem('recentSearches');
+      const stored = localStorage.getItem(recentSearchesKey(omniNetwork()));
       if (stored) {
         recentSearches = JSON.parse(stored).slice(0, 8);
+      } else {
+        recentSearches = [];
       }
     } catch (e) {
       recentSearches = [];
     }
   }
+  
+  $: $appState.network, loadRecentSearches();
   
   // Fetch suggestions when input changes
   async function fetchSuggestions(query) {
@@ -81,9 +96,139 @@
       }
     }
     
-    // For dURL-like input or partial text, fetch from backend
-    if (trimmed.toLowerCase().startsWith('dero://') || 
+    // Specialized search: key:, value:, code: prefixes
+    const lowerTrimmed = trimmed.toLowerCase();
+    if (lowerTrimmed.startsWith('key:') && trimmed.length > 4) {
+      const keyQuery = trimmed.slice(4).trim();
+      if (keyQuery) {
+        try {
+          const result = await SearchByKey(keyQuery);
+          if (result.success && result.results) {
+            const filtered = await FilterSearchResults(result.results);
+            const keySuggestions = (filtered || result.results).slice(0, 6).map(r => ({
+              type: 'key-result',
+              icon: 'scid',
+              label: r.name || r.scid?.slice(0, 16) + '...',
+              value: r.scid || r,
+              hint: `Key: ${keyQuery}`,
+              scid: r.scid || r,
+              resultData: r
+            }));
+            suggestions = [...suggestions, ...keySuggestions];
+          }
+        } catch (e) { /* continue */ }
+      }
+    } else if (lowerTrimmed.startsWith('value:') && trimmed.length > 6) {
+      const valQuery = trimmed.slice(6).trim();
+      if (valQuery) {
+        try {
+          const result = await SearchByValue(valQuery);
+          if (result.success && result.results) {
+            const filtered = await FilterSearchResults(result.results);
+            const valSuggestions = (filtered || result.results).slice(0, 6).map(r => ({
+              type: 'value-result',
+              icon: 'scid',
+              label: r.name || r.scid?.slice(0, 16) + '...',
+              value: r.scid || r,
+              hint: `Value: ${valQuery}`,
+              scid: r.scid || r,
+              resultData: r
+            }));
+            suggestions = [...suggestions, ...valSuggestions];
+          }
+        } catch (e) { /* continue */ }
+      }
+    } else if ((lowerTrimmed.startsWith('code:') || lowerTrimmed.startsWith('line:')) && trimmed.length > 5) {
+      const codeQuery = trimmed.slice(trimmed.indexOf(':') + 1).trim();
+      if (codeQuery) {
+        try {
+          const result = await SearchCodeLine(codeQuery);
+          if (result.success && result.results) {
+            const filtered = await FilterSearchResults(result.results);
+            const codeSuggestions = (filtered || result.results).slice(0, 6).map(r => ({
+              type: 'code-result',
+              icon: 'scid',
+              label: r.name || r.scid?.slice(0, 16) + '...',
+              value: r.scid || r,
+              hint: `Code match`,
+              scid: r.scid || r,
+              resultData: r
+            }));
+            suggestions = [...suggestions, ...codeSuggestions];
+          }
+        } catch (e) { /* continue */ }
+      }
+    } else if (lowerTrimmed.startsWith('class:')) {
+      const classQuery = trimmed.slice(6).trim();
+      if (!classQuery) {
+        // No class specified - list all available classes
+        try {
+          const result = await GetAllClasses();
+          if (result.success && result.classes) {
+            const classSuggestions = result.classes.slice(0, 8).map(c => ({
+              type: 'class-result',
+              icon: 'scid',
+              label: c,
+              value: `class:${c}`,
+              hint: 'Class'
+            }));
+            suggestions = [...suggestions, ...classSuggestions];
+          }
+        } catch (e) { /* continue */ }
+      } else {
+        // Class specified - get SCIDs in that class
+        try {
+          const result = await GetSCIDsByClass(classQuery);
+          if (result.success && result.scids) {
+            const classSuggestions = result.scids.slice(0, 6).map(scid => ({
+              type: 'class-result',
+              icon: 'scid',
+              label: typeof scid === 'string' ? scid.slice(0, 16) + '...' : (scid.name || scid.scid?.slice(0, 16) + '...'),
+              value: typeof scid === 'string' ? scid : (scid.scid || scid),
+              hint: `Class: ${classQuery}`,
+              scid: typeof scid === 'string' ? scid : scid.scid
+            }));
+            suggestions = [...suggestions, ...classSuggestions];
+          }
+        } catch (e) { /* continue */ }
+      }
+    } else if (lowerTrimmed.startsWith('tag:')) {
+      const tagQuery = trimmed.slice(4).trim();
+      if (tagQuery) {
+        try {
+          const result = await GetSCIDsByTag(tagQuery);
+          if (result.success && result.scids) {
+            const tagSuggestions = result.scids.slice(0, 6).map(scid => ({
+              type: 'tag-result',
+              icon: 'scid',
+              label: typeof scid === 'string' ? scid.slice(0, 16) + '...' : (scid.name || scid.scid?.slice(0, 16) + '...'),
+              value: typeof scid === 'string' ? scid : (scid.scid || scid),
+              hint: `Tag: ${tagQuery}`,
+              scid: typeof scid === 'string' ? scid : scid.scid
+            }));
+            suggestions = [...suggestions, ...tagSuggestions];
+          }
+        } catch (e) { /* continue */ }
+      }
+    } else if (trimmed.toLowerCase().startsWith('dero://') || 
         (!trimmed.match(/^[a-fA-F0-9]+$/) && !trimmed.match(/^\d+$/) && !trimmed.toLowerCase().startsWith('dero1'))) {
+      // For dURL-like input or partial text, fetch app suggestions from backend
+      try {
+        // Try weighted full-text search first
+        const searchResult = await SearchApps(trimmed);
+        if (searchResult.success && searchResult.results && searchResult.results.length > 0) {
+          const appSearchSuggestions = searchResult.results.slice(0, 4).map(r => ({
+            type: 'app',
+            icon: 'app',
+            label: r.name || r.durl || r.scid?.slice(0, 16) + '...',
+            value: r.durl ? (r.durl.startsWith('dero://') ? r.durl : `dero://${r.durl}`) : r.scid,
+            hint: r.description?.slice(0, 30) || 'App',
+            scid: r.scid
+          }));
+          suggestions = [...suggestions, ...appSearchSuggestions];
+        }
+      } catch (e) { /* continue */ }
+
       try {
         const result = await GetNameSuggestions(trimmed);
         if (result.success && result.suggestions) {
@@ -95,11 +240,13 @@
             hint: s.avg ? `${s.avg}` : 'App',
             scid: s.scid
           }));
-          // Prepend name resolution if found
-          suggestions = [...suggestions, ...appSuggestions];
+          // Deduplicate by scid
+          const existingScids = new Set(suggestions.filter(s => s.scid).map(s => s.scid));
+          const newSuggestions = appSuggestions.filter(s => !existingScids.has(s.scid));
+          suggestions = [...suggestions, ...newSuggestions];
         }
       } catch (e) {
-        // Keep any name resolution suggestions
+        // Keep any existing suggestions
       }
     }
     
@@ -204,6 +351,20 @@
       bg: 'bg-orange-500/20',
       border: 'border-orange-500/40'
     },
+    class: { 
+      label: 'Class Browse', 
+      iconType: 'key',
+      color: 'text-indigo-400',
+      bg: 'bg-indigo-500/20',
+      border: 'border-indigo-500/40'
+    },
+    tag: { 
+      label: 'Tag Browse', 
+      iconType: 'value',
+      color: 'text-teal-400',
+      bg: 'bg-teal-500/20',
+      border: 'border-teal-500/40'
+    },
     unknown: { 
       label: 'Unknown', 
       iconType: 'search',
@@ -222,7 +383,7 @@
     
     const lowerTrimmed = trimmed.toLowerCase();
     
-    // Special search prefixes (key:, value:, code:)
+    // Special search prefixes (key:, value:, code:, class:, tag:)
     if (lowerTrimmed.startsWith('key:')) {
       return 'key';
     }
@@ -231,6 +392,12 @@
     }
     if (lowerTrimmed.startsWith('code:') || lowerTrimmed.startsWith('line:')) {
       return 'code';
+    }
+    if (lowerTrimmed.startsWith('class:')) {
+      return 'class';
+    }
+    if (lowerTrimmed.startsWith('tag:')) {
+      return 'tag';
     }
     
     // IMPORTANT: Check 64-char hex FIRST - before block height!
@@ -278,13 +445,80 @@
   /**
    * Handle search submission
    */
-  function handleSearch() {
+  async function handleSearch() {
     if (!value.trim() || loading) return;
     
     const type = detectedType;
     const query = value.trim();
     
-    dispatch('search', { query, type });
+    // For specialized search types, fetch results and include them in the event
+    let results = null;
+    const lowerQuery = query.toLowerCase();
+    
+    if (type === 'key' && lowerQuery.startsWith('key:')) {
+      const keyQuery = query.slice(4).trim();
+      if (keyQuery) {
+        try {
+          loading = true;
+          const res = await SearchByKey(keyQuery);
+          if (res.success) results = res.results;
+        } catch (e) { /* continue */ }
+        finally { loading = false; }
+      }
+    } else if (type === 'value' && lowerQuery.startsWith('value:')) {
+      const valQuery = query.slice(6).trim();
+      if (valQuery) {
+        try {
+          loading = true;
+          const res = await SearchByValue(valQuery);
+          if (res.success) results = res.results;
+        } catch (e) { /* continue */ }
+        finally { loading = false; }
+      }
+    } else if (type === 'code' && (lowerQuery.startsWith('code:') || lowerQuery.startsWith('line:'))) {
+      const codeQuery = query.slice(query.indexOf(':') + 1).trim();
+      if (codeQuery) {
+        try {
+          loading = true;
+          const res = await SearchCodeLine(codeQuery);
+          if (res.success) results = res.results;
+        } catch (e) { /* continue */ }
+        finally { loading = false; }
+      }
+    } else if (type === 'class' && lowerQuery.startsWith('class:')) {
+      const classQuery = query.slice(6).trim();
+      try {
+        loading = true;
+        if (!classQuery) {
+          const res = await GetAllClasses();
+          if (res.success) results = res.classes;
+        } else {
+          const res = await GetSCIDsByClass(classQuery);
+          if (res.success) results = res.scids;
+        }
+      } catch (e) { /* continue */ }
+      finally { loading = false; }
+    } else if (type === 'tag' && lowerQuery.startsWith('tag:')) {
+      const tagQuery = query.slice(4).trim();
+      if (tagQuery) {
+        try {
+          loading = true;
+          const res = await GetSCIDsByTag(tagQuery);
+          if (res.success) results = res.scids;
+        } catch (e) { /* continue */ }
+        finally { loading = false; }
+      }
+    }
+    
+    // Apply content filter if we have results
+    if (results && results.length > 0) {
+      try {
+        const filtered = await FilterSearchResults(results);
+        if (filtered) results = filtered;
+      } catch (e) { /* use unfiltered */ }
+    }
+    
+    dispatch('search', { query, type, results });
   }
   
   /**
@@ -354,8 +588,10 @@
     showSuggestions = false;
     selectedIndex = -1;
     
-    // If it's a direct app/dURL, trigger search immediately
-    if (suggestion.type === 'app' || suggestion.searchType === 'durl' || suggestion.searchType === 'scid') {
+    // If it's a direct app/dURL or search result, trigger search immediately
+    if (suggestion.type === 'app' || suggestion.searchType === 'durl' || suggestion.searchType === 'scid' ||
+        suggestion.type === 'key-result' || suggestion.type === 'value-result' || suggestion.type === 'code-result' ||
+        suggestion.type === 'class-result' || suggestion.type === 'tag-result') {
       handleSearch();
     } else {
       // Focus input for further editing or Enter to search
@@ -368,9 +604,28 @@
    */
   function handleFocus() {
     focused = true;
+    
+    // If this component was set to autofocus, skip showing the dropdown on the VERY FIRST focus event
+    if (autofocus && !initialFocusSkipped) {
+      initialFocusSkipped = true;
+      return;
+    }
+    
+    // Skip auto-dropdown on initial mount (for programmatic focus)
+    if (Date.now() - mountedAt < 500) return;
+    
     // Show recent searches when focused and empty
     if (!value.trim()) {
       fetchSuggestions('');
+    }
+  }
+  
+  /**
+   * Handle click on input (to show recent searches if already focused)
+   */
+  function handleClick() {
+    if (focused && !showSuggestions) {
+      fetchSuggestions(value);
     }
   }
   
@@ -407,12 +662,14 @@
 
 <div class="omni-search" class:compact class:focused>
   <div class="search-container">
-    <!-- Search Icon -->
+    <!-- Search Icon (hidden in compact/toolbar mode) -->
+    {#if !compact}
     <div class="search-icon">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
         <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
       </svg>
     </div>
+    {/if}
     
     <!-- Input Field -->
     <input
@@ -424,6 +681,7 @@
       on:keydown={handleKeydown}
       on:focus={handleFocus}
       on:blur={handleBlur}
+      on:click={handleClick}
       disabled={loading}
       class="search-input"
       class:has-type={currentTypeConfig}
@@ -468,7 +726,8 @@
       </div>
     {/if}
     
-    <!-- Search Button -->
+    <!-- Search Button (hidden in compact/toolbar mode - Enter key suffices) -->
+    {#if !compact}
     <button 
       class="search-btn"
       on:click={handleSearch}
@@ -481,6 +740,7 @@
         Search
       {/if}
     </button>
+    {/if}
   </div>
   
   <!-- Suggestions Dropdown -->
@@ -513,24 +773,6 @@
     </div>
   {/if}
   
-  <!-- Helper Text -->
-  {#if focused && !value && !showSuggestions}
-    <div class="helper-text">
-      <span>Block height</span>
-      <span class="helper-sep">•</span>
-      <span>TX hash</span>
-      <span class="helper-sep">•</span>
-      <span>SCID</span>
-      <span class="helper-sep">•</span>
-      <span>app.tela</span>
-      <span class="helper-sep">•</span>
-      <span>dero1qy...</span>
-      <span class="helper-sep">•</span>
-      <span>key:varname</span>
-      <span class="helper-sep">•</span>
-      <span>code:Function</span>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -556,8 +798,16 @@
   }
   
   .omni-search.compact .search-container {
-    padding: 0.4rem 0.6rem;
-    border-radius: 8px;
+    padding: 0;
+    gap: 6px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+  }
+
+  .omni-search.compact.focused .search-container {
+    border: none;
+    box-shadow: none;
   }
   
   .search-icon {
@@ -596,6 +846,7 @@
   
   .omni-search.compact .search-input {
     font-size: 0.85rem;
+    min-width: 0;
   }
   
   .type-badge {
@@ -691,21 +942,6 @@
     border-radius: 6px;
   }
   
-  .helper-text {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--s-2, 8px);
-    margin-top: var(--s-3, 12px);
-    font-size: 12px;
-    color: var(--text-4, #505068);
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  }
-  
-  .helper-sep {
-    color: var(--text-5, #404058);
-    font-size: 8px;
-  }
   
   /* Animation for spinner */
   .animate-spin {

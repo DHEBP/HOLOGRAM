@@ -138,7 +138,7 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 	docCode := string(docInfo.Data)
 	fileName := docInfo.Name
 	compressionStr := "none"
-	
+
 	if docInfo.Compressed {
 		// Check if file is already compressed (has .gz extension)
 		ext := filepath.Ext(fileName)
@@ -156,16 +156,15 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 			docCode = compressed
 			fileName = fileName + tela.COMPRESSION_GZIP // Append .gz to filename
 			compressionStr = "gzip"
-			
+
 			// Log compression results
 			originalSize := len(docInfo.Data)
 			compressedSize := len(compressed)
 			savings := 100 - (float64(compressedSize) / float64(originalSize) * 100)
-			a.logToConsole(fmt.Sprintf("[COMPRESS] %s: %d → %d bytes (%.1f%% smaller)", 
+			a.logToConsole(fmt.Sprintf("[COMPRESS] %s: %d → %d bytes (%.1f%% smaller)",
 				docInfo.Name, originalSize, compressedSize, savings))
 		} else {
 			// File already has compression extension
-			a.logToConsole(fmt.Sprintf("[DEBUG] File already compressed: %s", fileName))
 			compressionStr = ext
 		}
 	}
@@ -179,16 +178,6 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 			"success": false,
 			"error":   "Failed to sign file content",
 		}
-	}
-
-	// Debug: Log signature details
-	a.logToConsole(fmt.Sprintf("[DEBUG] Signature length: %d bytes", len(signature)))
-	sigStr := string(signature)
-	// Log first 200 chars of signature to see format
-	if len(sigStr) > 200 {
-		a.logToConsole(fmt.Sprintf("[DEBUG] Signature preview: %s...", sigStr[:200]))
-	} else {
-		a.logToConsole(fmt.Sprintf("[DEBUG] Signature: %s", sigStr))
 	}
 
 	// Parse the signature to extract C and S values
@@ -211,10 +200,6 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 	if len(checkS) < 64 {
 		checkS = strings.Repeat("0", 64-len(checkS)) + checkS
 	}
-
-	// Debug: Log extracted signature values (after padding)
-	a.logToConsole(fmt.Sprintf("[DEBUG] Parsed checkC: '%s' (len=%d)", checkC, len(checkC)))
-	a.logToConsole(fmt.Sprintf("[DEBUG] Parsed checkS: '%s' (len=%d)", checkS, len(checkS)))
 
 	// Build DOC structure (matching tela-cli)
 	doc := tela.DOC{
@@ -246,31 +231,29 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 	// 2. tela.GetGasEstimate() creates its OWN websocket connection
 	// 3. The simulator daemon can only handle ONE websocket at a time
 	// 4. Having both connections open crashes the daemon
-	// 
+	//
 	// Solution: In simulator mode, only set the endpoint variable and flags.
 	// Let the tela library create its own connection for everything.
 	endpoint := "127.0.0.1:20000"
-	
+
 	if isSimulator {
 		// Set globals for simulator
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode (--simulator=true)")
-		
+
 		// Set wallet daemon address and mode (no websocket connection yet)
-	wallet.SetDaemonAddress(endpoint)
-	wallet.SetOnlineMode()
+		wallet.SetDaemonAddress(endpoint)
+		wallet.SetOnlineMode()
 
 		// Set the endpoint variable that tela.GetGasEstimate() uses
 		walletapi.Daemon_Endpoint_Active = endpoint
-		
+
 		// Set Connected=true so TransferPayload0 doesn't reject as "offline"
 		// NOTE: We're NOT creating a real walletapi websocket connection!
 		// The tela library creates its own connection via GetGasEstimate().
 		// Setting Connected=true just satisfies the check in TransferPayload0.
 		walletapi.Connected = true
-		
-		a.logToConsole(fmt.Sprintf("[DEBUG] Set Daemon_Endpoint_Active=%s, Connected=true (tela library will create websocket)", endpoint))
+
 		a.logToConsole("[OK] Proceeding with installation (tela library will create its own websocket)")
 	} else {
 		// For mainnet: use setupNetworkForDeployment (which calls walletapi.Connect)
@@ -293,14 +276,14 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 		ringsize = uint64(docInfo.Ringsize)
 	}
 	a.logToConsole(fmt.Sprintf("[DOC] Using ringsize=%d (updateable=%v)", ringsize, ringsize <= 2))
-	
+
 	var txid string
 	if isSimulator {
 		// SIMULATOR MODE: Bypass tela.Installer() to avoid websocket conflicts
 		// Uses retry logic similar to tela-cli tests for better reliability
-		
+
 		a.logToConsole("[DOC] Using simulator-specific installation with GetGasEstimate validation")
-		
+
 		// PRE-DEPLOYMENT HEALTH CHECK: Verify daemon is alive
 		if a.daemonClient != nil {
 			if _, err := a.daemonClient.GetInfo(); err != nil {
@@ -313,23 +296,23 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 			}
 			a.logToConsole("[OK] Simulator daemon responding")
 		}
-		
+
 		// Build install arguments
 		args, err := tela.NewInstallArgs(&doc)
 		if err != nil {
 			a.logToConsole(fmt.Sprintf("[ERR] Failed to create install args: %v", err))
 			return ErrorResponse(err)
 		}
-		
+
 		// Create transfer with safe destination (avoids "Sending to self" error)
 		senderAddr := wallet.GetAddress().String()
 		destAddr := a.getSimulatorTransferDestination(senderAddr)
 		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
-		
+
 		// RETRY LOOP: Similar to tela-cli tests, retry up to 3 times
 		const maxRetries = 3
 		var lastErr error
-		
+
 		for attempt := 1; attempt <= maxRetries; attempt++ {
 			if attempt > 1 {
 				a.logToConsole(fmt.Sprintf("[RETRY] Attempt %d/%d...", attempt, maxRetries))
@@ -338,15 +321,15 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 					a.logToConsole(fmt.Sprintf("[WARN] Block wait failed: %v", err))
 				}
 			}
-			
+
 			// CRITICAL: The simulator daemon can only handle ONE websocket connection at a time.
 			// tela.GetGasEstimate() creates its own websocket connection internally.
 			// So we must: 1) Call GetGasEstimate (creates/closes its own WS), 2) Then connect walletapi
-			
+
 			// STEP 1: Ensure walletapi is DISCONNECTED before calling GetGasEstimate
 			a.disconnectWalletAPI()
 			time.Sleep(50 * time.Millisecond) // Brief settle time for daemon
-			
+
 			// STEP 2: Get gas estimate - this validates SC code AND creates its own temporary websocket
 			a.logToConsole(fmt.Sprintf("[GAS] Getting gas estimate (attempt %d)...", attempt))
 			gasFees, gasErr := tela.GetGasEstimate(wallet, ringsize, transfers, args)
@@ -356,10 +339,10 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 				continue
 			}
 			a.logToConsole(fmt.Sprintf("[OK] Gas estimate: %d", gasFees))
-			
+
 			// Brief pause to let GetGasEstimate's websocket fully close
 			time.Sleep(100 * time.Millisecond)
-			
+
 			// STEP 3: NOW connect walletapi for sync/build/send
 			a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi (attempt %d): %s", attempt, endpoint))
 			if err := walletapi.Connect(endpoint); err != nil {
@@ -368,13 +351,13 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 				a.disconnectWalletAPI()
 				continue
 			}
-			
+
 			// Sync wallet to get correct nonce
 			if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] Pre-tx sync failed: %v", err))
 			}
 			time.Sleep(50 * time.Millisecond) // Brief settle time
-			
+
 			// Build transaction
 			tx, buildErr := wallet.TransferPayload0(transfers, ringsize, false, args, gasFees, false)
 			if buildErr != nil {
@@ -383,13 +366,13 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 				a.disconnectWalletAPI()
 				continue
 			}
-			
+
 			if tx == nil {
 				lastErr = fmt.Errorf("transaction is nil after build")
 				a.disconnectWalletAPI()
 				continue
 			}
-			
+
 			// Send transaction
 			if err := wallet.SendTransaction(tx); err != nil {
 				a.logToConsole(fmt.Sprintf("[ERR] SendTransaction failed (attempt %d): %v", attempt, err))
@@ -397,19 +380,19 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 				a.disconnectWalletAPI()
 				continue
 			}
-			
+
 			txid = tx.GetHash().String()
 			a.logToConsole(fmt.Sprintf("[OK] Transaction sent: %s", txid))
-			
+
 			// Disconnect walletapi (cleanup)
 			a.disconnectWalletAPI()
 			a.logToConsole("[NET] Disconnected after send")
-			
+
 			// SUCCESS! Exit retry loop
 			lastErr = nil
 			break
 		}
-		
+
 		if lastErr != nil {
 			return map[string]interface{}{
 				"success":        false,
@@ -426,9 +409,9 @@ func (a *App) InstallDOC(docJSON string) map[string]interface{} {
 			if strings.Contains(err.Error(), "Account Unregistered") || strings.Contains(err.Error(), "-32098") {
 				a.logToConsole("[ERR] Wallet not registered on blockchain")
 				return map[string]interface{}{
-					"success":        false,
-					"error":          "Wallet not registered. Please click 'Auto-mines to confirm' button or start mining to register your wallet on the simulator blockchain.",
-					"technicalError": err.Error(),
+					"success":           false,
+					"error":             "Wallet not registered. Please click 'Auto-mines to confirm' button or start mining to register your wallet on the simulator blockchain.",
+					"technicalError":    err.Error(),
 					"needsRegistration": true,
 				}
 			}
@@ -581,20 +564,18 @@ func (a *App) InstallINDEX(indexJSON string) map[string]interface{} {
 	// Set up network configuration
 	// CRITICAL: In simulator mode, do NOT call walletapi.Connect() - see InstallDOC for explanation
 	endpoint := "127.0.0.1:20000"
-	
+
 	if isSimulator {
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode (--simulator=true)")
-		
+
 		// Set wallet daemon address and mode (no websocket connection yet)
 		wallet.SetDaemonAddress(endpoint)
 		wallet.SetOnlineMode()
-		
+
 		// Set the endpoint variable and Connected flag for tela library
 		walletapi.Daemon_Endpoint_Active = endpoint
-		walletapi.Connected = true  // Required for TransferPayload0 check
-		a.logToConsole(fmt.Sprintf("[DEBUG] Set Daemon_Endpoint_Active=%s, Connected=true (tela library will create websocket)", endpoint))
+		walletapi.Connected = true // Required for TransferPayload0 check
 	} else {
 		// Get daemon endpoint for non-simulator
 		if a.daemonClient != nil {
@@ -602,14 +583,14 @@ func (a *App) InstallINDEX(indexJSON string) map[string]interface{} {
 			endpoint = strings.TrimPrefix(endpoint, "http://")
 			endpoint = strings.TrimPrefix(endpoint, "https://")
 		}
-		
+
 		// For non-simulator: use walletapi.Connect()
-		a.logToConsole(fmt.Sprintf("[DEBUG] Connecting walletapi to daemon: %s", endpoint))
+		a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi to daemon: %s", endpoint))
 		if err := walletapi.Connect(endpoint); err != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
 		}
-	wallet.SetDaemonAddress(endpoint)
-	wallet.SetOnlineMode()
+		wallet.SetDaemonAddress(endpoint)
+		wallet.SetOnlineMode()
 	}
 
 	// Install INDEX using tela library
@@ -672,15 +653,6 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		}
 	}
 
-	// Debug: Log what we received from frontend
-	a.logToConsole(fmt.Sprintf("[DEBUG] Received INDEX update request:"))
-	a.logToConsole(fmt.Sprintf("[DEBUG]   Name: %s", idx.Name))
-	a.logToConsole(fmt.Sprintf("[DEBUG]   DURL: %s", idx.DURL))
-	a.logToConsole(fmt.Sprintf("[DEBUG]   DOCSCIDs count: %d", len(idx.DOCSCIDs)))
-	for i, doc := range idx.DOCSCIDs {
-		a.logToConsole(fmt.Sprintf("[DEBUG]   DOCSCIDs[%d]: %s", i, doc))
-	}
-
 	// Get daemon endpoint
 	// CRITICAL: In simulator mode, do NOT call walletapi.Connect() - see InstallDOC for explanation
 	endpoint := "127.0.0.1:10102"
@@ -688,16 +660,14 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		endpoint = "127.0.0.1:20000"
 		globals.Arguments["--simulator"] = true
 		globals.InitNetwork()
-		a.logToConsole("[DEBUG] Set globals for simulator mode (--simulator=true)")
-		
+
 		// Set wallet daemon address and mode (no websocket connection yet)
 		wallet.SetDaemonAddress(endpoint)
 		wallet.SetOnlineMode()
-		
+
 		// Set the endpoint variable and Connected flag for tela library
 		walletapi.Daemon_Endpoint_Active = endpoint
-		walletapi.Connected = true  // Required for TransferPayload0 check
-		a.logToConsole(fmt.Sprintf("[DEBUG] Set Daemon_Endpoint_Active=%s, Connected=true (tela library will create websocket)", endpoint))
+		walletapi.Connected = true // Required for TransferPayload0 check
 	} else if ep, ok := a.settings["daemon_endpoint"].(string); ok && ep != "" {
 		endpoint = strings.TrimPrefix(ep, "http://")
 		endpoint = strings.TrimPrefix(endpoint, "https://")
@@ -707,8 +677,8 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		if err := walletapi.Connect(endpoint); err != nil {
 			a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
 		}
-	wallet.SetDaemonAddress(endpoint)
-	wallet.SetOnlineMode()
+		wallet.SetDaemonAddress(endpoint)
+		wallet.SetOnlineMode()
 	}
 
 	// Verify owner (only original author can update)
@@ -762,12 +732,6 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		}
 	}
 
-	// Debug: Log the DOCs being sent in the update
-	a.logToConsole(fmt.Sprintf("[DEBUG] INDEX update - DOCs to set: %d", len(index.DOCs)))
-	for i, doc := range index.DOCs {
-		a.logToConsole(fmt.Sprintf("[DEBUG]   DOC%d: %s", i+1, doc))
-	}
-
 	// Update INDEX using tela library
 	txid, err := tela.Updater(wallet, &index)
 	if err != nil {
@@ -787,7 +751,7 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 
 // GetINDEXInfo retrieves information about a TELA INDEX
 func (a *App) GetINDEXInfo(scid string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("📖 Getting INDEX info: %s", scid[:16]+"..."))
+	a.logToConsole(fmt.Sprintf("[TELA] Getting INDEX info: %s", scid[:16]+"..."))
 
 	// Get daemon endpoint
 	isSimulator := a.IsInSimulatorMode()
@@ -822,7 +786,7 @@ func (a *App) GetINDEXInfo(scid string) map[string]interface{} {
 		walletAddr := wallet.GetAddress().String()
 		isOwner = index.Author == walletAddr
 	}
-	
+
 	// "anon" author means immutable (ring 16+)
 	if index.Author == "anon" {
 		canUpdate = false
@@ -885,7 +849,7 @@ func (a *App) CloneTELA(scid string, allowUpdates bool) map[string]interface{} {
 	var contentType string
 	var name, dURL, description string
 	var fileCount int
-	
+
 	// Try INDEX first
 	indexInfo, err := tela.GetINDEXInfo(scid, endpoint)
 	if err == nil {
@@ -936,18 +900,18 @@ func (a *App) CloneTELA(scid string, allowUpdates bool) map[string]interface{} {
 	if err != nil {
 		errStr := err.Error()
 		a.logToConsole(fmt.Sprintf("[ERR] Clone failed: %v", err))
-		
+
 		// Check if it's an "updated content" error - user needs to confirm
 		if strings.Contains(errStr, "user defined no updates and content has been updated") {
 			return map[string]interface{}{
-				"success":          false,
-				"error":            "Content has been updated since original deployment",
-				"technicalError":   errStr,
-				"requiresConfirm":  true,
-				"confirmMessage":   "This TELA content has been updated. Do you want to clone the latest version?",
+				"success":         false,
+				"error":           "Content has been updated since original deployment",
+				"technicalError":  errStr,
+				"requiresConfirm": true,
+				"confirmMessage":  "This TELA content has been updated. Do you want to clone the latest version?",
 			}
 		}
-		
+
 		return map[string]interface{}{
 			"success":        false,
 			"error":          FriendlyError(err),
@@ -1085,13 +1049,13 @@ func (a *App) ParseFolderForTELA(folderPath string) map[string]interface{} {
 	estimatedGas := totalGas
 
 	return map[string]interface{}{
-		"success":                  true,
-		"files":                    files,
-		"totalFiles":               len(files),
-		"totalSize":                totalSize,
-		"totalGas":                 totalGas,
-		"errors":                   errors,
-		"folderPath":               folderPath,
+		"success":      true,
+		"files":        files,
+		"totalFiles":   len(files),
+		"totalSize":    totalSize,
+		"totalGas":     totalGas,
+		"errors":       errors,
+		"folderPath":   folderPath,
 		"estimatedGas": estimatedGas,
 	}
 }
@@ -1147,6 +1111,7 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{"error": errMsg})
 		return map[string]interface{}{"success": false, "error": errMsg}
 	}
+	a.logToConsole(fmt.Sprintf("[WALLET] Deploy wallet address: %s", wallet.GetAddress().String()))
 
 	// Parse batch config
 	var batch BatchDeployConfig
@@ -1155,16 +1120,65 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		return map[string]interface{}{"success": false, "error": "Invalid batch format", "technicalError": err.Error()}
 	}
 
+	// Use ringsize from batch, default to 2 (updateable)
+	ringsize := batch.Ringsize
+	if ringsize == 0 {
+		ringsize = 2
+	}
+
 	// CRITICAL: Sort files to ensure entry point (index.html) is deployed FIRST
 	// The first DOC deployed becomes DOC1 in the INDEX, which is the application entrypoint.
 	// Without this sort, alphabetical ordering could make blocks.js the entrypoint instead of index.html.
 	sortFilesForDeployment(batch.Files)
 	a.logToConsole(fmt.Sprintf("[SORT] Files ordered for deployment (entry point first): %s", batch.Files[0].Name))
 
+	// CRITICAL: In simulator mode, the daemon can only handle ONE WebSocket at a time.
+	// Both EPOCH and Gnomon hold persistent WebSocket connections that will crash the
+	// daemon if they're active when walletapi connects to send transactions.
+	// Pause both for the entire batch deploy and resume when done.
+	epochWasActive := false
+	gnomonWasActive := false
+	if isSimulator {
+		epochWasActive = a.pauseEpochForSimulator()
+		gnomonWasActive = a.pauseGnomonForSimulator()
+	}
+	defer func() {
+		if gnomonWasActive {
+			a.resumeGnomonForSimulator()
+		}
+		if epochWasActive {
+			a.resumeEpochForSimulator()
+		}
+		// Restore Daemon_Endpoint_Active after simulator deploy so walletapi can
+		// reconnect normally. Also clear our cached endpoint.
+		if isSimulator && a.simulatorDeployEndpoint != "" {
+			walletapi.Daemon_Endpoint_Active = a.simulatorDeployEndpoint
+			a.simulatorDeployEndpoint = ""
+		}
+	}()
+
 	// Set up network
 	if _, err := a.setupNetworkForDeployment(wallet, isSimulator); err != nil {
 		runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{"error": err.Error()})
 		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+
+	// MAINNET SAFETY GATE: estimate total batch gas up front and ensure the wallet
+	// has enough headroom before sending the first transaction. This avoids partial
+	// deployments where early DOCs land on-chain but later DOC/INDEX sends fail.
+	if !isSimulator {
+		budget, err := a.precheckMainnetBatchBudget(wallet, &batch, ringsize)
+		if err != nil {
+			errMsg := "Mainnet precheck failed: " + err.Error()
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{"error": errMsg})
+			return map[string]interface{}{"success": false, "error": errMsg}
+		}
+		a.logToConsole(fmt.Sprintf(
+			"[CHECK] Mainnet budget gate passed: wallet=%d, estimated=%d, required(with 20%% buffer)=%d",
+			budget.WalletBalance,
+			budget.EstimatedGas,
+			budget.RequiredWithBuffer,
+		))
 	}
 
 	// NOTE: Pre-deployment balance check REMOVED for simulator mode (Session 103)
@@ -1178,13 +1192,6 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		"totalFiles": len(batch.Files),
 		"indexName":  batch.IndexName,
 	})
-
-	// Use ringsize from batch, default to 2 (updateable)
-	ringsize := batch.Ringsize
-	if ringsize == 0 {
-		ringsize = 2
-	}
-	a.logToConsole(fmt.Sprintf("[DEBUG] Using ringsize %d", ringsize))
 
 	// Deploy each DOC
 	docScids := []string{}
@@ -1216,7 +1223,7 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 			errResp := GetTELAErrorResponse(err.Error(), docInfo.Name)
 			errResp["index"] = i
 			errResp["partial"] = deployedFiles
-			
+
 			runtime.EventsEmit(a.ctx, "tela:deploy:error", errResp)
 			return errResp
 		}
@@ -1228,28 +1235,27 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 			"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name, "status": "completed", "scid": txid,
 		})
 
-		// POST-DEPLOYMENT VERIFICATION: Check that the DOC's init() succeeded
-		// This catches cases where the SC was deployed but stringkeys weren't stored
+		// POST-DEPLOYMENT VERIFICATION (belt-and-suspenders: deployDOC already verified,
+		// but re-check before committing to INDEX creation)
 		if !isSimulator {
-			a.logToConsole(fmt.Sprintf("[VERIFY] Checking DOC %s (%s...) has valid stringkeys...", docInfo.Name, txid[:16]))
+			a.logToConsole(fmt.Sprintf("[VERIFY] Re-checking DOC %s (%s...) before proceeding...", docInfo.Name, txid[:16]))
 			runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
-				"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name, 
+				"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name,
 				"status": "verifying", "scid": txid,
 			})
-			
-			// Wait a moment for the transaction to propagate before verifying
+
 			time.Sleep(1 * time.Second)
-			
+
 			if err := a.verifyDeployedDOC(txid, docInfo.Name, 3); err != nil {
-				a.logToConsole(fmt.Sprintf("[WARN] DOC verification failed: %v", err))
-				// Emit warning but continue - the DOC might still work after more time
-				runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
-					"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name, 
-					"status": "verify_warning", "scid": txid, "warning": err.Error(),
+				a.logToConsole(fmt.Sprintf("[ERR] DOC re-verification failed — aborting batch: %v", err))
+				runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{
+					"error": err.Error(), "fileName": docInfo.Name, "index": i, "partial": deployedFiles,
 				})
-			} else {
-				a.logToConsole(fmt.Sprintf("[OK] DOC %s verified successfully", docInfo.Name))
+				return map[string]interface{}{
+					"success": false, "error": "DOC verification failed after deploy: " + err.Error(), "partial": deployedFiles,
+				}
 			}
+			a.logToConsole(fmt.Sprintf("[OK] DOC %s verified successfully", docInfo.Name))
 		}
 
 		// CRITICAL: Wait for block confirmation between deployments
@@ -1258,17 +1264,16 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		if !isSimulator && i < len(batch.Files)-1 { // Don't wait after last DOC (INDEX will handle its own wait)
 			a.logToConsole("[WAIT] Waiting for block confirmation before next DOC...")
 			runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
-				"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name, 
+				"current": i + 1, "total": len(batch.Files), "fileName": docInfo.Name,
 				"status": "waiting_confirmation", "scid": txid,
 			})
-			
+
 			// CRITICAL: Must wait for block confirmation - retry up to 3 times with increasing timeout
 			// If we don't wait, the next transaction will be rejected with "rejected by pool by mempool"
 			blockConfirmed := false
 			for blockWaitAttempt := 0; blockWaitAttempt < 3; blockWaitAttempt++ {
 				timeout := time.Duration(60+blockWaitAttempt*30) * time.Second // 60s, 90s, 120s
-				a.logToConsole(fmt.Sprintf("[DEBUG] Block wait attempt %d (timeout: %v)...", blockWaitAttempt+1, timeout))
-				
+
 				if err := a.waitForNewBlockWithHealthCheck(timeout); err != nil {
 					a.logToConsole(fmt.Sprintf("[WARN] Block wait attempt %d failed: %v", blockWaitAttempt+1, err))
 					// Wait a bit before retrying
@@ -1279,20 +1284,20 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 					break
 				}
 			}
-			
+
 			if !blockConfirmed {
 				// Last resort: wait a fixed amount of time for the block to be mined
 				a.logToConsole("[WARN] Block confirmation retries exhausted. Waiting 30s as fallback...")
 				time.Sleep(30 * time.Second)
 			}
-			
+
 			// CRITICAL: Sync wallet MULTIPLE times after block confirmation to ensure nonce is updated
 			// The first sync may return before the daemon has fully processed the new block
 			// Adding a brief delay and double-sync ensures the wallet has the correct nonce
 			time.Sleep(500 * time.Millisecond) // Let daemon fully process the new block
-			
+
 			for syncAttempt := 0; syncAttempt < 3; syncAttempt++ {
-			if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+				if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
 					a.logToConsole(fmt.Sprintf("[WARN] Post-deploy wallet sync attempt %d failed: %v", syncAttempt+1, err))
 				} else {
 					a.logToConsole(fmt.Sprintf("[OK] Wallet synced (attempt %d)", syncAttempt+1))
@@ -1302,7 +1307,7 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 				}
 			}
 		}
-		
+
 		// SIMULATOR MODE: Add delay between deployments (like tela-cli tests do)
 		// This gives the simulator daemon time to process and prevents transaction conflicts
 		if isSimulator && i < len(batch.Files)-1 {
@@ -1328,16 +1333,15 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 	if !isSimulator && len(batch.Files) > 0 {
 		a.logToConsole("[WAIT] Waiting for last DOC block confirmation before INDEX creation...")
 		runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
-			"current": len(batch.Files), "total": len(batch.Files), 
+			"current": len(batch.Files), "total": len(batch.Files),
 			"fileName": "INDEX", "status": "waiting_for_docs",
 		})
-		
+
 		// CRITICAL: Must wait for block confirmation - retry up to 3 times
 		blockConfirmed := false
 		for blockWaitAttempt := 0; blockWaitAttempt < 3; blockWaitAttempt++ {
 			timeout := time.Duration(60+blockWaitAttempt*30) * time.Second
-			a.logToConsole(fmt.Sprintf("[DEBUG] INDEX block wait attempt %d (timeout: %v)...", blockWaitAttempt+1, timeout))
-			
+
 			if err := a.waitForNewBlockWithHealthCheck(timeout); err != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] INDEX block wait attempt %d failed: %v", blockWaitAttempt+1, err))
 				time.Sleep(5 * time.Second)
@@ -1347,12 +1351,12 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 				break
 			}
 		}
-		
+
 		if !blockConfirmed {
 			a.logToConsole("[WARN] INDEX block confirmation retries exhausted. Waiting 30s as fallback...")
 			time.Sleep(30 * time.Second)
 		}
-		
+
 		// CRITICAL: Sync wallet multiple times after block confirmation
 		time.Sleep(500 * time.Millisecond)
 		for syncAttempt := 0; syncAttempt < 3; syncAttempt++ {
@@ -1382,6 +1386,45 @@ func (a *App) DeployTELABatch(batchJSON string) map[string]interface{} {
 		})
 		return map[string]interface{}{
 			"success": false, "error": "INDEX creation failed: " + FriendlyError(err), "deployedDocs": deployedFiles,
+		}
+	}
+
+	if isSimulator {
+		a.logToConsole("[WAIT] Waiting for INDEX block confirmation...")
+		runtime.EventsEmit(a.ctx, "tela:deploy:progress", map[string]interface{}{
+			"current": len(batch.Files), "total": len(batch.Files), "fileName": "INDEX",
+			"status": "waiting_confirmation", "scid": indexTxid,
+		})
+		if err := a.waitForNewBlockWithHealthCheck(15 * time.Second); err != nil {
+			errMsg := "INDEX transaction was sent, but simulator daemon failed before confirmation: " + FriendlyError(err)
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{
+				"error": errMsg, "deployedDocs": deployedFiles, "indexScid": indexTxid, "durl": batch.IndexDURL,
+			})
+			return map[string]interface{}{
+				"success": false, "error": errMsg, "deployedDocs": deployedFiles, "indexScid": indexTxid, "durl": batch.IndexDURL,
+			}
+		}
+
+		a.logToConsole("[VERIFY] Checking simulator daemon stability after INDEX...")
+		if err := a.verifyDaemonStability(8*time.Second, 500*time.Millisecond); err != nil {
+			errMsg := "INDEX transaction confirmed, but simulator daemon died immediately after deploy: " + FriendlyError(err)
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{
+				"error": errMsg, "deployedDocs": deployedFiles, "indexScid": indexTxid, "durl": batch.IndexDURL,
+			})
+			return map[string]interface{}{
+				"success": false, "error": errMsg, "deployedDocs": deployedFiles, "indexScid": indexTxid, "durl": batch.IndexDURL,
+			}
+		}
+
+		a.logToConsole("[VERIFY] Checking INDEX stringkeys...")
+		if err := a.verifyDeployedINDEX(indexTxid, batch.IndexDURL, 4); err != nil {
+			errMsg := "INDEX transaction confirmed, but the deployed TELA contract could not be verified: " + FriendlyError(err)
+			runtime.EventsEmit(a.ctx, "tela:deploy:error", map[string]interface{}{
+				"error": errMsg, "deployedDocs": deployedFiles, "indexScid": indexTxid, "durl": batch.IndexDURL,
+			})
+			return map[string]interface{}{
+				"success": false, "error": errMsg, "deployedDocs": deployedFiles, "indexScid": indexTxid, "durl": batch.IndexDURL,
+			}
 		}
 	}
 
@@ -1441,14 +1484,6 @@ type Commit struct {
 	Timestamp int64  `json:"timestamp"` // Unix timestamp (if available)
 	IsCurrent bool   `json:"isCurrent"` // True if this is the latest version
 	Label     string `json:"label"`     // Auto-generated semantic label
-}
-
-// VersionedContent represents content retrieved at a specific commit
-type VersionedContent struct {
-	Files   map[string]string `json:"files"`   // filename -> content
-	DOCs    []string          `json:"docs"`    // DOC SCIDs in this version
-	DURL    string            `json:"durl"`    // dURL at this version
-	Version int               `json:"version"` // Commit number
 }
 
 // FileDiff represents differences in a single file between versions
@@ -2204,6 +2239,14 @@ func parseVersionCount(val string) int {
 // In simulator mode, it returns the primary simulator wallet (#0); otherwise the main app wallet
 func (a *App) getWalletForDeployment(isSimulator bool) *walletapi.Wallet_Disk {
 	if isSimulator {
+		// Use the currently-open wallet (set by OpenTestWallet), NOT hardcoded wallet #0.
+		// The user may have funded and opened a different test wallet (e.g. wallet #1)
+		// and that is the wallet that holds the balance for deployment.
+		w := GetWallet()
+		if w != nil {
+			return w
+		}
+		// Fallback to the internal primary wallet if nothing is open in walletManager
 		if a.simulatorManager != nil && a.simulatorManager.walletManager != nil {
 			return a.simulatorManager.walletManager.GetPrimaryWallet()
 		}
@@ -2213,26 +2256,23 @@ func (a *App) getWalletForDeployment(isSimulator bool) *walletapi.Wallet_Disk {
 }
 
 func estimateGasCost(sizeBytes int) uint64 {
-	// Gas estimation aligned with tela-cli's DERO.GetGasEstimate behavior
-	// The daemon calculates GasStorage based on SC code/data storage costs
-	// Real-world fees from tela-cli examples: 90-320 gas for typical operations
-	//
-	// Formula: base cost + logarithmic scaling for larger files
-	// This provides a reasonable estimate without requiring daemon connection
-	const minGas = uint64(100) // Matches tela.MINIMUM_GAS_FEE
+	// UI display estimate only — real gas is from tela.GetGasEstimate() at deploy time.
+	// Linear scaling: baseCost(100) + 0.1 gas per byte. Deliberately calibrated down from
+	// an earlier logarithmic formula that produced estimates far too high.
+	// Do not change without verifying against real GetGasEstimate outputs.
+	// See docs/proposals/AUTO-SHARD-DURING-DEPLOY.md §12.14 for the full calibration table.
+	const minGas = uint64(100)
 	const baseCost = uint64(100)
-	
+
 	if sizeBytes <= 0 {
 		return minGas
 	}
-	
-	// Logarithmic scaling: larger files don't cost linearly more
-	// ~200 gas for 1KB, ~300 gas for 10KB, ~400 gas for 100KB
+
 	sizeCost := uint64(float64(sizeBytes) * 0.1)
 	if sizeCost < 50 {
 		sizeCost = 50
 	}
-	
+
 	total := baseCost + sizeCost
 	if total < minGas {
 		return minGas

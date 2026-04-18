@@ -2,18 +2,19 @@
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode, toast, combinedSyncProgress } from '../stores/appState.js';
   import { 
-    SetSetting, GetEpochStats, SetNetworkMode,
+    GetEpochStats, SetNetworkMode,
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus,
     ApproveWalletConnection, ConnectXSWD,
     GetRecentWalletsWithInfo, SwitchWallet, GetActiveXSWDConnections, RevokeXSWDConnection,
-    DisconnectXSWD, CloseWallet, RemoveRecentWallet
+    DisconnectXSWD, CloseWallet, RemoveRecentWallet, UseSimulatorWallet,
+    GetSimulatorTestWallets, OpenSimulatorTestWallet
   } from '../../../wailsjs/go/main/App.js';
   import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime.js';
   import { DotIndicator, Icons } from './holo';
   import Wordmark from './Wordmark.svelte';
   import { 
     Globe, Palette, Blocks, Wallet, Settings, 
-    Diamond, User,
+    Diamond,
     Globe2, FlaskConical, Gamepad2, Radio, FolderOpen
   } from 'lucide-svelte';
   import { getAvatarUrl, clearAvatarCache } from '../utils/avatarService.js';
@@ -36,6 +37,9 @@
   // Network switch modal state
   let showNetworkSwitchModal = false;
   let networkSwitchTarget = 'simulator'; // 'simulator' or 'mainnet'
+  let networkSwitchStartedAt = 0;
+  let networkSwitchElapsed = 0;
+  let networkSwitchTicker = null;
   const networkSwitchSteps = [
     { id: 0, label: 'Checking current connection' },
     { id: 1, label: 'Checking simulator binary' },
@@ -55,6 +59,9 @@
   let showConnectedApps = false;
   let connectedApps = [];
   let loadingApps = false;
+  let simulatorQuickWallets = [];
+  let simulatorWalletsLoading = false;
+  let switchingSimulatorWalletIndex = null;
   
   // Determine wallet address to display (reactive statements)
   // Priority: Integrated wallet address > Engram (external) address
@@ -69,6 +76,13 @@
   
   // XSWD server ready but no wallet connected
   $: xswdReadyNoWallet = $appState.xswdServerRunning && !walletIsConnected;
+
+  function detectAddressNetwork(address) {
+    if (!address) return 'unknown';
+    if (address.startsWith('dero1') || address.startsWith('deroi1')) return 'mainnet';
+    if (address.startsWith('deto1') || address.startsWith('detoi1')) return 'simulator';
+    return 'unknown';
+  }
   
   // Format address for display - show only the unique part (last 8 chars)
   function formatAddressForDisplay(address) {
@@ -141,13 +155,13 @@
       };
     });
     
-    // Listen for simulator completion
+    // Listen for simulator completion — also triggers from the RPC return path,
+    // so we skip the toast here to avoid doubling it up.
     EventsOn("simulator:complete", (data) => {
       simulatorStarting = false;
       showNetworkSwitchModal = false;
+      stopNetworkSwitchTimer();
       if (data.success) {
-        toast.success(data.message || 'Simulator mode activated!', 3000);
-        // Immediately sync network mode and refresh status
         syncNetworkMode();
         refreshSimulatorStatus();
       }
@@ -157,12 +171,14 @@
     EventsOn("simulator:error", (data) => {
       simulatorStarting = false;
       showNetworkSwitchModal = false;
-      toast.error(data.error || 'Simulator startup failed', 5000);
+      stopNetworkSwitchTimer();
+      showSimulatorToastOnce('error', data.error || 'Simulator startup failed', 5000);
     });
   });
   
   onDestroy(() => {
     if (epochInterval) clearInterval(epochInterval);
+    stopNetworkSwitchTimer();
     // Clean up avatar cache
     if (walletDisplayAddress) {
       clearAvatarCache(walletDisplayAddress);
@@ -188,6 +204,32 @@
       // Silently fail
     }
   }
+
+  async function ensureSimulatorWalletActive() {
+    // Keep external-wallet UX unchanged.
+    if ($appState.engramConnected) return;
+
+    const currentAddrNetwork = detectAddressNetwork($walletState.address);
+    const needsSimulatorWallet = !$walletState.isOpen || currentAddrNetwork !== 'simulator';
+    if (!needsSimulatorWallet) return;
+
+    try {
+      const result = await UseSimulatorWallet();
+      if (result?.success) {
+        walletState.update(state => ({
+          ...state,
+          isOpen: true,
+          address: result.address || '',
+          balance: result.balance ?? 0,
+          lockedBalance: result.locked ?? 0,
+          walletPath: result.path || state.walletPath
+        }));
+      }
+    } catch (e) {
+      // Non-fatal: mismatch warning remains visible if activation fails.
+      console.warn('Failed to auto-activate simulator wallet:', e);
+    }
+  }
   
   export let tabs = [];
   export let currentTab = 'browser';
@@ -196,6 +238,48 @@
   const dispatch = createEventDispatcher();
   
   let showNetworkMenu = false;
+  let lastSimulatorToast = { key: '', at: 0 };
+
+  function startNetworkSwitchTimer() {
+    networkSwitchStartedAt = Date.now();
+    networkSwitchElapsed = 0;
+    if (networkSwitchTicker) clearInterval(networkSwitchTicker);
+    networkSwitchTicker = setInterval(() => {
+      networkSwitchElapsed = Math.max(0, Math.floor((Date.now() - networkSwitchStartedAt) / 1000));
+    }, 1000);
+  }
+
+  function stopNetworkSwitchTimer() {
+    if (networkSwitchTicker) {
+      clearInterval(networkSwitchTicker);
+      networkSwitchTicker = null;
+    }
+    networkSwitchStartedAt = 0;
+    networkSwitchElapsed = 0;
+  }
+
+  function showSimulatorToastOnce(type, message, duration = 5000) {
+    const now = Date.now();
+    const key = `${type}:${message || ''}`;
+    if (lastSimulatorToast.key === key && (now - lastSimulatorToast.at) < 2000) {
+      return;
+    }
+    lastSimulatorToast = { key, at: now };
+
+    switch (type) {
+      case 'success':
+        toast.success(message, duration);
+        break;
+      case 'warning':
+        toast.warning(message, duration);
+        break;
+      case 'error':
+        toast.error(message, duration);
+        break;
+      default:
+        toast.info(message, duration);
+    }
+  }
   
   // Network configuration - v6 colors
   // Mainnet = Green (primary/production), Simulator = Red (local/dev)
@@ -204,7 +288,17 @@
     simulator: { label: 'Simulator', icon: 'gamepad', dotStatus: 'err' },
   };
   
-  $: currentNetwork = networks[$settingsState.network] || networks.mainnet;
+  // Use effective network from status (actual connection) when node is connected;
+  // otherwise use persisted preference. Prevents "Simulator" + mainnet block height mismatch on restart.
+  $: effectiveNetwork = $appState.nodeConnected && $appState.network
+    ? $appState.network
+    : $settingsState.network;
+  $: currentNetwork = networks[effectiveNetwork] || networks.mainnet;
+  $: walletAddressNetwork = detectAddressNetwork(walletDisplayAddress);
+  $: walletNetworkMismatch = walletMode === 'integrated'
+    && walletIsConnected
+    && walletAddressNetwork !== 'unknown'
+    && walletAddressNetwork !== effectiveNetwork;
   
   function selectTab(tabId) {
     dispatch('tabChange', tabId);
@@ -242,8 +336,6 @@
       if (result.success) {
         // Sync network mode from backend (updates both appState and settingsState)
         await syncNetworkMode();
-        // Also update settings for compatibility
-        await SetSetting(JSON.stringify({ network: networkId }));
       } else {
         console.error('Failed to set network mode:', result.error);
       }
@@ -262,41 +354,63 @@
       networkSwitchTarget = 'simulator';
       simulatorProgress = { step: 0, message: 'Starting simulator...', status: 'starting' };
       showNetworkSwitchModal = true;
+      startNetworkSwitchTimer();
       
       try {
         const result = await StartSimulatorMode();
-        // Note: simulatorStarting and showNetworkSwitchModal are reset by event handlers
+        // Always close the modal when the call resolves — the simulator:complete
+        // event handler also does this, but the event may race with the RPC return
+        // (or be missed if Wails delivers it before the listener is active).
+        simulatorStarting = false;
+        showNetworkSwitchModal = false;
+        stopNetworkSwitchTimer();
         
         if (result.success) {
+          showSimulatorToastOnce('success', result.message || 'Simulator mode activated!', 3000);
           // Network mode will be updated via the completion event handler
           // But also ensure it's set here as a fallback
           await doSwitchNetwork('simulator');
           await refreshSimulatorStatus();
+          await ensureSimulatorWalletActive();
         } else {
-          simulatorStarting = false;
-          showNetworkSwitchModal = false;
-          toast.error(result.error || 'Failed to start simulator', 5000);
+          showSimulatorToastOnce('error', result.error || 'Failed to start simulator', 5000);
         }
       } catch (e) {
         simulatorStarting = false;
         showNetworkSwitchModal = false;
-        toast.error(e.message || 'Failed to start simulator', 5000);
+        stopNetworkSwitchTimer();
+        showSimulatorToastOnce('error', e.message || 'Failed to start simulator', 5000);
       }
     } else if (simulatorAction === 'stop') {
       // Stop simulator and switch to mainnet with progress modal
       networkSwitchTarget = 'mainnet';
       simulatorProgress = { step: 0, message: 'Stopping simulator...', status: 'stopping' };
       showNetworkSwitchModal = true;
+      startNetworkSwitchTimer();
       
       try {
         await StopSimulatorMode();
+        // Immediately clear a simulator wallet from local UI state while
+        // backend status broadcast catches up.
+        if (detectAddressNetwork($walletState.address) === 'simulator') {
+          walletState.update(state => ({
+            ...state,
+            isOpen: false,
+            address: '',
+            balance: 0,
+            lockedBalance: 0,
+            walletPath: '',
+          }));
+        }
         await doSwitchNetwork('mainnet');
         await refreshSimulatorStatus();
         showNetworkSwitchModal = false;
+        stopNetworkSwitchTimer();
         toast.success('Switched to Mainnet', 2000);
       } catch (e) {
         console.error('Failed to stop simulator:', e);
         showNetworkSwitchModal = false;
+        stopNetworkSwitchTimer();
         toast.error('Failed to stop simulator: ' + e.message, 5000);
       }
     }
@@ -363,12 +477,11 @@
     }
   }
   
-  // Navigate directly to Avatar Editor when clicking the avatar
+  // Avatar editing is moving to Villager; keep a clear temporary action for now.
   function handleAvatarClick(event) {
     event.stopPropagation();
     event.preventDefault();
-    // Navigate to Wallet tab > My Identity section
-    dispatch('statusClick', { type: 'avatar', tab: 'wallet', section: 'avatar' });
+    toast.info('Villager avatar editor coming soon');
   }
   
   async function handleConnectWallet() {
@@ -402,6 +515,60 @@
       }
     } catch (e) {
       console.error('Failed to load recent wallets:', e);
+    }
+  }
+
+  function formatBalanceAtomic(balance) {
+    const atomic = Number(balance || 0);
+    return (atomic / 100000).toFixed(5);
+  }
+
+  async function loadSimulatorQuickWallets() {
+    if (simulatorWalletsLoading) return;
+    simulatorWalletsLoading = true;
+    try {
+      const result = await GetSimulatorTestWallets();
+      if (result?.success && Array.isArray(result.wallets)) {
+        simulatorQuickWallets = [...result.wallets].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      } else {
+        simulatorQuickWallets = [];
+      }
+    } catch (e) {
+      simulatorQuickWallets = [];
+      console.error('Failed to load simulator quick wallets:', e);
+    } finally {
+      simulatorWalletsLoading = false;
+    }
+  }
+
+  async function handleSimulatorQuickSwitch(wallet) {
+    if (!wallet || wallet.index === undefined || wallet.index === null) return;
+    if ($walletState.address && wallet.address === $walletState.address) return;
+
+    switchingSimulatorWalletIndex = wallet.index;
+    try {
+      const result = await OpenSimulatorTestWallet(wallet.index);
+      if (!result?.success) {
+        toast.error(result?.error || 'Failed to open test wallet');
+        return;
+      }
+
+      walletState.update(state => ({
+        ...state,
+        isOpen: true,
+        address: result.address || '',
+        balance: result.balance ?? 0,
+        lockedBalance: result.locked ?? 0,
+        walletPath: result.path || state.walletPath,
+      }));
+
+      await loadSimulatorQuickWallets();
+      showWalletMenu = false;
+      toast.success(`Switched to test wallet #${wallet.index}`);
+    } catch (e) {
+      toast.error(e.message || 'Failed to open test wallet');
+    } finally {
+      switchingSimulatorWalletIndex = null;
     }
   }
   
@@ -450,6 +617,11 @@
     if (showWalletMenu) {
       await loadRecentWallets();
       await loadConnectedApps();
+      if (effectiveNetwork === 'simulator') {
+        await loadSimulatorQuickWallets();
+      } else {
+        simulatorQuickWallets = [];
+      }
     } else {
       switchingWallet = null;
       switchPassword = '';
@@ -686,7 +858,7 @@
                 <button
                   on:click|stopPropagation={() => switchNetwork(id)}
                   class="network-dropdown-option"
-                  class:active={$settingsState.network === id}
+                  class:active={effectiveNetwork === id}
                   disabled={simulatorStarting && id !== 'simulator'}
                 >
                   <span class="dot-column">
@@ -709,7 +881,7 @@
             on:click|stopPropagation={(e) => handleStatusClick('block', e)}
           >
             <span class="info-label">BLOCK</span>
-            <span class="info-value value-cyan">
+            <span class="info-value value-ok">
               {formatBlockHeight($appState.chainHeight)}
             </span>
           </button>
@@ -841,7 +1013,7 @@
                 <button
                   on:click|stopPropagation={() => switchNetwork(id)}
                   class="network-dropdown-option"
-                  class:active={$settingsState.network === id}
+                  class:active={effectiveNetwork === id}
                   disabled={simulatorStarting && id !== 'simulator'}
                 >
                   <span class="dot-column">
@@ -862,10 +1034,10 @@
             class="unified-indicator collapsed"
             on:click|stopPropagation={(e) => handleStatusClick('block', e)}
           >
-            <span class="unified-dot dot-cyan"></span>
+            <span class="unified-dot dot-ok"></span>
             <div class="rail-tooltip">
               <span class="rail-tooltip-label">Block</span>
-              <span class="rail-tooltip-value tt-cyan">
+              <span class="rail-tooltip-value tt-ok">
                 {formatBlockHeight($appState.chainHeight)}
               </span>
             </div>
@@ -910,8 +1082,8 @@
         {#if walletIsConnected && walletAvatarUrl}
           <img 
             src={walletAvatarUrl} 
-            alt="Edit Avatar"
-            title="Click to customize your avatar"
+            alt="Wallet avatar"
+            title="Villager avatar editor coming soon"
             class="wallet-avatar wallet-avatar-collapsed wallet-avatar-clickable"
             class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
             on:click={handleAvatarClick}
@@ -931,7 +1103,7 @@
           <span class="rail-tooltip-label">Wallet</span>
           {#if walletMode === 'integrated'}
             <span class="rail-tooltip-value tt-ok">
-              {formatAddressForDisplay(walletDisplayAddress)}
+              {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
             </span>
             <span class="rail-tooltip-value tt-dim">Wallet Ready</span>
             {#if connectedApps.length > 0}
@@ -950,8 +1122,8 @@
           {#if walletIsConnected && walletAvatarUrl}
             <img 
               src={walletAvatarUrl} 
-              alt="Edit Avatar"
-              title="Click to customize your avatar"
+              alt="Wallet avatar"
+              title="Villager avatar editor coming soon"
               class="wallet-avatar wallet-avatar-expanded wallet-avatar-clickable"
               class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
               on:click={handleAvatarClick}
@@ -967,7 +1139,7 @@
         <div class="wallet-anchor-content">
           <span class="wallet-anchor-address" class:disconnected={!walletIsConnected} class:xswd-only={xswdReadyNoWallet}>
             {#if walletIsConnected}
-              {formatAddressForDisplay(walletDisplayAddress)}
+              {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
             {:else}
               Connect Wallet
             {/if}
@@ -976,7 +1148,9 @@
             {#if $appState.pendingXSWDRequests?.length > 0}
               <span class="status-warn">{$appState.pendingXSWDRequests.length === 1 ? 'App requesting access' : `${$appState.pendingXSWDRequests.length} apps requesting access`}</span>
             {:else if walletMode === 'integrated'}
-              {#if $settingsState.network === 'simulator'}
+              {#if walletNetworkMismatch}
+                <span class="status-warn">Network mismatch ({walletAddressNetwork === 'simulator' ? 'deto' : 'dero'})</span>
+              {:else if effectiveNetwork === 'simulator'}
                 <span class="status-sim">Simulator Wallet</span>
               {:else}
                 <span class="status-ok">Wallet Ready</span>
@@ -1005,7 +1179,7 @@
           <p class="wallet-menu-label">CURRENT WALLET</p>
           <p class="wallet-menu-address">
             {#if $walletState.address}
-              {$walletState.address.slice(0, 12)}...{$walletState.address.slice(-8)}
+              {$settingsState.hideAddress ? '••••••••••••••' : `${$walletState.address.slice(0, 12)}...${$walletState.address.slice(-8)}`}
             {:else if $appState.engramConnected}
               Engram Wallet (External)
             {:else if xswdReadyNoWallet}
@@ -1015,7 +1189,14 @@
             {/if}
           </p>
           {#if $walletState.balance !== undefined && $walletState.isOpen}
-            <p class="wallet-menu-balance">{($walletState.balance / 100000).toFixed(5)} DERO</p>
+            <p class="wallet-menu-balance">
+              {$settingsState.hideBalance ? '••••••••' : `${($walletState.balance / 100000).toFixed(5)} DERO`}
+            </p>
+          {/if}
+          {#if walletNetworkMismatch && $walletState.isOpen}
+            <p class="wallet-menu-warning">
+              Address prefix ({walletAddressNetwork === 'simulator' ? 'deto' : 'dero'}) does not match selected network ({currentNetwork.label})
+            </p>
           {/if}
         </div>
         
@@ -1052,6 +1233,41 @@
           </div>
         {:else}
           <!-- Other wallets list -->
+          {#if effectiveNetwork === 'simulator'}
+            <div class="wallet-quickswitch-list">
+              <p class="wallet-menu-label">TEST WALLETS</p>
+              {#if simulatorWalletsLoading}
+                <p class="wallet-quick-hint">Loading test wallets...</p>
+              {:else if simulatorQuickWallets.length === 0}
+                <p class="wallet-quick-hint">No simulator wallets available yet</p>
+              {:else}
+                {#each simulatorQuickWallets.slice(0, 8) as wallet}
+                  {@const isCurrentSimWallet = !!$walletState.address && wallet.address === $walletState.address}
+                  <button
+                    on:click|stopPropagation={() => handleSimulatorQuickSwitch(wallet)}
+                    class="wallet-option wallet-option-test"
+                    disabled={isCurrentSimWallet || switchingSimulatorWalletIndex === wallet.index}
+                  >
+                    <span class="wallet-option-icon"><Gamepad2 size={14} strokeWidth={1.5} /></span>
+                    <div class="wallet-option-info">
+                      <p class="wallet-option-name">Test Wallet #{wallet.index}</p>
+                      <p class="wallet-option-addr">
+                        {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(wallet.address)} ·
+                        {$settingsState.hideBalance ? '••••' : `${formatBalanceAtomic(wallet.balance)} DERO`}
+                      </p>
+                    </div>
+                    {#if isCurrentSimWallet}
+                      <span class="wallet-test-active">Active</span>
+                    {:else if switchingSimulatorWalletIndex === wallet.index}
+                      <span class="wallet-test-active">...</span>
+                    {/if}
+                  </button>
+                {/each}
+                <p class="wallet-quick-hint">Open Wallet tab for full simulator wallet list</p>
+              {/if}
+            </div>
+          {/if}
+
           {#if recentWalletsInfo.filter(w => !w.isCurrent).length > 0}
             <div class="wallet-quickswitch-list">
               <p class="wallet-menu-label">QUICK SWITCH</p>
@@ -1080,15 +1296,16 @@
               {/each}
             </div>
           {/if}
-          
-          <!-- Edit Avatar Button -->
+
+          <!-- Manage Avatar Placeholder -->
           <div class="wallet-menu-action">
             <button
-              on:click|stopPropagation={() => { showWalletMenu = false; handleAvatarClick(new Event('click')); }}
-              class="edit-avatar-btn"
+              on:click|stopPropagation={handleAvatarClick}
+              class="manage-avatar-btn"
+              title="Villager avatar editor coming soon"
             >
-              <User size={14} />
-              <span>Edit Avatar</span>
+              <span class="manage-avatar-title">Manage Avatar</span>
+              <span class="manage-avatar-subtitle">Coming soon (Villager on TELA)</span>
             </button>
           </div>
           
@@ -1353,6 +1570,9 @@
         <div class="network-switch-simple">
           <div class="simple-spinner"></div>
           <p class="simple-message">Closing simulator services and connecting to mainnet node...</p>
+          <p class="simple-elapsed">
+            Elapsed {networkSwitchElapsed}s{networkSwitchElapsed > 25 ? ' — this can take up to a minute' : ''}
+          </p>
         </div>
       {/if}
     </div>
@@ -1759,7 +1979,6 @@
   .info-value.value-ok { color: var(--status-ok); }
   .info-value.value-warn { color: var(--status-warn); }
   .info-value.value-err { color: var(--status-err); }
-  .info-value.value-cyan { color: var(--cyan-400); }
   
   /* ============================================
      COLLAPSED STATE - LED Strip (unchanged)
@@ -1876,7 +2095,6 @@
   .unified-dot.dot-ok { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
   .unified-dot.dot-warn { background: var(--status-warn); box-shadow: 0 0 6px var(--status-warn); }
   .unified-dot.dot-err { background: var(--status-err); box-shadow: 0 0 6px var(--status-err); }
-  .unified-dot.dot-cyan { background: var(--cyan-400); box-shadow: 0 0 6px var(--cyan-400); }
   
   /* v6.3 Edge Rail: Smaller dots (5px) for LED strip */
   .sidebar.collapsed .unified-dot {
@@ -1887,7 +2105,6 @@
   .sidebar.collapsed .unified-dot.dot-ok { box-shadow: 0 0 4px var(--status-ok); }
   .sidebar.collapsed .unified-dot.dot-warn { box-shadow: 0 0 4px var(--status-warn); }
   .sidebar.collapsed .unified-dot.dot-err { box-shadow: 0 0 4px var(--status-err); }
-  .sidebar.collapsed .unified-dot.dot-cyan { box-shadow: 0 0 4px var(--cyan-400); }
   
   /* ============================================
      v6.3 TOOLTIP SYSTEM FOR COLLAPSED STATE
@@ -2370,6 +2587,13 @@
     color: var(--text-3);
     margin-top: var(--s-1);
   }
+
+  .wallet-menu-warning {
+    margin-top: var(--s-2);
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--status-warn);
+  }
   
   .wallet-option {
     width: 100%;
@@ -2386,6 +2610,19 @@
   
   .wallet-option:hover {
     background: var(--void-hover);
+  }
+
+  .wallet-option:disabled {
+    opacity: 0.7;
+    cursor: default;
+  }
+
+  .wallet-option-test {
+    border-left: 2px solid transparent;
+  }
+
+  .wallet-option-test:hover {
+    border-left-color: var(--status-err);
   }
   
   .wallet-option-icon {
@@ -2410,6 +2647,12 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-4);
+  }
+
+  .wallet-test-active {
+    font-size: 10px;
+    color: var(--status-ok);
+    font-family: var(--font-mono);
   }
   
   .wallet-option-row {
@@ -2466,33 +2709,42 @@
   .wallet-disconnect-btn:hover {
     background: rgba(248, 113, 113, 0.08);
   }
-  
-  /* Edit Avatar Button in Menu */
+
+  /* Manage Avatar Placeholder Button */
   .wallet-menu-action {
     padding: var(--s-2) var(--s-3);
     border-bottom: 1px solid var(--border-dim);
   }
-  
-  .edit-avatar-btn {
+
+  .manage-avatar-btn {
     width: 100%;
     display: flex;
-    align-items: center;
-    gap: var(--s-2);
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
     padding: var(--s-2) var(--s-3);
     font-size: 11px;
-    font-weight: 500;
-    color: var(--cyan-400);
     background: transparent;
-    border: none;
+    border: 1px dashed rgba(34, 211, 238, 0.28);
     border-radius: var(--r-sm);
     cursor: pointer;
-    transition: background var(--dur-fast), color var(--dur-fast);
+    transition: background var(--dur-fast), border-color var(--dur-fast);
     text-align: left;
   }
-  
-  .edit-avatar-btn:hover {
-    background: rgba(0, 255, 255, 0.08);
-    color: var(--cyan-300);
+
+  .manage-avatar-btn:hover {
+    background: rgba(0, 255, 255, 0.06);
+    border-color: rgba(34, 211, 238, 0.42);
+  }
+
+  .manage-avatar-title {
+    color: var(--cyan-400);
+    font-weight: 500;
+  }
+
+  .manage-avatar-subtitle {
+    color: var(--text-4);
+    font-size: 10px;
   }
   
   .wallet-switch-section {
@@ -2532,6 +2784,13 @@
   
   .wallet-quickswitch-list .wallet-menu-label {
     padding: var(--s-1) var(--s-3);
+  }
+
+  .wallet-quick-hint {
+    margin: 0;
+    padding: 0 var(--s-3) var(--s-2);
+    font-size: 10px;
+    color: var(--text-4);
   }
   
   .connected-apps-section {
@@ -2756,268 +3015,6 @@
     min-width: 140px;
   }
   
-  /* Simulator Modal - Hologram v6.1 Wizard Style */
-  .sim-modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.85);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    backdrop-filter: blur(8px);
-  }
-  
-  .sim-modal-card {
-    background: var(--void-mid);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-lg);
-    width: 90%;
-    max-width: 420px;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
-    overflow: hidden;
-    position: relative;
-  }
-  
-  /* Shimmer border effect */
-  .sim-modal-card::before {
-    content: '';
-    position: absolute;
-    inset: -1px;
-    border-radius: var(--r-lg);
-    padding: 1px;
-    background: var(--grad-shimmer);
-    background-size: 300% 100%;
-    animation: shimmer 4s linear infinite;
-    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    z-index: 0;
-    pointer-events: none;
-  }
-  
-  /* Status Bar */
-  .sim-modal-status {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--s-3) var(--s-4);
-    border-bottom: 1px solid var(--border-dim);
-    background: var(--void-deep);
-    position: relative;
-    z-index: 1;
-  }
-  
-  .sim-modal-status-left {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-  }
-  
-  .sim-modal-status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--text-4);
-  }
-  
-  .sim-modal-status-dot.start { background: var(--status-ok); box-shadow: 0 0 8px var(--status-ok); }
-  .sim-modal-status-dot.stop { background: var(--status-warn); box-shadow: 0 0 8px var(--status-warn); }
-  
-  .sim-modal-status-text {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-3);
-  }
-  
-  .sim-modal-badge {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    padding: 3px 8px;
-    border-radius: 4px;
-    border: 1px solid;
-  }
-  
-  .sim-modal-badge.start { color: var(--status-ok); border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.08); }
-  .sim-modal-badge.stop { color: var(--status-warn); border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.08); }
-  
-  /* Header */
-  .sim-modal-header {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    padding: var(--s-5) var(--s-4) var(--s-4);
-    position: relative;
-    z-index: 1;
-  }
-  
-  .sim-modal-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 56px;
-    height: 56px;
-    border-radius: 50%;
-    border: 1px solid;
-    margin-bottom: var(--s-3);
-  }
-  
-  .sim-modal-icon.start {
-    color: var(--status-ok);
-    background: rgba(52, 211, 153, 0.08);
-    border-color: rgba(52, 211, 153, 0.25);
-    box-shadow: 0 0 20px rgba(52, 211, 153, 0.15);
-  }
-  
-  .sim-modal-icon.stop {
-    color: var(--status-warn);
-    background: rgba(251, 191, 36, 0.08);
-    border-color: rgba(251, 191, 36, 0.25);
-    box-shadow: 0 0 20px rgba(251, 191, 36, 0.15);
-  }
-  
-  .sim-modal-title {
-    font-family: var(--font-mono);
-    font-size: 14px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-1);
-    margin: 0 0 var(--s-2);
-  }
-  
-  .sim-modal-desc {
-    font-size: 13px;
-    color: var(--text-3);
-    margin: 0;
-    line-height: 1.5;
-  }
-  
-  /* Body */
-  .sim-modal-body {
-    padding: 0 var(--s-4) var(--s-4);
-    position: relative;
-    z-index: 1;
-  }
-  
-  .sim-modal-features {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-2);
-    margin-bottom: var(--s-3);
-  }
-  
-  .sim-modal-feature {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    font-size: 12px;
-    color: var(--text-2);
-    padding: var(--s-2) var(--s-3);
-    background: var(--void-deep);
-    border-radius: var(--r-sm);
-    border: 1px solid var(--border-subtle);
-  }
-  
-  .sim-modal-feature :global(.sim-feature-icon) {
-    color: var(--text-4);
-    flex-shrink: 0;
-  }
-  
-  .sim-modal-note {
-    padding: var(--s-3);
-    border-radius: var(--r-md);
-    font-size: 12px;
-    line-height: 1.5;
-    margin-bottom: var(--s-2);
-  }
-  
-  .sim-modal-note:last-child {
-    margin-bottom: 0;
-  }
-  
-  .sim-modal-note.cyan {
-    background: rgba(34, 211, 238, 0.08);
-    border: 1px solid rgba(34, 211, 238, 0.2);
-    color: var(--cyan-400);
-  }
-  
-  .sim-modal-note.warn {
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.2);
-    color: var(--status-warn);
-  }
-  
-  /* Actions */
-  .sim-modal-actions {
-    display: flex;
-    gap: var(--s-3);
-    padding: var(--s-4);
-    border-top: 1px solid var(--border-dim);
-    background: var(--void-deep);
-    position: relative;
-    z-index: 1;
-  }
-  
-  .sim-modal-btn {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--s-3) var(--s-4);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    border-radius: var(--r-md);
-    cursor: pointer;
-    transition: all var(--dur-med) var(--ease-out);
-    border: none;
-  }
-  
-  .sim-modal-btn.secondary {
-    background: var(--void-up);
-    color: var(--text-3);
-    border: 1px solid var(--border-subtle);
-  }
-  
-  .sim-modal-btn.secondary:hover {
-    background: var(--void-surface);
-    color: var(--text-1);
-    border-color: var(--border-default);
-  }
-  
-  .sim-modal-btn.primary {
-    background: var(--status-ok);
-    color: var(--void-pure);
-  }
-  
-  .sim-modal-btn.primary:hover {
-    filter: brightness(1.1);
-    box-shadow: 0 0 16px rgba(52, 211, 153, 0.4);
-    transform: translateY(-1px);
-  }
-  
-  .sim-modal-btn.warn {
-    background: var(--status-warn);
-    color: var(--void-pure);
-  }
-  
-  .sim-modal-btn.warn:hover {
-    filter: brightness(1.1);
-    box-shadow: 0 0 16px rgba(251, 191, 36, 0.4);
-    transform: translateY(-1px);
-  }
-  
   :global(.c-violet) {
     color: var(--violet-400);
   }
@@ -3033,7 +3030,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 2000;
+    z-index: var(--z-modal-nested, 2000);
     animation: fadeIn 0.2s ease-out;
   }
   
@@ -3162,15 +3159,15 @@
   }
   
   .step-circle {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    border: 1.5px solid currentColor;
+    border: 1px solid currentColor;
   }
   
   .step-spinner {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     border: 2px solid transparent;
     border-top-color: currentColor;
     border-radius: 50%;
@@ -3208,22 +3205,18 @@
   .progress-bar-track {
     height: 4px;
     background: var(--void-up);
-    border-radius: 2px;
+    border-radius: var(--r-xs);
     overflow: hidden;
   }
   
   .progress-bar-fill {
     height: 100%;
-    border-radius: 2px;
+    border-radius: var(--r-xs);
     transition: width 0.3s ease-out;
   }
   
   .progress-bar-fill.simulator {
     background: linear-gradient(90deg, var(--status-err), var(--pink-400));
-  }
-  
-  .progress-bar-fill.mainnet {
-    background: linear-gradient(90deg, var(--cyan-400), var(--status-ok));
   }
   
   .progress-text {
@@ -3247,7 +3240,7 @@
   .simple-spinner {
     width: 40px;
     height: 40px;
-    border: 3px solid var(--void-up);
+    border: 2px solid var(--void-up);
     border-top-color: var(--status-ok);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
@@ -3259,5 +3252,14 @@
     text-align: center;
     line-height: 1.5;
     margin: 0;
+  }
+
+  .simple-elapsed {
+    margin: 0;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-4);
+    text-align: center;
+    letter-spacing: 0.02em;
   }
 </style>

@@ -49,10 +49,12 @@ func (a *App) routeDaemonCall(method string, params map[string]interface{}) XSWD
 	return xswdSuccess(result)
 }
 
-// routeEpochCall handles EPOCH-related methods
-func (a *App) routeEpochCall(method string, params map[string]interface{}) XSWDResponse {
+// routeEpochCall handles EPOCH-related methods.
+// requesterHint is used for attribution/rate-limit tracking (e.g. websocket origin).
+func (a *App) routeEpochCall(method string, params map[string]interface{}, requesterHint string) XSWDResponse {
 	switch method {
 	case "AttemptEPOCH", "AttemptEPOCHWithAddr":
+		appID := resolveEpochRequester(params, requesterHint)
 		hashes := 100 // default
 		if h, ok := params["hashes"].(float64); ok && h > 0 {
 			hashes = int(h)
@@ -78,7 +80,7 @@ func (a *App) routeEpochCall(method string, params map[string]interface{}) XSWDR
 		}
 
 		// Compute hashes (rewards go to current EPOCH address - either app dev or default)
-		epochResult := a.HandleEpochRequest(hashes, "")
+		epochResult := a.HandleEpochRequest(hashes, appID)
 		if epochResult["success"] == true {
 			return xswdSuccess(map[string]interface{}{
 				"epochHashes":        epochResult["hashes"],
@@ -92,12 +94,43 @@ func (a *App) routeEpochCall(method string, params map[string]interface{}) XSWDR
 	case "GetMaxHashesEPOCH":
 		stats := a.GetEpochStats()
 		return xswdSuccess(map[string]interface{}{
-			"maxHashes": stats["maxHashes"],
+			"maxHashes": stats["max_hashes"],
 		})
 
 	default:
 		return xswdError(fmt.Sprintf("Unknown EPOCH method: %s", method))
 	}
+}
+
+func resolveEpochRequester(params map[string]interface{}, requesterHint string) string {
+	candidates := []string{
+		requesterHint,
+	}
+
+	if params != nil {
+		lookupKeys := []string{
+			"app_scid",
+			"appSCID",
+			"scid",
+			"origin",
+			"durl",
+			"name",
+		}
+		for _, key := range lookupKeys {
+			if raw, ok := params[key]; ok {
+				if value, ok := raw.(string); ok && strings.TrimSpace(value) != "" {
+					candidates = append(candidates, value)
+				}
+			}
+		}
+	}
+
+	for _, candidate := range candidates {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "unknown"
 }
 
 // routeTELACall handles TELA-specific methods
@@ -152,14 +185,65 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 		})
 
 	case "GetAllSCIDVariableDetails":
-		vars := a.gnomonClient.GetAllSCIDVariableDetails(getStr("scid"))
-		varMaps := make([]map[string]interface{}, 0, len(vars))
-		for _, v := range vars {
-			varMaps = append(varMaps, map[string]interface{}{
-				"Key":   v.Key,
-				"Value": v.Value,
-			})
+		scid := getStr("scid")
+		varMaps := make([]map[string]interface{}, 0)
+
+		// Primary: query the daemon — it always reflects the live blockchain state.
+		// Gnomon can be stale (e.g. a SC that gained new entries since Gnomon last indexed it
+		// would return a partial list from Gnomon, silently missing the newer entries).
+		// The daemon returns string values hex-encoded; decode them before passing to the app.
+		// Both stringkeys (string-keyed vars) and uint64keys (integer-keyed vars) are included
+		// to match the full dataset returned by telaHost.getSmartContract in Engram.
+		if a.daemonClient != nil && scid != "" {
+			if scResult, err := a.daemonClient.GetSC(scid, false, true); err == nil {
+				if stringkeys, ok := scResult["stringkeys"].(map[string]interface{}); ok {
+					for k, v := range stringkeys {
+						value := v
+						if strVal, ok := v.(string); ok {
+							value = decodeHexString(strVal)
+						}
+						varMaps = append(varMaps, map[string]interface{}{
+							"Key":   k,
+							"Value": value,
+						})
+					}
+				}
+				// uint64keys holds variables indexed by an integer key (e.g. NFT token IDs).
+				// The daemon JSON encodes these keys as strings (map[string]interface{}) after
+				// the JSON round-trip. String values inside are hex-encoded; numerics pass as-is.
+				if uint64keys, ok := scResult["uint64keys"].(map[string]interface{}); ok {
+					for k, v := range uint64keys {
+						value := v
+						if strVal, ok := v.(string); ok {
+							value = decodeHexString(strVal)
+						}
+						varMaps = append(varMaps, map[string]interface{}{
+							"Key":   k,
+							"Value": value,
+						})
+					}
+				}
+				log.Printf("[GNOMON] Daemon returned %d variables for %s", len(varMaps), scid[:min(16, len(scid))])
+			}
 		}
+
+		// Fallback: if the daemon query failed or returned nothing, try Gnomon.
+		// Gnomon already hex-decodes all string values during indexing
+		// (see gnomon/indexer/indexer.go VariableStringKeys loop), so do NOT
+		// call decodeHexString here — it would double-decode SCID strings.
+		if len(varMaps) == 0 {
+			vars := a.gnomonClient.GetAllSCIDVariableDetails(scid)
+			for _, v := range vars {
+				varMaps = append(varMaps, map[string]interface{}{
+					"Key":   v.Key,
+					"Value": v.Value,
+				})
+			}
+			if len(varMaps) > 0 {
+				log.Printf("[GNOMON] Daemon unavailable, returned %d variables from Gnomon for %s", len(varMaps), scid[:min(16, len(scid))])
+			}
+		}
+
 		return xswdSuccess(map[string]interface{}{
 			"allVariables": varMaps,
 		})
@@ -305,4 +389,3 @@ func isEpochMethod(method string) bool {
 func isTELAMethod(method string) bool {
 	return method == "HandleTELALinks"
 }
-

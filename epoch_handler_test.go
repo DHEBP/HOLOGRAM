@@ -196,7 +196,7 @@ func TestEpochHandlerSetConfig(t *testing.T) {
 
 	// Test with invalid max hashes (should not change)
 	handler.SetConfig(true, 0, 2) // 0 is invalid
-	
+
 	handler.RLock()
 	if handler.maxHashes != 200 { // Should remain unchanged
 		t.Errorf("maxHashes changed to %d when it shouldn't have", handler.maxHashes)
@@ -245,32 +245,32 @@ func TestEpochHandlerRateLimiting(t *testing.T) {
 	}
 
 	// Record 100 hashes (total: 100)
-	handler.recordRequest(appSCID, 100)
+	handler.recordRequest(appSCID, 100, 0)
 
 	// 100 + 100 = 200 <= 500, should NOT be rate limited
 	if handler.isRateLimited(appSCID, 100) {
 		t.Error("200 total hashes should not be rate limited")
 	}
-	handler.recordRequest(appSCID, 100) // total: 200
+	handler.recordRequest(appSCID, 100, 0) // total: 200
 
 	// 200 + 100 = 300 <= 500, should NOT be rate limited
 	if handler.isRateLimited(appSCID, 100) {
 		t.Error("300 total hashes should not be rate limited")
 	}
-	handler.recordRequest(appSCID, 100) // total: 300
+	handler.recordRequest(appSCID, 100, 0) // total: 300
 
 	// 300 + 100 = 400 <= 500, should NOT be rate limited
 	if handler.isRateLimited(appSCID, 100) {
 		t.Error("400 total hashes should not be rate limited")
 	}
-	handler.recordRequest(appSCID, 100) // total: 400
+	handler.recordRequest(appSCID, 100, 0) // total: 400
 
 	// 400 + 100 = 500 <= 500 (equals limit), should NOT be rate limited
 	// Note: The check is > not >=, so exactly at limit is allowed
 	if handler.isRateLimited(appSCID, 100) {
 		t.Error("500 total hashes should not be rate limited (equals limit)")
 	}
-	handler.recordRequest(appSCID, 100) // total: 500
+	handler.recordRequest(appSCID, 100, 0) // total: 500
 
 	// Now at 500, requesting 1 more would be 501 > 500, should be rate limited
 	if !handler.isRateLimited(appSCID, 1) {
@@ -289,7 +289,7 @@ func TestEpochHandlerRateLimitingWindow(t *testing.T) {
 	appSCID := "testapp123456789"
 
 	// Fill up rate limit
-	handler.recordRequest(appSCID, 400)
+	handler.recordRequest(appSCID, 400, 0)
 	if handler.isRateLimited(appSCID, 200) {
 		// 600 would exceed 500
 	}
@@ -314,7 +314,7 @@ func TestEpochHandlerRateLimitingMultipleApps(t *testing.T) {
 	app2 := "app2scid..."
 
 	// Fill app1's limit
-	handler.recordRequest(app1, RATE_LIMIT_MAX_HASHES)
+	handler.recordRequest(app1, RATE_LIMIT_MAX_HASHES, 0)
 
 	// app1 should be rate limited
 	if !handler.isRateLimited(app1, 1) {
@@ -326,11 +326,73 @@ func TestEpochHandlerRateLimitingMultipleApps(t *testing.T) {
 		t.Error("app2 should not be rate limited")
 	}
 
-	handler.recordRequest(app2, 100)
+	handler.recordRequest(app2, 100, 0)
 
 	// app2 still has room
 	if handler.isRateLimited(app2, 100) {
 		t.Error("app2 should still not be rate limited")
+	}
+}
+
+func TestEpochHandlerRateLimitingUnknownIdentifierNormalization(t *testing.T) {
+	handler := NewEpochHandler(nil)
+
+	handler.recordRequest("", 300, 0)
+	if handler.isRateLimited("   ", 200) {
+		t.Error("unknown bucket should not be rate limited at exactly 500 hashes")
+	}
+	if !handler.isRateLimited("", 201) {
+		t.Error("unknown bucket should be rate limited once it exceeds 500 hashes")
+	}
+}
+
+func TestEpochHandlerRecordRequestMetrics(t *testing.T) {
+	handler := NewEpochHandler(nil)
+	appID := "app-metrics"
+
+	handler.recordRequest(appID, 100, 1)
+	handler.recordRequest(appID, 50, 2)
+
+	handler.rateLimitLock.Lock()
+	entry := handler.rateLimits[appID]
+	handler.rateLimitLock.Unlock()
+
+	if entry == nil {
+		t.Fatal("expected metrics entry for app")
+	}
+	if entry.totalRequests != 2 {
+		t.Errorf("totalRequests = %d, expected 2", entry.totalRequests)
+	}
+	if entry.totalHashes != 150 {
+		t.Errorf("totalHashes = %d, expected 150", entry.totalHashes)
+	}
+	if entry.totalMiniBlocks != 3 {
+		t.Errorf("totalMiniBlocks = %d, expected 3", entry.totalMiniBlocks)
+	}
+}
+
+func TestNormalizeAppIdentifier(t *testing.T) {
+	if got := normalizeAppIdentifier(""); got != "unknown" {
+		t.Errorf("normalizeAppIdentifier(\"\") = %q, expected unknown", got)
+	}
+	if got := normalizeAppIdentifier("   "); got != "unknown" {
+		t.Errorf("normalizeAppIdentifier(whitespace) = %q, expected unknown", got)
+	}
+	if got := normalizeAppIdentifier("  app-1  "); got != "app-1" {
+		t.Errorf("normalizeAppIdentifier(trim) = %q, expected app-1", got)
+	}
+}
+
+func TestPreviewAppIdentifier(t *testing.T) {
+	if got := previewAppIdentifier(""); got != "unknown" {
+		t.Errorf("previewAppIdentifier(\"\") = %q, expected unknown", got)
+	}
+	if got := previewAppIdentifier("short-id"); got != "short-id" {
+		t.Errorf("previewAppIdentifier(short) = %q, expected short-id", got)
+	}
+	longID := "0123456789abcdefXYZ"
+	if got := previewAppIdentifier(longID); got != "0123456789abcdef..." {
+		t.Errorf("previewAppIdentifier(long) = %q, expected 16-char preview", got)
 	}
 }
 
@@ -411,7 +473,7 @@ func TestEpochHandlerConcurrentRateLimiting(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_ = handler.isRateLimited(appSCID, 10)
-			handler.recordRequest(appSCID, 10)
+			handler.recordRequest(appSCID, 10, 0)
 		}()
 	}
 
@@ -488,7 +550,7 @@ func BenchmarkEpochHandlerRecordRequest(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		handler.recordRequest(appSCID, 10)
+		handler.recordRequest(appSCID, 10, 0)
 	}
 }
 

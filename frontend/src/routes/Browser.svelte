@@ -1,18 +1,28 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory } from '../../wailsjs/go/main/App.js';
-  import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, OpenURLInBrowserIfAllowed } from '../../wailsjs/go/main/App.js';
+  import { EventsOn, EventsOff, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
 import RatingsBreakdown from '../lib/components/RatingsBreakdown.svelte';
 import VersionHistory from '../lib/components/VersionHistory.svelte';
-import { Star, History, GitBranch, Heart } from 'lucide-svelte';
+import { Star, History, GitBranch, Heart, Link2, X } from 'lucide-svelte';
 import deroIconFallback from '../assets/dero-icon-fallback.svg';
+import OmniSearch from '../lib/components/OmniSearch.svelte';
 
 // Permission helpers for XSWD connection requests
+function isAllowedExternalWebUrl(s) {
+  try {
+    const u = new URL(s);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function getPermissionName(permId) {
   const names = {
     'read_public_data': 'Read Public Blockchain Data',
@@ -35,11 +45,39 @@ function getPermissionDescription(permId) {
   return descriptions[permId] || 'Unknown permission';
 }
 
+function closeExternalLinkModal() {
+  showExternalLinkModal = false;
+  externalLinkUrl = '';
+}
+
+async function copyExternalLinkToClipboard() {
+  if (!externalLinkUrl) return;
+  try {
+    await ClipboardSetText(externalLinkUrl);
+    toast.success('Link copied');
+  } catch {
+    toast.error('Could not copy link');
+  }
+}
+
+async function openExternalLinkInSystemBrowser() {
+  if (!externalLinkUrl || !isAllowedExternalWebUrl(externalLinkUrl)) return;
+  try {
+    const res = await OpenURLInBrowserIfAllowed(externalLinkUrl);
+    if (!res || res.success === false) {
+      return;
+    }
+    closeExternalLinkModal();
+  } catch {
+    toast.error('Could not open link');
+  }
+}
+
 function resetXSWDSubscriptions() {
   xswdSubscriptions = { new_topoheight: false, new_balance: false, new_entry: false };
   lastTopoheight = null;
   lastBalance = null;
-  lastEntryTxid = null;
+  seenEntryTxids = new Set();
   stopXSWDSubscriptionPolling();
 }
 
@@ -91,12 +129,19 @@ async function pollXSWDSubscriptions() {
     }
 
     if (xswdSubscriptions.new_entry) {
-      const history = await GetTransactionHistory(5);
+      const history = await GetTransactionHistory(10);
       if (history?.success && Array.isArray(history.transactions) && history.transactions.length > 0) {
-        const latest = history.transactions[history.transactions.length - 1];
-        if (latest?.txid && latest.txid !== lastEntryTxid) {
-          lastEntryTxid = latest.txid;
-          sendXSWDEvent('new_entry', latest);
+        // Iterate through all transactions (oldest to newest) and emit events for new ones
+        for (const tx of history.transactions) {
+          if (tx?.txid && !seenEntryTxids.has(tx.txid)) {
+            seenEntryTxids.add(tx.txid);
+            sendXSWDEvent('new_entry', tx);
+          }
+        }
+        // Limit the Set size to prevent memory growth (keep last 100 txids)
+        if (seenEntryTxids.size > 100) {
+          const txidsArray = Array.from(seenEntryTxids);
+          seenEntryTxids = new Set(txidsArray.slice(-100));
         }
       }
     }
@@ -113,6 +158,7 @@ function startXSWDSubscriptionPolling() {
 }
 
 let addressInput = '';
+  let addressInputEl;
   let loading = false;
   let showWelcome = true;
   let currentMeta = {};
@@ -132,7 +178,7 @@ let addressInput = '';
   let xswdSubscriptions = { new_topoheight: false, new_balance: false, new_entry: false };
   let lastTopoheight = null;
   let lastBalance = null;
-  let lastEntryTxid = null;
+  let seenEntryTxids = new Set();
   
   // Browser tabs state - each tab has its own history
   let tabs = [
@@ -220,12 +266,18 @@ let addressInput = '';
   let unsubscribeConsole;
   let consoleViewport;
   let consoleUserScrolled = false;
+  let previousLogCount = 0;
   
   // App discovery state
   let apps = [];
   let filteredApps = [];
   let appsLoading = false;
   let appsLoaded = false; // Track if we've attempted to load apps (prevents infinite loop when 0 apps found)
+  let waitingForInitialApps = false;
+  let appDiscoveryRetryCount = 0;
+  let appDiscoveryRetryTimer = null;
+  const APP_DISCOVERY_RETRY_DELAY_MS = 5000;
+  const APP_DISCOVERY_MAX_RETRIES = 12;
   let selectedCategory = 'top';
   let sortBy = 'rating';
   
@@ -242,14 +294,29 @@ let addressInput = '';
   function shouldShowIcon(iconUrl) {
     return iconUrl && !failedIcons.has(iconUrl);
   }
+
+  function clearAppDiscoveryRetryTimer() {
+    if (appDiscoveryRetryTimer) {
+      clearTimeout(appDiscoveryRetryTimer);
+      appDiscoveryRetryTimer = null;
+    }
+  }
   
   // Gnomon auto-start preference
   let enableAutostart = false;
+  
+  // True while Browser.svelte is attempting to auto-start Gnomon on mount
+  let gnomonStarting = false;
   
   // Local Dev Mode state
   let isLocalDevMode = false;
   let localDevUrl = '';
   let hotReloadInProgress = false; // Flag to auto-approve XSWD during hot reload
+  
+  // Session approval tracking - prevents double-modal when stale content reloads via HTTP
+  let sessionApprovedScid = null;
+  let sessionApprovedAppName = null;
+  let sessionApprovalTime = 0;
   
   // Favorites
   let showAllFavorites = false;
@@ -266,6 +333,9 @@ let addressInput = '';
   // Ratings breakdown state
   let showRatingsBreakdown = false;
   let breakdownScid = '';
+
+  let showExternalLinkModal = false;
+  let externalLinkUrl = '';
   
   function openRatingModal(app, event) {
     event.stopPropagation();
@@ -334,17 +404,26 @@ let addressInput = '';
   let showBlockedApps = false; // Toggle to show blocked apps
   
   // Check if current address is favorited
-  $: currentIsFavorited = addressInput && favorites.isFavorite(addressInput);
+  $: currentIsFavorited = addressInput && $favorites && favorites.isFavorite(addressInput);
   
   async function loadApps() {
+    if (appsLoading) {
+      return;
+    }
+
     // Only load apps if Gnomon is already running - don't auto-start
     if (!$appState.gnomonRunning) {
+      clearAppDiscoveryRetryTimer();
       appsLoading = false;
+      waitingForInitialApps = false;
+      appDiscoveryRetryCount = 0;
       setAppDiscoveryState({ loading: false });
       return;
     }
     
     appsLoading = true;
+    waitingForInitialApps = false;
+    clearAppDiscoveryRetryTimer();
     setAppDiscoveryState({ loading: true });
     try {
       // Load content filter config first
@@ -383,26 +462,44 @@ let addressInput = '';
         availableTags = [];
       }
       
-      appsLoaded = true; // Mark as loaded even if 0 apps found
-      
-      // If we found 0 apps but Gnomon just started (fastsync), retry after a delay
-      // This handles the case where block sync is instant but app discovery takes time
-      if (apps.length === 0 && get(appState).gnomonRunning) {
-        console.log('[Browser] No apps found yet, will retry in 5 seconds...');
-        setTimeout(() => {
-          if (get(appState).gnomonRunning && apps.length === 0) {
-            console.log('[Browser] Retrying app discovery...');
-            appsLoaded = false; // Reset to allow reload
-            loadApps();
-          }
-        }, 5000);
+      if (apps.length > 0) {
+        appsLoaded = true;
+        waitingForInitialApps = false;
+        appDiscoveryRetryCount = 0;
+      } else if (get(appState).gnomonRunning) {
+        appsLoaded = false;
+        if (appDiscoveryRetryCount < APP_DISCOVERY_MAX_RETRIES) {
+          appDiscoveryRetryCount += 1;
+          waitingForInitialApps = true;
+          const retryAttempt = appDiscoveryRetryCount;
+          console.log(`[Browser] No apps found yet, retrying discovery in 5 seconds (${retryAttempt}/${APP_DISCOVERY_MAX_RETRIES})`);
+          appDiscoveryRetryTimer = setTimeout(() => {
+            appDiscoveryRetryTimer = null;
+            if (get(appState).gnomonRunning && apps.length === 0) {
+              console.log('[Browser] Retrying app discovery...');
+              loadApps();
+            } else {
+              waitingForInitialApps = false;
+            }
+          }, APP_DISCOVERY_RETRY_DELAY_MS);
+        } else {
+          waitingForInitialApps = false;
+          appsLoaded = true;
+          console.log('[Browser] App discovery retry budget exhausted; showing empty state');
+        }
+      } else {
+        waitingForInitialApps = false;
+        appsLoaded = true;
       }
     } catch (error) {
       console.error('Failed to load apps:', error);
+      waitingForInitialApps = false;
+      appDiscoveryRetryCount = 0;
+      clearAppDiscoveryRetryTimer();
       appsLoaded = true; // Mark as loaded to prevent retry loop
     } finally {
       appsLoading = false;
-      setAppDiscoveryState({ loading: false, loaded: appsLoaded });
+      setAppDiscoveryState({ loading: appsLoading || waitingForInitialApps, loaded: appsLoaded });
       if (appsLoaded && apps.length > 0) {
         const currentIndexedHeight = get(appState).gnomonIndexedHeight || 0;
         appState.update(state => ({
@@ -444,8 +541,12 @@ let addressInput = '';
   }
   
   // Reset appsLoaded when Gnomon stops (so it can reload when restarted)
-  $: if (!$appState.gnomonRunning && appsLoaded) {
+  $: if (!$appState.gnomonRunning && (appsLoaded || appsLoading || waitingForInitialApps)) {
+    clearAppDiscoveryRetryTimer();
+    waitingForInitialApps = false;
+    appDiscoveryRetryCount = 0;
     appsLoaded = false;
+    appsLoading = false;
     apps = [];
     filteredApps = [];
     setAppDiscoveryState({ loading: false, loaded: false });
@@ -453,7 +554,7 @@ let addressInput = '';
   
   // Reactive: reload apps when Gnomon starts running (if not yet loaded)
   // Uses appsLoaded flag to prevent infinite loop when 0 apps are found
-  $: if ($appState.gnomonRunning && !appsLoaded && !appsLoading) {
+  $: if ($appState.gnomonRunning && !appsLoaded && !appsLoading && !waitingForInitialApps) {
     loadApps();
   }
   
@@ -673,12 +774,33 @@ let addressInput = '';
   
   // Check if an app is favorited (pass $favorites to make it reactive)
   function isAppFavorited(app, favList) {
-    return favList.some(f => f.scid === app.scid || (f.durl && f.durl === app.durl));
+    return favList.some(f => (app.scid && f.scid === app.scid) || (app.durl && f.durl === app.durl));
   }
   
   onMount(async () => {
     restoreBrowserSession();
     restoreDiscoveryCache();
+    
+    // Auto-start Gnomon when the Browser page opens — no reason to make the user
+    // stare at a blank page and manually click "Start". EnsureGnomonRunning is
+    // idempotent: it returns immediately if already running.
+    if (!get(appState).gnomonRunning) {
+      gnomonStarting = true;
+      try {
+        await EnsureGnomonRunning();
+        await updateStatus();
+      } catch (err) {
+        console.error('[Browser] Auto-start Gnomon failed:', err);
+      } finally {
+        gnomonStarting = false;
+      }
+    }
+    
+    // Auto-focus address bar when entering Browser section
+    await tick();
+    if (addressInputEl) {
+      addressInputEl.focus();
+    }
 
     unsubscribePending = pendingNavigation.subscribe((nav) => {
       if (nav?.url && !hasNavigated) {
@@ -784,6 +906,26 @@ let addressInput = '';
         }
         return;
       }
+
+      if (event.data && event.data.type === 'hologram-external-link') {
+        const url = typeof event.data.url === 'string' ? event.data.url.trim() : '';
+        if (url && isAllowedExternalWebUrl(url)) {
+          externalLinkUrl = url;
+          showExternalLinkModal = true;
+        }
+        return;
+      }
+
+      // TELA / in-app HTML: open HOLOGRAM Block Explorer (OmniSearch) with a 64-hex SCID or other query
+      if (event.data && event.data.type === 'hologram-explorer-search') {
+        const query = typeof event.data.query === 'string' ? event.data.query.trim() : '';
+        if (!query) return;
+        window.dispatchEvent(new CustomEvent('search-navigate', {
+          detail: { tab: 'explorer', type: 'hash', query, result: null }
+        }));
+        return;
+      }
+
       if (!event.data || event.data.type !== 'xswd-request') {
         return;
       }
@@ -821,45 +963,62 @@ let addressInput = '';
                   addConsoleLog(`[Browser] Auto-approve result: ${JSON.stringify(approveResult)}`);
                   result = true;
                 } else {
-                  addConsoleLog('[Browser] Requesting wallet approval via modal...');
-                  // Check if app requests specific permissions in handshake
-                  const requestedPerms = payload.appInfo?.permissions || [];
-                  const hasWalletPerms = requestedPerms.some(p => 
-                    ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
-                  );
-                  // Default to read-only unless app explicitly requests wallet permissions
-                  const isReadOnly = !hasWalletPerms;
-                  // Flag if wallet is not open but app likely needs it
-                  const walletNotOpen = !currentWalletState.isOpen;
+                  // Check if this app was already approved in this session (prevents double-modal
+                  // when stale cached content loads in srcdoc then switches to HTTP server)
+                  const connectingAppName = payload.appInfo?.name || '';
+                  const timeSinceApproval = Date.now() - sessionApprovalTime;
+                  const sameScid = sessionApprovedScid != null && currentMeta?.scid && sessionApprovedScid === currentMeta.scid;
+                  const sameName = sessionApprovedAppName != null && connectingAppName && sessionApprovedAppName === connectingAppName;
                   
-                  const approval = await requestWalletApproval({
-                    type: 'connect',
-                    appName: payload.appInfo?.name || currentMeta.name || 'App',
-                    origin: addressInput,
-                    description: payload.appInfo?.description || '',
-                    isReadOnly: isReadOnly,
-                    walletNotOpen: walletNotOpen,
-                    requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
-                      id: p,
-                      name: getPermissionName(p),
-                      description: getPermissionDescription(p),
-                      alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(p)
-                    })) : [{ 
-                      id: 'read_public_data', 
-                      name: 'Read Public Blockchain Data',
-                      description: 'Can read public blockchain info (blocks, transactions, network stats)',
-                      alwaysAsk: false
-                    }]
-                  });
-                  addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
-                  if (approval && approval.approved) {
-                    addConsoleLog('[Browser] Calling ApproveWalletConnection...');
+                  if ((sameScid || sameName) && timeSinceApproval < 30000) {
+                    addConsoleLog(`[Browser] Auto-approving reconnect for: ${connectingAppName} (already approved in this session)`);
                     const approveResult = await ApproveWalletConnection();
-                    addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
-                    result = true;
+                    result = approveResult?.success === true;
                   } else {
-                    addConsoleLog('[Browser] User denied connection');
-                    result = false;
+                    addConsoleLog('[Browser] Requesting wallet approval via modal...');
+                    // Check if app requests specific permissions in handshake
+                    const requestedPerms = payload.appInfo?.permissions || [];
+                    const hasWalletPerms = requestedPerms.some(p => 
+                      ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
+                    );
+                    // Default to read-only unless app explicitly requests wallet permissions
+                    const isReadOnly = !hasWalletPerms;
+                    // Flag if wallet is not open but app likely needs it
+                    const walletNotOpen = !currentWalletState.isOpen;
+                    
+                    const approval = await requestWalletApproval({
+                      type: 'connect',
+                      appName: payload.appInfo?.name || currentMeta.name || 'App',
+                      origin: addressInput,
+                      description: payload.appInfo?.description || '',
+                      isReadOnly: isReadOnly,
+                      walletNotOpen: walletNotOpen,
+                      requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
+                        id: p,
+                        name: getPermissionName(p),
+                        description: getPermissionDescription(p),
+                        alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(p)
+                      })) : [{ 
+                        id: 'read_public_data', 
+                        name: 'Read Public Blockchain Data',
+                        description: 'Can read public blockchain info (blocks, transactions, network stats)',
+                        alwaysAsk: false
+                      }]
+                    });
+                    addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
+                    if (approval && approval.approved) {
+                      addConsoleLog('[Browser] Calling ApproveWalletConnection...');
+                      const approveResult = await ApproveWalletConnection();
+                      addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
+                      // Record this approval for reconnect deduplication
+                      sessionApprovedScid = currentMeta?.scid || null;
+                      sessionApprovedAppName = connectingAppName;
+                      sessionApprovalTime = Date.now();
+                      result = true;
+                    } else {
+                      addConsoleLog('[Browser] User denied connection');
+                      result = false;
+                    }
                   }
                 }
               } catch (e) {
@@ -875,7 +1034,6 @@ let addressInput = '';
           case 'call':
             // Handle XSWD method call
             const { method, params, authState } = payload;
-            addConsoleLog(`[DEBUG] XSWD call received: method=${method}, authState=${authState}`);
             const normalizedMethod = method.replace('DERO.', '');
           const methodLower = normalizedMethod.toLowerCase();
           const callSettings = get(settingsState);
@@ -906,23 +1064,30 @@ let addressInput = '';
             // Wallet methods that require authorization
             const walletMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
                                    'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
-                                   'SplitIntegratedAddress', 'QueryKey', 'transfer', 'Transfer',
+                                   'SplitIntegratedAddress', 'QueryKey', 'SignData', 'CheckSignature',
+                                   'transfer', 'Transfer', 'transfer_split',
                                    'scinvoke', 'SC_Invoke', 'Login'];
             
+            const walletMethodsLower = walletMethods.map(m => m.toLowerCase());
+
             // Check authorization for wallet methods
             // Accept both 'accepted' and 'ok' for backward compatibility
-            if (walletMethods.includes(normalizedMethod) && authState !== 'accepted' && authState !== 'ok') {
+            if (walletMethodsLower.includes(methodLower) && authState !== 'accepted' && authState !== 'ok') {
               throw new Error('Wallet not authorized');
             }
             
             // Handle special methods
-            if (normalizedMethod === 'Ping') {
+            if (methodLower === 'ping') {
               result = 'Pong';
-            } else if (normalizedMethod === 'Echo') {
+            } else if (methodLower === 'echo') {
               result = params;
-            } else if (normalizedMethod === 'Login') {
+            } else if (methodLower === 'login') {
               result = 'Logged in';
-            } else if (normalizedMethod === 'GetDaemon') {
+            } else if (methodLower === 'hasmethod') {
+              const knownMethods = [...walletMethods, 'Ping', 'Echo', 'GetDaemon', 'Subscribe', 'Unsubscribe', 'HasMethod',
+                                    'AttemptEPOCH', 'AttemptEPOCHWithAddr', 'GetMaxHashesEPOCH', 'GetSessionEPOCH', 'GetAddressEPOCH'];
+              result = knownMethods.map(m => m.toLowerCase()).includes((params?.name || '').toLowerCase());
+            } else if (methodLower === 'getdaemon') {
               // GetDaemon - returns daemon endpoint for direct node communication
               // Always route through CallXSWD since it's handled specially in app.go
               addConsoleLog(`[Browser] GetDaemon requested - routing to backend`);
@@ -938,13 +1103,12 @@ let addressInput = '';
               }
             } else {
               // Route through XSWD/wallet
-              const signingMethods = ['transfer', 'scinvoke', 'sign', 'Transfer', 'SC_Invoke'];
+              const signingMethods = ['transfer', 'scinvoke', 'sign', 'Transfer', 'SC_Invoke', 'transfer_split', 'SignData'];
               const readMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
                                    'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
-                                   'SplitIntegratedAddress', 'QueryKey'];
+                                   'SplitIntegratedAddress', 'QueryKey', 'CheckSignature'];
               
-              // Check if this is a wallet method (read or write)
-              const isWalletMethod = walletMethods.includes(normalizedMethod);
+              const isWalletMethod = walletMethodsLower.includes(methodLower);
               const isSigningMethod = signingMethods.map(m => m.toLowerCase()).includes(methodLower);
               
               if (callSettings.integratedWallet && isWalletMethod) {
@@ -1002,6 +1166,24 @@ let addressInput = '';
             }
             break;
             
+          case 'saveFile': {
+            // Download request from bridge script (works for cross-origin HTTP-served apps)
+            const { filename, base64, mimeType } = payload;
+            const ext = (filename || '').split('.').pop().toLowerCase();
+            const filterMap = {
+              png: ['PNG Image', '*.png'],
+              jpg: ['JPEG Image', '*.jpg'],
+              jpeg: ['JPEG Image', '*.jpeg'],
+              gif: ['GIF Image', '*.gif'],
+              svg: ['SVG Image', '*.svg'],
+              json: ['JSON File', '*.json'],
+              txt: ['Text File', '*.txt'],
+            };
+            const [filterName, filterPattern] = filterMap[ext] || ['All Files', '*.*'];
+            result = await SaveBinaryFileWithDialog(filename || 'download', base64, filterName, filterPattern);
+            break;
+          }
+
           default:
             throw new Error('Unknown action: ' + action);
         }
@@ -1032,7 +1214,7 @@ let addressInput = '';
     // Try to restore last loaded TELA session for fast back-navigation
     await restoreTelaSession();
 
-    if ($appState.gnomonRunning && !appsLoaded && !appsLoading) {
+    if ($appState.gnomonRunning && !appsLoaded && !appsLoading && !waitingForInitialApps) {
       loadApps();
     }
     
@@ -1047,6 +1229,7 @@ let addressInput = '';
     if (unsubscribePending) unsubscribePending();
     if (unsubscribeConsole) unsubscribeConsole();
     if (unsubscribeWalletRequests) unsubscribeWalletRequests();
+    clearAppDiscoveryRetryTimer();
     EventsOff('localdev:reload');
     stopXSWDSubscriptionPolling();
     saveBrowserSession();
@@ -1101,7 +1284,7 @@ let addressInput = '';
         
         if (cssResponse.ok) {
           let fetchedCSS = await cssResponse.text();
-          addConsoleLog(`📄 CSS fetched: ${fetchedCSS.length} bytes`);
+          addConsoleLog(`[CSS] Fetched: ${fetchedCSS.length} bytes`);
           
           // Rewrite url() references in CSS to be absolute
           fetchedCSS = fetchedCSS.replace(/url\(['"]?(?!http|https|data:|\/\/)([^'")]+)['"]?\)/gi, 
@@ -1202,6 +1385,8 @@ let addressInput = '';
     try {
       await ClearBackendLogs();
       clearConsoleLogsStore(); // Clear the store (which updates local consoleLogs via subscription)
+      previousLogCount = 0;
+      consoleUserScrolled = false;
     } catch (e) {
       console.error('Failed to clear logs:', e);
     }
@@ -1223,17 +1408,21 @@ let addressInput = '';
   function handleConsoleScroll() {
     if (!consoleViewport) return;
     const { scrollTop, scrollHeight, clientHeight } = consoleViewport;
-    // Consider "at bottom" if within 50px of the bottom
-    consoleUserScrolled = scrollHeight - scrollTop - clientHeight > 50;
+    // Consider "at bottom" if within 100px of the bottom
+    consoleUserScrolled = scrollHeight - scrollTop - clientHeight > 100;
   }
-  
-  // Auto-scroll console to bottom only if user hasn't scrolled up
-  $: if (consoleLogs && consoleViewport && !consoleUserScrolled) {
-    setTimeout(() => {
-      if (consoleViewport && !consoleUserScrolled) {
-        consoleViewport.scrollTop = consoleViewport.scrollHeight;
-      }
-    }, 0);
+
+  // Auto-scroll console to bottom ONLY when new logs arrive AND user is at bottom
+  $: if (consoleLogs && consoleViewport) {
+    const currentLogCount = consoleLogs.length;
+    if (currentLogCount > previousLogCount && !consoleUserScrolled) {
+      requestAnimationFrame(() => {
+        if (consoleViewport && !consoleUserScrolled) {
+          consoleViewport.scrollTop = consoleViewport.scrollHeight;
+        }
+      });
+    }
+    previousLogCount = currentLogCount;
   }
   
   async function navigate(fromHistory = false) {
@@ -1243,6 +1432,10 @@ let addressInput = '';
     showWelcome = false;
     hasNavigated = false;
     resetXSWDSubscriptions();
+    // Reset session approval so new app navigations always show the approval modal
+    sessionApprovedScid = null;
+    sessionApprovedAppName = null;
+    sessionApprovalTime = 0;
     
     // Strip any existing dero:// prefix from input (badge provides it visually)
     let cleanInput = addressInput.trim();
@@ -1324,6 +1517,9 @@ let addressInput = '';
   // This enables developers to test dApps locally with full telaHost API access
   async function navigateToLocalFile(filePath, fromHistory = false) {
     resetXSWDSubscriptions();
+    sessionApprovedScid = null;
+    sessionApprovedAppName = null;
+    sessionApprovalTime = 0;
     
     // Clean up the file path
     let cleanPath = filePath.trim();
@@ -1403,7 +1599,7 @@ let addressInput = '';
     }
     
     addConsoleLog(`[Server] Loading from local dev server: ${serverInfo.url}`);
-    addConsoleLog(`📂 Directory: ${directory}`);
+    addConsoleLog(`[Dir] Directory: ${directory}`);
     
     try {
       // Add cache-busting to ensure fresh content
@@ -1416,7 +1612,7 @@ let addressInput = '';
       }
       
       let html = await response.text();
-      addConsoleLog(`📄 Fetched HTML (${html.length} bytes)`);
+      addConsoleLog(`[HTML] Fetched HTML (${html.length} bytes)`);
       
       // Inline CSS to avoid cross-origin issues
       html = await inlineLocalDevCSS(html, serverInfo.url);
@@ -1435,19 +1631,8 @@ let addressInput = '';
         '})();' +
         '</scr' + 'ipt>';
       
-      // Inject at the very start of <head> (before base tag or any other scripts)
-      if (html.includes('<head>')) {
-        html = html.replace('<head>', '<head>' + telaHostPlaceholder);
-      } else if (html.includes('</head>')) {
-        html = html.replace('</head>', telaHostPlaceholder + '</head>');
-      } else {
-        // No head, inject at start of body or beginning
-        if (html.includes('<body>')) {
-          html = html.replace('<body>', '<head>' + telaHostPlaceholder + '</head><body>');
-        } else {
-          html = telaHostPlaceholder + html;
-        }
-      }
+      // Inject into the document without moving <!DOCTYPE html> from byte 0.
+      html = injectIntoHtmlDocument(html, telaHostPlaceholder);
       
       // Rewrite remaining URLs (scripts, images, etc.) to absolute URLs
       // This allows us to use srcdoc while maintaining asset loading
@@ -1458,9 +1643,10 @@ let addressInput = '';
       // This enables dApps to connect via XSWD (ws://localhost:44326/xswd)
       // The bridge proxies WebSocket calls through postMessage to the parent Browser.svelte
       const bridgeScript = getXSWDBridgeScript();
-      html = bridgeScript + html;
+      html = injectIntoHtmlDocument(html, bridgeScript);
+      html = injectIntoHtmlDocument(html, getExternalLinkGuardScript());
       
-      addConsoleLog('[OK] Injected XSWD bridge and telaHost placeholder into HTML');
+      addConsoleLog('[OK] Injected XSWD bridge, external-link guard, and telaHost placeholder into HTML');
       
       currentMeta = {
         name: dirName,
@@ -1512,6 +1698,9 @@ let addressInput = '';
   async function navigateToLocalDev(url, fromHistory = false) {
     const directory = url.slice(8); // Remove 'local://'
     resetXSWDSubscriptions();
+    sessionApprovedScid = null;
+    sessionApprovedAppName = null;
+    sessionApprovalTime = 0;
     
     try {
       // Check if Local Dev Server is running
@@ -1561,7 +1750,7 @@ let addressInput = '';
       
       // Fetch HTML from local server and inject XSWD bridge
       addConsoleLog(`[Server] Loading local dev server: ${status.url}`);
-      addConsoleLog(`📂 Server directory: ${status.directory}`);
+      addConsoleLog(`[Dir] Server directory: ${status.directory}`);
       
       try {
         // Add cache-busting to ensure fresh content
@@ -1575,7 +1764,7 @@ let addressInput = '';
         }
         
         let html = await response.text();
-        addConsoleLog(`📄 Fetched HTML (${html.length} bytes)`);
+        addConsoleLog(`[HTML] Fetched HTML (${html.length} bytes)`);
         
         // Inline CSS to avoid cross-origin issues with doc.write()
         html = await inlineLocalDevCSS(html, status.url);
@@ -1681,6 +1870,12 @@ let addressInput = '';
       // Start real HTTP server for this TELA content
       const serverResult = await ServeTELAContent(scid);
       
+      if (serverResult.success && serverResult.srcdocOnly) {
+        addConsoleLog('[OK] DocShards content — srcdoc mode (no HTTP server needed)');
+        telaServerFallback = null;
+        return false;
+      }
+
       if (serverResult.success && serverResult.url) {
         addConsoleLog(`[Server] TELA server started: ${serverResult.url}`);
         activeTelaServer = serverResult.name;
@@ -2037,15 +2232,148 @@ let addressInput = '';
   
   // Monitor what happens after page loads
   window.addEventListener('DOMContentLoaded', function() {
-    log('📄 [DOM] DOMContentLoaded');
+    log('[DOM] DOMContentLoaded');
     setTimeout(function() {
       var root = document.getElementById('root');
-      log('📄 [DOM] #root innerHTML length: ' + (root ? root.innerHTML.length : 'no root'));
-      log('📄 [DOM] #root children: ' + (root ? root.children.length : 0));
+      log('[DOM] #root innerHTML length: ' + (root ? root.innerHTML.length : 'no root'));
+      log('[DOM] #root children: ' + (root ? root.children.length : 0));
     }, 1000);
   });
+
+  // ── Blob download interceptor ─────────────────────────────────────────────
+  // Apps (e.g. Villager) call URL.revokeObjectURL() synchronously immediately
+  // after a.click(), so we must cache the Blob at createObjectURL() time rather
+  // than fetching it asynchronously later.
+  (function() {
+    var _blobCache = {};
+
+    var _origCreate = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = function(obj) {
+      var url = _origCreate(obj);
+      if (obj && typeof obj === 'object') _blobCache[url] = obj;
+      return url;
+    };
+
+    var _origRevoke = URL.revokeObjectURL.bind(URL);
+    URL.revokeObjectURL = function(url) {
+      delete _blobCache[url];
+      return _origRevoke(url);
+    };
+
+    function _saveBlobDownload(href, filename, cachedBlob) {
+      var blob = cachedBlob || _blobCache[href];
+      if (!blob) {
+        fetch(href).then(function(r) { return r.blob(); }).then(function(b) {
+          _saveBlobDownload(href, filename, b);
+        }).catch(function(e) {
+          log('[Download] Blob unavailable: ' + e.message);
+        });
+        return;
+      }
+      var reader = new FileReader();
+      reader.onloadend = function() {
+        request('saveFile', {
+          filename: filename,
+          base64: reader.result,
+          mimeType: blob.type || 'application/octet-stream'
+        }).then(function(result) {
+          if (result && result.success) {
+            log('[OK] File saved: ' + (result.path || filename));
+          } else if (result && result.cancelled) {
+            log('[Info] Download cancelled');
+          } else {
+            log('[Download] Save failed: ' + (result && result.error));
+          }
+        }).catch(function(e) {
+          log('[Download] Save request error: ' + e.message);
+        });
+      };
+      reader.readAsDataURL(blob);
+    }
+
+    var _origAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function() {
+      if (this.hasAttribute('download') && this.href && this.href.indexOf('blob:') === 0) {
+        var href = this.href;
+        var filename = this.download || 'download';
+        var cached = _blobCache[href];
+        log('[Download] Intercepting: ' + filename);
+        _saveBlobDownload(href, filename, cached);
+        return;
+      }
+      return _origAnchorClick.call(this);
+    };
+
+    document.addEventListener('click', function(e) {
+      var el = e.target;
+      while (el && el.tagName !== 'A') el = el.parentElement;
+      if (!el || !el.hasAttribute('download')) return;
+      var href = el.href;
+      if (!href || href.indexOf('blob:') !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var filename = el.download || 'download';
+      var cached = _blobCache[href];
+      log('[Download] Intercepting click: ' + filename);
+      _saveBlobDownload(href, filename, cached);
+    }, true);
+
+    log('[Bridge] Download interceptor installed');
+  })();
 })();
 <\/script>`;
+  }
+
+  /** Intercepts http(s) anchor navigation inside srcdoc/injected HTML and defers to the host modal. */
+  function getExternalLinkGuardScript() {
+    return `<script>
+(function() {
+  'use strict';
+  document.addEventListener('click', function(e) {
+    if (e.defaultPrevented) return;
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var a = t.closest('a[href]');
+    if (!a || a.hasAttribute('download')) return;
+    var raw = a.getAttribute('href');
+    if (!raw) return;
+    var trimmed = raw.trim();
+    if (!trimmed || trimmed === '#' || /^javascript:/i.test(trimmed)) return;
+    if (/^(mailto:|tel:|sms:|data:)/i.test(trimmed)) return;
+    try {
+      var u = new URL(trimmed, document.baseURI);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      window.parent.postMessage({ type: 'hologram-external-link', url: u.href }, '*');
+    } catch (err) {}
+  }, true);
+})();
+<\/script>`;
+  }
+
+  function injectIntoHtmlDocument(html, snippet) {
+    if (!snippet) return html;
+
+    const injectIntoDocument = (doc) => {
+      if (/<head[\s>]/i.test(doc)) {
+        return doc.replace(/<head([^>]*)>/i, `<head$1>${snippet}`);
+      }
+      if (/<body[\s>]/i.test(doc)) {
+        return doc.replace(/<body([^>]*)>/i, `<head>${snippet}</head><body$1>`);
+      }
+      return snippet + doc;
+    };
+
+    const doctypeMatch = html.match(/^\s*<!doctype[^>]*>/i);
+    if (!doctypeMatch) {
+      return injectIntoDocument(html);
+    }
+
+    const doctype = doctypeMatch[0];
+    const rest = html.slice(doctype.length);
+    return doctype + injectIntoDocument(rest);
   }
   
   function renderContent(html) {
@@ -2057,9 +2385,10 @@ let addressInput = '';
       
       let injectedHtml = html;
       if (ENABLE_BRIDGE) {
-        // Inject the XSWD bridge script at the ABSOLUTE BEGINNING of the HTML
+        // Preserve <!DOCTYPE html> so srcdoc stays in standards mode.
         const bridgeScript = getXSWDBridgeScript();
-        injectedHtml = bridgeScript + html;
+        injectedHtml = injectIntoHtmlDocument(html, bridgeScript);
+        injectedHtml = injectIntoHtmlDocument(injectedHtml, getExternalLinkGuardScript());
       }
       
       // Remove src attribute - we're using srcdoc for inline content
@@ -2107,7 +2436,7 @@ let addressInput = '';
         call: async (method, params = {}) => {
           try {
             const settings = get(settingsState);
-            const signingMethods = ['transfer', 'scinvoke', 'sign'];
+            const signingMethods = ['transfer', 'scinvoke', 'sign', 'transfer_split', 'signdata'];
             const methodLower = method.toLowerCase().replace('dero.', '');
             
             if (settings.integratedWallet && signingMethods.includes(methodLower)) {
@@ -2186,8 +2515,73 @@ let addressInput = '';
         },
         scInvoke: async (params) => {
           return iframeWindow.telaHost.call('scinvoke', params);
-        }
+        },
+        // File operations for TELA apps
+        // saveFile allows dApps to save files to the user's filesystem via native dialog
+        // Supports both text content and binary data (base64 encoded)
+        saveFile: async (options = {}) => {
+          const { filename = 'download', content, base64, mimeType = 'application/octet-stream' } = options;
+          
+          // Determine filter based on file extension or mimeType
+          let filterName = 'All Files';
+          let filterPattern = '*.*';
+          const ext = filename.split('.').pop()?.toLowerCase();
+          
+          if (ext === 'png' || mimeType.includes('png')) {
+            filterName = 'PNG Images';
+            filterPattern = '*.png';
+          } else if (ext === 'jpg' || ext === 'jpeg' || mimeType.includes('jpeg')) {
+            filterName = 'JPEG Images';
+            filterPattern = '*.jpg;*.jpeg';
+          } else if (ext === 'json' || mimeType.includes('json')) {
+            filterName = 'JSON Files';
+            filterPattern = '*.json';
+          } else if (ext === 'txt' || mimeType.includes('text')) {
+            filterName = 'Text Files';
+            filterPattern = '*.txt';
+          }
+          
+          try {
+            // Use binary save for base64 content (images, etc.)
+            if (base64) {
+              const result = await SaveBinaryFileWithDialog(filename, base64, filterName, filterPattern);
+              if (result.cancelled) {
+                return { success: false, cancelled: true };
+              }
+              if (!result.success) {
+                throw new Error(result.error || 'Save failed');
+              }
+              return { success: true, path: result.path, size: result.size };
+            }
+            
+            // For text content, we could use SaveFileWithDialog but let's use binary for consistency
+            // Convert text to base64
+            if (content) {
+              const base64Content = btoa(unescape(encodeURIComponent(content)));
+              const result = await SaveBinaryFileWithDialog(filename, base64Content, filterName, filterPattern);
+              if (result.cancelled) {
+                return { success: false, cancelled: true };
+              }
+              if (!result.success) {
+                throw new Error(result.error || 'Save failed');
+              }
+              return { success: true, path: result.path, size: result.size };
+            }
+            
+            throw new Error('No content provided - use content (string) or base64 (binary)');
+          } catch (error) {
+            addConsoleLog(`[ERR] telaHost.saveFile failed: ${error.message}`);
+            throw error;
+          }
+        },
+        // Check if running in HOLOGRAM (for feature detection)
+        isHologram: () => true,
+        version: '1.0.0'
       };
+      
+      // Inject download interceptor to handle <a download> clicks natively
+      // This makes standard browser downloads work transparently in HOLOGRAM
+      injectDownloadInterceptor(iframeWindow);
       
       // Notify explorer that telaHost is now available (in case it initialized before injection)
       try {
@@ -2220,6 +2614,122 @@ let addressInput = '';
       // Silently fail for cross-origin - this is expected when iframe content
       // is served from a different origin (e.g., local dev server at localhost:50080)
       // The XSWD bridge handles communication via postMessage instead
+    }
+  }
+  
+  // Inject download interceptor to make standard <a download> work in HOLOGRAM
+  // This intercepts clicks on anchor tags with download attribute and handles them natively
+  function injectDownloadInterceptor(iframeWindow) {
+    if (!iframeWindow || !iframeWindow.document) return;
+    
+    try {
+      if (iframeWindow.__hologramDownloadInterceptor) return;
+      iframeWindow.__hologramDownloadInterceptor = true;
+
+      // ── Blob cache ──────────────────────────────────────────────────────────
+      // Many dApps (e.g. Villager) call URL.revokeObjectURL() immediately after
+      // a.click(), before any async handler can fetch the blob. By caching the
+      // Blob object at createObjectURL() time we have it in hand regardless of
+      // when revokeObjectURL() fires.
+      const blobCache = new Map();
+
+      const origCreateObjectURL = iframeWindow.URL.createObjectURL.bind(iframeWindow.URL);
+      iframeWindow.URL.createObjectURL = function(obj) {
+        const url = origCreateObjectURL(obj);
+        if (obj instanceof iframeWindow.Blob) blobCache.set(url, obj);
+        return url;
+      };
+
+      const origRevokeObjectURL = iframeWindow.URL.revokeObjectURL.bind(iframeWindow.URL);
+      iframeWindow.URL.revokeObjectURL = function(url) {
+        blobCache.delete(url);
+        return origRevokeObjectURL(url);
+      };
+
+      // ── Shared save helper ───────────────────────────────────────────────────
+      async function saveBlob(href, filename, cachedBlob) {
+        // Prefer the synchronously-captured blob; fall back to fetch for URLs
+        // that were created before our interceptor was injected.
+        let blob = cachedBlob || blobCache.get(href);
+        if (!blob) {
+          try {
+            const resp = await iframeWindow.fetch(href);
+            blob = await resp.blob();
+          } catch (fetchErr) {
+            addConsoleLog(`[ERR] Download: could not read blob — ${fetchErr.message}`);
+            return;
+          }
+        }
+
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new iframeWindow.FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+        if (!iframeWindow.telaHost || !iframeWindow.telaHost.saveFile) {
+          addConsoleLog('[ERR] Download: telaHost.saveFile not available');
+          return;
+        }
+
+        const result = await iframeWindow.telaHost.saveFile({
+          filename,
+          base64,
+          mimeType: blob.type || 'application/octet-stream'
+        });
+
+        if (result.success) {
+          addConsoleLog(`[OK] File saved to: ${result.path}`);
+        } else if (result.cancelled) {
+          addConsoleLog('[Info] Download cancelled by user');
+        } else {
+          addConsoleLog(`[ERR] Save failed: ${result.error}`);
+        }
+      }
+
+      // ── Programmatic .click() override ──────────────────────────────────────
+      // Intercept anchor.click() calls (Villager pattern).
+      // Must NOT be async itself — we grab the cached blob synchronously before
+      // the caller can call revokeObjectURL(), then fire async work in the bg.
+      const origAnchorClick = iframeWindow.HTMLAnchorElement.prototype.click;
+      iframeWindow.HTMLAnchorElement.prototype.click = function() {
+        if (this.hasAttribute('download') && this.href && this.href.startsWith('blob:')) {
+          const href = this.href;
+          const filename = this.download || 'download';
+          // Capture blob NOW (synchronously) before the caller revokes the URL
+          const cachedBlob = blobCache.get(href);
+          addConsoleLog(`[Download] Intercepting: ${filename}`);
+          saveBlob(href, filename, cachedBlob).catch(err =>
+            addConsoleLog(`[ERR] Download failed: ${err.message}`)
+          );
+          return; // do not call original — native WebView can't download anyway
+        }
+        return origAnchorClick.call(this);
+      };
+
+      // ── Declarative click events (<a download> in markup) ───────────────────
+      iframeWindow.document.addEventListener('click', (e) => {
+        let anchor = e.target;
+        while (anchor && anchor.tagName !== 'A') anchor = anchor.parentElement;
+        if (!anchor || !anchor.hasAttribute('download')) return;
+        const href = anchor.href;
+        if (!href || !href.startsWith('blob:')) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const filename = anchor.download || 'download';
+        const cachedBlob = blobCache.get(href);
+        addConsoleLog(`[Download] Intercepting click: ${filename}`);
+        saveBlob(href, filename, cachedBlob).catch(err =>
+          addConsoleLog(`[ERR] Download failed: ${err.message}`)
+        );
+      }, true);
+
+      addConsoleLog('[OK] Download interceptor installed (with blob cache)');
+    } catch (error) {
+      // Silently fail — cross-origin iframes will throw here
     }
   }
   
@@ -2403,6 +2913,26 @@ let addressInput = '';
     scheduleBrowserSessionSave();
   }
   
+  function handleOmniSearch(event) {
+    const { query, type, results } = event.detail;
+    
+    // For navigable types, use existing Browser navigation
+    if (type === 'durl' || type === 'name') {
+      navigate();
+    } else if (type === 'hash' || type === 'scid') {
+      // 64-char hex could be SCID - try to navigate as TELA app
+      navigate();
+    } else if (type === 'block' || type === 'address' || type === 'key' || type === 'value' || type === 'code' || type === 'class' || type === 'tag') {
+      // These are Explorer queries - switch to Explorer tab with search pre-loaded
+      window.dispatchEvent(new CustomEvent('search-navigate', {
+        detail: { tab: 'explorer', type, query, result: results }
+      }));
+    } else {
+      // Default: try to navigate (might be a dURL)
+      navigate();
+    }
+  }
+
   function handleKeydown(event) {
     if (event.key === 'Enter') {
       if (showSuggestions && selectedIndex >= 0 && selectedIndex < suggestions.length) {
@@ -2513,32 +3043,14 @@ let addressInput = '';
     <!-- v6.1 URL Bar -->
     <div class="browser-url-container" class:focused={addressBarFocused}>
       <span class="browser-url-protocol">dero://</span>
-          <input
-            type="text"
+          <OmniSearch
+            bind:this={addressInputEl}
             bind:value={addressInput}
-            on:input={handleAddressInput}
-            on:keydown={handleKeydown}
-            on:focus={() => { addressBarFocused = true; handleAddressInput(); }}
-            on:blur={() => { addressBarFocused = false; setTimeout(() => showSuggestions = false, 200); }}
-            placeholder="dURL or SCID..."
-        class="browser-url-input"
+            placeholder="Enter dURL, SCID, or search..."
+            compact={true}
+            on:search={handleOmniSearch}
+            loading={loading}
           />
-          
-      <!-- Go Button -->
-          <button
-            on:click={() => navigate()}
-            disabled={loading}
-        class="browser-go-btn"
-          >
-            {#if loading}
-          <svg width="16" height="16" class="animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-            {:else}
-          →
-            {/if}
-          </button>
       
       <!-- Favorite Button (in address bar) -->
       <button
@@ -2551,34 +3063,6 @@ let addressInput = '';
         <Heart size={14} fill={currentIsFavorited ? 'currentColor' : 'none'} />
       </button>
         </div>
-        
-        <!-- Suggestions Dropdown -->
-        {#if showSuggestions && suggestions.length > 0}
-          <div class="browser-suggestions-dropdown">
-            {#each suggestions as suggestion, i}
-              <button
-                on:click={() => selectSuggestion(suggestion)}
-                on:mouseenter={() => selectedIndex = i}
-                class="browser-suggestion-item"
-                class:selected={i === selectedIndex}
-              >
-                <div class="browser-suggestion-icon">
-                  <Icons name="box" size={18} />
-                </div>
-                <div class="browser-suggestion-info">
-                  <div class="browser-suggestion-name">{suggestion.name}</div>
-                  <div class="browser-suggestion-scid">{suggestion.scid?.substring(0, 20)}...</div>
-                </div>
-                {#if suggestion.avg}
-                  <HoloBadge variant={getRatingBadge(suggestion.avg)}>★ {suggestion.avg}</HoloBadge>
-                {/if}
-              </button>
-            {/each}
-            <div class="browser-suggestions-hint">
-              ↑↓ Navigate • Enter Select • Tab Autocomplete
-            </div>
-          </div>
-        {/if}
       
       <!-- Version History Toggle -->
       <button
@@ -2752,22 +3236,28 @@ let addressInput = '';
       <!-- Content -->
       <div class="browser-discover-content">
         <div class="browser-discover-content-inner">
-          {#if !$appState.gnomonRunning}
+          {#if gnomonStarting}
+            <div class="browser-empty-state">
+              <div class="browser-loading-spinner"></div>
+              <h2 class="browser-empty-title">Starting Gnomon Indexer...</h2>
+              <p class="browser-empty-text">Connecting to blockchain index to discover applications</p>
+            </div>
+          {:else if !$appState.gnomonRunning}
             <div class="browser-empty-state">
               <div class="browser-empty-icon">
                 <Icons name="wifi" size={48} />
               </div>
-              <h2 class="browser-empty-title">Gnomon Indexer Not Running</h2>
-              <p class="browser-empty-text">Start the Gnomon indexer to discover applications</p>
+              <h2 class="browser-empty-title">Could Not Connect to Gnomon</h2>
+              <p class="browser-empty-text">The Gnomon indexer failed to start. Make sure the DERO daemon is running and try again.</p>
               <button on:click={startIndexer} class="btn btn-primary">
-                Start Gnomon Indexer
+                Retry
               </button>
               <label class="gnomon-autostart-option checkbox-wrap">
                 <input type="checkbox" class="checkbox" bind:checked={enableAutostart} />
-                <span class="checkbox-label">Always start automatically</span>
+                <span class="checkbox-label">Start at app launch (before opening Browser)</span>
               </label>
             </div>
-          {:else if $appState.gnomonProgress < 95 && filteredApps.length === 0}
+          {:else if $appState.gnomonProgress < 95 && apps.length === 0}
             <!-- Gnomon is syncing - show progress instead of "No Apps Found" -->
             <div class="browser-empty-state">
               <div class="browser-loading-spinner"></div>
@@ -2783,10 +3273,17 @@ let addressInput = '';
               </div>
               <p class="browser-empty-hint">Apps will appear as they are discovered...</p>
             </div>
-          {:else if appsLoading}
+          {:else if appsLoading || waitingForInitialApps}
             <div class="browser-empty-state">
               <div class="browser-loading-spinner"></div>
-              <p class="browser-empty-text">Loading apps from blockchain index...</p>
+              <p class="browser-empty-text">
+                {waitingForInitialApps
+                  ? 'Building app index in background... apps will appear shortly.'
+                  : 'Loading apps from blockchain index...'}
+              </p>
+              {#if waitingForInitialApps}
+                <p class="browser-empty-hint">Discovery pass {appDiscoveryRetryCount}/{APP_DISCOVERY_MAX_RETRIES}</p>
+              {/if}
             </div>
           {:else if filteredApps.length === 0}
             <div class="browser-empty-state">
@@ -2979,6 +3476,45 @@ let addressInput = '';
   </div>
 </div>
 
+{#if showExternalLinkModal}
+  <div class="modal-overlay" on:click={closeExternalLinkModal} role="presentation">
+    <div class="modal-content modal-content-wide" on:click|stopPropagation role="dialog" aria-modal="true" aria-labelledby="external-link-title">
+      <div class="modal-header">
+        <div class="modal-header-left">
+          <div class="modal-icon warning">
+            <Link2 size={16} />
+          </div>
+          <div>
+            <h2 id="external-link-title" class="modal-title">Leaving the in-app browser</h2>
+            <p class="modal-subtitle">This app linked to a classic web (HTTPS) address. HOLOGRAM does not open it automatically. Copy the URL and paste it into a browser you trust, or open it in your system browser if you choose.</p>
+          </div>
+        </div>
+        <button type="button" class="modal-close" on:click={closeExternalLinkModal} aria-label="Close">
+          <X size={16} />
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="modal-form-label" for="external-link-url">URL</label>
+        <textarea
+          id="external-link-url"
+          class="modal-input"
+          readonly
+          rows="3"
+          bind:value={externalLinkUrl}
+          style="resize: vertical; min-height: 4.5rem;"
+        ></textarea>
+      </div>
+      <div class="modal-footer modal-footer-spread">
+        <button type="button" class="modal-btn modal-btn-secondary" on:click={closeExternalLinkModal}>Close</button>
+        <div style="display: flex; gap: var(--s-3);">
+          <button type="button" class="modal-btn modal-btn-secondary" on:click={openExternalLinkInSystemBrowser}>Open in default browser</button>
+          <button type="button" class="modal-btn modal-btn-primary" on:click={copyExternalLinkToClipboard}>Copy link</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <!-- Rating Modal -->
 <RatingModal 
   bind:show={showRatingModal}
@@ -3019,11 +3555,6 @@ let addressInput = '';
   :global(.browser-search-icon) {
     color: var(--text-4, #505068);
     flex-shrink: 0;
-  }
-  
-  /* Animate spin utility (used by loading indicator in URL bar) */
-  .animate-spin {
-    animation: browser-spin 1s linear infinite;
   }
   
   /* Rate button in app cards */

@@ -16,14 +16,16 @@ type LiveStatsService struct {
 	monitoring       bool
 	monitoringLock   sync.Mutex
 	stopChan         chan struct{}
+	networkSwitching bool
+	switchNoticeSeen bool
 }
 
 // NewLiveStatsService creates a new live stats service
 func NewLiveStatsService(app *App) *LiveStatsService {
 	return &LiveStatsService{
-		app:        app,
-		lastStats:  make(map[string]interface{}),
-		stopChan:   make(chan struct{}),
+		app:       app,
+		lastStats: make(map[string]interface{}),
+		stopChan:  make(chan struct{}),
 	}
 }
 
@@ -65,7 +67,7 @@ func (a *App) GetLiveStats() map[string]interface{} {
 	peers := incomingPeers + outgoingPeers
 
 	return map[string]interface{}{
-		"success":          true,
+		"success": true,
 		"stats": map[string]interface{}{
 			"height":           height,
 			"topoheight":       topoheight,
@@ -238,6 +240,30 @@ func (a *App) StopBlockMonitoring() {
 	}
 }
 
+// setNetworkSwitching toggles temporary suppression of block tick logs/events
+// during network handoff (mainnet <-> simulator) to avoid misleading [MINE] noise.
+func (a *App) setNetworkSwitching(inProgress bool, target string) {
+	if a.liveStats == nil {
+		a.liveStats = NewLiveStatsService(a)
+	}
+
+	a.liveStats.monitoringLock.Lock()
+	wasSwitching := a.liveStats.networkSwitching
+	a.liveStats.networkSwitching = inProgress
+	if inProgress {
+		a.liveStats.switchNoticeSeen = false
+	}
+	a.liveStats.monitoringLock.Unlock()
+
+	if inProgress && !wasSwitching {
+		a.logToConsole(fmt.Sprintf("[NET] Switching network: pausing block monitor (%s)...", target))
+		return
+	}
+	if !inProgress && wasSwitching {
+		a.logToConsole(fmt.Sprintf("[NET] Block monitor resumed on %s", target))
+	}
+}
+
 // checkForNewBlocks checks if there's a new block and emits an event
 func (a *App) checkForNewBlocks() {
 	if a.daemonClient == nil {
@@ -250,22 +276,39 @@ func (a *App) checkForNewBlocks() {
 	}
 
 	currentHeight := getInt64(info, "height", 0)
-	
+
+	// During network handoff, suppress normal block tick logs/events and simply
+	// advance the cursor so we don't emit stale burst logs after the switch.
+	a.liveStats.monitoringLock.Lock()
+	switching := a.liveStats.networkSwitching
+	needSwitchNotice := switching && !a.liveStats.switchNoticeSeen
+	if needSwitchNotice {
+		a.liveStats.switchNoticeSeen = true
+	}
+	a.liveStats.monitoringLock.Unlock()
+	if switching {
+		if needSwitchNotice {
+			a.logToConsole("[NET] Network switch in progress (suppressing block tick events)")
+		}
+		a.liveStats.lastHeight = currentHeight
+		return
+	}
+
 	if a.liveStats.lastHeight > 0 && currentHeight > a.liveStats.lastHeight {
 		// New block detected!
 		blockDiff := currentHeight - a.liveStats.lastHeight
-		
+
 		// Get the new block header
 		blockRes, err := a.daemonClient.Call("DERO.GetBlockHeaderByHeight", map[string]interface{}{
 			"height": currentHeight,
 		})
-		
+
 		blockData := map[string]interface{}{
-			"height":    currentHeight,
+			"height":     currentHeight,
 			"prevHeight": a.liveStats.lastHeight,
-			"blockDiff": blockDiff,
+			"blockDiff":  blockDiff,
 		}
-		
+
 		if err == nil && blockRes != nil {
 			if result, ok := blockRes.(map[string]interface{}); ok {
 				if header, ok := result["block_header"].(map[string]interface{}); ok {
@@ -279,10 +322,10 @@ func (a *App) checkForNewBlocks() {
 
 		// Emit event to frontend
 		runtime.EventsEmit(a.ctx, "explorer:newBlock", blockData)
-		
+
 		a.logToConsole(fmt.Sprintf("[MINE] New block detected: #%d", currentHeight))
 	}
-	
+
 	a.liveStats.lastHeight = currentHeight
 }
 
@@ -339,11 +382,11 @@ func (a *App) GetMempoolStats() map[string]interface{} {
 	return map[string]interface{}{
 		"success": true,
 		"stats": map[string]interface{}{
-			"count":      totalCount,
-			"totalSize":  totalSize,
-			"totalFees":  float64(totalFees) / 100000,
-			"avgFee":     avgFee,
-			"avgSize":    avgSize,
+			"count":     totalCount,
+			"totalSize": totalSize,
+			"totalFees": float64(totalFees) / 100000,
+			"avgFee":    avgFee,
+			"avgSize":   avgSize,
 		},
 		"txs": txs,
 	}
@@ -397,4 +440,3 @@ func joinStrings(strs []string, sep string) string {
 	}
 	return result
 }
-

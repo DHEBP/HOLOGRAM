@@ -6,10 +6,6 @@ export function AddAllowedHost(arg1) {
   return window['go']['main']['App']['AddAllowedHost'](arg1);
 }
 
-export function AddBookmark(arg1, arg2) {
-  return window['go']['main']['App']['AddBookmark'](arg1, arg2);
-}
-
 export function AddContact(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddContact'](arg1, arg2, arg3);
 }
@@ -36,10 +32,6 @@ export function BatchPrefetchFavorites(arg1, arg2) {
 
 export function BuildRating(arg1, arg2) {
   return window['go']['main']['App']['BuildRating'](arg1, arg2);
-}
-
-export function BuildTextIndex() {
-  return window['go']['main']['App']['BuildTextIndex']();
 }
 
 export function CallXSWD(arg1) {
@@ -130,6 +122,10 @@ export function ConstructFromShards(arg1) {
   return window['go']['main']['App']['ConstructFromShards'](arg1);
 }
 
+export function ConsumeLaunchURL() {
+  return window['go']['main']['App']['ConsumeLaunchURL']();
+}
+
 export function CreatePaymentRequest(arg1, arg2) {
   return window['go']['main']['App']['CreatePaymentRequest'](arg1, arg2);
 }
@@ -202,24 +198,12 @@ export function DiffSCIDs(arg1, arg2) {
   return window['go']['main']['App']['DiffSCIDs'](arg1, arg2);
 }
 
-export function DisableNodeMining() {
-  return window['go']['main']['App']['DisableNodeMining']();
-}
-
 export function DisconnectXSWD() {
   return window['go']['main']['App']['DisconnectXSWD']();
 }
 
 export function DislikeTELAApp(arg1) {
   return window['go']['main']['App']['DislikeTELAApp'](arg1);
-}
-
-export function DownloadDerodFromGitHub() {
-  return window['go']['main']['App']['DownloadDerodFromGitHub']();
-}
-
-export function EnableNodeMining(arg1) {
-  return window['go']['main']['App']['EnableNodeMining'](arg1);
 }
 
 export function EnsureGnomonRunning() {
@@ -240,10 +224,6 @@ export function EstimateSimulatorGas(arg1) {
 
 export function EstimateSyncTime() {
   return window['go']['main']['App']['EstimateSyncTime']();
-}
-
-export function ExecuteSCFunction(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ExecuteSCFunction'](arg1, arg2, arg3);
 }
 
 export function ExecuteSCViaXSWD(arg1, arg2, arg3) {
@@ -370,10 +350,6 @@ export function GetBlockchainStats() {
   return window['go']['main']['App']['GetBlockchainStats']();
 }
 
-export function GetBookmarks() {
-  return window['go']['main']['App']['GetBookmarks']();
-}
-
 export function GetCachedApps() {
   return window['go']['main']['App']['GetCachedApps']();
 }
@@ -450,10 +426,6 @@ export function GetEpochAddressInfo() {
   return window['go']['main']['App']['GetEpochAddressInfo']();
 }
 
-export function GetEpochDeveloperAddress() {
-  return window['go']['main']['App']['GetEpochDeveloperAddress']();
-}
-
 export function GetEpochStats() {
   return window['go']['main']['App']['GetEpochStats']();
 }
@@ -468,10 +440,6 @@ export function GetFileInfo(arg1) {
 
 export function GetGasEstimate(arg1) {
   return window['go']['main']['App']['GetGasEstimate'](arg1);
-}
-
-export function GetGetWorkEndpoint() {
-  return window['go']['main']['App']['GetGetWorkEndpoint']();
 }
 
 export function GetGnomonAutostart() {
@@ -494,12 +462,8 @@ export function GetINDEXInfo(arg1) {
   return window['go']['main']['App']['GetINDEXInfo'](arg1);
 }
 
-export function GetIntegratedAddress(arg1) {
-  return window['go']['main']['App']['GetIntegratedAddress'](arg1);
-}
-
-export function GetLatestDerodRelease() {
-  return window['go']['main']['App']['GetLatestDerodRelease']();
+export function GetIntegratedAddress(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetIntegratedAddress'](arg1, arg2, arg3);
 }
 
 export function GetLiveStats() {
@@ -522,10 +486,6 @@ export function GetMODsList() {
   return window['go']['main']['App']['GetMODsList']();
 }
 
-export function GetManualDerodInstructions() {
-  return window['go']['main']['App']['GetManualDerodInstructions']();
-}
-
 export function GetMempoolExtended(arg1) {
   return window['go']['main']['App']['GetMempoolExtended'](arg1);
 }
@@ -538,8 +498,8 @@ export function GetMempoolTransactions() {
   return window['go']['main']['App']['GetMempoolTransactions']();
 }
 
-export function GetMiningAddress() {
-  return window['go']['main']['App']['GetMiningAddress']();
+export function GetMetadataFiles(arg1) {
+  return window['go']['main']['App']['GetMetadataFiles'](arg1);
 }
 
 export function GetMiningEarningsSummary() {
@@ -590,10 +550,6 @@ export function GetNodeLogs(arg1) {
   return window['go']['main']['App']['GetNodeLogs'](arg1);
 }
 
-export function GetNodeMiningConfig() {
-  return window['go']['main']['App']['GetNodeMiningConfig']();
-}
-
 export function GetNodeStatus() {
   return window['go']['main']['App']['GetNodeStatus']();
 }
@@ -608,10 +564,6 @@ export function GetPermissionTypes() {
 
 export function GetPersonalTransfers(arg1) {
   return window['go']['main']['App']['GetPersonalTransfers'](arg1);
-}
-
-export function GetRandomAddress() {
-  return window['go']['main']['App']['GetRandomAddress']();
 }
 
 export function GetRandomSmartContracts(arg1) {
@@ -862,10 +814,6 @@ export function IsEpochEnabled() {
   return window['go']['main']['App']['IsEpochEnabled']();
 }
 
-export function IsGitHubCheckAllowed() {
-  return window['go']['main']['App']['IsGitHubCheckAllowed']();
-}
-
 export function IsInSimulatorMode() {
   return window['go']['main']['App']['IsInSimulatorMode']();
 }
@@ -918,16 +866,20 @@ export function Navigate(arg1) {
   return window['go']['main']['App']['Navigate'](arg1);
 }
 
+export function NotifyWizardComplete() {
+  return window['go']['main']['App']['NotifyWizardComplete']();
+}
+
 export function OmniSearch(arg1) {
   return window['go']['main']['App']['OmniSearch'](arg1);
 }
 
-export function OpenServerInBrowser(arg1) {
-  return window['go']['main']['App']['OpenServerInBrowser'](arg1);
-}
-
 export function OpenSimulatorTestWallet(arg1) {
   return window['go']['main']['App']['OpenSimulatorTestWallet'](arg1);
+}
+
+export function OpenURLInBrowserIfAllowed(arg1) {
+  return window['go']['main']['App']['OpenURLInBrowserIfAllowed'](arg1);
 }
 
 export function OpenWallet(arg1, arg2) {
@@ -948,6 +900,10 @@ export function ParseSCFunctions(arg1) {
 
 export function PrefetchApp(arg1) {
   return window['go']['main']['App']['PrefetchApp'](arg1);
+}
+
+export function PreflightExpand(arg1, arg2) {
+  return window['go']['main']['App']['PreflightExpand'](arg1, arg2);
 }
 
 export function PrepareMODInstall(arg1, arg2) {
@@ -972,6 +928,10 @@ export function RateTELA(arg1, arg2) {
 
 export function RateTELAApp(arg1, arg2) {
   return window['go']['main']['App']['RateTELAApp'](arg1, arg2);
+}
+
+export function ReadTextFile(arg1) {
+  return window['go']['main']['App']['ReadTextFile'](arg1);
 }
 
 export function RebuildTagIndex() {
@@ -1062,8 +1022,8 @@ export function RevokeXSWDConnection(arg1) {
   return window['go']['main']['App']['RevokeXSWDConnection'](arg1);
 }
 
-export function RewindChain(arg1) {
-  return window['go']['main']['App']['RewindChain'](arg1);
+export function SaveBinaryFileWithDialog(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveBinaryFileWithDialog'](arg1, arg2, arg3, arg4);
 }
 
 export function SaveFileWithDialog(arg1, arg2, arg3, arg4) {
@@ -1104,14 +1064,6 @@ export function SearchMyDOCs(arg1) {
 
 export function SearchMyINDEXes() {
   return window['go']['main']['App']['SearchMyINDEXes']();
-}
-
-export function SearchSCByLine(arg1) {
-  return window['go']['main']['App']['SearchSCByLine'](arg1);
-}
-
-export function SearchTextIndex(arg1) {
-  return window['go']['main']['App']['SearchTextIndex'](arg1);
 }
 
 export function SelectFile() {
@@ -1166,10 +1118,6 @@ export function SetMaxServers(arg1) {
   return window['go']['main']['App']['SetMaxServers'](arg1);
 }
 
-export function SetMiningAddress(arg1) {
-  return window['go']['main']['App']['SetMiningAddress'](arg1);
-}
-
 export function SetNetworkMode(arg1) {
   return window['go']['main']['App']['SetNetworkMode'](arg1);
 }
@@ -1180,10 +1128,6 @@ export function SetNodeAdvancedConfig(arg1, arg2, arg3) {
 
 export function SetNodeConfig(arg1) {
   return window['go']['main']['App']['SetNodeConfig'](arg1);
-}
-
-export function SetNodeMiningConfig(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SetNodeMiningConfig'](arg1, arg2, arg3);
 }
 
 export function SetNodePorts(arg1, arg2) {
@@ -1242,6 +1186,10 @@ export function SignMessage(arg1) {
   return window['go']['main']['App']['SignMessage'](arg1);
 }
 
+export function SplitIntegratedAddress(arg1) {
+  return window['go']['main']['App']['SplitIntegratedAddress'](arg1);
+}
+
 export function StartBlockMonitoring() {
   return window['go']['main']['App']['StartBlockMonitoring']();
 }
@@ -1266,10 +1214,6 @@ export function StartNode(arg1) {
   return window['go']['main']['App']['StartNode'](arg1);
 }
 
-export function StartNodeWithMining(arg1, arg2) {
-  return window['go']['main']['App']['StartNodeWithMining'](arg1, arg2);
-}
-
 export function StartNodeWithNetwork(arg1, arg2) {
   return window['go']['main']['App']['StartNodeWithNetwork'](arg1, arg2);
 }
@@ -1284,6 +1228,10 @@ export function StartStatusBroadcast() {
 
 export function StopBlockMonitoring() {
   return window['go']['main']['App']['StopBlockMonitoring']();
+}
+
+export function StopEpochAddressMonitor() {
+  return window['go']['main']['App']['StopEpochAddressMonitor']();
 }
 
 export function StopGnomon() {
@@ -1334,12 +1282,12 @@ export function TestAndConnectEndpoint(arg1) {
   return window['go']['main']['App']['TestAndConnectEndpoint'](arg1);
 }
 
-export function Transfer(arg1, arg2, arg3) {
-  return window['go']['main']['App']['Transfer'](arg1, arg2, arg3);
+export function Transfer(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['Transfer'](arg1, arg2, arg3, arg4);
 }
 
-export function TransferToken(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['TransferToken'](arg1, arg2, arg3, arg4);
+export function TransferToken(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['TransferToken'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function UnsubscribeFromEvents() {
@@ -1372,6 +1320,10 @@ export function ValidateProof(arg1) {
 
 export function ValidateProofFull(arg1, arg2) {
   return window['go']['main']['App']['ValidateProofFull'](arg1, arg2);
+}
+
+export function ValidateSCCode(arg1) {
+  return window['go']['main']['App']['ValidateSCCode'](arg1);
 }
 
 export function ValidateSenderProof(arg1, arg2, arg3, arg4, arg5) {

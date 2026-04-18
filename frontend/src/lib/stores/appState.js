@@ -24,6 +24,8 @@ const settingsKeyMap = {
   // Developer Support (EPOCH)
   'dev_support_enabled': 'epochEnabled',
   'epoch_enabled': 'epochEnabled',
+  'hide_balance': 'hideBalance',
+  'hide_address': 'hideAddress',
 };
 
 // Reverse map for saving (frontend → backend)
@@ -63,7 +65,7 @@ export function pushToHistory(url) {
 
 // ==================== Wallet Request History ====================
 // Persisted log of all wallet approval/denial events (defined early so it can be used by queue functions)
-export const walletRequestHistory = writable(loadRequestHistoryFromStorage());
+const walletRequestHistory = writable(loadRequestHistoryFromStorage());
 
 // Load history from localStorage
 function loadRequestHistoryFromStorage() {
@@ -119,14 +121,6 @@ export function logWalletRequest(request, status, txid = null) {
   });
 
   return entry;
-}
-
-// Clear request history
-export function clearRequestHistory() {
-  walletRequestHistory.set([]);
-  if (typeof localStorage !== 'undefined') {
-    localStorage.removeItem('walletRequestHistory');
-  }
 }
 
 // ==================== Wallet Request Queue ====================
@@ -188,6 +182,18 @@ export function denyWalletRequest(id) {
   }
 }
 
+// Dismiss a wallet request silently (used when backend already handled the response,
+// e.g. timeout or dApp disconnect). Does not call resolve/reject callbacks.
+export function dismissWalletRequest(id, reason = 'dismissed') {
+  const requests = get(walletRequests);
+  const request = requests.find(r => r.id === id);
+  
+  if (request) {
+    logWalletRequest(request, reason);
+    walletRequests.update(reqs => reqs.filter(r => r.id !== id));
+  }
+}
+
 // Core application state
 export const appState = writable({
   xswdConnected: false,       // Legacy: any XSWD activity (server running OR engram connected)
@@ -242,6 +248,8 @@ export const settingsState = writable({
   cypherpunkMode: false,
   integratedWallet: true,
   lastWalletPath: '', // Store the last used wallet path for quick connection
+  hideBalance: false,
+  hideAddress: false,
 });
 
 // Load settings from backend and sync to frontend store
@@ -277,6 +285,10 @@ export async function loadSettings() {
 // Save a setting to backend using the correct backend key
 export async function saveSetting(frontendKey, value) {
   const backendKey = settingsKeyMapReverse[frontendKey] || frontendKey;
+  const currentValue = get(settingsState)?.[frontendKey];
+  if (currentValue === value) {
+    return;
+  }
   
   // Update frontend state immediately
   settingsState.update(state => ({ ...state, [frontendKey]: value }));
@@ -307,19 +319,6 @@ export function clearPendingNavigation() {
 }
 
 // Derived stores
-export const isConnected = derived(
-  appState,
-  ($appState) => $appState.xswdConnected || $appState.nodeConnected
-);
-
-export const syncProgress = derived(
-  appState,
-  ($appState) => {
-    if ($appState.chainHeight === 0) return 0;
-    return ($appState.gnomonIndexedHeight / $appState.chainHeight) * 100;
-  }
-);
-
 export const combinedSyncProgress = derived(
   appState,
   ($appState) => {
@@ -378,11 +377,12 @@ export async function updateStatus() {
 }
 
 // Sync network mode from backend to frontend stores
-// This ensures all network indicators stay in sync across the app
+// This ensures all network indicators stay in sync across the app.
+// When effective network differs from persisted (e.g. simulator not running on restart),
+// updates and persists so next launch shows correct network.
 export async function syncNetworkMode() {
   try {
     const networkMode = await GetNetworkMode();
-    const nodeStatus = await GetNodeStatus();
     
     if (networkMode && networkMode.network) {
       const network = networkMode.network;
@@ -407,12 +407,23 @@ export async function syncNetworkMode() {
         currentEndpoint: endpoint,
       }));
       
-      // Also update settingsState for Settings page compatibility
-      settingsState.update(state => ({
-        ...state,
-        network: network,
-        daemonEndpoint: endpoint,
-      }));
+      // Update settingsState network label and persist.
+      // Do NOT touch daemonEndpoint here — it is loaded from disk by loadSettings()
+      // and updated only by TestAndConnectEndpoint. Overwriting it here would replace
+      // a user-configured remote endpoint with a constructed 127.0.0.1 URL.
+      const currentNetworkSetting = get(settingsState)?.network;
+      if (currentNetworkSetting !== network) {
+        settingsState.update(state => ({
+          ...state,
+          network: network,
+        }));
+        await saveSetting('network', network);
+      } else {
+        settingsState.update(state => ({
+          ...state,
+          network: network,
+        }));
+      }
       
       console.log('[Network] Mode synced:', { network, endpoint });
     }
@@ -486,11 +497,6 @@ export function dismissToast(id) {
   toastNotifications.update(toasts => toasts.filter(t => t.id !== id));
 }
 
-// Dismiss all toasts
-export function dismissAllToasts() {
-  toastNotifications.set([]);
-}
-
 // Convenience functions for different toast types
 export const toast = {
   info: (message, duration) => showToast(message, 'info', duration),
@@ -535,24 +541,4 @@ export function handleBackendError(result, options = {}) {
   return friendlyError;
 }
 
-/**
- * Wrap an async backend call with standardized error handling
- * @param {Function} fn - Async function that returns a backend response
- * @param {Object} options - Error handling options (same as handleBackendError)
- * @returns {Promise<Object>} - The result, with error field populated if failed
- */
-export async function withErrorHandling(fn, options = {}) {
-  try {
-    const result = await fn();
-    handleBackendError(result, options);
-    return result;
-  } catch (e) {
-    const error = e.message || 'An unexpected error occurred';
-    console.error('[Backend Exception]', e);
-    if (options.showToast !== false) {
-      toast.error(error);
-    }
-    return { success: false, error };
-  }
-}
 

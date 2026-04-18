@@ -107,6 +107,7 @@
           placeholder="64-character SCID..."
           class="input input-mono"
           disabled={updateIndexLoading}
+          on:keydown={(e) => e.key === 'Enter' && updateIndexScid.length >= 64 && !updateIndexLoading && loadIndexInfo()}
         />
       </div>
       

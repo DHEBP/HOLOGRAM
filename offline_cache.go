@@ -383,7 +383,7 @@ func (c *OfflineCache) RemoveCachedApp(scid string) error {
 		return err
 	}
 
-	c.log(fmt.Sprintf("🗑️ Removed cached app %s", scid[:16]))
+	c.log(fmt.Sprintf("[Cache] Removed app %s", scid[:16]))
 	return nil
 }
 
@@ -510,7 +510,7 @@ func (c *OfflineCache) evictOldest(bytesNeeded int64) error {
 		}
 		c.RemoveCachedApp(app.SCID)
 		bytesFreed += app.TotalSize
-		c.log(fmt.Sprintf("🗑️ Evicted %s to free %s", app.SCID[:16], formatBytes(app.TotalSize)))
+		c.log(fmt.Sprintf("[Cache] Evicted %s to free %s", app.SCID[:16], formatBytes(app.TotalSize)))
 	}
 
 	if bytesFreed < bytesNeeded {
@@ -550,7 +550,7 @@ func (c *OfflineCache) CleanupOldApps(maxAge time.Duration) (int, int64, error) 
 		c.updateStats(stats)
 	}
 
-	c.log(fmt.Sprintf("🧹 Cache cleanup: removed %d apps, freed %s", removedCount, formatBytes(bytesFreed)))
+	c.log(fmt.Sprintf("[Cache] Cleanup: removed %d apps, freed %s", removedCount, formatBytes(bytesFreed)))
 	return removedCount, bytesFreed, nil
 }
 
@@ -568,7 +568,7 @@ func (c *OfflineCache) ClearCache() error {
 		c.RemoveCachedApp(app.SCID)
 	}
 
-	c.log("🗑️ Cache cleared")
+	c.log("[Cache] Cleared")
 	return nil
 }
 

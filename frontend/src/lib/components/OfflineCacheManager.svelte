@@ -143,11 +143,11 @@
         <div class="card-content">
         <div class="stats-grid">
           <div class="stat-item">
-            <span class="stat-value">{stats.stats?.TotalApps || 0}</span>
+            <span class="stat-value">{stats.stats?.total_apps || 0}</span>
             <span class="stat-label">Cached Apps</span>
           </div>
           <div class="stat-item">
-            <span class="stat-value">{stats.stats?.TotalFiles || 0}</span>
+            <span class="stat-value">{stats.stats?.total_files || 0}</span>
             <span class="stat-label">Files</span>
           </div>
           <div class="stat-item">
@@ -198,26 +198,26 @@
           {#each cachedApps as app}
             <div class="app-card">
               <div class="app-icon">
-                {#if app.SupportsEpoch}
+                {#if app.supports_epoch}
                   <span class="epoch-badge" title="Supports EPOCH"><Icons name="gem" size={24} /></span>
                 {:else}
                   <Icons name="smartphone" size={24} />
                 {/if}
               </div>
               <div class="app-info">
-                <span class="app-name">{app.Name || 'Unnamed App'}</span>
-                <span class="app-scid">{formatScid(app.SCID)}</span>
+                <span class="app-name">{app.name || 'Unnamed App'}</span>
+                <span class="app-scid">{formatScid(app.scid)}</span>
                 <span class="app-meta">
-                  {app.FileCount} files • {formatBytes(app.TotalSize)} • Cached {getTimeSince(app.CachedAt)}
+                  {app.file_count} files • {formatBytes(app.total_size)} • Cached {getTimeSince(app.cached_at)}
                 </span>
               </div>
               <div class="app-actions">
-                {#if app.HasUpdate}
-                  <span class="update-badge" title="Update available: v{app.Version} → v{app.OnChainVersion}">
+                {#if app.has_update}
+                  <span class="update-badge" title="Update available: v{app.version} → v{app.onchain_version}">
                     <Icons name="arrow-up" size={12} />
                     Update
                   </span>
-                {:else if app.IsComplete}
+                {:else if app.is_complete}
                   <span class="complete-badge">
                     <Icons name="check" size={12} />
                     Complete
@@ -227,7 +227,7 @@
                 {/if}
                 <button 
                   class="btn btn-ghost btn-sm"
-                  on:click={() => handleRemoveApp(app.SCID)}
+                  on:click={() => handleRemoveApp(app.scid)}
                   title="Remove from cache"
                 >
                   <Icons name="x" size={14} />

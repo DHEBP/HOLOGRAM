@@ -2,7 +2,7 @@
 // Core App Structure - Session 87 refactored into domain files
 //
 // Domain Files:
-//   app_navigation.go  - Navigate, GoBack, GoForward, Reload, History, Bookmarks
+//   app_navigation.go  - Navigate, GoBack, GoForward, Reload, History
 //   app_settings.go    - GetSetting, SetSetting, GetAllSettings
 //   app_console.go     - ConsoleLog, logToConsole, GetConsoleLogs
 //   app_status.go      - StatusBroadcaster, getFullStatus, StartStatusBroadcast
@@ -25,8 +25,11 @@ import (
 	"time"
 
 	"github.com/civilware/tela"
+	"github.com/deroproject/derohe/cryptography/crypto"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+var deroSCID = crypto.ZEROHASH.String()
 
 // App struct
 type App struct {
@@ -39,8 +42,8 @@ type App struct {
 	liveStats    *LiveStatsService
 	settings     map[string]interface{}
 	history      []string
-	bookmarks    []map[string]string
 	consoleLogs  []ConsoleLog
+	launchURL    string
 
 	// EPOCH (Developer Support)
 	epochHandler     *EpochHandler
@@ -57,12 +60,27 @@ type App struct {
 	// Simulator Mode (integrated testing environment)
 	simulatorManager *SimulatorManager
 
+	// simulatorDeployEndpoint holds the real daemon endpoint during simulator batch deploy.
+	// Daemon_Endpoint_Active is intentionally blanked between TXs to suppress
+	// walletapi.Keep_Connectivity from opening competing WebSocket connections.
+	// This field lets deployDOC restore the endpoint when it needs to connect.
+	simulatorDeployEndpoint string
+
 	// Gnomon WebSocket API Server (simple-gnomon feature)
 	gnomonWSServer *GnomonWSServer
 
 	// Status broadcast
 	statusBroadcaster     *StatusBroadcaster
 	statusBroadcasterOnce sync.Once
+	launchURLMu           sync.Mutex
+
+	// Wizard / startup gating
+	wizardComplete        bool
+	backgroundStarted     bool
+	backgroundStartedOnce sync.Once
+
+	// EPOCH address monitor lifecycle
+	epochMonitorStop chan struct{}
 }
 
 // NewApp creates a new App application struct
@@ -75,18 +93,19 @@ func NewApp() *App {
 		gnomonClient: NewGnomonClient("gravdb"),
 		cache:        NewGravitonCache(),
 		settings: map[string]interface{}{
-			"min_rating":           60,
-			"block_malware":        true,
-			"show_nsfw":            false,
-			"auto_connect_ws":      true,
-			"gnomon_enabled":       false,
-			"daemon_endpoint":      daemonEndpoint,
-			"network":              "mainnet",
-			"integrated_wallet":    true,
-			"allow_github_check":   true, // Allow pinging GitHub for derod updates
+			"min_rating":         60,
+			"block_malware":      true,
+			"show_nsfw":          false,
+			"auto_connect_ws":    true,
+			"gnomon_enabled":     false,
+			"daemon_endpoint":    daemonEndpoint,
+			"network":            "mainnet",
+			"integrated_wallet":  true,
+			"allow_github_check": true, // Allow pinging GitHub for derod updates
+			"hide_balance":       false,
+			"hide_address":       false,
 		},
 		history:     make([]string, 0),
-		bookmarks:   make([]map[string]string, 0),
 		consoleLogs: make([]ConsoleLog, 0),
 	}
 
@@ -94,6 +113,23 @@ func NewApp() *App {
 	app.epochHandler = NewEpochHandler(app.logToConsole)
 	app.devSupportWorker = NewDevSupportWorker(app.epochHandler, app.logToConsole)
 	return app
+}
+
+// shutdown is called when the app is closing. Ensures open wallets are
+// flushed to disk so a hard exit / reboot cannot leave 0-byte wallet files.
+func (a *App) shutdown(ctx context.Context) {
+	a.logToConsole("[SHUTDOWN] HOLOGRAM shutting down — closing wallet...")
+
+	walletManager.Lock()
+	if walletManager.isOpen && walletManager.wallet != nil {
+		walletManager.wallet.Close_Encrypted_Wallet()
+		walletManager.wallet = nil
+		walletManager.isOpen = false
+		walletManager.walletPath = ""
+	}
+	walletManager.Unlock()
+
+	a.logToConsole("[SHUTDOWN] Wallet closed. Goodbye.")
 }
 
 // startup is called when the app starts
@@ -104,6 +140,12 @@ func (a *App) startup(ctx context.Context) {
 	// Load persisted settings (daemon_endpoint, network, etc.) before any connections
 	// This ensures user-configured endpoints survive app restarts
 	a.loadSettings()
+
+	// Reconcile daemon_endpoint with the actual network after loading persisted settings.
+	// Bug #39 fix: persisted settings may contain a stale endpoint (e.g. simulator :20000)
+	// from a previous session while the user is now on mainnet. We need to update both
+	// the daemonClient and the settings before any services start using them.
+	a.reconcileDaemonEndpoint()
 
 	// Ensure datashards are writable before any TELA operations
 	// CRITICAL: This MUST succeed or TELA apps will fail with "read-only file system" errors
@@ -171,90 +213,114 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}()
 
-	// Auto-connect to XSWD
-	if autoConnect, ok := a.settings["auto_connect_ws"].(bool); ok && autoConnect {
-		if integrated, ok := a.settings["integrated_wallet"].(bool); ok && integrated {
-			go a.xswdServer.Start()
-		} else {
-			go func() {
-				a.logToConsole("[XSWD] Auto-connecting to XSWD (external wallet)...")
-				a.ConnectXSWD()
-			}()
-		}
+	// Check if wizard was already completed (returning user)
+	if wizardDone, ok := a.settings["wizard_complete"].(bool); ok && wizardDone {
+		a.wizardComplete = true
+		a.startBackgroundServices()
+	} else {
+		a.logToConsole("[START] First run detected - background services deferred until setup completes")
 	}
+}
 
-	// Initialize Developer Support
-	go func() {
-		time.Sleep(3 * time.Second)
+// NotifyWizardComplete is called by the frontend when the FirstRunWizard finishes.
+// It starts all the background services that were deferred during first run.
+func (a *App) NotifyWizardComplete() {
+	a.wizardComplete = true
+	a.logToConsole("[START] Setup complete - starting background services")
+	a.startBackgroundServices()
+}
 
-		devSupportEnabled := true
-		if savedSetting, ok := a.settings["dev_support_enabled"]; ok {
-			if enabled, ok := savedSetting.(bool); ok {
-				devSupportEnabled = enabled
-			}
-		} else if savedSetting, ok := a.settings["epoch_enabled"]; ok {
-			if enabled, ok := savedSetting.(bool); ok {
-				devSupportEnabled = enabled
-			}
-		}
+// startBackgroundServices starts all background goroutines (XSWD, EPOCH, Gnomon, StatusBroadcaster).
+// Gated behind wizard completion so first-run users don't get hammered by daemon polling.
+func (a *App) startBackgroundServices() {
+	a.backgroundStartedOnce.Do(func() {
+		a.backgroundStarted = true
 
-		a.loadDevSupportStats()
-
-		if a.epochHandler == nil {
-			a.epochHandler = NewEpochHandler(a.logToConsole)
-		}
-		a.epochHandler.SetEnabled(devSupportEnabled)
-
-		if devSupportEnabled {
-			// Option 2: Wait for node sync before starting EPOCH
-			// This helps avoid "unregistered miner" errors by ensuring node is ready
-			if !a.waitForNodeSync(5 * time.Minute) {
-				a.logToConsole("[WARN] EPOCH: Node sync check timeout - starting anyway")
-			}
-
-			a.InitializeEpoch()
-			time.Sleep(2 * time.Second)
-
-			if a.devSupportWorker != nil {
-				a.devSupportWorker.SetEnabled(true)
-				a.devSupportWorker.Start()
-			}
-
-			// Start the address monitor for fair developer support switching
-			a.StartEpochAddressMonitor()
-		} else {
-			a.logToConsole("[EPOCH] Developer Support: Disabled by user preference")
-		}
-	}()
-
-	// Auto-start Gnomon if enabled
-	go func() {
-		time.Sleep(2 * time.Second) // Wait for daemon connection test
-
-		if autostart, ok := a.settings["gnomon_autostart"].(bool); ok && autostart {
-			if err := a.daemonClient.TestConnection(); err == nil {
-				a.logToConsole("[GNOMON] Auto-starting Gnomon indexer (user preference)...")
-				a.StartGnomon()
+		// Auto-connect to XSWD
+		if autoConnect, ok := a.settings["auto_connect_ws"].(bool); ok && autoConnect {
+			if integrated, ok := a.settings["integrated_wallet"].(bool); ok && integrated {
+				go a.xswdServer.Start()
 			} else {
-				a.logToConsole("[GNOMON] Auto-start skipped - daemon not connected")
+				go func() {
+					a.logToConsole("[XSWD] Auto-connecting to XSWD (external wallet)...")
+					a.ConnectXSWD()
+				}()
 			}
 		}
-	}()
 
-	a.StartStatusBroadcast()
+		// Initialize Developer Support
+		go func() {
+			time.Sleep(3 * time.Second)
+
+			devSupportEnabled := true
+			if savedSetting, ok := a.settings["dev_support_enabled"]; ok {
+				if enabled, ok := savedSetting.(bool); ok {
+					devSupportEnabled = enabled
+				}
+			} else if savedSetting, ok := a.settings["epoch_enabled"]; ok {
+				if enabled, ok := savedSetting.(bool); ok {
+					devSupportEnabled = enabled
+				}
+			}
+
+			a.loadDevSupportStats()
+
+			if a.epochHandler == nil {
+				a.epochHandler = NewEpochHandler(a.logToConsole)
+			}
+			a.epochHandler.SetEnabled(devSupportEnabled)
+
+			if devSupportEnabled {
+				// Wait for node sync before starting EPOCH
+				// This helps avoid "unregistered miner" errors by ensuring node is ready
+				if !a.waitForNodeSync(5 * time.Minute) {
+					a.logToConsole("[WARN] EPOCH: Node sync check timeout - starting anyway")
+				}
+
+				a.InitializeEpoch()
+				time.Sleep(2 * time.Second)
+
+				if a.devSupportWorker != nil {
+					a.devSupportWorker.SetEnabled(true)
+					a.devSupportWorker.Start()
+				}
+
+				// Start the address monitor for fair developer support switching
+				a.StartEpochAddressMonitor()
+			} else {
+				a.logToConsole("[EPOCH] Developer Support: Disabled by user preference")
+			}
+		}()
+
+		// Auto-start Gnomon if enabled
+		go func() {
+			time.Sleep(2 * time.Second) // Wait for daemon connection test
+
+			if autostart, ok := a.settings["gnomon_autostart"].(bool); ok && autostart {
+				if err := a.daemonClient.TestConnection(); err == nil {
+					a.logToConsole("[GNOMON] Auto-starting Gnomon indexer (user preference)...")
+					a.StartGnomon()
+				} else {
+					a.logToConsole("[GNOMON] Auto-start skipped - daemon not connected")
+				}
+			}
+		}()
+
+		a.StartStatusBroadcast()
+	})
 }
 
 // waitForNodeSync waits for the node to be synced before proceeding
 // Returns true if node is synced, false if timeout
 func (a *App) waitForNodeSync(maxWait time.Duration) bool {
 	a.logToConsole("[EPOCH] Waiting for node sync before starting developer support...")
-	
+
 	startTime := time.Now()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	
+
 	lastLoggedProgress := -1.0
-	
+
 	for time.Since(startTime) < maxWait {
 		// Check if node is synced
 		syncResult := a.GetSyncProgress()
@@ -262,7 +328,7 @@ func (a *App) waitForNodeSync(maxWait time.Duration) bool {
 			a.logToConsole("[EPOCH] Node is synced - starting developer support")
 			return true
 		}
-		
+
 		// Check if node is even running
 		nodeStatus := a.GetNodeStatus()
 		if isRunning, ok := nodeStatus["isRunning"].(bool); !ok || !isRunning {
@@ -270,19 +336,19 @@ func (a *App) waitForNodeSync(maxWait time.Duration) bool {
 			<-ticker.C
 			continue
 		}
-		
+
 		// Log progress if available (every 10% to avoid spam)
 		if progress, ok := syncResult["progress"].(float64); ok {
-			currentProgress := int(progress / 10) * 10 // Round down to nearest 10%
+			currentProgress := int(progress/10) * 10 // Round down to nearest 10%
 			if currentProgress != int(lastLoggedProgress) && currentProgress >= 0 {
 				a.logToConsole(fmt.Sprintf("[EPOCH] Node sync progress: %.1f%% - waiting...", progress))
 				lastLoggedProgress = float64(currentProgress)
 			}
 		}
-		
+
 		<-ticker.C
 	}
-	
+
 	return false
 }
 
@@ -359,7 +425,7 @@ func (a *App) CallXSWD(methodJSON string) map[string]interface{} {
 	// This matches Engram's behavior
 	if request.Method == "GetDaemon" {
 		endpoint := "127.0.0.1:10102"
-		
+
 		if a.simulatorManager != nil && a.simulatorManager.isInitialized {
 			endpoint = "127.0.0.1:20000"
 		} else {
@@ -382,7 +448,7 @@ func (a *App) CallXSWD(methodJSON string) map[string]interface{} {
 			return a.routeDaemonCall(request.Method, request.Params)
 
 		case isEpochMethod(request.Method):
-			return a.routeEpochCall(request.Method, request.Params)
+			return a.routeEpochCall(request.Method, request.Params, "")
 
 		case isTELAMethod(request.Method):
 			return a.routeTELACall(request.Method, request.Params)
@@ -412,10 +478,10 @@ func (a *App) GetXSWDStatus() map[string]interface{} {
 	if a.xswdServer != nil && a.xswdServer.IsRunning() {
 		xswdServerRunning = true
 	}
-	
+
 	// Engram connection status (HOLOGRAM as client to external wallet)
 	engramConnected := a.xswdClient.IsConnected()
-	
+
 	// Legacy: any XSWD activity
 	connected := xswdServerRunning || engramConnected
 
@@ -574,20 +640,9 @@ func (a *App) FetchSCID(scid string) map[string]interface{} {
 		}
 	}
 
-	// Fallback: serve last cached content even if version is unknown/mismatched
-	if a.cache != nil {
-		if html, ok := a.cache.GetHTML(scid); ok && html != "" {
-			a.logToConsole("[FAST] Cache hit (unverified): serving last cached content")
-			ch := computeContentHash(html)
-			return map[string]interface{}{
-				"success": true,
-				"scid":    scid,
-				"content": html,
-				"meta":    map[string]interface{}{"cache": true, "stale": true, "version": version, "hash": ch},
-				"message": "Content served from cache (unverified)",
-			}
-		}
-	}
+	// IMPORTANT: Do not serve unverified cache snapshots.
+	// They can be stale and cause incorrect rendering after deploys/fixes.
+	// If versioned cache misses, fetch fresh content from blockchain.
 
 	content, err := a.FetchTELAContent(scid)
 	if err != nil {
@@ -642,33 +697,16 @@ func (a *App) FetchByDURL(durl string) map[string]interface{} {
 	cachedSCID, cached := a.getCachedDURLMapping(name)
 	scid := ""
 
-	// Fast path: serve cached HTML immediately when we have a cached mapping
-	if cached && a.cache != nil {
-		if html, ok := a.cache.GetHTML(cachedSCID); ok && html != "" {
-			ch := computeContentHash(html)
-			return map[string]interface{}{
-				"success": true,
-				"scid":    cachedSCID,
-				"content": html,
-				"meta": map[string]interface{}{
-					"cache":      true,
-					"stale":      true,
-					"hash":       ch,
-					"durl":       name,
-					"durl_cache": true,
-				},
-				"message": "Content served from cache (unverified)",
-			}
-		}
-	}
-
+	// Prefer live Gnomon resolution first so stale cache mappings don't override
+	// the latest on-chain contract for the same dURL.
 	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
-		if cached {
-			scid = cachedSCID
-		} else if sc, ok := a.gnomonClient.ResolveDURL(name); ok {
+		if sc, ok := a.gnomonClient.ResolveDURL(name); ok {
 			scid = sc
 		} else if sc, ok2 := a.gnomonClient.ResolveName(name); ok2 {
 			scid = sc
+		} else if cached {
+			scid = cachedSCID
+			a.logToConsole(fmt.Sprintf("[Search] Using cached dURL mapping fallback for %s → %s", name, cachedSCID))
 		} else {
 			return map[string]interface{}{
 				"success": false,
@@ -932,7 +970,7 @@ func (a *App) GetTokenPortfolio() map[string]interface{} {
 					}
 				}
 
-				if scid == "0000000000000000000000000000000000000000000000000000000000000000" {
+				if scid == deroSCID {
 					token["name"] = "DERO"
 					token["symbol"] = "DERO"
 					token["native"] = true
@@ -1241,7 +1279,7 @@ func (a *App) GetBalanceAtHeight(address string, topoheight int64, scid string) 
 		"topoheight": topoheight,
 	}
 
-	if scid != "" && scid != "0000000000000000000000000000000000000000000000000000000000000000" {
+	if scid != "" && scid != deroSCID {
 		params["scid"] = scid
 	}
 

@@ -16,6 +16,14 @@ import (
 var assets embed.FS
 
 func main() {
+	originalArgs := append([]string(nil), os.Args...)
+
+	// Capture launch args (e.g., dero:// links) before clearing Wails/CLI flags.
+	launchArgs := []string{}
+	if len(originalArgs) > 1 {
+		launchArgs = append(launchArgs, originalArgs[1:]...)
+	}
+
 	// Clear args to prevent DERO globals from picking up Wails flags
 	os.Args = []string{os.Args[0]}
 
@@ -31,6 +39,7 @@ func main() {
 
 	// Create an instance of the app structure
 	app := NewApp()
+	app.captureLaunchURLFromArgs(launchArgs)
 
 	// Create application with options
 	err := wails.Run(&options.App{
@@ -42,9 +51,10 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 12, G: 12, B: 20, A: 1}, // --void-base: #0c0c14
 		OnStartup:        app.startup,
+		OnShutdown:        app.shutdown,
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,
-			DisableWebViewDrop: false, // Allow webview for visual feedback, Wails OnFileDrop provides real paths
+			DisableWebViewDrop: true, // Prevent WebKit from natively handling drops (causes image preview navigation); Wails OnFileDrop provides real paths
 		},
 		Mac: &mac.Options{
 			TitleBar: &mac.TitleBar{

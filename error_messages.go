@@ -50,9 +50,9 @@ var TELADeploymentErrors = []TELADeploymentError{
 	},
 	{
 		Pattern:     `graviton.*panic|daemon.*crash|simulator.*crash`,
-		Title:       "Daemon crashed (likely Unicode in file)",
-		Description: "The DERO daemon or Graviton database crashed. This is often caused by Unicode characters in your deployment files that the system cannot process.",
-		Fix:         "Check all files for non-ASCII characters using: grep -P \"[^\\x00-\\x7F]\" yourfile.js\nReplace any Unicode characters with ASCII equivalents.",
+		Title:       "Daemon crashed during deployment",
+		Description: "The simulator daemon process became unavailable during deployment. This can be caused by malformed DOC content, SC parse/execution failures, or simulator connection instability.",
+		Fix:         "Check deploy logs around the first failing file and look for DVM parse errors (e.g., \"Expecting declaration of function\"). Also ensure files are ASCII-safe and do not contain '*/' inside raw DOC content.",
 		Example:     "",
 	},
 
@@ -334,7 +334,9 @@ var UserFriendlyErrors = map[string]string{
 	"daemon connection lost":       "Simulator daemon connection lost. Please restart simulator mode.",
 	"daemon crashed":               "Simulator daemon crashed. Please restart simulator mode.",
 	"daemon endpoint is invalid":   "Simulator not properly configured. Please restart simulator mode.",
-	"could not be built":           "Transaction build failed. Retrying with fresh nonce...",
+	"could not be built":           "Transaction build failed. Wallet may be out of sync — please try again.",
+	"more than you have":           "Amount plus network fees exceeds your balance. Try reducing the amount slightly.",
+	"TX verification failed":       "Amount plus network fees exceeds your balance. Try reducing the amount slightly.",
 	"simulator daemon not responding": "Simulator daemon not responding. Please restart simulator mode.",
 	"websocket: close":             "Connection closed unexpectedly. Retrying...",
 	"abnormal closure":             "Connection interrupted. The operation will be retried.",
@@ -452,15 +454,6 @@ func ErrorResponse(err error) map[string]interface{} {
 		"success":       false,
 		"error":         FriendlyError(err),
 		"technicalError": err.Error(),
-	}
-}
-
-// ErrorResponseString creates an error response from a string
-func ErrorResponseString(errMsg string) map[string]interface{} {
-	return map[string]interface{}{
-		"success":        false,
-		"error":          FriendlyErrorString(errMsg),
-		"technicalError": errMsg,
 	}
 }
 

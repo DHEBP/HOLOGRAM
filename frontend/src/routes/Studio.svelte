@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { walletState, settingsState, navigateTo, syncNetworkMode, toast } from '../lib/stores/appState.js';
-  import BatchUpload from '../lib/components/BatchUpload.svelte';
+  import StudioBatchUpload from '../lib/components/studio/StudioBatchUpload.svelte';
   import DiffViewer from '../lib/components/DiffViewer.svelte';
   import ModPickerModal from '../lib/components/ModPickerModal.svelte';
   import VersionHistory from '../lib/components/VersionHistory.svelte';
@@ -16,14 +16,15 @@
   import StudioInstallDoc from '../lib/components/studio/StudioInstallDoc.svelte';
   import StudioShards from '../lib/components/studio/StudioShards.svelte';
   import StudioActions from '../lib/components/studio/StudioActions.svelte';
+  import StudioDeploySC from '../lib/components/studio/StudioDeploySC.svelte';
   import { 
     SetSetting, GetGasEstimate, InstallDOC, InstallINDEX, GetINDEXInfo, UpdateINDEX, SelectFolder, SelectFile,
     IsInSimulatorMode, GetSimulatorDeploymentInfo, CloneTELA, GetClonePath,
     StartLocalDevServer, StopLocalDevServer, GetLocalDevServerStatus, RefreshLocalDevServer,
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus, SetNetworkMode,
-    ShardFile, ConstructFromShards, InstallSmartContract
+    ShardFile, ConstructFromShards, OpenURLInBrowserIfAllowed
   } from '../../wailsjs/go/main/App.js';
-  import { BrowserOpenURL, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
+  import { ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
   import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff } from '../../wailsjs/runtime/runtime.js';
   import { 
     Globe, FlaskConical, Gamepad2, FileText, FolderUp, FolderDown, Layers, RefreshCw, 
@@ -152,16 +153,13 @@
   let shardError = '';
 
   // =====================================================
-  // Deploy SC state (raw smart contract deployment)
-  // =====================================================
-  let scCode = '';                // DVM-BASIC smart contract code
-  let scAnonymous = false;        // Use ringsize 16+ for anonymous deployment
-  let scDeploying = false;
-  let scDeployResult = null;
-  let scDeployError = '';
+  // Deploy SC state moved to StudioDeploySC.svelte
+  let deploySCRef; // Reference to StudioDeploySC component for confirmation flow
 
   // Dropzone element reference for native drag-and-drop
   let batchDropzoneElement;
+  let shardDropzoneElement;
+  let shardDragging = false;
   
   // Check local server status on mount
   onMount(async () => {
@@ -173,22 +171,45 @@
     // Set up Wails native drag-and-drop handler for REAL filesystem paths
     // (Browser drag-and-drop API only provides virtual paths for security)
     OnFileDrop((x, y, paths) => {
-      // Only handle if we're on the batch-upload tab and no folder is selected yet
-      if (activeTab !== 'batch-upload') {
-        return;
-      }
-      if (batchFolderPath) {
+      // Handle batch-upload tab (folder drops)
+      if (activeTab === 'batch-upload' && !batchFolderPath) {
+        if (batchDropzoneElement) {
+          const rect = batchDropzoneElement.getBoundingClientRect();
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            if (paths && paths.length > 0) {
+              batchFolderPath = paths[0];
+              batchDragging = false;
+            }
+          }
+        }
         return;
       }
       
-      // Check if drop is within the dropzone element bounds
-      if (batchDropzoneElement) {
-        const rect = batchDropzoneElement.getBoundingClientRect();
-        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-          // Use the first dropped path (should be a folder)
-          if (paths && paths.length > 0) {
-            batchFolderPath = paths[0];
-            batchDragging = false;
+      // Handle shards tab (file drops for sharding)
+      if (activeTab === 'shards' && shardMode === 'shard' && !shardFilePath) {
+        if (shardDropzoneElement) {
+          const rect = shardDropzoneElement.getBoundingClientRect();
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            if (paths && paths.length > 0) {
+              shardFilePath = paths[0];
+              shardDragging = false;
+              shardError = '';
+            }
+          }
+        }
+        return;
+      }
+      
+      // Handle shards tab reconstruct mode (folder drops)
+      if (activeTab === 'shards' && shardMode === 'reconstruct' && !shardFolderPath) {
+        if (shardDropzoneElement) {
+          const rect = shardDropzoneElement.getBoundingClientRect();
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            if (paths && paths.length > 0) {
+              shardFolderPath = paths[0];
+              shardDragging = false;
+              shardError = '';
+            }
           }
         }
       }
@@ -210,6 +231,7 @@
       localServerWatcherActive = status.watcherActive || false;
     } catch (e) {
       console.error('Failed to get local server status:', e);
+      toast.error('Failed to check local server status');
     }
   }
   
@@ -335,9 +357,8 @@
   
   async function openCloneFolder() {
     if (cloneResult?.directory) {
-      // Use the shell to open the folder
       try {
-        BrowserOpenURL(`file://${cloneResult.directory}`);
+        await OpenURLInBrowserIfAllowed(`file://${cloneResult.directory}`);
       } catch (e) {
         console.error('Failed to open folder:', e);
       }
@@ -452,52 +473,7 @@
   }
 
   // =====================================================
-  // Deploy SC Functions (raw smart contract deployment)
-  // =====================================================
-  
-  async function deploySmartContract() {
-    if (!scCode.trim()) {
-      scDeployError = 'Please enter smart contract code';
-      return;
-    }
-    
-    // Check if wallet is open
-    if (!$walletState.isOpen && !isSimulator) {
-      scDeployError = 'Please open a wallet first';
-      return;
-    }
-    
-    scDeploying = true;
-    scDeployError = '';
-    scDeployResult = null;
-    
-    try {
-      const result = await InstallSmartContract(scCode, scAnonymous);
-      
-      if (result.success) {
-        scDeployResult = {
-          txid: result.txid,
-          message: result.message
-        };
-        toast.success('Smart contract deployed successfully!');
-      } else {
-        scDeployError = result.error || 'Deployment failed';
-        toast.error(scDeployError);
-      }
-    } catch (e) {
-      scDeployError = e.message || 'Deployment failed';
-      toast.error(scDeployError);
-    } finally {
-      scDeploying = false;
-    }
-  }
-  
-  function resetSCDeploy() {
-    scCode = '';
-    scAnonymous = false;
-    scDeployResult = null;
-    scDeployError = '';
-  }
+  // Deploy SC functions moved to StudioDeploySC.svelte
 
   // =====================================================
   // My Content Functions (matching tela-cli search my docs/indexes)
@@ -663,12 +639,13 @@
   
   async function handleVersionClone(event) {
     const commit = event.detail;
-    // Clone at that specific version
     if (commit.txid) {
       cloneScid = `${versionHistoryScid}@${commit.txid}`;
     } else if (commit.height) {
-      // Need TXID for CloneAtCommit - for now just use the SCID
+      // CloneAtCommit requires a TXID, but this commit only has a block height.
+      // Fall back to cloning the latest version and notify the user.
       cloneScid = versionHistoryScid;
+      toast.warning('TXID unavailable for this commit -- cloning latest version instead');
     }
     activeTab = 'clone';
     showVersionHistory = false;
@@ -801,7 +778,7 @@
           await syncNetworkMode();
         } else {
           console.error('Failed to start simulator:', result.error);
-          alert('Failed to start simulator: ' + result.error);
+          toast.error('Failed to start simulator: ' + result.error);
         }
       } else if (simModalAction === 'stop') {
         await StopSimulatorMode();
@@ -814,7 +791,7 @@
       }
     } catch (e) {
       console.error('Simulator action failed:', e);
-      alert('Simulator action failed: ' + e.message);
+      toast.error('Simulator action failed: ' + e.message);
     }
     
     simIsLoading = false;
@@ -1675,34 +1652,34 @@
   $: indexIconValidation = validateIconURL(indexIconURL);
   
   // =====================================================
-  // dURL Tag Detection (matching tela-cli conventions)
+  // dURL Tag Detection (must match backend conventions in blockchain.go)
   // =====================================================
   // Special dURL suffixes indicate content type:
-  // - .lib     = Library (collection of reusable DOCs)
-  // - .shard   = DocShard DOC
-  // - .shards  = DocShards INDEX (requires reconstruction)
-  // - .bootstrap = Bootstrap INDEX (collection of apps)
+  // - .tela.lib       = Library (collection of reusable DOCs)
+  // - .tela.shard     = DocShard DOC
+  // - .tela.shards    = DocShards INDEX (requires reconstruction)
+  // - .tela.bootstrap = Bootstrap INDEX (collection of apps)
   
   const DURL_TAGS = {
-    '.lib': {
+    '.tela.lib': {
       name: 'Library',
       icon: 'lib',
       description: 'A collection of reusable DOCs that can be embedded in other apps',
       color: 'violet'
     },
-    '.shard': {
+    '.tela.shard': {
       name: 'DocShard',
-      icon: '🧩',
+      icon: 'shard',
       description: 'A shard DOC (part of a larger file split across multiple contracts)',
       color: 'cyan'
     },
-    '.shards': {
+    '.tela.shards': {
       name: 'DocShards',
       icon: 'shards',
       description: 'An INDEX containing DocShards that require reconstruction',
       color: 'cyan'
     },
-    '.bootstrap': {
+    '.tela.bootstrap': {
       name: 'Bootstrap',
       icon: 'bootstrap',
       description: 'A collection of TELA apps/content for bootstrapping',
@@ -1811,6 +1788,8 @@
       await deployBatch();
     } else if (confirmModalType === 'index') {
       await installIndex();
+    } else if (confirmModalType === 'sc') {
+      if (deploySCRef) await deploySCRef.deploySmartContract();
     }
     
     confirmModalType = '';
@@ -1887,7 +1866,13 @@
         <p class="page-header-desc">Create and deploy TELA applications</p>
       </div>
       <div class="page-header-actions">
-        <span class="badge" class:badge-warn={currentNetConfig.status === 'err'} class:badge-ok={currentNetConfig.status === 'ok'} class:badge-cyan={currentNetConfig.status === 'warn'}>
+        <span 
+          class="badge" 
+          class:badge-warn={currentNetConfig.status === 'err'} 
+          class:badge-ok={currentNetConfig.status === 'ok'} 
+          class:badge-cyan={currentNetConfig.status === 'warn'}
+          title={currentNetConfig.description}
+        >
           {currentNetConfig.warning}
         </span>
         <div class="network-toggle-group">
@@ -1997,69 +1982,15 @@
       />
     
     {:else if activeTab === 'batch-upload'}
-      <div class="content-section">
-        <h2 class="content-section-title">Batch Upload</h2>
-        <p class="content-section-desc">Upload an entire folder to create DOCs + INDEX in one operation.</p>
-        
-        <!-- v6.1 Folder Selection Dropzone -->
-        {#if !batchFolderPath}
-          <div 
-            bind:this={batchDropzoneElement}
-            class="dropzone"
-            class:active={batchDragging}
-            on:dragover|preventDefault={() => batchDragging = true}
-            on:dragleave={() => batchDragging = false}
-            on:drop|preventDefault={() => {
-              // Visual feedback reset - actual path is set by Wails OnFileDrop handler
-              // which provides REAL filesystem paths (browser API only gives virtual paths)
-              batchDragging = false;
-            }}
-            on:click={async () => {
-              const selected = await SelectFolder();
-              if (selected) {
-                batchFolderPath = selected;
-              }
-            }}
-            role="button"
-            tabindex="0"
-          >
-            <div class="dropzone-icon">
-              {#if batchDragging}
-                <FolderDown size={40} strokeWidth={1.5} />
-              {:else}
-                <FolderUp size={40} strokeWidth={1.5} />
-              {/if}
-            </div>
-            <p class="dropzone-title">
-              {batchDragging ? 'Drop folder here' : 'Drag & drop a folder'}
-            </p>
-            <p class="dropzone-hint">
-              Or click to browse. All files will be scanned for batch deployment.
-            </p>
-          </div>
-        {:else}
-          <BatchUpload 
-            folderPath={batchFolderPath} 
-            on:complete={(e) => {
-              // Show success toast notification
-              toast.success(`Deployment complete! INDEX: ${e.detail.indexScid?.substring(0, 16)}...`);
-              // Don't clear batchFolderPath - let user see the success card and SCIDs
-              // They can click "Choose different folder" button to start over
-            }}
-            on:preview={(e) => {
-              // Navigate to browser with the SCID
-              previewInBrowser(e.detail.scid);
-            }}
-          />
-          
-          <button
-            on:click={() => batchFolderPath = ''}
-            class="btn btn-ghost back-link"
-          >
-            ← Choose different folder
-          </button>
-        {/if}
-      </div>
+      <StudioBatchUpload
+        bind:batchFolderPath
+        bind:batchDragging
+        bind:batchDropzoneElement
+        selectFolder={SelectFolder}
+        on:preview={(e) => {
+          previewInBrowser(e.detail.scid);
+        }}
+      />
     
     {:else if activeTab === 'install-index'}
       <StudioInstallIndex
@@ -2236,6 +2167,8 @@
         bind:shardFilePath
         bind:shardFolderPath
         bind:shardCompress
+        bind:shardDropzoneElement
+        bind:shardDragging
         {shardError}
         {shardResult}
         {shardLoading}
@@ -2248,126 +2181,13 @@
       />
     
     {:else if activeTab === 'deploy-sc'}
-      <!-- Deploy Smart Contract - Raw DVM-BASIC code deployment -->
-      <div class="content-section">
-        <h2 class="content-section-title">Deploy Smart Contract</h2>
-        <p class="content-section-desc">Deploy a raw DVM-BASIC smart contract directly to the blockchain.</p>
-        
-        <!-- Error Display -->
-        {#if scDeployError}
-          <div class="alert alert-error" style="margin-bottom: var(--s-4);">
-            <AlertTriangle size={16} />
-            <span>{scDeployError}</span>
-          </div>
-        {/if}
-        
-        <!-- Success Display -->
-        {#if scDeployResult}
-          <div class="clone-success-card">
-            <div class="clone-success-header">
-              <CheckCircle size={24} class="clone-success-icon" />
-              <div>
-                <h3 class="clone-success-title">Smart Contract Deployed!</h3>
-                <p class="clone-success-subtitle">Transaction submitted successfully</p>
-              </div>
-            </div>
-            
-            <div class="clone-result-details">
-              <div class="clone-detail-row">
-                <span class="clone-detail-label">Transaction ID</span>
-                <code class="clone-detail-value" style="font-size: 11px;">{scDeployResult.txid}</code>
-              </div>
-              <div class="clone-detail-row">
-                <span class="clone-detail-label">Status</span>
-                <span class="clone-detail-value">Pending confirmation</span>
-              </div>
-            </div>
-            
-            <div class="clone-result-note">
-              <Info size={14} />
-              <span>The SCID will be the same as the TXID once confirmed. Copy the TXID above.</span>
-            </div>
-            
-            <div class="clone-actions">
-              <button class="btn btn-secondary" on:click={() => navigator.clipboard.writeText(scDeployResult.txid)}>
-                <Copy size={14} />
-                Copy TXID
-              </button>
-              <button class="btn btn-ghost" on:click={resetSCDeploy}>
-                Deploy Another
-              </button>
-            </div>
-          </div>
-        {:else}
-          <!-- Deployment Form -->
-          <div class="content-card">
-            <div class="content-card-header">
-              <FileCode size={32} class="content-card-icon" />
-              <p class="content-card-title">DVM-BASIC Code</p>
-              <p class="content-card-text">Enter your smart contract code below. The code will be validated before deployment.</p>
-            </div>
-            
-            <div class="form-group" style="margin-top: var(--s-4);">
-              <label class="form-label">Smart Contract Code <span class="required">*</span></label>
-              <textarea
-                bind:value={scCode}
-                placeholder="Function Initialize() Uint64
-  10 RETURN 0
-End Function"
-                class="textarea sc-code-textarea"
-                rows="15"
-                spellcheck="false"
-              ></textarea>
-              <span class="form-hint">Write or paste your DVM-BASIC smart contract code</span>
-            </div>
-            
-              <div class="form-group" style="margin-top: var(--s-3);">
-                <label class="checkbox-wrap">
-                  <input type="checkbox" bind:checked={scAnonymous} class="checkbox" />
-                  <span class="checkbox-label">Anonymous Deployment (Ring 16+)</span>
-                </label>
-                <span class="form-hint">Use higher ring size for enhanced privacy. Standard deployment uses Ring 2.</span>
-              </div>
-            
-            <!-- Wallet Check -->
-            {#if !$walletState.isOpen && !isSimulator}
-              <div class="alert alert-warning" style="margin-top: var(--s-4);">
-                <AlertTriangle size={16} />
-                <span>Please open a wallet to deploy smart contracts</span>
-              </div>
-            {/if}
-            
-            <button 
-              class="btn btn-primary btn-block" 
-              style="margin-top: var(--s-4);"
-              on:click={deploySmartContract}
-              disabled={scDeploying || !scCode.trim() || (!$walletState.isOpen && !isSimulator)}
-            >
-              {#if scDeploying}
-                <Loader2 size={16} class="spinner" />
-                Deploying...
-              {:else}
-                <Zap size={16} />
-                Deploy Smart Contract
-              {/if}
-            </button>
-          </div>
-          
-          <!-- Info Panel -->
-          <div class="info-panel" style="margin-top: var(--s-4);">
-            <div class="info-panel-icon">◎</div>
-            <div class="info-panel-content">
-              <p class="info-panel-title">About Smart Contract Deployment</p>
-              <ul class="info-list">
-                <li>Smart contracts are written in DVM-BASIC, a BASIC-like language</li>
-                <li>Every SC must have an <code>Initialize()</code> function that returns Uint64</li>
-                <li>The SCID (Smart Contract ID) equals the transaction hash</li>
-                <li>Anonymous mode uses Ring 16+ for enhanced privacy but costs more gas</li>
-              </ul>
-            </div>
-          </div>
-        {/if}
-      </div>
+      <StudioDeploySC
+        bind:this={deploySCRef}
+        {isSimulator}
+        walletIsOpen={$walletState.isOpen}
+        {currentNetwork}
+        {showDeployConfirmation}
+      />
     {/if}
     </div>
   </div>
@@ -2802,6 +2622,8 @@ End Function"
         <div class="sim-modal-icon start">
           {#if confirmModalType === 'doc'}
             <FileText size={28} strokeWidth={1.5} />
+          {:else if confirmModalType === 'sc'}
+            <FileCode size={28} strokeWidth={1.5} />
           {:else}
             <Layers size={28} strokeWidth={1.5} />
           {/if}
@@ -2809,6 +2631,8 @@ End Function"
         <h2 class="sim-modal-title">
           {#if confirmModalType === 'doc'}
             Deploy {confirmModalData?.files?.length || 0} DOC{(confirmModalData?.files?.length || 0) > 1 ? 's' : ''}
+          {:else if confirmModalType === 'sc'}
+            Deploy Smart Contract
           {:else}
             Create INDEX
           {/if}
@@ -2843,11 +2667,32 @@ End Function"
               <span class="confirm-label">DOCs</span>
               <span class="confirm-value">{confirmModalData?.docCount || 0} references</span>
             </div>
+          {:else if confirmModalType === 'sc'}
+            <div class="confirm-row">
+              <span class="confirm-label">Code</span>
+              <span class="confirm-value">{confirmModalData?.lineCount || 0} lines &middot; {confirmModalData?.charCount || 0} chars</span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Functions</span>
+              <span class="confirm-value">{confirmModalData?.functionCount || '?'} exported</span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Ring Size</span>
+              <span class="confirm-value">{confirmModalData?.anonymous ? 'Ring 16 (Anonymous)' : 'Ring 2 (Standard)'}</span>
+            </div>
+            {#if confirmModalData?.hasValidation}
+              <div class="confirm-row">
+                <span class="confirm-label">Validated</span>
+                <span class="confirm-value c-emerald">Yes</span>
+              </div>
+            {/if}
           {/if}
+          {#if confirmModalType !== 'sc'}
           <div class="confirm-row">
             <span class="confirm-label">Est. Cost</span>
             <span class="confirm-value c-emerald">~{formatGas(confirmModalData?.gasEstimate || 0)} gas</span>
           </div>
+          {/if}
           <div class="confirm-row">
             <span class="confirm-label">Network</span>
             <span class="confirm-value">

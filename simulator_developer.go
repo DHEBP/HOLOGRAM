@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/deroproject/derohe/rpc"
+	"github.com/deroproject/derohe/walletapi"
 )
 
 // SimulatorDeveloper provides developer experience features for simulator mode
@@ -72,41 +75,69 @@ func (a *App) DeployToSimulator(code string) map[string]interface{} {
 	}
 }
 
-// deployRawSC deploys raw SC code (helper function)
+// deployRawSC deploys raw SC code using the simulator's primary wallet.
+// Pauses Gnomon and uses a temporary connect/disconnect pattern to avoid
+// crashing the simulator daemon's single WebSocket slot.
 func (a *App) deployRawSC(code string) (string, error) {
-	// Use the daemon client to install SC
-	// This is a simplified version - in production, you'd use proper SC installation
-	
 	wallet := a.simulatorManager.walletManager.GetPrimaryWallet()
 	if wallet == nil {
 		return "", fmt.Errorf("no wallet available")
 	}
 
-	// For raw SC deployment, we need to use the wallet's SC install capability
-	// This requires the wallet to be connected to the daemon
-	
-	// Build a simple SC install transfer
-	params := map[string]interface{}{
-		"scid":     "",              // Empty for new SC
-		"ringsize": 2,               // Minimum ringsize
-		"sc":       code,            // The SC code
-		"fees":     uint64(0),       // Simulator doesn't need fees
+	scArgs := rpc.Arguments{
+		{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_INSTALL)},
+		{Name: rpc.SCCODE, DataType: rpc.DataString, Value: code},
 	}
 
-	// Use transfer with SC parameters
-	result, err := a.daemonClient.Call("DERO.Transfer", params)
-	if err != nil {
-		return "", err
-	}
+	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
 
-	// Extract TXID from result
-	if resultMap, ok := result.(map[string]interface{}); ok {
-		if txid, ok := resultMap["txid"].(string); ok {
-			return txid, nil
+	gnomonWasRunning := a.pauseGnomonForSimulator()
+
+	a.disconnectWalletAPI()
+	if err := walletapi.Connect(endpoint); err != nil {
+		if gnomonWasRunning {
+			a.resumeGnomonForSimulator()
 		}
+		return "", fmt.Errorf("failed to connect to simulator daemon: %v", err)
 	}
 
-	return "", fmt.Errorf("no txid in response")
+	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Pre-deploy sync failed: %v", err))
+	}
+
+	senderAddr := wallet.GetAddress().String()
+	destAddr := a.getSimulatorTransferDestination(senderAddr)
+	transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
+
+	tx, err := wallet.TransferPayload0(transfers, 2, false, scArgs, 0, false)
+	if err != nil {
+		a.disconnectWalletAPI()
+		if gnomonWasRunning {
+			a.resumeGnomonForSimulator()
+		}
+		return "", fmt.Errorf("transaction build failed: %v", err)
+	}
+
+	if err := wallet.SendTransaction(tx); err != nil {
+		a.disconnectWalletAPI()
+		if gnomonWasRunning {
+			a.resumeGnomonForSimulator()
+		}
+		return "", fmt.Errorf("transaction send failed: %v", err)
+	}
+
+	txid := tx.GetHash().String()
+	a.disconnectWalletAPI()
+
+	// Wait for the daemon to process the transaction and mine the block
+	// before allowing Gnomon to reconnect
+	time.Sleep(2 * time.Second)
+
+	if gnomonWasRunning {
+		a.resumeGnomonForSimulator()
+	}
+
+	return txid, nil
 }
 
 // ================== TELA App Deployment ==================

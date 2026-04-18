@@ -31,8 +31,8 @@ func (a *App) InitializeEpoch() map[string]interface{} {
 
 	daemonEndpoint := ""
 
-	nodeEndpoint := a.GetGetWorkEndpoint()
-	if nodeEndpoint["available"] == true {
+	// Check if embedded node is running and use its RPC port
+	if nodeManager != nil && nodeManager.isRunning {
 		daemonEndpoint = fmt.Sprintf("127.0.0.1:%d", nodeManager.rpcPort)
 		a.logToConsole(fmt.Sprintf("[EPOCH] Using embedded node at %s", daemonEndpoint))
 	} else {
@@ -114,11 +114,6 @@ func (a *App) SetDevSupportEnabled(enabled bool) map[string]interface{} {
 	}
 }
 
-// GetEpochDeveloperAddress returns the address where EPOCH rewards are sent
-func (a *App) GetEpochDeveloperAddress() string {
-	return DEFAULT_EPOCH_DEVELOPER_ADDRESS
-}
-
 // IsEpochEnabled returns whether EPOCH is enabled in settings
 func (a *App) IsEpochEnabled() bool {
 	if savedSetting, ok := a.settings["epoch_enabled"]; ok {
@@ -163,6 +158,13 @@ func (a *App) GetEpochStats() map[string]interface{} {
 		result["max_threads"] = stats.MaxThreads
 		result["address"] = stats.Address
 		result["is_processing"] = stats.IsProcessing
+		result["tracked_apps"] = stats.TrackedApps
+		result["total_requests"] = stats.TotalRequests
+		result["last_requester"] = stats.LastRequester
+		result["last_request_at"] = stats.LastRequestAt
+		result["top_requester"] = stats.TopRequester
+		result["top_requester_hashes"] = stats.TopRequesterHashes
+		result["top_requester_miniblocks"] = stats.TopRequesterMiniblocks
 	}
 
 	if a.devSupportWorker != nil {
@@ -384,12 +386,20 @@ func formatDEROAmount(atomicUnits uint64) string {
 // and switches back to default after STICKY_TIMEOUT of inactivity.
 // Called during app startup.
 func (a *App) StartEpochAddressMonitor() {
+	// Stop any existing monitor before starting a new one
+	a.StopEpochAddressMonitor()
+
+	a.epochMonitorStop = make(chan struct{})
+	stopCh := a.epochMonitorStop
+
 	go func() {
 		ticker := time.NewTicker(5 * time.Second) // Check every 5 seconds
 		defer ticker.Stop()
 
 		for {
 			select {
+			case <-stopCh:
+				return
 			case <-ticker.C:
 				a.checkEpochAddressTimeout()
 			}
@@ -397,6 +407,19 @@ func (a *App) StartEpochAddressMonitor() {
 	}()
 
 	a.logToConsole("[EPOCH] Address monitor started - will switch back to default after 30s of app inactivity")
+}
+
+// StopEpochAddressMonitor stops the EPOCH address monitor goroutine
+func (a *App) StopEpochAddressMonitor() {
+	if a.epochMonitorStop != nil {
+		select {
+		case <-a.epochMonitorStop:
+			// Already closed
+		default:
+			close(a.epochMonitorStop)
+		}
+		a.epochMonitorStop = nil
+	}
 }
 
 // checkEpochAddressTimeout checks if we should switch back to the default address
@@ -424,11 +447,11 @@ func (a *App) checkEpochAddressTimeout() {
 // GetEpochAddressInfo returns current EPOCH address switching state
 func (a *App) GetEpochAddressInfo() map[string]interface{} {
 	result := map[string]interface{}{
-		"current_address":       "",
-		"default_address":       DEFAULT_EPOCH_DEVELOPER_ADDRESS,
-		"is_on_app_address":     false,
-		"last_app_request":      time.Time{},
-		"seconds_until_switch":  0,
+		"current_address":      "",
+		"default_address":      DEFAULT_EPOCH_DEVELOPER_ADDRESS,
+		"is_on_app_address":    false,
+		"last_app_request":     time.Time{},
+		"seconds_until_switch": 0,
 	}
 
 	if a.epochHandler == nil {
@@ -451,4 +474,3 @@ func (a *App) GetEpochAddressInfo() map[string]interface{} {
 
 	return result
 }
-

@@ -42,9 +42,14 @@
       .map(([id, _]) => id);
   }
 
+  function getWalletFilename(path) {
+    if (!path) return '';
+    return path.split(/[\\/]/).pop() || path;
+  }
+
   // Initialize wallet path from settings/state when modal opens
   $: if (isOpen && !walletPath) {
-    walletPath = $settingsState.lastWalletPath || $walletState.walletPath || '';
+    walletPath = $walletState.walletPath || $settingsState.lastWalletPath || '';
     // Load recent wallets
     loadRecentWallets();
   }
@@ -65,7 +70,7 @@
         const recents = await ListRecentWallets();
         if (recents && recents.length > 0) {
           recentWallets = recents;
-          recentWalletsInfo = recents.map(p => ({ path: p, filename: p.split('/').pop(), addressPrefix: '', isCurrent: false }));
+          recentWalletsInfo = recents.map(p => ({ path: p, filename: getWalletFilename(p), addressPrefix: '', isCurrent: false }));
           if (!walletPath && recents.length > 0) {
             walletPath = recents[0];
           }
@@ -127,7 +132,8 @@
       // Reload recent wallets to update current marker
       await loadRecentWallets();
     } catch (e) {
-      error = e.message || 'Failed to switch wallet';
+      error = e.message || 'Unable to switch wallet. Please try again.';
+      console.error('[WalletModal] Switch wallet error:', e);
     } finally {
       isLoading = false;
     }
@@ -193,7 +199,8 @@
           console.error('Failed to fetch balance:', e);
         }
       } catch (e) {
-        error = e.message || 'Failed to open wallet';
+        error = e.message || 'Unable to open wallet. Please check the file path and try again.';
+        console.error('[WalletModal] Open wallet error:', e);
         isLoading = false;
         return;
       }
@@ -213,7 +220,8 @@
       // Restore focus to main document to prevent iframe from capturing scroll
       restoreFocus();
     } catch (e) {
-      error = e.message || 'Failed to approve request';
+      error = e.message || 'Unable to process request. Please try again.';
+      console.error('[WalletModal] Approve request error:', e);
     } finally {
       isLoading = false;
     }
@@ -386,36 +394,110 @@
             <h3 class="modal-section-title">Transaction Details</h3>
             
             <div class="modal-tx-details-card">
-              {#if request.payload.transfers}
-                {#each request.payload.transfers as transfer}
-                  <div class="modal-tx-field">
-                    <div class="modal-tx-label">AMOUNT</div>
-                    <div class="modal-tx-amount">
-                      {(transfer.amount / 100000).toLocaleString()} DERO
+              <!-- Smart Contract Info (show first if present) -->
+              {#if request.payload.scid || request.payload.entrypoint}
+                <div class="wallet-tx-sc-header">
+                  {#if request.payload.entrypoint}
+                    <div class="modal-tx-field">
+                      <div class="modal-tx-label">SC FUNCTION</div>
+                      <div class="modal-tx-entrypoint">{request.payload.entrypoint}</div>
                     </div>
-                  </div>
-                  <div class="modal-tx-field">
-                    <div class="modal-tx-label">DESTINATION</div>
-                    <div class="modal-tx-destination">
-                      {transfer.destination}
+                  {/if}
+                  {#if request.payload.scid}
+                    <div class="modal-tx-field">
+                      <div class="modal-tx-label">SMART CONTRACT</div>
+                      <div class="modal-tx-scid" title={request.payload.scid}>
+                        {request.payload.scid.slice(0, 8)}...{request.payload.scid.slice(-8)}
+                      </div>
                     </div>
-                  </div>
-                {/each}
+                  {/if}
+                </div>
               {/if}
               
-              {#if request.payload.sc_data}
+              <!-- Transfers (DERO or token amounts) -->
+              {#if request.payload.transfers && request.payload.transfers.length > 0}
+                {#each request.payload.transfers as transfer}
+                  <div class="modal-tx-field">
+                    <div class="modal-tx-label">
+                      {#if transfer.burn}
+                        BURN AMOUNT
+                      {:else}
+                        AMOUNT
+                      {/if}
+                    </div>
+                    <div class="modal-tx-amount">
+                      {#if transfer.scid && transfer.scid !== '0000000000000000000000000000000000000000000000000000000000000000'}
+                        {transfer.amount || 0} token(s)
+                        <span class="modal-tx-token-scid" title={transfer.scid}>
+                          ({transfer.scid.slice(0, 6)}...)
+                        </span>
+                      {:else}
+                        {((transfer.amount || 0) / 100000).toLocaleString()} DERO
+                      {/if}
+                    </div>
+                  </div>
+                  {#if transfer.destination}
+                    <div class="modal-tx-field">
+                      <div class="modal-tx-label">DESTINATION</div>
+                      <div class="modal-tx-destination">
+                        {transfer.destination}
+                      </div>
+                    </div>
+                  {/if}
+                {/each}
+              {:else if !request.payload.scid}
+                <!-- No transfers and no SC - unusual, show warning -->
+                <div class="modal-tx-field">
+                  <div class="modal-tx-label">AMOUNT</div>
+                  <div class="modal-tx-amount modal-tx-amount-zero">0 DERO (no transfer)</div>
+                </div>
+              {/if}
+              
+              <!-- SC Arguments (if any) -->
+              {#if request.payload.sc_args && request.payload.sc_args.length > 0}
                 <div class="wallet-tx-sc-section">
-                  <div class="modal-tx-label">SMART CONTRACT CALL</div>
+                  <div class="modal-tx-label">SC ARGUMENTS</div>
+                  <div class="wallet-tx-sc-args">
+                    {#each request.payload.sc_args as arg}
+                      <div class="wallet-tx-sc-arg">
+                        <span class="wallet-tx-sc-arg-name">{arg.name}:</span>
+                        <span class="wallet-tx-sc-arg-value" title={String(arg.value)}>
+                          {#if String(arg.value).length > 40}
+                            {String(arg.value).slice(0, 40)}...
+                          {:else}
+                            {arg.value}
+                          {/if}
+                        </span>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {:else if request.payload.sc_data && Array.isArray(request.payload.sc_data) && request.payload.sc_data.length > 0}
+                <!-- Fallback: show raw sc_data if sc_args not parsed -->
+                <div class="wallet-tx-sc-section">
+                  <div class="modal-tx-label">SMART CONTRACT DATA</div>
                   <div class="wallet-tx-sc-data">
                     {JSON.stringify(request.payload.sc_data, null, 2)}
                   </div>
+                </div>
+              {/if}
+              
+              <!-- Ring size if specified -->
+              {#if request.payload.ringsize}
+                <div class="modal-tx-field modal-tx-field-secondary">
+                  <div class="modal-tx-label">RING SIZE</div>
+                  <div class="modal-tx-ringsize">{request.payload.ringsize}</div>
                 </div>
               {/if}
             </div>
             
             <div class="modal-alert modal-alert-warning">
               <span class="modal-alert-icon">!</span>
-              Double check the destination and amount before approving.
+              {#if request.payload.scid}
+                Review the smart contract call details before approving.
+              {:else}
+                Double check the destination and amount before approving.
+              {/if}
             </div>
           </div>
         {/if}
@@ -445,7 +527,9 @@
           <div class="modal-wallet-current-row">
             <div>
               <p class="modal-wallet-label">CURRENT WALLET</p>
-              <p class="modal-wallet-address">{$walletState.address?.slice(0, 16)}...</p>
+              <p class="modal-wallet-address">
+                {$settingsState.hideAddress ? '••••••••••••••••' : `${$walletState.address?.slice(0, 16)}...`}
+              </p>
             </div>
             <button
               on:click={() => { showWalletSwitcher = !showWalletSwitcher; loadRecentWallets(); }}
@@ -522,7 +606,7 @@
                   on:click={async () => {
                     const selected = await SelectWalletFile();
                     if (selected) {
-                      selectWalletToSwitch({ path: selected, filename: selected.split('/').pop(), addressPrefix: '' });
+                      selectWalletToSwitch({ path: selected, filename: getWalletFilename(selected), addressPrefix: '' });
                     }
                   }}
                   class="modal-browse-btn"
@@ -582,7 +666,7 @@
                       on:click={() => walletPath = recent}
                       class="wallet-recent-simple-item"
                     >
-                      {recent.split('/').pop()}
+                      {getWalletFilename(recent)}
                     </button>
                   {/each}
                 </div>
@@ -648,17 +732,29 @@
   
   /* Info Note */
   .wallet-info-note {
-    margin-top: var(--s-3);
+    margin-top: var(--s-4);
     font-size: 12px;
     color: var(--text-4);
     display: flex;
-    align-items: center;
-    gap: var(--s-1);
+    align-items: flex-start;
+    gap: var(--s-2);
+    line-height: 1.5;
   }
   
   .wallet-info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--r-full);
+    background: rgba(34, 211, 238, 0.15);
     color: var(--cyan-400);
+    font-size: 10px;
     font-weight: 700;
+    line-height: 1;
+    margin-top: 1px;
   }
   
   /* Fallback Permissions */
@@ -677,14 +773,35 @@
     gap: var(--s-2);
     font-size: 13px;
     color: var(--text-3);
+    line-height: 1.5;
   }
   
   .wallet-check-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--r-full);
+    background: rgba(52, 211, 153, 0.15);
     color: var(--status-ok);
+    font-size: 10px;
+    line-height: 1;
   }
   
   .wallet-denied-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--r-full);
+    background: rgba(255, 255, 255, 0.05);
     color: var(--text-5);
+    font-size: 10px;
+    line-height: 1;
   }
   
   /* Read-Only Badge */
@@ -724,10 +841,11 @@
   
   .wallet-readonly-item {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: var(--s-2);
     font-size: 13px;
     color: var(--text-3);
+    line-height: 1.4;
   }
   
   .wallet-readonly-item-denied {
@@ -752,6 +870,15 @@
   }
   
   /* Smart Contract Section */
+  .wallet-tx-sc-header {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    padding-bottom: var(--s-3);
+    margin-bottom: var(--s-3);
+    border-bottom: 1px solid var(--border-dim);
+  }
+  
   .wallet-tx-sc-section {
     padding-top: var(--s-2);
     border-top: 1px solid var(--border-dim);
@@ -762,6 +889,70 @@
     font-size: 12px;
     color: var(--status-warn);
     white-space: pre-wrap;
+  }
+  
+  .wallet-tx-sc-args {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+    margin-top: var(--s-2);
+  }
+  
+  .wallet-tx-sc-arg {
+    display: flex;
+    gap: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  
+  .wallet-tx-sc-arg-name {
+    color: var(--cyan-400);
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  
+  .wallet-tx-sc-arg-value {
+    color: var(--text-3);
+    word-break: break-all;
+  }
+  
+  .modal-tx-entrypoint {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--cyan-400);
+    padding: var(--s-2) var(--s-3);
+    background: rgba(34, 211, 238, 0.1);
+    border-radius: var(--r-md);
+    border: 1px solid rgba(34, 211, 238, 0.2);
+  }
+  
+  .modal-tx-scid {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-4);
+    cursor: help;
+  }
+  
+  .modal-tx-token-scid {
+    font-size: 11px;
+    color: var(--text-5);
+    margin-left: var(--s-1);
+  }
+  
+  .modal-tx-amount-zero {
+    color: var(--text-5);
+    font-style: italic;
+  }
+  
+  .modal-tx-ringsize {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-4);
+  }
+  
+  .modal-tx-field-secondary {
+    opacity: 0.7;
   }
   
   /* Wallet Switcher */

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -97,7 +100,7 @@ func (a *App) GetFileInfo(filePath string) map[string]interface{} {
 
 // ShardFile splits a file into DocShards for TELA deployment
 func (a *App) ShardFile(filePath string, compress bool) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("🔪 Sharding file: %s (compress: %v)", filePath, compress))
+	a.logToConsole(fmt.Sprintf("[File] Sharding file: %s (compress: %v)", filePath, compress))
 
 	// Check file exists
 	info, err := os.Stat(filePath)
@@ -122,30 +125,38 @@ func (a *App) ShardFile(filePath string, compress bool) map[string]interface{} {
 		return ErrorResponse(err)
 	}
 
-	// Create output directory
-	outputDir := filepath.Join(".", "datashards", "shards", filepath.Base(filePath))
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return map[string]interface{}{
-			"success":        false,
-			"error":          "Failed to create output directory",
-			"technicalError": err.Error(),
-		}
-	}
+	// tela.CreateShardFiles writes output files into filepath.Dir(filePath) — the
+	// source file's own directory. Report this as the actual outputDir so the UI
+	// shows the real location instead of a phantom relative path.
+	outputDir := filepath.Dir(filePath)
 
-	// Set shard path and create shards using tela library
-	tela.SetShardPath(outputDir)
-	
 	compression := ""
 	if compress {
 		compression = tela.COMPRESSION_GZIP
+		// Compress BEFORE sharding: tela.Compress returns a base64-encoded gzip string.
+		// If we pass raw data with compression set, CreateShardFiles checks content != nil
+		// and skips its own compression step — the output would be named .gz but contain
+		// uncompressed bytes, causing ConstructFromShards to fail with "unexpected EOF"
+		// when it tries to base64-decode raw content. We compress here so each shard
+		// file is a fragment of the base64 gzip stream, exactly what ConstructFromShards
+		// expects when it concatenates and decompresses.
+		compressed, compErr := tela.Compress(data, compression)
+		if compErr != nil {
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Failed to compress file before sharding",
+				"technicalError": compErr.Error(),
+			}
+		}
+		data = []byte(compressed)
 	}
-	
+
 	err = tela.CreateShardFiles(filePath, compression, data)
 	if err != nil {
 		return ErrorResponse(err)
 	}
 
-	// Count shard files created
+	// Count shard files created using the (possibly compressed) data size
 	totalShards, _ := tela.GetTotalShards(data)
 
 	a.logToConsole(fmt.Sprintf("[OK] Created shard files in %s", outputDir))
@@ -159,61 +170,144 @@ func (a *App) ShardFile(filePath string, compress bool) map[string]interface{} {
 	}
 }
 
+// discoverShardFiles finds DocShard files, parses indices, sorts by index, and returns
+// ordered shard bytes plus recreate filename and compression. Matches tela-cli findDocShardFiles behavior.
+// entrypointPath can be a directory (we find the first shard set) or a shard file (e.g. file-1.go).
+func discoverShardFiles(entrypointPath string) (docShards [][]byte, recreate, compression string, err error) {
+	info, err := os.Stat(entrypointPath)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	shardDir := entrypointPath
+	fileName := ""
+	if !info.IsDir() {
+		shardDir = filepath.Dir(entrypointPath)
+		fileName = filepath.Base(entrypointPath)
+	}
+
+	// If directory, find first file matching name-N.ext or name-N.ext.gz
+	if fileName == "" {
+		entries, e := os.ReadDir(shardDir)
+		if e != nil {
+			return nil, "", "", e
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			base := name
+			// Strip compression extension first (e.g. .gz), then the original extension
+			// so that name-1.js.gz correctly yields "name-1" for the numeric check.
+			if tela.IsCompressedExt(filepath.Ext(base)) {
+				base = strings.TrimSuffix(base, filepath.Ext(base))
+			}
+			base = strings.TrimSuffix(base, filepath.Ext(base))
+			parts := strings.Split(base, "-")
+			if len(parts) >= 2 {
+				if n, pe := strconv.Atoi(parts[len(parts)-1]); pe == nil && n >= 1 {
+					fileName = name
+					break
+				}
+			}
+		}
+		if fileName == "" {
+			return nil, "", "", fmt.Errorf("no shard files found in %s (expected name-1.ext or name-1.ext.gz)", shardDir)
+		}
+	}
+
+	split := strings.Split(fileName, "-")
+	if len(split) < 2 {
+		return nil, "", "", fmt.Errorf("%q is not a DocShard file", entrypointPath)
+	}
+
+	ext := filepath.Ext(fileName) // used for matching (e.g. .gz for compressed)
+	prefix := fmt.Sprintf("%s-", split[0])
+
+	if tela.IsCompressedExt(ext) {
+		compression = ext
+		origExt := filepath.Ext(strings.TrimSuffix(fileName, ext))
+		recreate = fmt.Sprintf("%s%s", split[0], origExt)
+	} else {
+		recreate = fmt.Sprintf("%s%s", split[0], ext)
+	}
+
+	type shardEntry struct {
+		index int
+		data  []byte
+	}
+	var shards []shardEntry
+
+	files, err := os.ReadDir(shardDir)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		shardFileName := file.Name()
+		if !strings.HasPrefix(shardFileName, prefix) || filepath.Ext(shardFileName) != ext {
+			continue
+		}
+
+		baseName := strings.TrimSuffix(shardFileName, ext)
+		if compression != "" {
+			baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
+		}
+		idxParts := strings.Split(baseName, "-")
+		if len(idxParts) < 2 {
+			continue
+		}
+		idx, parseErr := strconv.Atoi(idxParts[len(idxParts)-1])
+		if parseErr != nil {
+			continue
+		}
+
+		data, errr := os.ReadFile(filepath.Join(shardDir, shardFileName))
+		if errr != nil {
+			return nil, "", "", fmt.Errorf("could not read shard file %q: %w", shardFileName, errr)
+		}
+		shards = append(shards, shardEntry{index: idx, data: data})
+	}
+
+	if len(shards) == 0 {
+		return nil, "", "", fmt.Errorf("no shard files found in %s", shardDir)
+	}
+
+	sort.Slice(shards, func(i, j int) bool { return shards[i].index < shards[j].index })
+	for _, s := range shards {
+		docShards = append(docShards, s.data)
+	}
+	return docShards, recreate, compression, nil
+}
+
 // ConstructFromShards reconstructs a file from DocShards
 func (a *App) ConstructFromShards(shardPath string) map[string]interface{} {
 	a.logToConsole(fmt.Sprintf("[Shards] Constructing file from shards: %s", shardPath))
 
-	// Check shard path exists
-	info, err := os.Stat(shardPath)
+	shardFiles, recreate, compression, err := discoverShardFiles(shardPath)
 	if err != nil {
 		return map[string]interface{}{
 			"success":        false,
-			"error":          "Shard path not found. Check the path.",
+			"error":          "Failed to discover shard files",
 			"technicalError": err.Error(),
 		}
 	}
 
-	var shardDir string
-	if info.IsDir() {
-		shardDir = shardPath
-	} else {
+	shardDir := shardPath
+	if info, e := os.Stat(shardPath); e == nil && !info.IsDir() {
 		shardDir = filepath.Dir(shardPath)
 	}
 
-	// Find shard files in directory
-	shardFiles := [][]byte{}
-	err = filepath.Walk(shardDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() && strings.HasSuffix(path, tela.TAG_DOC_SHARD) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			shardFiles = append(shardFiles, data)
-		}
-		return nil
-	})
+	err = tela.ConstructFromShards(shardFiles, recreate, shardDir, compression)
 	if err != nil {
 		return ErrorResponse(err)
 	}
 
-	if len(shardFiles) == 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "No shard files found in directory",
-		}
-	}
-
-	// Reconstruct using tela library
-	outputPath := filepath.Join(shardDir, "reconstructed")
-	err = tela.ConstructFromShards(shardFiles, outputPath, shardDir, "")
-	if err != nil {
-		return ErrorResponse(err)
-	}
-
-	// Get file size
+	outputPath := filepath.Join(shardDir, recreate)
 	outputInfo, _ := os.Stat(outputPath)
 	size := int64(0)
 	if outputInfo != nil {
@@ -353,7 +447,7 @@ func (a *App) MoveFile(source, destination string) map[string]interface{} {
 
 // RemoveFile removes a file or directory (only from datashards/clone)
 func (a *App) RemoveFile(path string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("🗑️ Removing: %s", path))
+	a.logToConsole(fmt.Sprintf("[File] Removing: %s", path))
 
 	// Security check: only allow removal from datashards directory
 	absPath, _ := filepath.Abs(path)
@@ -455,6 +549,48 @@ func (a *App) SelectFile() string {
 		return ""
 	}
 	return selection
+}
+
+// ReadTextFile reads a text file and returns its content.
+// Used by the Deploy SC flow to load .bas files from disk.
+func (a *App) ReadTextFile(filePath string) map[string]interface{} {
+	if filePath == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No file path provided",
+		}
+	}
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "File not found: " + err.Error(),
+		}
+	}
+
+	const maxSize = 1 * 1024 * 1024 // 1MB
+	if info.Size() > maxSize {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("File too large (%d bytes). Maximum is 1MB.", info.Size()),
+		}
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Failed to read file: " + err.Error(),
+		}
+	}
+
+	return map[string]interface{}{
+		"success":  true,
+		"content":  string(data),
+		"size":     len(data),
+		"filename": info.Name(),
+	}
 }
 
 // SelectFiles opens a native multiple file picker dialog for TELA DOC uploads
@@ -689,6 +825,109 @@ func (a *App) ScanFolder(folderPath string) map[string]interface{} {
 	}
 }
 
+// PreflightExpand scans a folder and returns an expanded deploy plan.
+// When config.AutoShard is true, files exceeding the DOC size limit are split
+// in-memory into shard DOCInfos. No files are written to disk.
+//
+// This endpoint is called by BatchUpload.svelte when the auto-shard toggle is on.
+// It does NOT replace or modify ScanFolder — that path remains unchanged.
+//
+// configJSON must be a JSON string matching PreflightConfig:
+//   {"autoShard": true, "compress": true, "indexDurl": "my-app.tela"}
+func (a *App) PreflightExpand(folderPath, configJSON string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[DIR] PreflightExpand: scanning %s", folderPath))
+
+	var config PreflightConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return map[string]interface{}{"success": false, "error": "Invalid config JSON: " + err.Error()}
+	}
+
+	// Validate folder exists
+	info, err := os.Stat(folderPath)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("Folder not found: %v", err)}
+	}
+	if !info.IsDir() {
+		return map[string]interface{}{"success": false, "error": "Path is not a directory"}
+	}
+
+	// Walk the folder and build DOCInfo slice — same filtering logic as ScanFolder.
+	var files []DOCInfo
+	var scanErrors []string
+
+	err = filepath.Walk(folderPath, func(path string, fi os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			scanErrors = append(scanErrors, fmt.Sprintf("Error accessing %s: %v", path, walkErr))
+			return nil
+		}
+		if fi.IsDir() {
+			return nil
+		}
+		name := fi.Name()
+		// Skip hidden files, build artifacts, and shard output directories
+		if strings.HasPrefix(name, ".") || name == "Thumbs.db" || name == ".DS_Store" {
+			return nil
+		}
+		// Skip hidden directories (e.g. .git, .doc-shards)
+		rel, _ := filepath.Rel(folderPath, path)
+		for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+			if strings.HasPrefix(part, ".") {
+				return nil
+			}
+		}
+
+		relPath, _ := filepath.Rel(folderPath, path)
+		subDir := filepath.Dir(relPath)
+		if subDir == "." {
+			subDir = "/"
+		} else {
+			subDir = "/" + filepath.ToSlash(subDir)
+		}
+
+		docType := tela.ParseDocType(name)
+		files = append(files, DOCInfo{
+			Name:    name,
+			Path:    path,
+			SubDir:  subDir,
+			DocType: docType,
+			Size:    fi.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		scanErrors = append(scanErrors, fmt.Sprintf("Walk error: %v", err))
+	}
+
+	if len(files) == 0 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No deployable files found in folder",
+			"errors":  scanErrors,
+		}
+	}
+
+	expansion, err := a.buildPreflightExpansion(files, config)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error(), "errors": scanErrors}
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] PreflightExpand: %d source files → %d deploy DOCs (%d shards, ~%d gas)",
+		expansion.Summary.SourceFileCount,
+		expansion.Summary.DeployDocCount,
+		expansion.Summary.ShardCount,
+		expansion.Summary.EstimatedGas,
+	))
+
+	return map[string]interface{}{
+		"success":     true,
+		"deployFiles": expansion.DeployFiles,
+		"shardGroups": expansion.ShardGroups,
+		"warnings":    expansion.Warnings,
+		"summary":     expansion.Summary,
+		"errors":      scanErrors,
+	}
+}
+
 // GenerateSubDirs generates subDir paths from a list of files
 func (a *App) GenerateSubDirs(folderPath string, filesJSON string) map[string]interface{} {
 	// Parse files array
@@ -845,6 +1084,76 @@ func computeLineDiff(lines1, lines2 []string) []DiffLine {
 	return diffs
 }
 
+// SaveBinaryFileWithDialog opens a native save dialog and writes binary content (base64 encoded) to the selected file
+// This is used for saving images, PDFs, and other binary files from TELA apps
+// The content parameter should be base64-encoded binary data
+func (a *App) SaveBinaryFileWithDialog(defaultFilename string, base64Content string, filterName string, filterPattern string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[FILE] SaveBinaryFileWithDialog: %s", defaultFilename))
+	
+	// Decode base64 content
+	// Handle data URL format (e.g., "data:image/png;base64,...")
+	content := base64Content
+	if strings.Contains(content, ",") {
+		parts := strings.SplitN(content, ",", 2)
+		if len(parts) == 2 {
+			content = parts[1]
+		}
+	}
+	
+	data, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to decode base64 content: %v", err),
+		}
+	}
+
+	// Open native save dialog
+	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: defaultFilename,
+		Title:           "Save File",
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: filterName,
+				Pattern:     filterPattern,
+			},
+		},
+	})
+
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Save dialog error: %v", err),
+		}
+	}
+
+	// User cancelled
+	if savePath == "" {
+		return map[string]interface{}{
+			"success":   false,
+			"cancelled": true,
+			"error":     "Save cancelled by user",
+		}
+	}
+
+	// Write the binary file
+	err = os.WriteFile(savePath, data, 0644)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to write file: %v", err),
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[OK] Saved binary file to: %s (%d bytes)", savePath, len(data)))
+
+	return map[string]interface{}{
+		"success": true,
+		"path":    savePath,
+		"size":    len(data),
+	}
+}
+
 // SaveFileWithDialog opens a native save dialog and writes content to the selected file
 // Returns the path where the file was saved, or an error
 func (a *App) SaveFileWithDialog(defaultFilename string, content string, filterName string, filterPattern string) map[string]interface{} {
@@ -891,5 +1200,49 @@ func (a *App) SaveFileWithDialog(defaultFilename string, content string, filterN
 		"success": true,
 		"path":    savePath,
 	}
+}
+
+// GetMetadataFiles reads metadata files from a folder for auto-inference of TELA app properties.
+// Returns content of package.json, index.html, and README.md (if they exist) for frontend parsing.
+func (a *App) GetMetadataFiles(folderPath string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[META] Reading metadata files from: %s", folderPath))
+
+	result := map[string]interface{}{
+		"success":     true,
+		"folderPath":  folderPath,
+		"packageJson": "",
+		"indexHtml":   "",
+		"readme":      "",
+	}
+
+	// Read package.json if it exists
+	packagePath := filepath.Join(folderPath, "package.json")
+	if data, err := os.ReadFile(packagePath); err == nil {
+		result["packageJson"] = string(data)
+		a.logToConsole("[META] Found package.json")
+	}
+
+	// Read index.html if it exists
+	indexPath := filepath.Join(folderPath, "index.html")
+	if data, err := os.ReadFile(indexPath); err == nil {
+		result["indexHtml"] = string(data)
+		a.logToConsole("[META] Found index.html")
+	}
+
+	// Read README.md or README.txt if they exist (try .md first)
+	readmePath := filepath.Join(folderPath, "README.md")
+	if data, err := os.ReadFile(readmePath); err == nil {
+		result["readme"] = string(data)
+		a.logToConsole("[META] Found README.md")
+	} else {
+		// Fallback to README.txt
+		readmePath = filepath.Join(folderPath, "README.txt")
+		if data, err := os.ReadFile(readmePath); err == nil {
+			result["readme"] = string(data)
+			a.logToConsole("[META] Found README.txt")
+		}
+	}
+
+	return result
 }
 

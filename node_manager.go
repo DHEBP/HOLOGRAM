@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,7 +66,7 @@ type NodeManager struct {
 	dataDir       string
 	rpcPort       int
 	p2pPort       int
-	getworkPort   int    // Port for GetWork mining server (default: 10100)
+	getworkPort   int // Port for GetWork mining server (default: 10100)
 	isRunning     bool
 	isSyncing     bool
 	syncHeight    int64
@@ -75,14 +77,10 @@ type NodeManager struct {
 	logBuffer     []string
 	lastSyncLine  string
 	syncStartTime time.Time
-	
+
 	// Network mode (mainnet, simulator)
 	networkMode NetworkMode
-	
-	// Mining server configuration
-	miningEnabled      bool   // Whether to start the GetWork server
-	integratorAddress  string // Default reward address for mining server
-	
+
 	// Advanced node options
 	fastSyncEnabled  bool   // Use --fastsync for quick initial sync
 	pruneHistory     int    // Use --prune-history=N (0 = disabled)
@@ -91,12 +89,12 @@ type NodeManager struct {
 
 // Regex patterns for parsing derod output
 var (
-	heightRegex      = regexp.MustCompile(`Height:\s*(\d+)`)
-	topoHeightRegex  = regexp.MustCompile(`TopoHeight:\s*(\d+)`)
-	syncingRegex     = regexp.MustCompile(`Syncing\s+(\d+)\s*/\s*(\d+)`)
-	peerRegex        = regexp.MustCompile(`Peers:\s*(\d+)`)
-	syncedRegex      = regexp.MustCompile(`(?i)(fully synced|sync complete|100%)`)
-	blockSyncRegex   = regexp.MustCompile(`Block\s+(\d+)\s+synced`)
+	heightRegex     = regexp.MustCompile(`Height:\s*(\d+)`)
+	topoHeightRegex = regexp.MustCompile(`TopoHeight:\s*(\d+)`)
+	syncingRegex    = regexp.MustCompile(`Syncing\s+(\d+)\s*/\s*(\d+)`)
+	peerRegex       = regexp.MustCompile(`Peers:\s*(\d+)`)
+	syncedRegex     = regexp.MustCompile(`(?i)(fully synced|sync complete|100%)`)
+	blockSyncRegex  = regexp.MustCompile(`Block\s+(\d+)\s+synced`)
 )
 
 // Global node manager instance
@@ -131,10 +129,10 @@ func (a *App) DetectRunningNode() map[string]interface{} {
 
 	for _, endpoint := range endpoints {
 		a.logToConsole(fmt.Sprintf("  Trying %s...", endpoint))
-		
+
 		// Create a temporary client with SHORT timeout for detection
 		client := NewDaemonClientWithTimeout(endpoint, 3*time.Second)
-		
+
 		info, err := client.GetInfo()
 		if err != nil {
 			a.logToConsole(fmt.Sprintf("  [ERR] %s: %v", endpoint, err))
@@ -243,8 +241,9 @@ func (a *App) TestAndConnectEndpoint(endpoint string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[OK] Connected to %s (v%s, %s, height: %d)", endpoint, version, network, height))
 
-	// Save the endpoint to settings
+	// Save the endpoint to settings and persist to disk immediately
 	a.settings["daemon_endpoint"] = endpoint
+	a.saveSettings()
 	a.logToConsole(fmt.Sprintf("[OK] Saved endpoint: %s", endpoint))
 
 	// Update the daemon client to use this endpoint
@@ -263,28 +262,6 @@ func (a *App) TestAndConnectEndpoint(endpoint string) map[string]interface{} {
 		"network":    network,
 		"message":    fmt.Sprintf("Connected to %s node (v%s) at height %d", network, version, height),
 	}
-}
-
-// IsLANAddress checks if an IP address is on the local network
-func IsLANAddress(ip string) bool {
-	// Check for common LAN ranges
-	lanPrefixes := []string{
-		"192.168.",
-		"10.",
-		"172.16.", "172.17.", "172.18.", "172.19.",
-		"172.20.", "172.21.", "172.22.", "172.23.",
-		"172.24.", "172.25.", "172.26.", "172.27.",
-		"172.28.", "172.29.", "172.30.", "172.31.",
-		"127.",
-		"localhost",
-	}
-
-	for _, prefix := range lanPrefixes {
-		if strings.HasPrefix(ip, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // DetectExistingBlockchain scans common locations for existing blockchain data
@@ -315,7 +292,7 @@ func (a *App) DetectExistingBlockchain() map[string]interface{} {
 					"network": "mainnet",
 					"exists":  true,
 				})
-				a.logToConsole(fmt.Sprintf("  ✓ Found blockchain at %s", loc))
+				a.logToConsole(fmt.Sprintf("  OK Found blockchain at %s", loc))
 			}
 		}
 	}
@@ -331,10 +308,11 @@ func (a *App) DetectExistingBlockchain() map[string]interface{} {
 
 // GetBinaryPath returns the path to the derod binary for the current platform
 // Search order:
-// 1. Downloaded derod at ~/.dero/hologram/derod/{version}/derod
-// 2. Bundled binaries directory (for manual installs)
-// 3. System PATH
-// 4. Common locations (~/.dero/, /usr/local/bin/)
+// 1. Co-located binary (built from source via Makefile) - build/bin/derod-*
+// 2. Downloaded derod at ~/.dero/hologram/derod/{version}/derod
+// 3. Bundled binaries directory (for manual installs)
+// 4. System PATH
+// 5. Common locations (~/.dero/, /usr/local/bin/)
 func GetBinaryPath() string {
 	// DERO binaries have platform-specific names
 	var binaryNames []string
@@ -354,6 +332,27 @@ func GetBinaryPath() string {
 		}
 	default:
 		binaryNames = []string{"derod"}
+	}
+
+	// 0. Check co-located binary (built from source via Makefile)
+	// This is the preferred method - binaries built alongside HOLOGRAM
+	execPath, err := os.Executable()
+	if err == nil {
+		execDir := filepath.Dir(execPath)
+		for _, binaryName := range binaryNames {
+			colocatedPath := filepath.Join(execDir, binaryName)
+			if _, err := os.Stat(colocatedPath); err == nil {
+				return colocatedPath
+			}
+		}
+		// Also check build/bin relative to working directory (for dev mode)
+		for _, binaryName := range binaryNames {
+			buildPath := filepath.Join("build", "bin", binaryName)
+			if _, err := os.Stat(buildPath); err == nil {
+				absPath, _ := filepath.Abs(buildPath)
+				return absPath
+			}
+		}
 	}
 
 	homeDir, _ := os.UserHomeDir()
@@ -409,12 +408,40 @@ func GetBinaryPath() string {
 	return ""
 }
 
+// CheckDerodStatus returns the current status of the derod binary.
+// Uses GetBinaryPath() to find the binary via all standard search paths
+// (co-located from Makefile build, system PATH, common locations).
+func (a *App) CheckDerodStatus() map[string]interface{} {
+	path := GetBinaryPath()
+	installed := path != ""
+
+	return map[string]interface{}{
+		"installed": installed,
+		"path":      path,
+	}
+}
+
+// getSimulatorBinaryName returns the platform-specific simulator binary name
+func getSimulatorBinaryName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "simulator-darwin"
+	case "windows":
+		return fmt.Sprintf("simulator-windows-%s.exe", runtime.GOARCH)
+	case "linux":
+		return fmt.Sprintf("simulator-linux-%s", runtime.GOARCH)
+	default:
+		return "simulator"
+	}
+}
+
 // GetSimulatorBinaryPath returns the path to the simulator binary for the current platform
 // Search order:
-// 1. Downloaded derod at ~/.dero/hologram/derod/{version}/simulator-darwin (or platform-specific)
-// 2. Bundled binaries directory
-// 3. System PATH
-// 4. Common locations
+// 1. Co-located binary (built from source via Makefile) - build/bin/simulator-*
+// 2. Downloaded derod at ~/.dero/hologram/derod/{version}/simulator-* (platform-specific)
+// 3. Bundled binaries directory
+// 4. System PATH
+// 5. Common locations
 func GetSimulatorBinaryPath() string {
 	// Simulator binaries have platform-specific names
 	var binaryNames []string
@@ -434,6 +461,27 @@ func GetSimulatorBinaryPath() string {
 		}
 	default:
 		binaryNames = []string{"simulator"}
+	}
+
+	// 0. Check co-located binary (built from source via Makefile)
+	// This is the preferred method - binaries built alongside HOLOGRAM
+	execPath, err := os.Executable()
+	if err == nil {
+		execDir := filepath.Dir(execPath)
+		for _, binaryName := range binaryNames {
+			colocatedPath := filepath.Join(execDir, binaryName)
+			if _, err := os.Stat(colocatedPath); err == nil {
+				return colocatedPath
+			}
+		}
+		// Also check build/bin relative to working directory (for dev mode)
+		for _, binaryName := range binaryNames {
+			buildPath := filepath.Join("build", "bin", binaryName)
+			if _, err := os.Stat(buildPath); err == nil {
+				absPath, _ := filepath.Abs(buildPath)
+				return absPath
+			}
+		}
 	}
 
 	homeDir, _ := os.UserHomeDir()
@@ -537,6 +585,22 @@ func (a *App) StartNodeWithNetwork(dataDir string, network string) map[string]in
 	extResult := a.checkForExternalNode(expectedEndpoint, networkMode)
 
 	if extResult.Found {
+		// Simulator mode must be launched from a clean, HOLOGRAM-controlled daemon.
+		// Reconnecting to an already-running simulator is handled elsewhere on app restart.
+		// Silently attaching here can bind us to a stale foreign process on :20000 that
+		// later disappears, causing "pseudo success" deploys followed by connection refused.
+		if networkMode == NetworkSimulator {
+			a.logToConsole(fmt.Sprintf("[WARN] Existing simulator daemon detected at %s", expectedEndpoint))
+			a.logToConsole("[WARN] Refusing to attach to external simulator during activation")
+			return map[string]interface{}{
+				"success": false,
+				"error":   "A simulator daemon is already running on port 20000. Reset or stop the stale simulator, then try again.",
+				"technicalError": fmt.Sprintf("external simulator detected at %s (v%s, height: %d)",
+					expectedEndpoint, extResult.Version, extResult.Height),
+				"staleSimulator": true,
+			}
+		}
+
 		if extResult.IsConflict {
 			return map[string]interface{}{
 				"success":         false,
@@ -631,6 +695,13 @@ func (a *App) StartNodeWithNetwork(dataDir string, network string) map[string]in
 		return ErrorResponse(err)
 	}
 
+	// CRITICAL: Update daemon client to point at the node we just started.
+	// Without this, Explorer/GetSCCode would keep querying the old endpoint (e.g. mainnet)
+	// and return "Smart contract has no code" for simulator-deployed contracts.
+	a.daemonClient = NewDaemonClient(expectedEndpoint)
+	a.settings["daemon_endpoint"] = expectedEndpoint
+	a.logToConsole(fmt.Sprintf("[OK] Daemon client connected to %s node at %s", networkMode, expectedEndpoint))
+
 	return map[string]interface{}{
 		"success":     true,
 		"dataDir":     fullDataDir,
@@ -661,7 +732,7 @@ func (a *App) StopNode() map[string]interface{} {
 	if nodeManager.process.Process != nil {
 		// Send interrupt signal
 		nodeManager.process.Process.Signal(os.Interrupt)
-		
+
 		// Wait for up to 10 seconds
 		done := make(chan error, 1)
 		go func() {
@@ -752,24 +823,24 @@ func (a *App) GetNodeStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"success":        true,
-		"isRunning":      true,
-		"isEmbedded":     embeddedRunning,
-		"isExternal":     !embeddedRunning && rpcConnected,
-		"isSyncing":      nodeManager.isSyncing || (topoHeight > 0 && topoHeight < height),
-		"dataDir":        nodeManager.dataDir,
-		"rpcPort":        nodeManager.rpcPort,
-		"p2pPort":        nodeManager.p2pPort,
-		"getworkPort":    nodeManager.getworkPort,
-		"network":        network,
-		"version":        version,
-		"isSimulator":    nodeManager.networkMode == NetworkSimulator,
-		"height":         height,
-		"topoHeight":    topoHeight,
-		"syncProgress":  syncProgress,
-		"peers":         peers,
-		"pid":           pid,
-		"lastSyncLine":  nodeManager.lastSyncLine,
+		"success":      true,
+		"isRunning":    true,
+		"isEmbedded":   embeddedRunning,
+		"isExternal":   !embeddedRunning && rpcConnected,
+		"isSyncing":    nodeManager.isSyncing || (topoHeight > 0 && topoHeight < height),
+		"dataDir":      nodeManager.dataDir,
+		"rpcPort":      nodeManager.rpcPort,
+		"p2pPort":      nodeManager.p2pPort,
+		"getworkPort":  nodeManager.getworkPort,
+		"network":      network,
+		"version":      version,
+		"isSimulator":  nodeManager.networkMode == NetworkSimulator,
+		"height":       height,
+		"topoHeight":   topoHeight,
+		"syncProgress": syncProgress,
+		"peers":        peers,
+		"pid":          pid,
+		"lastSyncLine": nodeManager.lastSyncLine,
 	}
 }
 
@@ -805,12 +876,12 @@ func (a *App) GetSyncProgress() map[string]interface{} {
 	isSynced := syncProgress >= 99.9
 
 	return map[string]interface{}{
-		"success":      true,
-		"height":       height,
-		"topoHeight":   topoHeight,
-		"progress":     syncProgress,
-		"isSynced":     isSynced,
-		"peers":        peers,
+		"success":    true,
+		"height":     height,
+		"topoHeight": topoHeight,
+		"progress":   syncProgress,
+		"isSynced":   isSynced,
+		"peers":      peers,
 	}
 }
 
@@ -878,7 +949,7 @@ func (a *App) readNodeOutput(reader io.ReadCloser, source string) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
-		
+
 		// Add to log buffer
 		nodeManager.Lock()
 		nodeManager.logBuffer = append(nodeManager.logBuffer, fmt.Sprintf("[%s] %s", source, line))
@@ -892,13 +963,13 @@ func (a *App) readNodeOutput(reader io.ReadCloser, source string) {
 		// Determine log level
 		level := "info"
 		lowerLine := strings.ToLower(line)
-		if source == "stderr" || strings.Contains(lowerLine, "error") || strings.Contains(lowerLine, "fatal") || 
-		   strings.Contains(lowerLine, "panic") || strings.Contains(lowerLine, "failed") {
+		if source == "stderr" || strings.Contains(lowerLine, "error") || strings.Contains(lowerLine, "fatal") ||
+			strings.Contains(lowerLine, "panic") || strings.Contains(lowerLine, "failed") {
 			level = "error"
 		} else if strings.Contains(lowerLine, "warn") || strings.Contains(lowerLine, "warning") {
 			level = "warn"
-		} else if strings.Contains(lowerLine, "started") || strings.Contains(lowerLine, "ready") || 
-		          strings.Contains(lowerLine, "success") || strings.Contains(line, "[OK]") {
+		} else if strings.Contains(lowerLine, "started") || strings.Contains(lowerLine, "ready") ||
+			strings.Contains(lowerLine, "success") || strings.Contains(line, "[OK]") {
 			level = "success"
 		}
 
@@ -918,13 +989,13 @@ func (a *App) readNodeOutput(reader io.ReadCloser, source string) {
 		if source == "stderr" {
 			// Always log stderr - it's usually errors
 			shouldLog = true
-		} else if strings.Contains(line, "Height") || strings.Contains(line, "Sync") || 
-		   strings.Contains(line, "Error") || strings.Contains(line, "Started") ||
-		   strings.Contains(lowerLine, "error") || strings.Contains(lowerLine, "fatal") ||
-		   strings.Contains(lowerLine, "panic") || strings.Contains(lowerLine, "failed") {
+		} else if strings.Contains(line, "Height") || strings.Contains(line, "Sync") ||
+			strings.Contains(line, "Error") || strings.Contains(line, "Started") ||
+			strings.Contains(lowerLine, "error") || strings.Contains(lowerLine, "fatal") ||
+			strings.Contains(lowerLine, "panic") || strings.Contains(lowerLine, "failed") {
 			shouldLog = true
 		}
-		
+
 		if shouldLog {
 			a.logToConsole(fmt.Sprintf("[derod %s] %s", source, line))
 		}
@@ -932,7 +1003,7 @@ func (a *App) readNodeOutput(reader io.ReadCloser, source string) {
 		// Parse sync progress from output
 		a.parseSyncProgress(line)
 	}
-	
+
 	// If scanner encountered an error, log it
 	if err := scanner.Err(); err != nil {
 		a.logToConsole(fmt.Sprintf("[WARN] Error reading derod %s: %v", source, err))
@@ -1007,7 +1078,7 @@ func (a *App) monitorNode() {
 	wasRunning := nodeManager.isRunning
 	nodeManager.isRunning = false
 	nodeManager.process = nil
-	
+
 	// Get last few lines of output for debugging
 	lastLines := make([]string, 0)
 	if len(nodeManager.logBuffer) > 0 {
@@ -1016,18 +1087,18 @@ func (a *App) monitorNode() {
 		if len(recentLines) > 10 {
 			recentLines = recentLines[len(recentLines)-10:]
 		}
-		
+
 		// Filter for error-related lines
 		for _, line := range recentLines {
-			if strings.Contains(strings.ToLower(line), "error") || 
-			   strings.Contains(strings.ToLower(line), "fatal") ||
-			   strings.Contains(strings.ToLower(line), "panic") ||
-			   strings.Contains(strings.ToLower(line), "failed") ||
-			   strings.Contains(line, "[stderr]") {
+			if strings.Contains(strings.ToLower(line), "error") ||
+				strings.Contains(strings.ToLower(line), "fatal") ||
+				strings.Contains(strings.ToLower(line), "panic") ||
+				strings.Contains(strings.ToLower(line), "failed") ||
+				strings.Contains(line, "[stderr]") {
 				lastLines = append(lastLines, line)
 			}
 		}
-		
+
 		// If no error lines found, just take last 5 lines
 		if len(lastLines) == 0 && len(recentLines) > 0 {
 			start := len(recentLines) - 5
@@ -1071,85 +1142,6 @@ func (a *App) monitorNode() {
 				"lastLines": lastLines,
 			})
 		}
-	}
-}
-
-// ================== Mining Server Configuration ==================
-
-// SetNodeMiningConfig configures the embedded node's GetWork mining server
-// This must be called BEFORE starting the node
-func (a *App) SetNodeMiningConfig(enabled bool, integratorAddress string, getworkPort int) map[string]interface{} {
-	nodeManager.Lock()
-	defer nodeManager.Unlock()
-
-	if nodeManager.isRunning {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Cannot change mining config while node is running",
-		}
-	}
-
-	nodeManager.miningEnabled = enabled
-	nodeManager.integratorAddress = integratorAddress
-	
-	if getworkPort > 0 && getworkPort < 65536 {
-		nodeManager.getworkPort = getworkPort
-	}
-
-	a.logToConsole(fmt.Sprintf("[MINE] Node mining server config: enabled=%v, port=%d, address=%s", 
-		enabled, nodeManager.getworkPort, integratorAddress[:min(16, len(integratorAddress))]+"..."))
-
-	return map[string]interface{}{
-		"success":           true,
-		"miningEnabled":     nodeManager.miningEnabled,
-		"getworkPort":       nodeManager.getworkPort,
-		"integratorAddress": nodeManager.integratorAddress,
-	}
-}
-
-// GetGetWorkEndpoint returns the GetWork WebSocket endpoint for the embedded node
-// This is used by both the Miner and EPOCH to connect to the node's mining server
-func (a *App) GetGetWorkEndpoint() map[string]interface{} {
-	nodeManager.RLock()
-	defer nodeManager.RUnlock()
-
-	if !nodeManager.isRunning {
-		return map[string]interface{}{
-			"success":   false,
-			"available": false,
-			"error":     "Node is not running",
-		}
-	}
-
-	if !nodeManager.miningEnabled {
-		return map[string]interface{}{
-			"success":   false,
-			"available": false,
-			"error":     "Mining server not enabled on node",
-		}
-	}
-
-	endpoint := fmt.Sprintf("127.0.0.1:%d", nodeManager.getworkPort)
-	
-	return map[string]interface{}{
-		"success":   true,
-		"available": true,
-		"endpoint":  endpoint,
-		"port":      nodeManager.getworkPort,
-	}
-}
-
-// GetNodeMiningConfig returns the current mining server configuration
-func (a *App) GetNodeMiningConfig() map[string]interface{} {
-	nodeManager.RLock()
-	defer nodeManager.RUnlock()
-
-	return map[string]interface{}{
-		"success":           true,
-		"miningEnabled":     nodeManager.miningEnabled,
-		"getworkPort":       nodeManager.getworkPort,
-		"integratorAddress": nodeManager.integratorAddress,
-		"isRunning":         nodeManager.isRunning,
 	}
 }
 
@@ -1205,19 +1197,92 @@ func (a *App) GetNodeAdvancedConfig() map[string]interface{} {
 	}
 }
 
-// StartNodeWithMining is a convenience function that configures mining and starts the node
-func (a *App) StartNodeWithMining(dataDir, integratorAddress string) map[string]interface{} {
-	// Configure mining first
-	configResult := a.SetNodeMiningConfig(true, integratorAddress, 0) // Use default port
-	if !configResult["success"].(bool) {
-		return configResult
-	}
+// ================== Network Mode Management ==================
 
-	// Then start the node
-	return a.StartNode(dataDir)
+func daemonInfoHeight(info map[string]interface{}) (int64, bool) {
+	if info == nil {
+		return 0, false
+	}
+	v, ok := info["height"]
+	if !ok {
+		return 0, false
+	}
+	switch val := v.(type) {
+	case float64:
+		return int64(val), true
+	case int64:
+		return val, true
+	case int:
+		return int64(val), true
+	default:
+		return 0, false
+	}
 }
 
-// ================== Network Mode Management ==================
+// inferRPCPortFromEndpoint returns the port from an http(s) URL, or host:port strings.
+func inferRPCPortFromEndpoint(endpoint string) int {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return 0
+	}
+	if !strings.Contains(endpoint, "://") {
+		if _, portStr, err := net.SplitHostPort(endpoint); err == nil {
+			if p, err := strconv.Atoi(portStr); err == nil {
+				return p
+			}
+		}
+		return 0
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return 0
+	}
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// inferNetworkModeFromDaemonInfo maps DERO.GetInfo to HOLOGRAM's NetworkMode.
+// Prefer the daemon-reported "network" field so long-lived simulator chains (>10k blocks)
+// are not misclassified as mainnet by height heuristics (which would repoint RPC to :10102).
+// connectedEndpoint is the URL the client is actually using (e.g. settings daemon_endpoint);
+// when the JSON omits "network", localhost :20000 / :10102 disambiguates before height fallback.
+func inferNetworkModeFromDaemonInfo(info map[string]interface{}, connectedEndpoint string) (NetworkMode, bool) {
+	if info == nil {
+		return "", false
+	}
+	if n, ok := info["network"].(string); ok {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			switch strings.ToLower(n) {
+			case "simulator":
+				return NetworkSimulator, true
+			case "mainnet":
+				return NetworkMainnet, true
+			}
+		}
+	}
+	if connectedEndpoint != "" && isLocalhostEndpoint(connectedEndpoint) {
+		switch inferRPCPortFromEndpoint(connectedEndpoint) {
+		case 20000:
+			return NetworkSimulator, true
+		case 10102:
+			return NetworkMainnet, true
+		}
+	}
+	if h, ok := daemonInfoHeight(info); ok {
+		if h > 10000 {
+			return NetworkMainnet, true
+		}
+		if h > 0 {
+			return NetworkSimulator, true
+		}
+	}
+	return "", false
+}
 
 // SetNetworkMode sets the network mode for the next node start
 // This must be called BEFORE starting the node
@@ -1241,7 +1306,7 @@ func (a *App) SetNetworkMode(network string) map[string]interface{} {
 	}
 
 	nodeManager.networkMode = mode
-	
+
 	// Update ports to match new network
 	netConfig := GetNetworkConfig(mode)
 	nodeManager.rpcPort = netConfig.RPCPort
@@ -1254,9 +1319,11 @@ func (a *App) SetNetworkMode(network string) map[string]interface{} {
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
 	a.daemonClient = NewDaemonClient(endpoint)
 
-	// Update settings (used by Gnomon and other services)
+	// Update settings (used by Gnomon and other services) and persist immediately
+	// so the status broadcaster and reconcileDaemonEndpoint see the new network.
 	a.settings["network"] = string(mode)
 	a.settings["daemon_endpoint"] = endpoint
+	a.saveSettings()
 
 	// If Gnomon is running on a different network, stop it and inform user
 	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
@@ -1288,20 +1355,64 @@ func (a *App) SetNetworkMode(network string) map[string]interface{} {
 	}
 }
 
-// GetNetworkMode returns the current network mode
+// GetNetworkMode returns the current network mode.
+// When daemon is connected, reconciles with GetInfo(): prefers the daemon "network" field,
+// then falls back to height heuristics only if that field is missing.
+// If a mismatch is detected, persists the corrected settings so they survive the next restart.
 func (a *App) GetNetworkMode() map[string]interface{} {
 	nodeManager.RLock()
-	defer nodeManager.RUnlock()
+	mode := nodeManager.networkMode
+	nodeManager.RUnlock()
 
-	netConfig := GetNetworkConfig(nodeManager.networkMode)
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+	netConfig := GetNetworkConfig(mode)
+
+	// Use the actual stored endpoint as the base — not a constructed localhost URL.
+	// This ensures remote/LAN endpoints survive the round-trip to the frontend.
+	endpoint, _ := a.settings["daemon_endpoint"].(string)
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+	}
+
+	inferEndpoint := endpoint
+	if a.daemonClient != nil {
+		if ep := a.daemonClient.GetEndpoint(); ep != "" {
+			inferEndpoint = ep
+		}
+	}
+
+	// Reconcile with actual daemon connection
+	if info, err := a.daemonClient.GetInfo(); err == nil {
+		if inferred, hasInference := inferNetworkModeFromDaemonInfo(info, inferEndpoint); hasInference && inferred != mode {
+			mode = inferred
+			netConfig = GetNetworkConfig(inferred)
+			// For localhost endpoints only, correct the port to match the
+			// detected network. Remote endpoints are left untouched.
+			if isLocalhostEndpoint(endpoint) {
+				endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+			}
+
+			nodeManager.Lock()
+			nodeManager.networkMode = inferred
+			nodeManager.rpcPort = netConfig.RPCPort
+			nodeManager.p2pPort = netConfig.P2PPort
+			nodeManager.getworkPort = netConfig.GetWorkPort
+			nodeManager.Unlock()
+
+			a.settings["network"] = string(inferred)
+			a.settings["daemon_endpoint"] = endpoint
+			a.daemonClient.SetEndpoint(endpoint)
+			a.saveSettings()
+		} else if hasInference {
+			netConfig = GetNetworkConfig(inferred)
+		}
+	}
 
 	return map[string]interface{}{
 		"success":     true,
-		"network":     string(nodeManager.networkMode),
+		"network":     string(mode),
 		"endpoint":    endpoint,
-		"isSimulator": nodeManager.networkMode == NetworkSimulator,
-		"isMainnet":   nodeManager.networkMode == NetworkMainnet,
+		"isSimulator": mode == NetworkSimulator,
+		"isMainnet":   mode == NetworkMainnet,
 		"rpcPort":     netConfig.RPCPort,
 		"p2pPort":     netConfig.P2PPort,
 		"getworkPort": netConfig.GetWorkPort,
@@ -1340,57 +1451,6 @@ func (a *App) GetAvailableNetworks() map[string]interface{} {
 	}
 }
 
-// EnableNodeMining enables the GetWork server on a running node
-// Note: This requires a node restart to take effect
-func (a *App) EnableNodeMining(integratorAddress string) map[string]interface{} {
-	nodeManager.Lock()
-	
-	wasRunning := nodeManager.isRunning
-	nodeManager.miningEnabled = true
-	nodeManager.integratorAddress = integratorAddress
-	
-	nodeManager.Unlock()
-
-	if wasRunning {
-		return map[string]interface{}{
-			"success":        true,
-			"requireRestart": true,
-			"message":        "Mining configuration updated. Restart node to apply changes.",
-		}
-	}
-
-	return map[string]interface{}{
-		"success":        true,
-		"requireRestart": false,
-		"message":        "Mining configuration updated. Start node to enable mining server.",
-	}
-}
-
-// DisableNodeMining disables the GetWork server
-// Note: This requires a node restart to take effect
-func (a *App) DisableNodeMining() map[string]interface{} {
-	nodeManager.Lock()
-	
-	wasRunning := nodeManager.isRunning
-	nodeManager.miningEnabled = false
-	
-	nodeManager.Unlock()
-
-	if wasRunning {
-		return map[string]interface{}{
-			"success":        true,
-			"requireRestart": true,
-			"message":        "Mining server will be disabled on next node restart.",
-		}
-	}
-
-	return map[string]interface{}{
-		"success":        true,
-		"requireRestart": false,
-		"message":        "Mining server disabled.",
-	}
-}
-
 // min helper for older Go versions
 func min(a, b int) int {
 	if a < b {
@@ -1414,7 +1474,7 @@ func (a *App) GetNetworkStats() map[string]interface{} {
 	// Get difficulty and block time for hashrate calculation
 	var difficulty float64 = 0
 	var blockTime float64 = 0
-	
+
 	// Common daemon info fields
 	if v, ok := info["difficulty"].(float64); ok {
 		difficulty = v
@@ -1428,14 +1488,14 @@ func (a *App) GetNetworkStats() map[string]interface{} {
 		blockTime = v
 		stats["blockTime"] = v
 	}
-	
+
 	// Calculate network hashrate from difficulty and block time
 	// This is more reliable than relying on daemon hashrate fields
 	var calculatedHashrate int64 = 0
 	if blockTime > 0 && difficulty > 0 {
 		calculatedHashrate = int64(difficulty / blockTime)
 	}
-	
+
 	if v, ok := info["tx_pool_size"].(float64); ok {
 		stats["txPoolSize"] = int64(v)
 	}
@@ -1451,7 +1511,7 @@ func (a *App) GetNetworkStats() map[string]interface{} {
 	if v, ok := info["miniblocks_rejected"].(float64); ok {
 		stats["miniblocksRejected"] = int64(v)
 	}
-	
+
 	// Try to get explicit hashrate fields, fall back to calculated
 	if v, ok := info["hashrate_1hr"].(float64); ok && v > 0 {
 		stats["hashrate1hr"] = int64(v)
@@ -1471,17 +1531,17 @@ func (a *App) GetNetworkStats() map[string]interface{} {
 	if v, ok := info["stableheight"].(float64); ok {
 		stats["stableHeight"] = int64(v)
 	}
-	
+
 	// Registration pool (Netrunner feature)
 	if v, ok := info["reg_pool_size"].(float64); ok {
 		stats["regPoolSize"] = int64(v)
 	}
-	
+
 	// Connected miners count
 	if v, ok := info["miners"].(float64); ok {
 		stats["minersConnected"] = int64(v)
 	}
-	
+
 	// NTP and P2P offsets (timing sync)
 	if v, ok := info["offset_ntp"].(string); ok {
 		stats["offsetNtp"] = v
@@ -1493,7 +1553,7 @@ func (a *App) GetNetworkStats() map[string]interface{} {
 	if v, ok := info["median_block_time"].(float64); ok {
 		stats["medianBlockTime"] = v
 	}
-	
+
 	// Mining hashrate estimates
 	if v, ok := info["hashrate_1hr_estimate"].(float64); ok {
 		stats["hashrateEstimate1hr"] = v
@@ -1504,98 +1564,13 @@ func (a *App) GetNetworkStats() map[string]interface{} {
 	if v, ok := info["hashrate_7d_estimate"].(float64); ok {
 		stats["hashrateEstimate7d"] = v
 	}
-	
+
 	// Total blocks mined on network
 	if v, ok := info["total_blocks"].(float64); ok {
 		stats["totalBlocks"] = int64(v)
 	}
 
 	return stats
-}
-
-// RewindChain rewinds the blockchain by N blocks (embedded node only)
-func (a *App) RewindChain(blocks int) map[string]interface{} {
-	nodeManager.Lock()
-	defer nodeManager.Unlock()
-
-	if !nodeManager.isRunning {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Cannot rewind chain: embedded node is not running",
-		}
-	}
-
-	if blocks <= 0 {
-		blocks = 50 // Default to 50 blocks like Netrunner
-	}
-
-	if blocks > 1000 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Cannot rewind more than 1000 blocks at once",
-		}
-	}
-
-	// For embedded node, we need to stop and restart with different parameters
-	// This is a placeholder - actual implementation would require blockchain access
-	a.logToConsole(fmt.Sprintf("[WARN] Chain rewind requested: %d blocks (requires node restart)", blocks))
-
-	return map[string]interface{}{
-		"success":        true,
-		"message":        fmt.Sprintf("Chain rewind of %d blocks initiated. Node may need restart.", blocks),
-		"blocksRewound":  blocks,
-		"requireRestart": true,
-	}
-}
-
-// SetMiningAddress sets the integrator/mining reward address
-func (a *App) SetMiningAddress(address string) map[string]interface{} {
-	if address == "" {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Address cannot be empty",
-		}
-	}
-
-	// Basic DERO address validation (starts with dero)
-	if !strings.HasPrefix(strings.ToLower(address), "dero") {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Invalid DERO address format",
-		}
-	}
-
-	if len(address) < 60 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Address appears too short",
-		}
-	}
-
-	nodeManager.Lock()
-	nodeManager.integratorAddress = address
-	wasRunning := nodeManager.isRunning
-	nodeManager.Unlock()
-
-	a.logToConsole(fmt.Sprintf("[MINE] Mining address set: %s...%s", address[:12], address[len(address)-8:]))
-
-	return map[string]interface{}{
-		"success":        true,
-		"address":        address,
-		"requireRestart": wasRunning,
-		"message":        "Mining address updated",
-	}
-}
-
-// GetMiningAddress returns the current mining/integrator address
-func (a *App) GetMiningAddress() map[string]interface{} {
-	nodeManager.RLock()
-	defer nodeManager.RUnlock()
-
-	return map[string]interface{}{
-		"success": true,
-		"address": nodeManager.integratorAddress,
-	}
 }
 
 // GetNodeConfig returns the current node configuration
@@ -1612,16 +1587,15 @@ func (a *App) GetNodeConfig() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"success":       true,
-		"dataDir":       dataDir,
-		"rpcPort":       nodeManager.rpcPort,
-		"p2pPort":       nodeManager.p2pPort,
-		"getworkPort":   nodeManager.getworkPort,
-		"network":       string(nodeManager.networkMode),
-		"miningEnabled": nodeManager.miningEnabled,
-		"fastSync":      nodeManager.fastSyncEnabled,
-		"pruneHistory":  nodeManager.pruneHistory,
-		"isRunning":     nodeManager.isRunning,
+		"success":      true,
+		"dataDir":      dataDir,
+		"rpcPort":      nodeManager.rpcPort,
+		"p2pPort":      nodeManager.p2pPort,
+		"getworkPort":  nodeManager.getworkPort,
+		"network":      string(nodeManager.networkMode),
+		"fastSync":     nodeManager.fastSyncEnabled,
+		"pruneHistory": nodeManager.pruneHistory,
+		"isRunning":    nodeManager.isRunning,
 	}
 }
 
@@ -1646,9 +1620,6 @@ func (a *App) SetNodeConfig(config map[string]interface{}) map[string]interface{
 	}
 	if v, ok := config["getworkPort"].(float64); ok && v > 1024 && v < 65535 {
 		nodeManager.getworkPort = int(v)
-	}
-	if v, ok := config["miningEnabled"].(bool); ok {
-		nodeManager.miningEnabled = v
 	}
 	if v, ok := config["fastSync"].(bool); ok {
 		nodeManager.fastSyncEnabled = v
@@ -1695,7 +1666,7 @@ func (a *App) EstimateSyncTime() map[string]interface{} {
 
 	// Estimate time based on blocks remaining
 	minutesRemaining := float64(remaining) / 1000.0
-	
+
 	var estimate string
 	if minutesRemaining < 1 {
 		estimate = "Less than 1 minute"
@@ -1714,4 +1685,3 @@ func (a *App) EstimateSyncTime() map[string]interface{} {
 		"progress":        progress,
 	}
 }
-

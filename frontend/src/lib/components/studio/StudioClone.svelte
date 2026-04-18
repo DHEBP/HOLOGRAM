@@ -149,8 +149,12 @@
   <div class="modal-overlay" on:click={cancelCloneUpdate}>
     <div class="modal-content" on:click|stopPropagation>
       <div class="modal-header">
-        <AlertTriangle size={24} class="modal-icon warning" />
-        <h3 class="modal-title">Content Has Been Updated</h3>
+        <div class="modal-header-left">
+          <div class="modal-icon warning">
+            <AlertTriangle size={18} />
+          </div>
+          <h3 class="modal-title">Content Has Been Updated</h3>
+        </div>
       </div>
       
       <div class="modal-body">
@@ -160,9 +164,9 @@
         </p>
       </div>
       
-      <div class="modal-actions">
-        <button class="btn btn-ghost" on:click={cancelCloneUpdate}>Cancel</button>
-        <button class="btn btn-primary" on:click={confirmCloneUpdate}>
+      <div class="modal-footer">
+        <button class="modal-btn modal-btn-secondary" on:click={cancelCloneUpdate}>Cancel</button>
+        <button class="modal-btn modal-btn-primary" on:click={confirmCloneUpdate}>
           Clone Latest Version
         </button>
       </div>

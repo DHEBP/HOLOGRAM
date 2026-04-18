@@ -13,6 +13,7 @@
   let step = 1; // 1: Enter, 2: Review, 3: Success
   let destination = '';
   let amount = '';
+  let ringsize = 16;
   let password = '';
   let showPassword = false;
   let loading = false;
@@ -39,6 +40,7 @@
     step = 1;
     destination = '';
     amount = '';
+    ringsize = 16;
     password = '';
     error = null;
     txid = null;
@@ -68,7 +70,7 @@
     error = null;
     
     try {
-      const result = await TransferToken(token.scid, destination, amountAtomic, password);
+      const result = await TransferToken(token.scid, destination, amountAtomic, password, ringsize);
       
       if (result.success) {
         txid = result.txid;
@@ -101,7 +103,7 @@
 
 {#if show && token}
   <div class="modal-overlay" on:click|self={close}>
-    <div class="modal">
+    <div class="modal-content">
       <div class="modal-header">
         <div class="modal-title">
           <ArrowUp size={18} />
@@ -161,6 +163,17 @@
               </span>
             {/if}
           </div>
+
+          <div class="form-group">
+            <label class="form-label">Ring Size</label>
+            <select class="select" bind:value={ringsize}>
+              <option value={2}>2 (Non-anonymous)</option>
+              <option value={16}>16 (Standard)</option>
+              <option value={32}>32</option>
+              <option value={64}>64</option>
+              <option value={128}>128</option>
+            </select>
+          </div>
           
         {:else if step === 2}
           <!-- STEP 2: Review & Confirm -->
@@ -176,6 +189,10 @@
             <div class="confirm-row">
               <span class="confirm-label">To</span>
               <span class="confirm-value confirm-value-address">{formatAddress(destination)}</span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Ring Size</span>
+              <span class="confirm-value">{ringsize}{ringsize === 2 ? ' (non-anonymous)' : ''}</span>
             </div>
           </div>
           
@@ -253,71 +270,6 @@
 {/if}
 
 <style>
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: var(--s-4);
-  }
-  
-  .modal {
-    background: var(--void-mid);
-    border: 1px solid var(--border-dim);
-    border-radius: var(--r-lg);
-    width: 100%;
-    max-width: 440px;
-    max-height: 90vh;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-  
-  .modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--s-4);
-    border-bottom: 1px solid var(--border-dim);
-  }
-  
-  .modal-title {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-1);
-  }
-  
-  .modal-close {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    background: transparent;
-    border: none;
-    border-radius: var(--r-sm);
-    color: var(--text-3);
-    cursor: pointer;
-    transition: all 150ms ease;
-  }
-  
-  .modal-close:hover {
-    background: var(--void-up);
-    color: var(--text-1);
-  }
-  
-  .modal-body {
-    padding: var(--s-4);
-    overflow-y: auto;
-  }
-  
   .token-info-bar {
     display: flex;
     align-items: center;
@@ -485,14 +437,6 @@
   .btn-icon-sm:hover {
     background: var(--void-hover);
     color: var(--cyan-400);
-  }
-  
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--s-3);
-    padding: var(--s-4);
-    border-top: 1px solid var(--border-dim);
   }
   
   :global(.spin) {

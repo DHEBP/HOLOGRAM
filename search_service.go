@@ -223,10 +223,37 @@ func (a *App) searchSmartContract(query string) SearchResult {
 	}
 
 	// Log code length for debugging
-	if code, ok := result["code"].(string); ok {
+	code, _ := result["code"].(string)
+	if code == "" {
+		// Fallback: extract from deployment TX (simulator may not populate GetSC code)
+		txResult, err := a.daemonClient.Call("DERO.GetTransaction", map[string]interface{}{
+			"txs_hashes": []string{normalizedSCID},
+		})
+		if err == nil {
+			if txMap, ok := txResult.(map[string]interface{}); ok {
+				if txsHex, ok := txMap["txs_as_hex"].([]interface{}); ok && len(txsHex) > 0 {
+					if hexStr, ok := txsHex[0].(string); ok {
+						code = ExtractSCCodeFromDeploymentTx(hexStr)
+						if code != "" {
+							a.logToConsole(fmt.Sprintf("[SC] Extracted code from deployment TX (%d chars)", len(code)))
+							result["code"] = code
+							scData["code"] = code
+						}
+					}
+				}
+			}
+		}
+	}
+	if code != "" {
 		a.logToConsole(fmt.Sprintf("[SC] Code length: %d chars", len(code)))
 	} else {
-		a.logToConsole("[WARN] SC code not found or not a string")
+		a.logToConsole("[WARN] SC code not found or not a string (likely a normal TX)")
+		return SearchResult{
+			Success: false,
+			Type:    "sc",
+			Query:   query,
+			Error:   "Not a valid smart contract (no code found)",
+		}
 	}
 
 	return SearchResult{
@@ -1039,28 +1066,6 @@ func (a *App) SearchMyContent() map[string]interface{} {
 	}
 
 	a.logToConsole("[SEARCH] Querying Gnomon for owned contracts...")
-	
-	// Debug: Check how many SCIDs Gnomon has indexed total
-	allScids := a.gnomonClient.GetAllOwnersAndSCIDs()
-	a.logToConsole(fmt.Sprintf("[DEBUG] Gnomon has indexed %d total contracts", len(allScids)))
-	
-	// Debug: Log first few SCIDs and their owners
-	count := 0
-	for scid, owner := range allScids {
-		if count < 5 {
-			// Safely truncate strings to avoid panic
-			scidTrunc := scid
-			if len(scid) > 16 {
-				scidTrunc = scid[:16]
-			}
-			ownerTrunc := owner
-			if len(owner) > 20 {
-				ownerTrunc = owner[:20]
-			}
-			a.logToConsole(fmt.Sprintf("[DEBUG] SCID: %s... Owner: %s...", scidTrunc, ownerTrunc))
-			count++
-		}
-	}
 	
 	docs := a.gnomonClient.GetMyDOCs(walletAddress, "")
 	indexes := a.gnomonClient.GetMyINDEXes(walletAddress)

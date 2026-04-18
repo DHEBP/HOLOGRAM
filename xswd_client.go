@@ -375,27 +375,6 @@ func (c *XSWDClient) Subscribe(event string, callback EventCallback) error {
 	return nil
 }
 
-// Unsubscribe from an XSWD event
-func (c *XSWDClient) Unsubscribe(event string) {
-	c.eventMutex.Lock()
-	delete(c.eventCallbacks, event)
-	c.eventMutex.Unlock()
-
-	// Send unsubscribe request if connected
-	if c.connected {
-		msg := XSWDMessage{
-			JSONRPC: "2.0",
-			ID:      c.generateID(),
-			Method:  "Unsubscribe",
-			Params:  map[string]interface{}{"event": event},
-		}
-
-		c.writeMutex.Lock()
-		_ = c.conn.WriteJSON(msg)
-		c.writeMutex.Unlock()
-	}
-}
-
 // ClearAllSubscriptions removes all event callbacks
 func (c *XSWDClient) ClearAllSubscriptions() {
 	c.eventMutex.Lock()

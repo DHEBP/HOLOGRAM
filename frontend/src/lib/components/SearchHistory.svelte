@@ -1,6 +1,9 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
-  import { Search } from 'lucide-svelte';
+  import { get } from 'svelte/store';
+  import { appState } from '../stores/appState.js';
+  import { recentSearchesKey, pinnedSearchesKey, migrateLegacyExplorerSearchStorage } from '../recentSearchStorage.js';
+  import { Search, Inbox, Pin, Clock, X } from 'lucide-svelte';
   
   const dispatch = createEventDispatcher();
   
@@ -10,20 +13,23 @@
   let pinnedSearches = [];
   let filter = ''; // Filter by query
   
-  const STORAGE_KEY = 'recentSearches';
-  const PINNED_KEY = 'pinnedSearches';
   const MAX_HISTORY = 50;
+  
+  function historyNetwork() {
+    return get(appState)?.network || 'mainnet';
+  }
   
   onMount(() => {
     loadSearches();
   });
   
   function loadSearches() {
+    migrateLegacyExplorerSearchStorage();
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(recentSearchesKey(historyNetwork()));
       searches = stored ? JSON.parse(stored).slice(0, MAX_HISTORY) : [];
       
-      const pinned = localStorage.getItem(PINNED_KEY);
+      const pinned = localStorage.getItem(pinnedSearchesKey(historyNetwork()));
       pinnedSearches = pinned ? JSON.parse(pinned) : [];
     } catch (e) {
       searches = [];
@@ -33,12 +39,14 @@
   
   function saveSearches() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(searches));
-      localStorage.setItem(PINNED_KEY, JSON.stringify(pinnedSearches));
+      localStorage.setItem(recentSearchesKey(historyNetwork()), JSON.stringify(searches));
+      localStorage.setItem(pinnedSearchesKey(historyNetwork()), JSON.stringify(pinnedSearches));
     } catch (e) {
       // Ignore storage errors
     }
   }
+  
+  $: $appState.network, loadSearches();
   
   function isPinned(query) {
     return pinnedSearches.includes(query);
@@ -129,11 +137,21 @@
 </script>
 
 {#if isOpen}
-  <div class="overlay" on:click={close}>
-    <div class="modal" on:click|stopPropagation>
+  <div class="modal-overlay" on:click={close}>
+    <div class="modal-content modal-content-wide search-history-modal" on:click|stopPropagation>
       <div class="modal-header">
-        <h2>Search History</h2>
-        <button class="close-btn" on:click={close}>×</button>
+        <div class="modal-header-left">
+          <div class="modal-icon">
+            <Search size={16} />
+          </div>
+          <div>
+            <h2 class="modal-title">Search History</h2>
+            <p class="modal-subtitle">Recent and pinned searches</p>
+          </div>
+        </div>
+        <button class="modal-close" on:click={close} aria-label="Close">
+          <X size={16} />
+        </button>
       </div>
       
       <div class="modal-toolbar">
@@ -162,7 +180,7 @@
       <div class="modal-body">
         {#if filteredSearches.length === 0}
           <div class="empty-state">
-            <span class="empty-icon">📭</span>
+            <span class="empty-icon"><Inbox size={24} /></span>
             <p>{filter ? 'No matching searches found' : 'No search history yet'}</p>
             <p class="empty-hint">Your searches will appear here</p>
           </div>
@@ -171,7 +189,11 @@
             {#each filteredSearches as search}
               <div class="search-item" class:pinned={isPinned(search.query)}>
                 <button class="pin-btn" on:click={() => togglePin(search)} title={isPinned(search.query) ? 'Unpin' : 'Pin'}>
-                  {isPinned(search.query) ? '📌' : '📍'}
+                  {#if isPinned(search.query)}
+                    <Pin size={14} fill="currentColor" />
+                  {:else}
+                    <Clock size={14} />
+                  {/if}
                 </button>
                 
                 <button class="search-content" on:click={() => selectSearch(search)}>
@@ -193,39 +215,17 @@
         <span class="stats">
           {searches.length} searches • {pinnedCount} pinned
         </span>
-        <button class="btn-primary" on:click={close}>Done</button>
+        <button class="modal-btn modal-btn-primary" on:click={close}>Done</button>
       </div>
     </div>
   </div>
 {/if}
 
 <style>
-  .overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    animation: overlay-fade 0.2s ease;
-  }
-  
-  @keyframes overlay-fade {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-  
-  .modal {
-    background: linear-gradient(135deg, rgba(30, 30, 40, 0.98) 0%, rgba(20, 20, 30, 0.98) 100%);
-    border: 1px solid rgba(82, 200, 219, 0.3);
-    border-radius: 16px;
+  .search-history-modal {
     width: 90%;
     max-width: 600px;
     max-height: 80vh;
-    display: flex;
-    flex-direction: column;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
     animation: modal-appear 0.2s ease;
   }
@@ -241,65 +241,28 @@
     }
   }
   
-  .modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1.25rem 1.5rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  }
-  
-  .modal-header h2 {
-    margin: 0;
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: #fff;
-  }
-  
-  .close-btn {
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    color: rgba(255, 255, 255, 0.6);
-    font-size: 1.25rem;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-  
-  .close-btn:hover {
-    background: rgba(239, 68, 68, 0.2);
-    border-color: rgba(239, 68, 68, 0.4);
-    color: #ef4444;
-  }
-  
   .modal-toolbar {
     display: flex;
     align-items: center;
-    gap: 1rem;
-    padding: 1rem 1.5rem;
-    background: rgba(0, 0, 0, 0.2);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    gap: var(--s-4);
+    padding: var(--s-4) var(--s-6);
+    background: var(--void-deep);
+    border-bottom: 1px solid var(--border-subtle);
   }
   
   .filter-input {
     flex: 1;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: var(--void-base);
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-md);
   }
   
   .filter-icon {
-    font-size: 0.85rem;
-    opacity: 0.5;
+    color: var(--text-4);
   }
   
   .filter-input input {
@@ -307,45 +270,46 @@
     background: transparent;
     border: none;
     outline: none;
-    color: #fff;
-    font-size: 0.9rem;
+    color: var(--text-1);
+    font-size: 13px;
+    font-family: var(--font-mono);
   }
   
   .filter-input input::placeholder {
-    color: rgba(255, 255, 255, 0.3);
+    color: var(--text-4);
   }
   
   .toolbar-actions {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--s-2);
   }
   
   .action-btn {
-    padding: 0.5rem 0.75rem;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    color: rgba(255, 255, 255, 0.6);
-    font-size: 0.75rem;
+    padding: var(--s-2) var(--s-3);
+    background: var(--void-up);
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-sm);
+    color: var(--text-3);
+    font-size: 12px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 150ms ease;
   }
   
   .action-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
+    background: var(--void-hover);
+    color: var(--text-1);
   }
   
   .action-btn.danger:hover {
-    background: rgba(239, 68, 68, 0.15);
-    border-color: rgba(239, 68, 68, 0.3);
-    color: #ef4444;
+    background: rgba(248, 113, 113, 0.15);
+    border-color: rgba(248, 113, 113, 0.3);
+    color: var(--status-err);
   }
   
   .modal-body {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem;
+    padding: var(--s-4);
   }
   
   .empty-state {
@@ -353,52 +317,52 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 3rem 1rem;
+    padding: var(--s-12) var(--s-4);
     text-align: center;
   }
   
   .empty-icon {
-    font-size: 3rem;
-    margin-bottom: 1rem;
+    margin-bottom: var(--s-4);
     opacity: 0.6;
+    color: var(--text-3);
   }
   
   .empty-state p {
     margin: 0;
-    color: rgba(255, 255, 255, 0.5);
+    color: var(--text-3);
   }
   
   .empty-hint {
-    font-size: 0.85rem;
-    margin-top: 0.5rem !important;
-    color: rgba(255, 255, 255, 0.3) !important;
+    font-size: 12px;
+    margin-top: var(--s-2);
+    color: var(--text-4);
   }
   
   .search-list {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--s-2);
   }
   
   .search-item {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem;
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 10px;
-    transition: all 0.15s ease;
+    gap: var(--s-2);
+    padding: var(--s-2);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    transition: all 150ms ease;
   }
   
   .search-item:hover {
-    background: rgba(0, 0, 0, 0.3);
-    border-color: rgba(255, 255, 255, 0.1);
+    background: var(--void-up);
+    border-color: var(--border-default);
   }
   
   .search-item.pinned {
-    background: rgba(251, 191, 36, 0.05);
-    border-color: rgba(251, 191, 36, 0.2);
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.24);
   }
   
   .pin-btn, .remove-btn {
@@ -409,19 +373,20 @@
     justify-content: center;
     background: transparent;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 150ms ease;
     flex-shrink: 0;
   }
   
   .pin-btn {
-    font-size: 0.85rem;
-    opacity: 0.5;
+    color: var(--text-4);
+    opacity: 0.8;
   }
   
   .pin-btn:hover {
     background: rgba(251, 191, 36, 0.1);
+    color: var(--status-warn);
     opacity: 1;
   }
   
@@ -430,32 +395,31 @@
   }
   
   .remove-btn {
-    font-size: 1.1rem;
-    color: rgba(255, 255, 255, 0.3);
+    color: var(--text-4);
   }
   
   .remove-btn:hover {
-    background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--status-err);
   }
   
   .search-content {
     flex: 1;
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem;
+    gap: var(--s-3);
+    padding: var(--s-2);
     background: transparent;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     cursor: pointer;
-    transition: background 0.15s ease;
+    transition: background 150ms ease;
     text-align: left;
     min-width: 0;
   }
   
   .search-content:hover {
-    background: rgba(82, 200, 219, 0.1);
+    background: rgba(34, 211, 238, 0.1);
   }
   
   .search-icon {
@@ -465,17 +429,17 @@
   
   .search-query {
     flex: 1;
-    font-size: 0.9rem;
-    color: #fff;
-    font-family: monospace;
+    font-size: 13px;
+    color: var(--text-1);
+    font-family: var(--font-mono);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   
   .search-time {
-    font-size: 0.7rem;
-    color: rgba(255, 255, 255, 0.3);
+    font-size: 11px;
+    color: var(--text-4);
     flex-shrink: 0;
   }
   
@@ -483,50 +447,33 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 1rem 1.5rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(0, 0, 0, 0.2);
+    padding: var(--s-4) var(--s-6);
+    border-top: 1px solid var(--border-subtle);
+    background: var(--void-deep);
   }
   
   .stats {
-    font-size: 0.8rem;
-    color: rgba(255, 255, 255, 0.4);
-  }
-  
-  .btn-primary {
-    padding: 0.6rem 1.25rem;
-    background: linear-gradient(135deg, #52c8db 0%, #3ba8bc 100%);
-    border: none;
-    border-radius: 8px;
-    color: #000;
-    font-size: 0.9rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-  
-  .btn-primary:hover {
-    background: linear-gradient(135deg, #6dd4e5 0%, #4bb8cc 100%);
-    transform: translateY(-1px);
+    font-size: 12px;
+    color: var(--text-3);
   }
   
   /* Scrollbar */
   .modal-body::-webkit-scrollbar {
-    width: 6px;
+    width: var(--s-2);
   }
   
   .modal-body::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.2);
-    border-radius: 3px;
+    background: var(--void-base);
+    border-radius: var(--r-xs);
   }
   
   .modal-body::-webkit-scrollbar-thumb {
-    background: rgba(82, 200, 219, 0.3);
-    border-radius: 3px;
+    background: rgba(34, 211, 238, 0.3);
+    border-radius: var(--r-xs);
   }
   
   .modal-body::-webkit-scrollbar-thumb:hover {
-    background: rgba(82, 200, 219, 0.5);
+    background: rgba(34, 211, 238, 0.5);
   }
 </style>
 

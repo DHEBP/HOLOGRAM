@@ -154,6 +154,37 @@ func parseTxBytes(txHex string, rings []map[string]interface{}, isMainnet bool) 
 	return result
 }
 
+// ExtractSCCodeFromDeploymentTx extracts SC code from an SC_INSTALL deployment transaction.
+// For deployment TX, SCID = TXID, so we can get the code from the tx payload when GetSC returns empty
+// (e.g. simulator daemon may not populate GetSC code).
+func ExtractSCCodeFromDeploymentTx(txHex string) string {
+	if txHex == "" {
+		return ""
+	}
+	txBytes, err := hex.DecodeString(txHex)
+	if err != nil {
+		return ""
+	}
+	var tx transaction.Transaction
+	if err := tx.Deserialize(txBytes); err != nil {
+		return ""
+	}
+	if tx.TransactionType != transaction.SC_TX {
+		return ""
+	}
+	if !tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
+		return ""
+	}
+	action := rpc.SC_ACTION(tx.SCDATA.Value(rpc.SCACTION, rpc.DataUint64).(uint64))
+	if action != rpc.SC_INSTALL {
+		return ""
+	}
+	if c, ok := tx.SCDATA.Value(rpc.SCCODE, rpc.DataString).(string); ok {
+		return c
+	}
+	return ""
+}
+
 // calculateTxAge calculates the age of a transaction from block data
 func (a *App) calculateTxAge(blockHeight float64) (age string, blockTime string) {
 	if blockHeight <= 0 {

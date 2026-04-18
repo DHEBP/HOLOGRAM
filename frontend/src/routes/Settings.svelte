@@ -5,8 +5,7 @@
   import { 
     SetSetting, StartGnomon, StopGnomon, ResyncGnomon, ResyncGnomonFromHeight,
     GetSearchExclusions, AddSearchExclusion, RemoveSearchExclusion, ClearSearchExclusions, SetSearchMinLikes,
-    DetectRunningNode, CheckDerodStatus, GetLatestDerodRelease,
-    DownloadDerodFromGitHub, GetManualDerodInstructions, IsGitHubCheckAllowed,
+    DetectRunningNode, CheckDerodStatus,
     StartNode, StopNode, GetNodeStatus, GetSyncProgress, TestAndConnectEndpoint,
     GetConnectedApps, RevokeAppPermissions, RevokeAppPermission, GetPermissionTypes,
     SetCypherpunkMode, GetNetworkFilterStatus, AddAllowedHost, RemoveAllowedHost,
@@ -31,7 +30,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   import ServerManager from '../lib/components/ServerManager.svelte';
   import { Settings as SettingsIcon } from 'lucide-svelte';
 
-  let activeSection = 'general';
+  export let initialSection = '';
+  let activeSection = initialSection || 'general';
   
   const sections = [
     { id: 'general', label: 'General', iconName: 'settings' },
@@ -68,9 +68,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   // Node state
   let nodeStatus = { isRunning: false };
   let derodStatus = { installed: false };
-  let latestRelease = null;
   let downloadProgress = null;
-  let isDownloading = false;
   let nodeDataDir = '';
   let syncProgress = { progress: 0, isSynced: false };
   let statusInterval;
@@ -189,10 +187,27 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   let advancedNodeLoading = false;
   
   onMount(async () => {
+    // Register event listener immediately so it's ready before any async work
+    const handleNavigateSection = (e) => {
+      const { section } = e.detail;
+      if (section && sections.find(s => s.id === section)) {
+        activeSection = section;
+      }
+    };
+    window.addEventListener('navigate-section', handleNavigateSection);
+    window._settingsNavigateHandler = handleNavigateSection;
+    
     // Sync network mode from backend first
     await syncNetworkMode();
     await refreshNodeStatus();
     nodeDataDir = $settingsState.nodeDataDir || '';
+    
+    // Pre-fill the endpoint input with the stored value so users can see
+    // and verify what HOLOGRAM is currently configured to connect to.
+    // Only initialize if the user hasn't typed anything yet.
+    if (!customEndpoint && $settingsState.daemonEndpoint) {
+      customEndpoint = $settingsState.daemonEndpoint;
+    }
     
     // Subscribe to network mode changes
     EventsOn('network-mode-changed', async () => {
@@ -220,18 +235,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     await initEpochPanel();
     await loadAdvancedNodeConfig();
     await loadAppInfo();
-    
-    // Listen for section navigation from status indicators
-    const handleNavigateSection = (e) => {
-      const { section } = e.detail;
-      if (section && sections.find(s => s.id === section)) {
-        activeSection = section;
-      }
-    };
-    window.addEventListener('navigate-section', handleNavigateSection);
-    
-    // Store handler for cleanup in onDestroy
-    window._settingsNavigateHandler = handleNavigateSection;
   });
   
   // Load app version info
@@ -771,46 +774,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     }, 5000);
   }
   
-  async function checkLatestRelease() {
-    latestRelease = await GetLatestDerodRelease();
-  }
-  
-  let downloadError = '';
-  let downloadVerified = false;
-  let showManualInstructions = false;
-  let manualInstructions = null;
-  
-  async function downloadDerod() {
-    isDownloading = true;
-    downloadError = '';
-    downloadVerified = false;
-    try {
-      const result = await DownloadDerodFromGitHub();
-      if (result.success) {
-        derodStatus = await CheckDerodStatus();
-        downloadVerified = result.verified || false;
-      } else if (result.github_blocked) {
-        // GitHub checks disabled - show manual instructions
-        downloadError = result.error;
-        showManualInstructions = true;
-        manualInstructions = await GetManualDerodInstructions();
-      } else {
-        downloadError = result.error || 'Download failed';
-        console.error('Download failed:', result.error);
-      }
-    } catch (error) {
-      downloadError = error.message || 'Download error';
-      console.error('Download error:', error);
-    } finally {
-      isDownloading = false;
-    }
-  }
-  
-  async function loadManualInstructions() {
-    manualInstructions = await GetManualDerodInstructions();
-    showManualInstructions = true;
-  }
-  
   // Node start/stop controls moved to Network page
   function focusAdvancedOptions() {
     if (advancedOptionsCard?.scrollIntoView) {
@@ -957,8 +920,6 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
       if (result.success) {
         // Sync network mode from backend (this updates appState and settingsState)
         await syncNetworkMode();
-        // Also update settings for compatibility
-        await updateSetting('network', newNetwork);
       } else {
         console.error('Failed to set network mode:', result.error);
       }
@@ -1706,79 +1667,19 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   <div class="settings-row-label">DERO Node (derod)</div>
                   <div class="settings-row-desc settings-row-desc-inline">
                     <span class="badge badge-ok">Installed</span>
-                    <span class="form-hint">{derodStatus.version || 'Unknown version'}</span>
+                    <span class="form-hint">{derodStatus.path || ''}</span>
                   </div>
                 </div>
-                <button on:click={checkLatestRelease} class="btn btn-secondary btn-sm">Check for Updates</button>
+                <button on:click={refreshNodeStatus} class="btn btn-secondary btn-sm">Refresh</button>
             </div>
-            {#if latestRelease && latestRelease.tagName !== derodStatus.version}
-                <div class="alert alert-info mt-3">
-                  <p class="update-notice">New version available: {latestRelease.tagName}</p>
-                  <button on:click={downloadDerod} disabled={isDownloading} class="btn btn-primary btn-sm mt-2">
-                  {isDownloading ? 'Downloading...' : 'Update'}
-                </button>
-              </div>
-            {/if}
           {:else}
               <div class="settings-row settings-row-stack">
                 <div class="settings-row-info settings-row-info-spaced">
                   <div class="settings-row-label">DERO Node Binary</div>
-                  <div class="settings-row-desc">The DERO node binary (derod) is required to run a local node.</div>
+                  <div class="settings-row-desc">The DERO node binary (derod) is required to run a local node. Build from source with <code>make all</code> in the HOLOGRAM directory.</div>
                 </div>
-                
-                {#if !$settingsState.allow_github_check}
-                  <div class="alert alert-warn mb-3">
-                    <p><strong>GitHub checks disabled</strong></p>
-                    <p class="form-hint">Auto-download is unavailable. You can enable it in Privacy settings or install manually.</p>
-                  </div>
-                  <button on:click={loadManualInstructions} class="btn btn-secondary">
-                    Show Manual Install Instructions
-                  </button>
-                {:else}
-                  <button on:click={downloadDerod} disabled={isDownloading} class="btn btn-primary">
-                    {isDownloading ? 'Downloading & Verifying...' : 'Download DERO Node'}
-                  </button>
-                {/if}
-                
-                {#if isDownloading}
-                  <p class="form-hint mt-3">Downloading and verifying SHA256 checksum... (~50MB)</p>
-                {/if}
-                
-                {#if downloadError}
-                  <div class="alert alert-error mt-3">
-                    <p>{downloadError}</p>
-                  </div>
-                {/if}
-                
-                {#if downloadVerified}
-                  <div class="alert alert-success mt-3">
-                    <p><Icons name="check" size={14} /> Download verified successfully</p>
-                  </div>
-                {/if}
+                <button on:click={refreshNodeStatus} class="btn btn-secondary btn-sm">Re-check</button>
               </div>
-              
-              {#if showManualInstructions && manualInstructions}
-                <div class="manual-instructions mt-4">
-                  <div class="explorer-header">
-                    <div class="explorer-header-left">
-                      <span class="explorer-header-icon">◆</span>
-                      <span class="explorer-header-title">MANUAL INSTALLATION</span>
-                    </div>
-                    <button class="btn btn-ghost btn-sm" on:click={() => showManualInstructions = false}>
-                      <Icons name="x" size={14} />
-                    </button>
-                  </div>
-                  <div class="card-content">
-                    <pre class="manual-instructions-text">{manualInstructions.instructions}</pre>
-                    <div class="manual-links mt-3">
-                      <a href={manualInstructions.downloadUrl} target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm">
-                        <Icons name="external-link" size={14} />
-                        Open GitHub Releases
-                      </a>
-                    </div>
-                  </div>
-                </div>
-              {/if}
           {/if}
           </div>
         </div>
@@ -2171,7 +2072,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
               <input
                 type="text"
                 bind:value={customEndpoint}
-                placeholder={$settingsState.daemonEndpoint || 'http://127.0.0.1:10102'}
+                placeholder="http://127.0.0.1:10102"
                 class="input endpoint-input"
                 on:keydown={(e) => e.key === 'Enter' && testAndConnect()}
               />
@@ -2191,7 +2092,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
             </div>
             
             <p class="form-hint settings-hint-top-sm">
-              Power users: Enter your LAN node address (e.g., http://192.168.1.100:10102)
+              Enter your node address and click <strong>Test &amp; Connect</strong>. Works for local (127.0.0.1), LAN (192.168.x.x), or remote nodes. Your endpoint is saved automatically on successful connection.
             </p>
             
             <!-- Connection test result -->

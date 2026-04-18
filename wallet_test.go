@@ -156,7 +156,7 @@ func TestGetIntegratedAddress_NoWallet(t *testing.T) {
 
 	app := &App{}
 
-	result := app.GetIntegratedAddress("test-payment-id")
+	result := app.GetIntegratedAddress(0, "", 0)
 
 	if result["success"] != false {
 		t.Error("GetIntegratedAddress should return success=false when no wallet is open")
@@ -171,7 +171,7 @@ func TestTransfer_NoWallet(t *testing.T) {
 
 	app := &App{consoleLogs: make([]ConsoleLog, 0)}
 
-	result := app.Transfer("dero1dest...", 1000000, "")
+	result := app.Transfer("dero1dest...", 1000000, "", 16)
 
 	if result["success"] != false {
 		t.Error("Transfer should return success=false when no wallet is open")
@@ -526,7 +526,7 @@ func TestInternalWalletCall_UnsupportedMethod(t *testing.T) {
 
 // ============== Recent Wallets Tests ==============
 
-func TestAddToRecentWallets_NoDuplicates(t *testing.T) {
+func TestAddToRecentWalletsWithInfo_NoDuplicates(t *testing.T) {
 	// Create temp directory for settings
 	tempDir, err := os.MkdirTemp("", "hologram_recent_test_*")
 	if err != nil {
@@ -544,10 +544,10 @@ func TestAddToRecentWallets_NoDuplicates(t *testing.T) {
 	walletManager.recentWallets = []string{}
 	walletManager.Unlock()
 
-	// Add same path twice
-	addToRecentWallets("/path/to/wallet.db")
-	addToRecentWallets("/other/wallet.db")
-	addToRecentWallets("/path/to/wallet.db") // Duplicate
+	// Add same path twice (addToRecentWalletsWithInfo requires path + address)
+	addToRecentWalletsWithInfo("/path/to/wallet.db", "dero1qwerty1234567890abcdef")
+	addToRecentWalletsWithInfo("/other/wallet.db", "dero1other1234567890abcdef")
+	addToRecentWalletsWithInfo("/path/to/wallet.db", "dero1qwerty1234567890abcdef") // Duplicate
 
 	walletManager.RLock()
 	count := len(walletManager.recentWallets)
@@ -567,7 +567,7 @@ func TestAddToRecentWallets_NoDuplicates(t *testing.T) {
 	}
 }
 
-func TestAddToRecentWallets_Max5(t *testing.T) {
+func TestAddToRecentWalletsWithInfo_Max10(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "hologram_recent_test_*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -584,21 +584,24 @@ func TestAddToRecentWallets_Max5(t *testing.T) {
 	walletManager.recentWallets = []string{}
 	walletManager.Unlock()
 
-	// Add 7 wallets
-	for i := 0; i < 7; i++ {
-		addToRecentWallets(filepath.Join(tempDir, "wallet"+string(rune('A'+i))+".db"))
+	// Add 12 wallets (exceeds the max of 10)
+	for i := 0; i < 12; i++ {
+		addToRecentWalletsWithInfo(
+			filepath.Join(tempDir, "wallet"+string(rune('A'+i))+".db"),
+			"dero1testaddr1234567890abc",
+		)
 	}
 
 	walletManager.RLock()
 	count := len(walletManager.recentWallets)
 	walletManager.RUnlock()
 
-	if count != 5 {
-		t.Errorf("Expected max 5 recent wallets, got %d", count)
+	if count != 10 {
+		t.Errorf("Expected max 10 recent wallets, got %d", count)
 	}
 }
 
-func TestLoadSaveRecentWallets_Roundtrip(t *testing.T) {
+func TestLoadSaveRecentWalletsData_Roundtrip(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "hologram_recent_test_*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -610,19 +613,26 @@ func TestLoadSaveRecentWallets_Roundtrip(t *testing.T) {
 	testDataDirOverride = tempDir
 	defer func() { testDataDirOverride = originalOverride }()
 
-	// Save some wallets (saveRecentWallets creates directories as needed)
-	testWallets := []string{"/path/a.db", "/path/b.db"}
-	saveRecentWallets(testWallets)
+	// Save some wallets using the new data format
+	testWallets := []recentWalletData{
+		{Path: "/path/a.db", AddressPrefix: "dero1aaa...", LastUsed: 1000, Network: "mainnet"},
+		{Path: "/path/b.db", AddressPrefix: "dero1bbb...", LastUsed: 2000, Network: "mainnet"},
+	}
+	saveRecentWalletsData(testWallets)
 
 	// Load them back
-	loaded := loadRecentWallets()
+	loaded := loadRecentWalletsData()
 
 	if len(loaded) != 2 {
 		t.Errorf("Expected 2 wallets, got %d", len(loaded))
 	}
 
-	if loaded[0] != "/path/a.db" || loaded[1] != "/path/b.db" {
-		t.Errorf("Loaded wallets don't match: %v", loaded)
+	if loaded[0].Path != "/path/a.db" || loaded[1].Path != "/path/b.db" {
+		t.Errorf("Loaded wallet paths don't match: %v", loaded)
+	}
+
+	if loaded[0].Network != "mainnet" || loaded[1].Network != "mainnet" {
+		t.Errorf("Loaded wallet networks don't match: %v", loaded)
 	}
 }
 

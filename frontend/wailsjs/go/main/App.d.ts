@@ -5,8 +5,6 @@ import {main} from '../models';
 
 export function AddAllowedHost(arg1:string):Promise<Record<string, any>>;
 
-export function AddBookmark(arg1:string,arg2:string):Promise<Record<string, any>>;
-
 export function AddContact(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
 export function AddSearchExclusion(arg1:string):Promise<Record<string, any>>;
@@ -20,8 +18,6 @@ export function BatchDeployToSimulator(arg1:string):Promise<Record<string, any>>
 export function BatchPrefetchFavorites(arg1:Array<Record<string, any>>,arg2:number):Promise<Record<string, any>>;
 
 export function BuildRating(arg1:number,arg2:number):Promise<Record<string, any>>;
-
-export function BuildTextIndex():Promise<void>;
 
 export function CallXSWD(arg1:string):Promise<Record<string, any>>;
 
@@ -67,6 +63,8 @@ export function ConnectXSWD():Promise<Record<string, any>>;
 
 export function ConstructFromShards(arg1:string):Promise<Record<string, any>>;
 
+export function ConsumeLaunchURL():Promise<string>;
+
 export function CreatePaymentRequest(arg1:number,arg2:string):Promise<Record<string, any>>;
 
 export function CreateWallet(arg1:string,arg2:string):Promise<Record<string, any>>;
@@ -103,15 +101,9 @@ export function DiffFiles(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function DiffSCIDs(arg1:string,arg2:string):Promise<Record<string, any>>;
 
-export function DisableNodeMining():Promise<Record<string, any>>;
-
 export function DisconnectXSWD():Promise<Record<string, any>>;
 
 export function DislikeTELAApp(arg1:string):Promise<Record<string, any>>;
-
-export function DownloadDerodFromGitHub():Promise<Record<string, any>>;
-
-export function EnableNodeMining(arg1:string):Promise<Record<string, any>>;
 
 export function EnsureGnomonRunning():Promise<Record<string, any>>;
 
@@ -122,8 +114,6 @@ export function EstimateSCGas(arg1:string,arg2:string,arg3:Array<Record<string, 
 export function EstimateSimulatorGas(arg1:string):Promise<Record<string, any>>;
 
 export function EstimateSyncTime():Promise<Record<string, any>>;
-
-export function ExecuteSCFunction(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
 export function ExecuteSCViaXSWD(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
@@ -187,8 +177,6 @@ export function GetBlockExtended(arg1:string):Promise<Record<string, any>>;
 
 export function GetBlockchainStats():Promise<Record<string, any>>;
 
-export function GetBookmarks():Promise<Array<Record<string, string>>>;
-
 export function GetCachedApps():Promise<Record<string, any>>;
 
 export function GetClonePath():Promise<string>;
@@ -227,8 +215,6 @@ export function GetDiscoveredApps():Promise<Record<string, any>>;
 
 export function GetEpochAddressInfo():Promise<Record<string, any>>;
 
-export function GetEpochDeveloperAddress():Promise<string>;
-
 export function GetEpochStats():Promise<Record<string, any>>;
 
 export function GetEpochSupportingApps():Promise<Record<string, any>>;
@@ -236,8 +222,6 @@ export function GetEpochSupportingApps():Promise<Record<string, any>>;
 export function GetFileInfo(arg1:string):Promise<Record<string, any>>;
 
 export function GetGasEstimate(arg1:string):Promise<Record<string, any>>;
-
-export function GetGetWorkEndpoint():Promise<Record<string, any>>;
 
 export function GetGnomonAutostart():Promise<boolean>;
 
@@ -249,9 +233,7 @@ export function GetHistory():Promise<Array<string>>;
 
 export function GetINDEXInfo(arg1:string):Promise<Record<string, any>>;
 
-export function GetIntegratedAddress(arg1:string):Promise<Record<string, any>>;
-
-export function GetLatestDerodRelease():Promise<Record<string, any>>;
+export function GetIntegratedAddress(arg1:number,arg2:string,arg3:number):Promise<Record<string, any>>;
 
 export function GetLiveStats():Promise<Record<string, any>>;
 
@@ -263,15 +245,13 @@ export function GetMODsByClass(arg1:string):Promise<Record<string, any>>;
 
 export function GetMODsList():Promise<Record<string, any>>;
 
-export function GetManualDerodInstructions():Promise<Record<string, any>>;
-
 export function GetMempoolExtended(arg1:number):Promise<Record<string, any>>;
 
 export function GetMempoolStats():Promise<Record<string, any>>;
 
 export function GetMempoolTransactions():Promise<Record<string, any>>;
 
-export function GetMiningAddress():Promise<Record<string, any>>;
+export function GetMetadataFiles(arg1:string):Promise<Record<string, any>>;
 
 export function GetMiningEarningsSummary():Promise<Record<string, any>>;
 
@@ -297,8 +277,6 @@ export function GetNodeConfig():Promise<Record<string, any>>;
 
 export function GetNodeLogs(arg1:number):Promise<Record<string, any>>;
 
-export function GetNodeMiningConfig():Promise<Record<string, any>>;
-
 export function GetNodeStatus():Promise<Record<string, any>>;
 
 export function GetOfflineCacheStats():Promise<Record<string, any>>;
@@ -306,8 +284,6 @@ export function GetOfflineCacheStats():Promise<Record<string, any>>;
 export function GetPermissionTypes():Promise<Array<Record<string, any>>>;
 
 export function GetPersonalTransfers(arg1:Record<string, any>):Promise<Record<string, any>>;
-
-export function GetRandomAddress():Promise<Record<string, any>>;
 
 export function GetRandomSmartContracts(arg1:number):Promise<Record<string, any>>;
 
@@ -433,8 +409,6 @@ export function IsEpochActive():Promise<boolean>;
 
 export function IsEpochEnabled():Promise<boolean>;
 
-export function IsGitHubCheckAllowed():Promise<boolean>;
-
 export function IsInSimulatorMode():Promise<boolean>;
 
 export function IsRequestAllowed(arg1:string):Promise<Record<string, any>>;
@@ -461,11 +435,13 @@ export function MoveFile(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function Navigate(arg1:string):Promise<Record<string, any>>;
 
+export function NotifyWizardComplete():Promise<void>;
+
 export function OmniSearch(arg1:string):Promise<main.SearchResult>;
 
-export function OpenServerInBrowser(arg1:string):Promise<Record<string, any>>;
-
 export function OpenSimulatorTestWallet(arg1:number):Promise<Record<string, any>>;
+
+export function OpenURLInBrowserIfAllowed(arg1:string):Promise<Record<string, any>>;
 
 export function OpenWallet(arg1:string,arg2:string):Promise<Record<string, any>>;
 
@@ -476,6 +452,8 @@ export function ParseRatingForUI(arg1:number):Promise<Record<string, any>>;
 export function ParseSCFunctions(arg1:string):Promise<Record<string, any>>;
 
 export function PrefetchApp(arg1:string):Promise<Record<string, any>>;
+
+export function PreflightExpand(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function PrepareMODInstall(arg1:string,arg2:string):Promise<Record<string, any>>;
 
@@ -488,6 +466,8 @@ export function QuickDeployFile(arg1:string,arg2:string,arg3:string):Promise<Rec
 export function RateTELA(arg1:string,arg2:number):Promise<Record<string, any>>;
 
 export function RateTELAApp(arg1:string,arg2:number):Promise<Record<string, any>>;
+
+export function ReadTextFile(arg1:string):Promise<Record<string, any>>;
 
 export function RebuildTagIndex():Promise<Record<string, any>>;
 
@@ -533,7 +513,7 @@ export function RevokeAppPermissions(arg1:string):Promise<Record<string, any>>;
 
 export function RevokeXSWDConnection(arg1:string):Promise<Record<string, any>>;
 
-export function RewindChain(arg1:number):Promise<Record<string, any>>;
+export function SaveBinaryFileWithDialog(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
 export function SaveFileWithDialog(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
@@ -554,10 +534,6 @@ export function SearchMyContent():Promise<Record<string, any>>;
 export function SearchMyDOCs(arg1:string):Promise<Record<string, any>>;
 
 export function SearchMyINDEXes():Promise<Record<string, any>>;
-
-export function SearchSCByLine(arg1:string):Promise<Record<string, any>>;
-
-export function SearchTextIndex(arg1:string):Promise<Array<string>>;
 
 export function SelectFile():Promise<string>;
 
@@ -585,15 +561,11 @@ export function SetGnomonAutostart(arg1:boolean):Promise<Record<string, any>>;
 
 export function SetMaxServers(arg1:number):Promise<Record<string, any>>;
 
-export function SetMiningAddress(arg1:string):Promise<Record<string, any>>;
-
 export function SetNetworkMode(arg1:string):Promise<Record<string, any>>;
 
 export function SetNodeAdvancedConfig(arg1:boolean,arg2:number,arg3:string):Promise<Record<string, any>>;
 
 export function SetNodeConfig(arg1:Record<string, any>):Promise<Record<string, any>>;
-
-export function SetNodeMiningConfig(arg1:boolean,arg2:string,arg3:number):Promise<Record<string, any>>;
 
 export function SetNodePorts(arg1:number,arg2:number):Promise<Record<string, any>>;
 
@@ -623,6 +595,8 @@ export function ShutdownTELAServers():Promise<Record<string, any>>;
 
 export function SignMessage(arg1:string):Promise<Record<string, any>>;
 
+export function SplitIntegratedAddress(arg1:string):Promise<Record<string, any>>;
+
 export function StartBlockMonitoring():Promise<void>;
 
 export function StartEpochAddressMonitor():Promise<void>;
@@ -635,8 +609,6 @@ export function StartLocalDevServer(arg1:string):Promise<Record<string, any>>;
 
 export function StartNode(arg1:string):Promise<Record<string, any>>;
 
-export function StartNodeWithMining(arg1:string,arg2:string):Promise<Record<string, any>>;
-
 export function StartNodeWithNetwork(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function StartSimulatorMode():Promise<Record<string, any>>;
@@ -644,6 +616,8 @@ export function StartSimulatorMode():Promise<Record<string, any>>;
 export function StartStatusBroadcast():Promise<void>;
 
 export function StopBlockMonitoring():Promise<void>;
+
+export function StopEpochAddressMonitor():Promise<void>;
 
 export function StopGnomon():Promise<Record<string, any>>;
 
@@ -669,9 +643,9 @@ export function SyncWallet():Promise<Record<string, any>>;
 
 export function TestAndConnectEndpoint(arg1:string):Promise<Record<string, any>>;
 
-export function Transfer(arg1:string,arg2:number,arg3:string):Promise<Record<string, any>>;
+export function Transfer(arg1:string,arg2:number,arg3:string,arg4:number):Promise<Record<string, any>>;
 
-export function TransferToken(arg1:string,arg2:string,arg3:number,arg4:string):Promise<Record<string, any>>;
+export function TransferToken(arg1:string,arg2:string,arg3:number,arg4:string,arg5:number):Promise<Record<string, any>>;
 
 export function UnsubscribeFromEvents():Promise<void>;
 
@@ -688,6 +662,8 @@ export function UseSimulatorWallet():Promise<Record<string, any>>;
 export function ValidateProof(arg1:string):Promise<Record<string, any>>;
 
 export function ValidateProofFull(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function ValidateSCCode(arg1:string):Promise<Record<string, any>>;
 
 export function ValidateSenderProof(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<Record<string, any>>;
 

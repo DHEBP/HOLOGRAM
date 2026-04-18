@@ -4,6 +4,14 @@ import { CallXSWD } from '../../../wailsjs/go/main/App.js';
 // Villager Smart Contract ID (Mainnet)
 let VILLAGER_SCID = 'f0b29081c1ed35fe942cb3402cd9d7bf0cf27639201bbc96223bdc99c4c6aa9f';
 
+/**
+ * Get the current Villager smart contract ID
+ * @returns {string} The SCID for the Villager avatar contract
+ */
+export function getVillagerSCID() {
+    return VILLAGER_SCID;
+}
+
 // Empty avatar string (576 'z' characters = all transparent pixels)
 const EMPTY_AVATAR = 'z'.repeat(576);
 
@@ -124,20 +132,6 @@ export async function getAvatarUrl(address, size = 40) {
 }
 
 /**
- * Preload avatar for an address (useful for prefetching)
- * @param {string} address - Wallet address
- * @param {number} size - Size to preload (default: 40)
- */
-export async function preloadAvatar(address, size = 40) {
-    if (!address) return;
-    try {
-        await getAvatarUrl(address, size);
-    } catch (error) {
-        console.error('Failed to preload avatar:', error);
-    }
-}
-
-/**
  * Clear avatar cache for an address
  * @param {string} address - Wallet address (optional, clears all if not provided)
  */
@@ -163,25 +157,5 @@ export function clearAvatarCache(address = null) {
         avatarPixelCache.clear();
         VillagerIdenticon.clearCache();
     }
-}
-
-/**
- * Set the Villager smart contract ID
- * @param {string} scid - Smart contract ID
- */
-export function setVillagerSCID(scid) {
-    if (typeof scid === 'string' && scid.length === 64) {
-        VILLAGER_SCID = scid;
-    } else {
-        console.warn('Invalid Villager SCID:', scid);
-    }
-}
-
-/**
- * Get the current Villager smart contract ID
- * @returns {string} - Smart contract ID
- */
-export function getVillagerSCID() {
-    return VILLAGER_SCID;
 }
 

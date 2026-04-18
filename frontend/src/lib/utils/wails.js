@@ -38,25 +38,3 @@ export function waitForWails(timeout = 5000, interval = 50) {
   });
 }
 
-/**
- * Check if Wails Go bindings are currently available.
- * Use this for synchronous checks without waiting.
- * 
- * @returns {boolean}
- */
-export function isWailsReady() {
-  return !!(window['go']?.['main']?.['App']);
-}
-
-/**
- * Safely call a Wails backend function, waiting for runtime if needed.
- * 
- * @param {Function} fn - The Wails function to call
- * @param {...any} args - Arguments to pass to the function
- * @returns {Promise<any>}
- */
-export async function safeWailsCall(fn, ...args) {
-  await waitForWails();
-  return fn(...args);
-}
-

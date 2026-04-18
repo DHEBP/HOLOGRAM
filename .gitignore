@@ -48,11 +48,27 @@ datashards/
 # Checksum files
 *.md5
 
-# Internal documentation (for development, not for peer review)
-docs/
+# Internal documentation (ignored by default; allowlisted docs may be committed)
+docs/*
+!docs/ARCHITECTURE.md
+!docs/DESIGN-SYSTEM-RULEBOOK.md
 
 # Compiled binaries (should be built, not committed)
 TELA-Browser-Wails
 
 # Reference projects (not part of HOLOGRAM, kept locally for reference)
 tela-cli/
+
+# MTP cache files (runtime artifacts, not source)
+*.mtp-cache.json
+
+# Local simulator/runtime sandboxes
+/testnet_simulator/
+/mtp-anchor/
+/mtp-anchor
+
+# Local agent/IDE artifacts
+/.cursor/
+
+# Local compiled app artifact
+/HOLOGRAM
