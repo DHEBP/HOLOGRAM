@@ -236,5 +236,6 @@ HOLOGRAM/
 ---
 
 **Version:** 1.0.0  
-**Status:** Production Ready  
-**Last Updated:** March 2026
+**Status:** Early public release — feature-complete, bug reports welcome  
+**Released:** April 18, 2026
+**Last Updated:** April 18, 2026

@@ -7,9 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.0.0] - 2026-04-16
+## [1.0.0] - 2026-04-18
 
-First public release.
+First public release
 
 ### Added (post-RC)
 - `hologram-explorer-search` message handler — TELA apps can invoke Explorer searches
