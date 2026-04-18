@@ -235,6 +235,12 @@ HOLOGRAM/
 
 ---
 
+## Disclaimer
+
+HOLOGRAM is experimental software — use at your own risk. Always back up your seed phrase and test with small amounts first. See [LICENSE](LICENSE) for full terms.
+
+---
+
 **Version:** 1.0.0  
 **Status:** Early public release — feature-complete, bug reports welcome  
 **Released:** April 18, 2026
