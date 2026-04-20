@@ -38,6 +38,10 @@ export function CallXSWD(arg1) {
   return window['go']['main']['App']['CallXSWD'](arg1);
 }
 
+export function CancelRegistration() {
+  return window['go']['main']['App']['CancelRegistration']();
+}
+
 export function CaptureSCState(arg1) {
   return window['go']['main']['App']['CaptureSCState'](arg1);
 }
@@ -594,6 +598,10 @@ export function GetRecentWalletsWithInfo() {
   return window['go']['main']['App']['GetRecentWalletsWithInfo']();
 }
 
+export function GetRegistrationStatus() {
+  return window['go']['main']['App']['GetRegistrationStatus']();
+}
+
 export function GetRingMembers(arg1) {
   return window['go']['main']['App']['GetRingMembers'](arg1);
 }
@@ -948,6 +956,10 @@ export function RefreshTestWalletBalance(arg1) {
 
 export function RefreshWatchedSCs() {
   return window['go']['main']['App']['RefreshWatchedSCs']();
+}
+
+export function RegisterWallet() {
+  return window['go']['main']['App']['RegisterWallet']();
 }
 
 export function Reload() {

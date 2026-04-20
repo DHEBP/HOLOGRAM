@@ -1,7 +1,7 @@
 <script>
   import { walletState, appState, settingsState, saveSetting, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents, GetRegistrationStatus, RegisterWallet, CancelRegistration } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { 
     Copy, ArrowUp, ArrowDown, ArrowLeftRight,
@@ -146,6 +146,16 @@
   // ============================================
   let syncStatus = null; // { synced, walletHeight, daemonHeight, behindBlocks }
   let isSyncing = false;
+  
+  // ============================================
+  // REGISTRATION STATUS
+  // ============================================
+  let registrationStatus = null; // { isRegistered, registrationHeight, registrationProgress, hashCount, elapsedSeconds }
+  let isRegistering = false;
+  let registrationHashCount = 0;
+  let registrationElapsed = 0;
+  let registrationPending = false; // TX sent, waiting for blockchain confirmation
+  let registrationTxid = '';
   
   // ============================================
   // ADDRESS BOOK STATE
@@ -350,6 +360,76 @@
       EventsOn('wallet:daemon_connection_warning', (data) => {
         console.warn('[WALLET] Daemon connection warning:', data);
       });
+      
+      // Listen for wallet unregistered status (new wallets)
+      EventsOn('wallet:unregistered', (data) => {
+        if (data?.message) {
+          toast.info(data.message);
+        }
+        // Refresh registration status
+        checkRegistrationStatus();
+      });
+      
+      // Listen for registration events
+      EventsOn('wallet:registration_started', (data) => {
+        isRegistering = true;
+        registrationHashCount = 0;
+        registrationElapsed = 0;
+        if (data?.message) {
+          toast.info(data.message);
+        }
+      });
+      
+      EventsOn('wallet:registration_progress', (data) => {
+        if (data) {
+          registrationHashCount = data.hashCount || 0;
+          registrationElapsed = data.elapsed || 0;
+        }
+      });
+      
+      EventsOn('wallet:registration_pending', (data) => {
+        // TX sent, waiting for blockchain confirmation
+        isRegistering = false; // PoW is done
+        registrationPending = true; // Now waiting for confirmation
+        registrationHashCount = 0;
+        registrationElapsed = 0;
+        if (data?.txid) registrationTxid = data.txid;
+        if (data?.message) {
+          toast.info(data.message);
+        }
+      });
+      
+      EventsOn('wallet:registration_complete', async (data) => {
+        isRegistering = false;
+        registrationPending = false;
+        registrationHashCount = 0;
+        registrationElapsed = 0;
+        registrationTxid = '';
+        if (data?.message) {
+          toast.success(data.message);
+        }
+        // Full refresh after registration - status, balance, sync
+        await checkRegistrationStatus();
+        await refreshBalance(true);
+      });
+      
+      EventsOn('wallet:registration_failed', (data) => {
+        isRegistering = false;
+        registrationPending = false;
+        registrationTxid = '';
+        if (data?.error) {
+          toast.error(`Registration failed: ${data.error}`);
+        }
+      });
+      
+      EventsOn('wallet:registration_cancelled', (data) => {
+        isRegistering = false;
+        registrationPending = false;
+        registrationTxid = '';
+        if (data?.message) {
+          toast.info(data.message);
+        }
+      });
 
       // Listen for network mode changes
       EventsOn('network-mode-changed', async () => {
@@ -384,6 +464,13 @@
     EventsOff('network-mode-changed');
     EventsOff('wallet:sync_warning');
     EventsOff('wallet:daemon_connection_warning');
+    EventsOff('wallet:unregistered');
+    EventsOff('wallet:registration_started');
+    EventsOff('wallet:registration_progress');
+    EventsOff('wallet:registration_pending');
+    EventsOff('wallet:registration_complete');
+    EventsOff('wallet:registration_failed');
+    EventsOff('wallet:registration_cancelled');
     UnsubscribeFromEvents();
     // Clean up section navigation listener
     if (window._walletNavigateHandler) {
@@ -646,11 +733,67 @@
     // Force sync when user manually refreshes
     await refreshBalance(true);
     await loadTransactionHistory();
+    await checkRegistrationStatus();
     
     if (syncStatus && !syncStatus.synced && syncStatus.behindBlocks > 0) {
       toast.info(`Syncing: ${syncStatus.behindBlocks} blocks behind`);
     } else {
       toast.success('Wallet refreshed');
+    }
+  }
+  
+  // ============================================
+  // REGISTRATION FUNCTIONS
+  // ============================================
+  async function checkRegistrationStatus() {
+    try {
+      const result = await GetRegistrationStatus();
+      if (result.success) {
+        registrationStatus = {
+          isRegistered: result.isRegistered,
+          registrationHeight: result.registrationHeight,
+          registrationProgress: result.registrationProgress,
+          hashCount: result.hashCount,
+          elapsedSeconds: result.elapsedSeconds,
+          message: result.message
+        };
+        isRegistering = result.registrationProgress || false;
+        if (result.hashCount) registrationHashCount = result.hashCount;
+        if (result.elapsedSeconds) registrationElapsed = result.elapsedSeconds;
+      }
+    } catch (e) {
+      console.error('Failed to check registration status:', e);
+    }
+  }
+  
+  async function startRegistration() {
+    try {
+      const result = await RegisterWallet();
+      if (result.success) {
+        // Don't show toast here - the wallet:registration_started event will show one
+        isRegistering = true;
+        registrationHashCount = 0;
+        registrationElapsed = 0;
+      } else {
+        toast.error(result.error || 'Failed to start registration');
+      }
+    } catch (e) {
+      console.error('Failed to start registration:', e);
+      toast.error('Failed to start registration');
+    }
+  }
+  
+  async function cancelRegistration() {
+    try {
+      const result = await CancelRegistration();
+      if (result.success) {
+        toast.info(result.message);
+        isRegistering = false;
+      } else {
+        toast.error(result.error || 'Failed to cancel registration');
+      }
+    } catch (e) {
+      console.error('Failed to cancel registration:', e);
     }
   }
   
@@ -695,6 +838,7 @@
         
         await refreshBalance();
         await loadTransactionHistory();
+        await checkRegistrationStatus();
         dashboardLoading = false;
         startPolling();
         loadWalletPath();
@@ -1549,6 +1693,53 @@
               </div>
             </div>
           {:else}
+          <!-- Registration Status Banner (for new wallets) -->
+          {#if (registrationStatus && !registrationStatus.isRegistered) || registrationPending}
+            <div class="registration-banner" class:pending={registrationPending}>
+              <div class="registration-banner-content">
+                {#if registrationPending}
+                  <Loader2 size={18} class="registration-icon spin" />
+                {:else}
+                  <AlertTriangle size={18} class="registration-icon" />
+                {/if}
+                <div class="registration-text">
+                  {#if registrationPending}
+                    <strong>Registration Pending</strong>
+                    <span>TX broadcast successfully. Waiting for blockchain confirmation...</span>
+                  {:else}
+                    <strong>New Wallet</strong>
+                    <span>Your address isn't on-chain yet. Receive DERO to auto-register, or register manually via PoW.</span>
+                  {/if}
+                </div>
+              </div>
+              {#if isRegistering}
+                <div class="registration-progress">
+                  <div class="registration-stats">
+                    <Loader2 size={14} class="spin" />
+                    <span>Registering... {registrationHashCount.toLocaleString()} hashes</span>
+                    {#if registrationElapsed > 0}
+                      <span class="registration-time">({Math.round(registrationElapsed)}s)</span>
+                    {/if}
+                  </div>
+                  <button class="btn btn-sm btn-outline" on:click={cancelRegistration}>
+                    Cancel
+                  </button>
+                </div>
+              {:else if registrationPending}
+                <div class="registration-progress">
+                  <div class="registration-stats">
+                    <Loader2 size={14} class="spin" />
+                    <span>Confirming on-chain...</span>
+                  </div>
+                </div>
+              {:else}
+                <button class="btn btn-sm btn-outline" on:click={startRegistration}>
+                  Register Now
+                </button>
+              {/if}
+            </div>
+          {/if}
+          
           <!-- Balance Panel -->
           <div class="cmd-stats-panel">
             <div class="cmd-panel-header">
@@ -3408,6 +3599,87 @@
     font-family: var(--font-mono);
     resize: vertical;
     min-height: 100px;
+  }
+  
+  /* ============================================
+     REGISTRATION BANNER STYLES
+     ============================================ */
+  
+  .registration-banner {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+    padding: var(--s-4);
+    background: linear-gradient(135deg, rgba(251, 191, 36, 0.1) 0%, rgba(245, 158, 11, 0.05) 100%);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
+  }
+  
+  .registration-banner.pending {
+    background: linear-gradient(135deg, rgba(34, 211, 238, 0.1) 0%, rgba(6, 182, 212, 0.05) 100%);
+    border-color: rgba(34, 211, 238, 0.3);
+  }
+  
+  .registration-banner.pending :global(.registration-icon) {
+    color: var(--cyan-400);
+  }
+  
+  .registration-banner.pending .registration-text strong {
+    color: var(--cyan-300);
+  }
+  
+  .registration-banner-content {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-3);
+  }
+  
+  .registration-banner :global(.registration-icon) {
+    color: var(--amber-400);
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  
+  .registration-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  
+  .registration-text strong {
+    color: var(--amber-300);
+    font-size: 13px;
+  }
+  
+  .registration-text span {
+    color: var(--text-2);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  
+  .registration-progress {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: var(--s-2);
+    border-top: 1px solid rgba(251, 191, 36, 0.2);
+  }
+  
+  .registration-stats {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  
+  .registration-stats :global(.spin) {
+    color: var(--amber-400);
+  }
+  
+  .registration-time {
+    color: var(--text-4);
   }
   
   /* ============================================

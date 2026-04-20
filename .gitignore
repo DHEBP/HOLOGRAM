@@ -38,6 +38,7 @@ mainnet/*.db.bak
 
 # Cache and temporary files
 datashards/
+.gocache/
 *.tmp
 *.temp
 

@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.2] - 2026-04-20
+
+Wallet registration and expanded platform support.
+
+### Added
+- Manual PoW-based wallet registration — new wallets can register on-chain without waiting for incoming DERO
+- Registration progress UI with hash count, elapsed time, and cancel option
+- Blockchain confirmation polling after registration TX broadcast
+- Linux ARM64 (aarch64) binary for Raspberry Pi and ARM servers
+
+### Changed
+- PoW registration uses all available CPU cores (GOMAXPROCS-1) for faster completion
+- Release artifacts renamed from `Hologram-*` to `HOLOGRAM-*` for brand consistency
+
+### Fixed
+- Duplicate toast notifications when starting wallet registration
+
+---
+
 ## [1.0.1] - 2026-04-20
 
 Cross-platform binaries and release automation.
