@@ -241,7 +241,7 @@ HOLOGRAM is experimental software — use at your own risk. Always back up your 
 
 ---
 
-**Version:** 1.0.0  
+**Version:** 1.0.1  
 **Status:** Early public release — feature-complete, bug reports welcome  
 **Released:** April 18, 2026
 **Last Updated:** April 18, 2026

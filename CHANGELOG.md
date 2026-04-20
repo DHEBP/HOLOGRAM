@@ -7,6 +7,21 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.1] - 2026-04-20
+
+Cross-platform binaries and release automation.
+
+### Added
+- Pre-built binaries for Linux (amd64) and Windows (amd64) — closes the gap from v1.0.0 release notes
+- GitHub Actions release workflow (`.github/workflows/release.yml`) — tag-triggered cross-platform builds
+- Universal macOS binary (Intel + Apple Silicon in one file)
+- SHA256 checksums for all release artifacts
+
+### Changed
+- Added plain-language disclaimer section to README reinforcing MIT "AS IS" terms for wallet-adjacent software
+
+---
+
 ## [1.0.0] - 2026-04-18
 
 First public release
