@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -274,11 +275,22 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 		select {
 		case err := <-syncDone:
 			if err != nil {
-				a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v — balance may be outdated until sync completes", err))
-				if a.ctx != nil {
-					runtime.EventsEmit(a.ctx, "wallet:sync_warning", map[string]interface{}{
-						"message": "Initial sync failed. Balance may be outdated until sync completes.",
-					})
+				// Check if this is an "Account Unregistered" error - expected for brand new wallets
+				errStr := strings.ToLower(err.Error())
+				if strings.Contains(errStr, "unregistered") || strings.Contains(errStr, "-32098") {
+					a.logToConsole("[INFO] Wallet address not yet registered on-chain — this is normal for new wallets")
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "wallet:unregistered", map[string]interface{}{
+							"message": "New wallet — your address will be registered on-chain when you receive your first DERO, or you can register manually.",
+						})
+					}
+				} else {
+					a.logToConsole(fmt.Sprintf("[WARN] Initial wallet sync failed: %v — balance may be outdated until sync completes", err))
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "wallet:sync_warning", map[string]interface{}{
+							"message": "Initial sync failed. Balance may be outdated until sync completes.",
+						})
+					}
 				}
 			} else {
 				a.logToConsole("[OK] Initial wallet sync completed")
@@ -3095,5 +3107,312 @@ func (a *App) VerifySignature(signedData string) map[string]interface{} {
 		"valid":   true,
 		"signer":  signer.String(),
 		"message": string(message),
+	}
+}
+
+// ============================================
+// WALLET REGISTRATION FUNCTIONS
+// ============================================
+
+// registrationState tracks the PoW registration process
+type registrationState struct {
+	sync.RWMutex
+	inProgress   bool
+	hashCount    uint64
+	startTime    time.Time
+	cancelCh     chan struct{}
+}
+
+var regState = &registrationState{}
+
+// GetRegistrationStatus returns whether the wallet is registered on-chain
+// In DERO, a wallet address doesn't exist on the blockchain until it either:
+// 1. Receives its first transaction (automatic registration)
+// 2. Submits a PoW registration transaction (manual registration)
+func (a *App) GetRegistrationStatus() map[string]interface{} {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+
+	wallet := walletManager.wallet
+
+	// Get registration topoheight - negative means not registered
+	regHeight := wallet.Get_Registration_TopoHeight()
+	isRegistered := regHeight >= 0
+
+	// Check if registration is in progress
+	regState.RLock()
+	inProgress := regState.inProgress
+	hashCount := regState.hashCount
+	var elapsedSeconds float64
+	if inProgress {
+		elapsedSeconds = time.Since(regState.startTime).Seconds()
+	}
+	regState.RUnlock()
+
+	result := map[string]interface{}{
+		"success":              true,
+		"isRegistered":         isRegistered,
+		"registrationHeight":   regHeight,
+		"registrationProgress": inProgress,
+	}
+
+	if inProgress {
+		result["hashCount"] = hashCount
+		result["elapsedSeconds"] = elapsedSeconds
+		if elapsedSeconds > 0 {
+			result["hashRate"] = float64(hashCount) / elapsedSeconds
+		}
+	}
+
+	if !isRegistered {
+		result["message"] = "Wallet address not yet on-chain. You can either receive DERO (auto-registers) or manually register via PoW."
+	} else {
+		result["message"] = "Wallet is registered on-chain"
+	}
+
+	return result
+}
+
+// RegisterWallet starts the PoW registration process for an unregistered wallet
+// This is a CPU-intensive process that can take up to 120 minutes.
+// The wallet must find a registration TX hash that starts with 3 zero bytes.
+func (a *App) RegisterWallet() map[string]interface{} {
+	walletManager.RLock()
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		walletManager.RUnlock()
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet is currently open",
+		}
+	}
+	wallet := walletManager.wallet
+	walletManager.RUnlock()
+
+	// Check if already registered
+	if wallet.Get_Registration_TopoHeight() >= 0 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Wallet is already registered on-chain",
+		}
+	}
+
+	// Check if registration is already in progress
+	regState.Lock()
+	if regState.inProgress {
+		regState.Unlock()
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Registration is already in progress",
+		}
+	}
+
+	// Start registration
+	regState.inProgress = true
+	regState.hashCount = 0
+	regState.startTime = time.Now()
+	regState.cancelCh = make(chan struct{})
+	cancelCh := regState.cancelCh
+	regState.Unlock()
+
+	a.logToConsole("[REGISTER] Starting PoW registration process...")
+	a.logToConsole("[REGISTER] This can take up to 120 minutes. Please be patient.")
+
+	// Emit event to frontend
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "wallet:registration_started", map[string]interface{}{
+			"message": "Registration started. This can take up to 120 minutes...",
+		})
+	}
+
+	// Run registration in background using multiple CPU threads
+	go func() {
+		defer func() {
+			regState.Lock()
+			regState.inProgress = false
+			regState.Unlock()
+		}()
+
+		numThreads := goruntime.GOMAXPROCS(0) - 1 // Use all available cores minus one, like Engram
+		if numThreads < 2 {
+			numThreads = 2 // Minimum 2 threads
+		}
+		a.logToConsole(fmt.Sprintf("[REGISTER] Starting PoW with %d threads (CPU cores: %d)", numThreads, goruntime.NumCPU()))
+		doneCh := make(chan struct{})   // Signals that registration is complete
+		var doneOnce sync.Once          // Ensure we only complete once
+		var wg sync.WaitGroup
+
+		for i := 0; i < numThreads; i++ {
+			wg.Add(1)
+			go func(threadID int) {
+				defer wg.Done()
+				for {
+					select {
+					case <-cancelCh:
+						return
+					case <-doneCh:
+						return
+					default:
+						// Check if wallet is still open
+						walletManager.RLock()
+						w := walletManager.wallet
+						walletManager.RUnlock()
+						if w == nil {
+							return
+						}
+
+						// Generate a registration TX and check if hash meets difficulty
+						regTx := w.GetRegistrationTX()
+						hash := regTx.GetHash()
+
+						regState.Lock()
+						regState.hashCount++
+						count := regState.hashCount
+						regState.Unlock()
+
+						// Log progress every 10000 hashes
+						if count%10000 == 0 {
+							a.logToConsole(fmt.Sprintf("[REGISTER] PoW progress: %d hashes computed...", count))
+							if a.ctx != nil {
+								runtime.EventsEmit(a.ctx, "wallet:registration_progress", map[string]interface{}{
+									"hashCount": count,
+									"elapsed":   time.Since(regState.startTime).Seconds(),
+								})
+							}
+						}
+
+						// Check if hash meets the difficulty requirement (3 leading zero bytes)
+						if hash[0] == 0 && hash[1] == 0 && hash[2] == 0 {
+							// Found a valid hash! Send the transaction immediately before returning
+							doneOnce.Do(func() {
+								close(doneCh) // Signal other threads to stop
+								
+								a.logToConsole(fmt.Sprintf("[REGISTER] PoW solved! Hash: %x", hash))
+								
+								// Send the transaction RIGHT NOW while we have the valid TX
+								err := w.SendTransaction(regTx)
+								if err != nil {
+									a.logToConsole(fmt.Sprintf("[REGISTER] Failed to broadcast registration TX: %v", err))
+									if a.ctx != nil {
+										runtime.EventsEmit(a.ctx, "wallet:registration_failed", map[string]interface{}{
+											"error": err.Error(),
+										})
+									}
+									return
+								}
+
+								txid := regTx.GetHash().String()
+								a.logToConsole(fmt.Sprintf("[REGISTER] Registration TX sent! TXID: %s", txid))
+								a.logToConsole("[REGISTER] Waiting for blockchain confirmation...")
+								
+								// Emit pending state to frontend
+								if a.ctx != nil {
+									runtime.EventsEmit(a.ctx, "wallet:registration_pending", map[string]interface{}{
+										"txid":    txid,
+										"message": "Registration TX broadcast. Waiting for confirmation...",
+									})
+								}
+								
+								// Poll for confirmation - the TX needs to be included in a block
+								go func() {
+									maxAttempts := 30 // Try for ~90 seconds (30 * 3s)
+									for attempt := 1; attempt <= maxAttempts; attempt++ {
+										time.Sleep(3 * time.Second)
+										
+										// Check if wallet is still open
+										walletManager.RLock()
+										wallet := walletManager.wallet
+										walletManager.RUnlock()
+										if wallet == nil {
+											a.logToConsole("[REGISTER] Wallet closed during confirmation wait")
+											return
+										}
+										
+										// Sync and check registration height
+										_ = wallet.Sync_Wallet_Memory_With_Daemon()
+										regHeight := wallet.Get_Registration_TopoHeight()
+										
+										if regHeight >= 0 {
+											a.logToConsole(fmt.Sprintf("[REGISTER] Registration confirmed at height %d!", regHeight))
+											if a.ctx != nil {
+												runtime.EventsEmit(a.ctx, "wallet:registration_complete", map[string]interface{}{
+													"txid":    txid,
+													"message": "Registration confirmed! Your wallet is now on-chain.",
+												})
+											}
+											return
+										}
+										
+										if attempt%5 == 0 {
+											a.logToConsole(fmt.Sprintf("[REGISTER] Still waiting for confirmation... (attempt %d/%d)", attempt, maxAttempts))
+										}
+									}
+									
+									// If we get here, confirmation didn't happen in time
+									// The TX might still be pending in the mempool
+									a.logToConsole("[REGISTER] Confirmation taking longer than expected. TX is in mempool, will be confirmed soon.")
+									if a.ctx != nil {
+										runtime.EventsEmit(a.ctx, "wallet:registration_complete", map[string]interface{}{
+											"txid":    txid,
+											"message": "Registration TX sent! It may take a few more blocks to confirm.",
+										})
+									}
+								}()
+							})
+							return
+						}
+					}
+				}
+			}(i)
+		}
+
+		// Wait for either completion or cancellation
+		select {
+		case <-doneCh:
+			// Registration completed successfully
+			wg.Wait()
+		case <-cancelCh:
+			wg.Wait()
+			a.logToConsole("[REGISTER] Registration cancelled")
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "wallet:registration_cancelled", map[string]interface{}{
+					"message": "Registration was cancelled",
+				})
+			}
+		}
+	}()
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Registration started in background. This can take up to 120 minutes.",
+	}
+}
+
+// CancelRegistration stops the PoW registration process if it's running
+func (a *App) CancelRegistration() map[string]interface{} {
+	regState.Lock()
+	defer regState.Unlock()
+
+	if !regState.inProgress {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No registration in progress",
+		}
+	}
+
+	close(regState.cancelCh)
+	regState.inProgress = false
+
+	a.logToConsole("[REGISTER] Registration cancelled by user")
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Registration cancelled",
 	}
 }

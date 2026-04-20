@@ -21,6 +21,8 @@ export function BuildRating(arg1:number,arg2:number):Promise<Record<string, any>
 
 export function CallXSWD(arg1:string):Promise<Record<string, any>>;
 
+export function CancelRegistration():Promise<Record<string, any>>;
+
 export function CaptureSCState(arg1:string):Promise<Record<string, any>>;
 
 export function ChangeWalletPassword(arg1:string,arg2:string):Promise<Record<string, any>>;
@@ -299,6 +301,8 @@ export function GetRecentBlocks(arg1:number):Promise<Record<string, any>>;
 
 export function GetRecentWalletsWithInfo():Promise<Array<main.WalletInfo>>;
 
+export function GetRegistrationStatus():Promise<Record<string, any>>;
+
 export function GetRingMembers(arg1:string):Promise<Record<string, any>>;
 
 export function GetSCChangeTimeline(arg1:string):Promise<Record<string, any>>;
@@ -476,6 +480,8 @@ export function RefreshLocalDevServer():Promise<Record<string, any>>;
 export function RefreshTestWalletBalance(arg1:number):Promise<Record<string, any>>;
 
 export function RefreshWatchedSCs():Promise<Record<string, any>>;
+
+export function RegisterWallet():Promise<Record<string, any>>;
 
 export function Reload():Promise<Record<string, any>>;
 
