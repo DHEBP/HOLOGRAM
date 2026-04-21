@@ -265,6 +265,19 @@ func (a *App) startBackgroundServices() {
 
 			a.loadDevSupportStats()
 
+			// Load verbose logging preference (default: on — heartbeat proves
+			// EPOCH is alive while supporting; users who find it noisy can
+			// disable it from the Developer Support settings panel)
+			if a.devSupportWorker != nil {
+				verbose := true
+				if savedSetting, ok := a.settings["dev_support_verbose"]; ok {
+					if v, ok := savedSetting.(bool); ok {
+						verbose = v
+					}
+				}
+				a.devSupportWorker.SetVerboseLogging(verbose)
+			}
+
 			if a.epochHandler == nil {
 				a.epochHandler = NewEpochHandler(a.logToConsole)
 			}

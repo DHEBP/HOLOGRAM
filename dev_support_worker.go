@@ -23,16 +23,18 @@ type DevSupportWorker struct {
 
 	// Configuration
 	enabled        bool          // User setting: is dev support enabled
+	verboseLogging bool          // User setting: log periodic heartbeats to console
 	hashesPerCycle int           // Hashes to compute per cycle (default: 50)
 	cycleInterval  time.Duration // Time between cycles (default: 5 seconds)
 
 	// Runtime state
-	running      bool
-	paused       bool
-	pauseReason  string
-	manualPaused bool   // True when paused by Pause() call (for app support)
-	manualReason string // Reason for manual pause
-	stopChan     chan struct{}
+	running       bool
+	paused        bool
+	pauseReason   string
+	manualPaused  bool   // True when paused by Pause() call (for app support)
+	manualReason  string // Reason for manual pause
+	stopChan      chan struct{}
+	lastHeartbeat time.Time // Last time we logged a heartbeat line
 
 	// Statistics (persisted)
 	stats DevSupportStats
@@ -80,12 +82,14 @@ const (
 	DefaultCycleInterval  = 5 * time.Second
 	DefaultMaxThreads     = 2
 	maxReasonableUptime   = int64(25 * 365 * 24 * 60 * 60) // 25 years
+	heartbeatInterval     = 60 * time.Second               // How often to log EPOCH activity heartbeat
 )
 
 // NewDevSupportWorker creates a new developer support worker
 func NewDevSupportWorker(epochHandler *EpochHandler, logFn func(string)) *DevSupportWorker {
 	return &DevSupportWorker{
 		enabled:        true, // Default ON (opt-out model)
+		verboseLogging: true, // Default ON - heartbeat confirms EPOCH is alive while supporting
 		hashesPerCycle: DefaultHashesPerCycle,
 		cycleInterval:  DefaultCycleInterval,
 		epochHandler:   epochHandler,
@@ -121,6 +125,22 @@ func (w *DevSupportWorker) IsEnabled() bool {
 	w.RLock()
 	defer w.RUnlock()
 	return w.enabled
+}
+
+// SetVerboseLogging enables or disables the periodic heartbeat log line.
+// When false (default), the worker runs silently except for miniblock finds
+// and pause/resume state changes.
+func (w *DevSupportWorker) SetVerboseLogging(verbose bool) {
+	w.Lock()
+	defer w.Unlock()
+	w.verboseLogging = verbose
+}
+
+// IsVerboseLogging returns whether the heartbeat log line is enabled.
+func (w *DevSupportWorker) IsVerboseLogging() bool {
+	w.RLock()
+	defer w.RUnlock()
+	return w.verboseLogging
 }
 
 // IsRunning returns whether the worker is actively running
@@ -300,11 +320,27 @@ func (w *DevSupportWorker) doHashing() {
 	w.stats.MiniBlocksFound += result.Submitted
 	w.stats.LastActive = time.Now()
 	w.stats.UptimeSeconds = sanitizeUptimeSeconds(int64(time.Since(w.stats.SessionStart).Seconds()))
+
+	// Periodic heartbeat so operators can confirm EPOCH is actually hashing.
+	// Logs once per heartbeatInterval, and only when verbose logging is enabled.
+	verbose := w.verboseLogging
+	shouldHeartbeat := verbose && time.Since(w.lastHeartbeat) >= heartbeatInterval
+	if shouldHeartbeat {
+		w.lastHeartbeat = time.Now()
+	}
+	sessionHashes := w.stats.SessionHashes
+	sessionMBs := w.stats.SessionMiniblocks
+	totalMBs := w.stats.MiniBlocksFound
 	w.Unlock()
 
-	// Log miniblock finds
+	if shouldHeartbeat {
+		w.log(fmt.Sprintf("[EPOCH] Heartbeat: session=%s hashes, %d miniblocks submitted (total found: %d)",
+			formatHashCount(sessionHashes), sessionMBs, totalMBs))
+	}
+
+	// Log miniblock finds immediately
 	if result.Submitted > 0 {
-		w.log(fmt.Sprintf("[EPOCH] Developer Support: Found %d miniblock(s)! Total: %d", result.Submitted, w.stats.MiniBlocksFound))
+		w.log(fmt.Sprintf("[EPOCH] Developer Support: Found %d miniblock(s)! Total: %d", result.Submitted, totalMBs))
 	}
 
 	// Trigger callback if set

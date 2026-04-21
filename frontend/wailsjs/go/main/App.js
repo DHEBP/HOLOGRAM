@@ -814,6 +814,10 @@ export function IsDevSupportEnabled() {
   return window['go']['main']['App']['IsDevSupportEnabled']();
 }
 
+export function IsDevSupportVerboseLogging() {
+  return window['go']['main']['App']['IsDevSupportVerboseLogging']();
+}
+
 export function IsEpochActive() {
   return window['go']['main']['App']['IsEpochActive']();
 }
@@ -1112,6 +1116,10 @@ export function SetCypherpunkMode(arg1) {
 
 export function SetDevSupportEnabled(arg1) {
   return window['go']['main']['App']['SetDevSupportEnabled'](arg1);
+}
+
+export function SetDevSupportVerboseLogging(arg1) {
+  return window['go']['main']['App']['SetDevSupportVerboseLogging'](arg1);
 }
 
 export function SetEpochConfig(arg1, arg2) {

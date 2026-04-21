@@ -283,6 +283,34 @@ func (a *App) GetDevSupportStats() map[string]interface{} {
 	}
 }
 
+// SetDevSupportVerboseLogging toggles periodic EPOCH heartbeat log lines.
+// When true, a one-line heartbeat is written to the console once per minute
+// while the worker is actively hashing. When false (default), the worker
+// only logs miniblock finds and state transitions.
+func (a *App) SetDevSupportVerboseLogging(verbose bool) map[string]interface{} {
+	if a.devSupportWorker != nil {
+		a.devSupportWorker.SetVerboseLogging(verbose)
+	}
+	a.settings["dev_support_verbose"] = verbose
+	a.logToConsole(fmt.Sprintf("[EPOCH] Verbose logging %s", map[bool]string{true: "enabled", false: "disabled"}[verbose]))
+	return map[string]interface{}{
+		"success": true,
+		"verbose": verbose,
+	}
+}
+
+// IsDevSupportVerboseLogging returns whether heartbeat logging is enabled.
+// Defaults to true so supporters can see proof of life in the console; they
+// can disable it from the Developer Support settings if they find it noisy.
+func (a *App) IsDevSupportVerboseLogging() bool {
+	if savedSetting, ok := a.settings["dev_support_verbose"]; ok {
+		if v, ok := savedSetting.(bool); ok {
+			return v
+		}
+	}
+	return true
+}
+
 // IsDevSupportEnabled returns whether developer support is enabled
 func (a *App) IsDevSupportEnabled() bool {
 	if savedSetting, ok := a.settings["dev_support_enabled"]; ok {

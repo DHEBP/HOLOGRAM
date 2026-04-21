@@ -409,6 +409,8 @@ export function IsAppCachedOffline(arg1:string):Promise<Record<string, any>>;
 
 export function IsDevSupportEnabled():Promise<boolean>;
 
+export function IsDevSupportVerboseLogging():Promise<boolean>;
+
 export function IsEpochActive():Promise<boolean>;
 
 export function IsEpochEnabled():Promise<boolean>;
@@ -558,6 +560,8 @@ export function SetContentFilterConfig(arg1:boolean,arg2:number,arg3:boolean,arg
 export function SetCypherpunkMode(arg1:boolean):Promise<Record<string, any>>;
 
 export function SetDevSupportEnabled(arg1:boolean):Promise<Record<string, any>>;
+
+export function SetDevSupportVerboseLogging(arg1:boolean):Promise<Record<string, any>>;
 
 export function SetEpochConfig(arg1:number,arg2:number):Promise<Record<string, any>>;
 
