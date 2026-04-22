@@ -217,10 +217,11 @@ func (g *GnomonClient) Start(endpoint string, network string) error {
 		height,
 		endpoint,
 		"daemon",
+		false, // mbllookup
 		false, // closeondisconnect
-		false, // runtime mode
 		config,
 		exclusions,
+		false, // storeintegrators (new in feat-addscidtoindex-wsserver)
 	)
 
 	// Initialize logging
@@ -557,6 +558,32 @@ func (g *GnomonClient) LatestInteractionHeight(scid string) int64 {
 		}
 	}
 	return max
+}
+
+// AddSCIDToIndex manually indexes a SCID that doesn't match the default search filter.
+// Implements civilware's feat-addscidtoindex-wsserver feature — the official fix for
+// Bug #1 (Gnomon fastsync: historical SCID data missing).
+//
+// Parameters:
+//   - scid: 64-char hex SCID to index
+//   - varstoreonly: if true, skips SC-code fetch (faster, but less classifier signal)
+//   - skipfsrecheck: if true, short-circuits if SCID is already indexed
+//
+// Returns error on failure, nil on success. After success, the SCID's current
+// variable state is stored and it becomes discoverable via GetAllOwnersAndSCIDs.
+func (g *GnomonClient) AddSCIDToIndex(scid string, varstoreonly, skipfsrecheck bool) error {
+	if !g.IsRunning() {
+		return fmt.Errorf("gnomon not running")
+	}
+	if len(strings.TrimSpace(scid)) != 64 {
+		return fmt.Errorf("invalid scid: expected 64 hex chars")
+	}
+
+	// Prepare the map with a single SCID to add
+	scidsToAdd := make(map[string]*structures.FastSyncImport)
+	scidsToAdd[scid] = &structures.FastSyncImport{}
+
+	return g.Indexer.AddSCIDToIndex(scidsToAdd, skipfsrecheck, varstoreonly)
 }
 
 // CheckAppSupportsEpoch determines if a TELA app supports EPOCH crowd mining

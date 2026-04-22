@@ -17,6 +17,7 @@
   import StudioShards from '../lib/components/studio/StudioShards.svelte';
   import StudioActions from '../lib/components/studio/StudioActions.svelte';
   import StudioDeploySC from '../lib/components/studio/StudioDeploySC.svelte';
+  import StudioAddSCID from '../lib/components/studio/StudioAddSCID.svelte';
   import { 
     SetSetting, GetGasEstimate, InstallDOC, InstallINDEX, GetINDEXInfo, UpdateINDEX, SelectFolder, SelectFile,
     IsInSimulatorMode, GetSimulatorDeploymentInfo, CloneTELA, GetClonePath,
@@ -810,6 +811,7 @@
     { id: 'serve', label: 'Serve', icon: 'server' },
     { id: 'diff', label: 'Diff', icon: 'diff' },
     { id: 'shards', label: 'DocShards', icon: 'file' },
+    { id: 'add-scid', label: 'Add SCID', icon: 'package' },
   ];
   
   // MODULES section tabs
@@ -2179,6 +2181,9 @@
         {performShard}
         {performReconstruct}
       />
+    
+    {:else if activeTab === 'add-scid'}
+      <StudioAddSCID />
     
     {:else if activeTab === 'deploy-sc'}
       <StudioDeploySC

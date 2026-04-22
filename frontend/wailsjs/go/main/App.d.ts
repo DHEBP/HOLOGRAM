@@ -7,6 +7,8 @@ export function AddAllowedHost(arg1:string):Promise<Record<string, any>>;
 
 export function AddContact(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
+export function AddSCIDToIndex(arg1:string):Promise<Record<string, any>>;
+
 export function AddSearchExclusion(arg1:string):Promise<Record<string, any>>;
 
 export function AddTrackedToken(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
@@ -40,6 +42,8 @@ export function CheckBalanceForBatchDeployment(arg1:walletapi.Wallet_Disk,arg2:n
 export function CheckDerodStatus():Promise<Record<string, any>>;
 
 export function CleanGnomonDB(arg1:string):Promise<Record<string, any>>;
+
+export function ClearAppCache(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<Record<string, any>>;
 
 export function ClearAppFilterOverride(arg1:string):Promise<Record<string, any>>;
 

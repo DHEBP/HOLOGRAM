@@ -3,7 +3,7 @@ module github.com/DHEBP/HOLOGRAM
 go 1.24.0
 
 require (
-	github.com/civilware/Gnomon v0.0.0-20240403103529-8b2fdb2b3106
+	github.com/civilware/Gnomon v0.0.0-20260112113638-0280ea286474
 	github.com/civilware/epoch v0.0.0-20241002060739-1ed2fc6f74cb
 	github.com/civilware/tela v0.0.0-20250806221602-aa892d2ff8d4
 	github.com/deroproject/derohe v0.0.0-20250813215012-9b6a8b82c839
@@ -44,6 +44,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mgutz/ansi v0.0.0-20200706080929-d51e80ef957d // indirect
 	github.com/minio/sha256-simd v1.0.0 // indirect
+	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/nxadm/tail v1.4.11 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -52,6 +53,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/samber/lo v1.49.1 // indirect
 	github.com/satori/go.uuid v1.2.0 // indirect
+	github.com/schollz/progressbar/v3 v3.19.0 // indirect
 	github.com/segmentio/fasthash v1.0.3 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect

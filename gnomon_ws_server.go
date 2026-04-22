@@ -405,6 +405,31 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 			"progress":       status["progress"],
 		}
 
+	// === AddSCIDToIndex (Bug #1 fix) ===
+	// Manually index a SCID that fastsync missed. Compatible with civilware's
+	// feat-addscidtoindex-wsserver WS API so dApps following that pattern just work.
+	case "addscidtoindex", "addscid_toindex", "add_scid_to_index":
+		scid := getStringParam(req.Params, "scid")
+		if scid == "" {
+			return errorResponse(req.ID, -32602, "Missing 'scid' parameter")
+		}
+		varstoreonly := getBoolParam(req.Params, "varstoreonly")
+		skipfsrecheck := getBoolParam(req.Params, "skipfsrecheck")
+
+		err := s.app.gnomonClient.AddSCIDToIndex(scid, varstoreonly, skipfsrecheck)
+		if err != nil {
+			result = map[string]any{
+				"success": false,
+				"result":  fmt.Sprintf("Err - %v", err),
+			}
+		} else {
+			result = map[string]any{
+				"success": true,
+				"result":  "Success",
+				"scid":    scid,
+			}
+		}
+
 	default:
 		return errorResponse(req.ID, -32601, fmt.Sprintf("Method not found: %s", req.Method))
 	}
@@ -450,4 +475,14 @@ func getInt64Param(params map[string]any, key string) int64 {
 		return int64(v)
 	}
 	return 0
+}
+
+func getBoolParam(params map[string]any, key string) bool {
+	if params == nil {
+		return false
+	}
+	if v, ok := params[key].(bool); ok {
+		return v
+	}
+	return false
 }

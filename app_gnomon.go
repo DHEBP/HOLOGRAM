@@ -348,6 +348,84 @@ func (a *App) GetGnomonAutostart() bool {
 	return false
 }
 
+// AddSCIDToIndex is the Wails-bound frontend entry point for Bug #1 resolution.
+// Manually indexes a SCID that the default search filter didn't catch.
+//
+// This implements civilware's feat-addscidtoindex-wsserver feature. Typical flow:
+// a developer deploys a TELA app, HOLOGRAM's fastsync misses it (deployed before
+// Gnomon started), the dev pastes the SCID into Studio > Add SCID and hits
+// "Add to Index" — this method fetches the SC via RPC, stores its variables,
+// and makes it discoverable.
+func (a *App) AddSCIDToIndex(scid string) map[string]interface{} {
+	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Gnomon is not running — start it first",
+		}
+	}
+
+	scid = strings.TrimSpace(scid)
+	if !isValidSCID(scid) {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Invalid SCID: expected 64 hex characters",
+		}
+	}
+
+	// Call GnomonClient method with default parameters:
+	// varstoreonly=false (fetch full code+vars for better classification)
+	// skipfsrecheck=false (re-validate even if previously seen)
+	err := a.gnomonClient.AddSCIDToIndex(scid, false, false)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[GNOMON] AddSCIDToIndex failed: %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[GNOMON] AddSCIDToIndex %s... success", scid[:16]))
+
+	// Fetch the newly indexed data to return useful info to the UI
+	vars := a.gnomonClient.GetAllSCIDVariableDetails(scid)
+	varCount := len(vars)
+
+	// Extract basic metadata from variables
+	result := map[string]interface{}{
+		"success":    true,
+		"scid":       scid,
+		"vars_count": varCount,
+	}
+
+	// Parse TELA metadata if available
+	data := map[string]any{"scid": scid}
+	app, isIndex, isDOC, _ := allocateData(vars, data)
+
+	if name, ok := app["name"].(string); ok && name != "" {
+		result["name"] = name
+	}
+	if desc, ok := app["description"].(string); ok && desc != "" {
+		result["description"] = desc
+	}
+	if durl, ok := app["durl"].(string); ok && durl != "" {
+		result["durl"] = durl
+	}
+	if owner, ok := app["owner"].(string); ok && owner != "" {
+		result["owner"] = owner
+	}
+
+	// Determine class/type
+	if isIndex {
+		result["class"] = "INDEX"
+	} else if isDOC {
+		result["class"] = "DOC"
+	} else {
+		result["class"] = "SC"
+	}
+
+	return result
+}
+
 // SearchByKey searches all indexed SCIDs for those containing a specific key
 func (a *App) SearchByKey(key string) map[string]interface{} {
 	a.logToConsole(fmt.Sprintf("[...] Searching by key: %s", key))

@@ -343,13 +343,68 @@ func (a *App) cacheDURLMapping(durl string, scid string) {
 }
 
 func (a *App) getCachedDURLMapping(durl string) (string, bool) {
-    if a == nil || a.cache == nil {
-        return "", false
-    }
-    if gc, ok := a.cache.(*GravitonCache); ok {
-        return gc.GetDURLMapping(durl)
-    }
-    return "", false
+	if a == nil || a.cache == nil {
+		return "", false
+	}
+	if gc, ok := a.cache.(*GravitonCache); ok {
+		return gc.GetDURLMapping(durl)
+	}
+	return "", false
+}
+
+// InvalidateSCID removes a cached HTML entry keyed by SCID from the
+// tela_cache_html tree. Used by cache-clear actions to force a re-fetch.
+func (c *GravitonCache) InvalidateSCID(scid string) error {
+	if c == nil || c.store == nil || scid == "" {
+		return nil
+	}
+	ss, err := c.store.LoadSnapshot(0)
+	if err != nil {
+		return err
+	}
+	tree, _ := ss.GetTree(c.tree)
+	if tree == nil {
+		return nil
+	}
+	// graviton does not expose an explicit delete; overwrite with empty bytes
+	// then commit. A nil value is handled as "not present" by our readers
+	// since GetHTMLIfVersion returns ("", false) when the payload is empty.
+	if err := tree.Delete([]byte(scid)); err != nil {
+		return err
+	}
+	_, err = graviton.Commit(tree)
+	return err
+}
+
+// InvalidateDURL removes cached HTML and name-resolution entries keyed by
+// the normalized dURL. Both the tela_cache_html "durl::<durl>" key and the
+// durl_cache tree entry are dropped.
+func (c *GravitonCache) InvalidateDURL(durl string) error {
+	if c == nil || c.store == nil {
+		return nil
+	}
+	durl = normalizeDURL(durl)
+	if durl == "" {
+		return nil
+	}
+	ss, err := c.store.LoadSnapshot(0)
+	if err != nil {
+		return err
+	}
+
+	// Drop the versioned HTML payload stored under "durl::<durl>"
+	if htmlTree, _ := ss.GetTree(c.tree); htmlTree != nil {
+		_ = htmlTree.Delete([]byte("durl::" + durl))
+		_, _ = graviton.Commit(htmlTree)
+	}
+
+	// Drop the dURL -> SCID mapping used for fast resolution
+	if mapTree, _ := ss.GetTree("durl_cache"); mapTree != nil {
+		_ = mapTree.Delete([]byte(durl))
+		_, _ = graviton.Commit(mapTree)
+	}
+
+	return nil
 }
 
 

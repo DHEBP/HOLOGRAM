@@ -957,6 +957,125 @@ func (a *App) ServeTELAContent(scid string) map[string]interface{} {
 	}
 }
 
+// ClearAppCache purges cached state for a single TELA app at varying
+// depths. Designed as the backend for the browser tab's reload dropdown:
+//
+//   mode = "normal"  : no-op; caller should just navigate again
+//   mode = "hard"    : drop Graviton HTML + dURL mapping so next load
+//                       refetches from the daemon, but keep the on-disk
+//                       clone under datashards/tela/<durl>.tela/
+//   mode = "empty"   : everything in "hard" + remove the on-disk clone +
+//                       shut down the running TELA proxy server for this
+//                       SCID. When clearOffline is true, also remove the
+//                       offline prefetch entry.
+//
+// The scid is always required; durl is optional but recommended because
+// some cache keys are indexed by normalized dURL.
+//
+// Safety: on-disk removal only targets paths that sit directly under
+// datashards/tela/, matching the invariant enforced by
+// cleanupTelaCloneFromError.
+func (a *App) ClearAppCache(scid, durl, mode string, clearOffline bool) map[string]interface{} {
+	result := map[string]interface{}{
+		"success": true,
+		"mode":    mode,
+		"scid":    scid,
+		"durl":    durl,
+		"cleared": []string{},
+	}
+	cleared := []string{}
+
+	if scid == "" && durl == "" {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "ClearAppCache requires scid or durl",
+		}
+	}
+
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "normal":
+		// Nothing to clear for a normal reload; caller re-navigates.
+		return result
+
+	case "hard", "empty":
+		// Drop Graviton HTML + dURL mapping entries so the next serve
+		// is forced to re-fetch from the daemon.
+		if gc, ok := a.cache.(*GravitonCache); ok && gc != nil {
+			if scid != "" {
+				if err := gc.InvalidateSCID(scid); err != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Invalidate SCID cache failed: %v", err))
+				} else {
+					cleared = append(cleared, "tela_cache:scid")
+				}
+			}
+			if durl != "" {
+				if err := gc.InvalidateDURL(durl); err != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Invalidate dURL cache failed: %v", err))
+				} else {
+					cleared = append(cleared, "tela_cache:durl", "nrs_cache")
+				}
+			}
+		}
+
+		if mode == "empty" || mode == "EMPTY" {
+			// Shut down the running TELA proxy server for this SCID so
+			// the clone folder is released before we try to remove it.
+			if scid != "" {
+				serverRegistry.RLock()
+				var serverName string
+				for name, server := range serverRegistry.servers {
+					if server.SCID == scid {
+						serverName = name
+						break
+					}
+				}
+				serverRegistry.RUnlock()
+				if serverName != "" {
+					shutdownProxyServer(scid)
+					tela.ShutdownServer(serverName)
+					serverRegistry.Lock()
+					delete(serverRegistry.servers, serverName)
+					serverRegistry.Unlock()
+					cleared = append(cleared, "tela_server")
+				}
+			}
+
+			// Remove the on-disk clone under datashards/tela/<durl>.tela/
+			// Only act if we can resolve a real dURL so we don't wipe the
+			// wrong folder.
+			if durl != "" {
+				cloneDir := filepath.Join(getDatashardsDir(), "tela", durl)
+				telaRootSuffix := string(filepath.Separator) + "datashards" + string(filepath.Separator) + "tela" + string(filepath.Separator)
+				if strings.Contains(cloneDir, telaRootSuffix) {
+					if _, err := os.Stat(cloneDir); err == nil {
+						if rmErr := os.RemoveAll(cloneDir); rmErr != nil {
+							a.logToConsole(fmt.Sprintf("[WARN] Remove clone dir failed: %v", rmErr))
+						} else {
+							a.logToConsole(fmt.Sprintf("[OK] Removed TELA clone: %s", cloneDir))
+							cleared = append(cleared, "clone_dir")
+						}
+					}
+				}
+			}
+
+			if clearOffline && a.offlineCache != nil && scid != "" {
+				if err := a.offlineCache.RemoveCachedApp(scid); err == nil {
+					cleared = append(cleared, "offline_cache")
+				}
+			}
+		}
+
+	default:
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("unknown mode %q (expected normal, hard, or empty)", mode),
+		}
+	}
+
+	result["cleared"] = cleared
+	return result
+}
+
 func cleanupTelaCloneFromError(err error, logFn func(string)) bool {
 	if err == nil {
 		return false
@@ -981,12 +1100,31 @@ func cleanupTelaCloneFromError(err error, logFn func(string)) bool {
 		return false
 	}
 
-	dir := filepath.Dir(filePath)
-	if !strings.Contains(dir, string(filepath.Separator)+"datashards"+string(filepath.Separator)+"tela"+string(filepath.Separator)) {
+	// Walk up from the offending file to find the clone root, which is the
+	// directory whose parent is ".../datashards/tela". This ensures we remove
+	// the entire <durl>.tela folder (including sibling files like upload.html)
+	// instead of only the immediate subdirectory of the offending file.
+	telaRootSuffix := string(filepath.Separator) + "datashards" + string(filepath.Separator) + "tela"
+	cloneRoot := filepath.Dir(filePath)
+	for {
+		parent := filepath.Dir(cloneRoot)
+		if parent == cloneRoot {
+			// Reached filesystem root without finding datashards/tela — bail out safely.
+			return false
+		}
+		if strings.HasSuffix(parent, telaRootSuffix) {
+			// cloneRoot is now the <durl>.tela folder directly under datashards/tela/
+			break
+		}
+		cloneRoot = parent
+	}
+
+	// Safety check: only remove paths that live under datashards/tela/
+	if !strings.Contains(cloneRoot, telaRootSuffix+string(filepath.Separator)) {
 		return false
 	}
 
-	if rmErr := os.RemoveAll(dir); rmErr != nil {
+	if rmErr := os.RemoveAll(cloneRoot); rmErr != nil {
 		if logFn != nil {
 			logFn(fmt.Sprintf("[WARN] Failed to remove stale TELA clone: %v", rmErr))
 		}
@@ -994,7 +1132,7 @@ func cleanupTelaCloneFromError(err error, logFn func(string)) bool {
 	}
 
 	if logFn != nil {
-		logFn(fmt.Sprintf("[OK] Removed stale TELA clone: %s", dir))
+		logFn(fmt.Sprintf("[OK] Removed stale TELA clone: %s", cloneRoot))
 	}
 	return true
 }

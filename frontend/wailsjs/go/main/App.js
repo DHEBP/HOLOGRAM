@@ -10,6 +10,10 @@ export function AddContact(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddContact'](arg1, arg2, arg3);
 }
 
+export function AddSCIDToIndex(arg1) {
+  return window['go']['main']['App']['AddSCIDToIndex'](arg1);
+}
+
 export function AddSearchExclusion(arg1) {
   return window['go']['main']['App']['AddSearchExclusion'](arg1);
 }
@@ -76,6 +80,10 @@ export function CheckDerodStatus() {
 
 export function CleanGnomonDB(arg1) {
   return window['go']['main']['App']['CleanGnomonDB'](arg1);
+}
+
+export function ClearAppCache(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ClearAppCache'](arg1, arg2, arg3, arg4);
 }
 
 export function ClearAppFilterOverride(arg1) {
