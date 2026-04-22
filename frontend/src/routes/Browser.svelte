@@ -3,7 +3,8 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, OpenURLInBrowserIfAllowed } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline } from '../../wailsjs/go/main/App.js';
+  import ReloadSplitButton from '../lib/components/browser/ReloadSplitButton.svelte';
   import { EventsOn, EventsOff, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
@@ -267,6 +268,57 @@ let addressInput = '';
   let consoleViewport;
   let consoleUserScrolled = false;
   let previousLogCount = 0;
+  let expandedLogIndices = new Set(); // Track which log entries have expanded details
+  let consoleFilterErrorsOnly = false; // Level filter: show only errors/warnings
+  let consoleFilterSource = 'all'; // Source filter: 'all' | 'dapp' | 'hologram' | 'bridge'
+  
+  // Reactive: filtered logs based on level and source filters
+  $: filteredConsoleLogs = consoleLogs.filter(log => {
+    // Level filter
+    if (consoleFilterErrorsOnly && log.level !== 'error' && log.level !== 'warn') {
+      return false;
+    }
+    // Source filter
+    if (consoleFilterSource !== 'all') {
+      const logSource = log.source || 'unknown';
+      if (consoleFilterSource === 'dapp') {
+        // Include dapp, dapp-uncaught, dapp-rejection
+        if (!logSource.startsWith('dapp')) return false;
+      } else if (consoleFilterSource === 'hologram') {
+        if (logSource !== 'hologram') return false;
+      } else if (consoleFilterSource === 'bridge') {
+        if (logSource !== 'bridge') return false;
+      }
+    }
+    return true;
+  });
+  
+  // Reactive: error and warning counts (from full log, not filtered)
+  $: consoleErrorCount = consoleLogs.filter(log => log.level === 'error').length;
+  $: consoleWarnCount = consoleLogs.filter(log => log.level === 'warn').length;
+  
+  function toggleLogExpanded(index) {
+    if (expandedLogIndices.has(index)) {
+      expandedLogIndices.delete(index);
+    } else {
+      expandedLogIndices.add(index);
+    }
+    expandedLogIndices = expandedLogIndices; // Trigger reactivity
+  }
+  
+  function hasExpandableContent(log) {
+    return log.stack || (log.args && log.args.length > 0) || log.app || log.location;
+  }
+  
+  function toggleErrorsOnlyFilter() {
+    consoleFilterErrorsOnly = !consoleFilterErrorsOnly;
+    expandedLogIndices = new Set(); // Reset expanded state when filter changes
+  }
+  
+  function setSourceFilter(source) {
+    consoleFilterSource = source;
+    expandedLogIndices = new Set(); // Reset expanded state when filter changes
+  }
   
   // App discovery state
   let apps = [];
@@ -938,7 +990,15 @@ let addressInput = '';
         
         switch (action) {
           case 'log':
-            // Add to console log
+            // Add to console log, enriching dApp logs with app context
+            if (typeof payload === 'object' && payload !== null && payload.source?.startsWith('dapp')) {
+              // Enrich with current app context
+              payload.app = {
+                name: currentMeta?.name || null,
+                scid: currentMeta?.scid || null,
+                durl: currentMeta?.durl || addressInput || null
+              };
+            }
             addConsoleLog(payload);
             result = true;
             break;
@@ -1218,10 +1278,20 @@ let addressInput = '';
       loadApps();
     }
     
+    // Keyboard shortcut: Cmd/Ctrl+Shift+J to toggle JS Console
+    const handleKeydown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        toggleConsole();
+      }
+    };
+    window.addEventListener('keydown', handleKeydown);
+    
     return () => {
       window.removeEventListener('search-result', handleSearchResult);
       window.removeEventListener('browser-navigate', handleBrowserNavigate);
       window.removeEventListener('message', handleXSWDMessage);
+      window.removeEventListener('keydown', handleKeydown);
     };
   });
   
@@ -1387,6 +1457,7 @@ let addressInput = '';
       clearConsoleLogsStore(); // Clear the store (which updates local consoleLogs via subscription)
       previousLogCount = 0;
       consoleUserScrolled = false;
+      expandedLogIndices = new Set(); // Clear expanded state
     } catch (e) {
       console.error('Failed to clear logs:', e);
     }
@@ -1401,6 +1472,69 @@ let addressInput = '';
       toast.success(`Copied ${logs.length} log lines`);
     } catch (e) {
       console.error('Failed to copy logs:', e);
+    }
+  }
+  
+  // Copy all console logs to clipboard
+  async function copyAllLogs() {
+    const text = consoleLogs.map(log => `[${log.timestamp || new Date().toLocaleTimeString()}] ${log.message}`).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(`Copied ${consoleLogs.length} log lines`);
+    } catch (e) {
+      console.error('Failed to copy logs:', e);
+    }
+  }
+  
+  // Copy diagnostics bundle to clipboard (for bug reports)
+  async function copyDiagnostics() {
+    const now = new Date();
+    const network = $appState.network || $settingsState.network || 'unknown';
+    const os = navigator.platform || 'unknown';
+    
+    // Build filter description
+    const filters = [];
+    if (consoleFilterSource !== 'all') filters.push(`source=${consoleFilterSource}`);
+    if (consoleFilterErrorsOnly) filters.push('level=errors');
+    const filterDesc = filters.length > 0 ? filters.join(', ') : 'none';
+    
+    // Format logs with more detail
+    const logsText = filteredConsoleLogs.map(log => {
+      let line = `[${log.timestamp}] ${log.level?.toUpperCase() || 'INFO'}`;
+      if (log.source) line += ` [${log.source}]`;
+      line += ` ${log.message}`;
+      if (log.location) {
+        line += `\n  at ${log.location.file || log.location.href}:${log.location.line || '?'}:${log.location.column || '?'}`;
+      }
+      if (log.stack) {
+        line += `\n${log.stack.split('\n').map(l => '  ' + l).join('\n')}`;
+      }
+      return line;
+    }).join('\n');
+    
+    const bundle = `=== HOLOGRAM Diagnostics ===
+Version: 1.0.1
+OS: ${os}
+Network: ${network}
+Generated: ${now.toISOString()}
+
+App:
+  dURL: ${currentMeta?.durl || addressInput || 'none'}
+  SCID: ${currentMeta?.scid || 'none'}
+  Name: ${currentMeta?.name || 'none'}
+
+Filters applied: ${filterDesc}
+Log lines: ${filteredConsoleLogs.length} (of ${consoleLogs.length} total)
+
+--- LOGS ---
+${logsText || '(no logs)'}
+`;
+    
+    try {
+      await navigator.clipboard.writeText(bundle);
+      toast.success('Diagnostics copied to clipboard');
+    } catch (e) {
+      console.error('Failed to copy diagnostics:', e);
     }
   }
   
@@ -1961,32 +2095,46 @@ let addressInput = '';
 (function() {
   'use strict';
   
-  // Simple log to parent
-  function log(msg) {
-    try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*'); } catch(e) {}
+  // Safe stringify helper - handles circular refs and caps size
+  function safeStringify(obj, maxLen) {
+    maxLen = maxLen || 4096;
+    var seen = [];
+    try {
+      var str = JSON.stringify(obj, function(key, val) {
+        if (val && typeof val === 'object') {
+          if (seen.indexOf(val) !== -1) return '[Circular]';
+          seen.push(val);
+        }
+        return val;
+      });
+      return str.length > maxLen ? str.substring(0, maxLen) + '...[truncated]' : str;
+    } catch(e) {
+      return String(obj);
+    }
   }
   
-  // Intercept console methods to capture dApp logs
+  // Send structured log to parent
+  function sendLog(payload) {
+    try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: payload }, '*'); } catch(e) {}
+  }
+  
+  // Intercept console methods to capture dApp logs with structured data
   (function() {
     var methods = ['log', 'warn', 'error', 'info', 'debug'];
-    var prefixes = { log: 'LOG', warn: 'WARN', error: 'ERROR', info: 'INFO', debug: 'DEBUG' };
-    var isForwarding = false; // Prevent infinite loops
+    var isForwarding = false;
     methods.forEach(function(method) {
       var original = console[method];
       console[method] = function() {
-        // Call original so browser DevTools still works
         if (original) original.apply(console, arguments);
-        // Prevent infinite loop: don't forward if we're already forwarding
         if (isForwarding) return;
-        // Forward to parent
         try {
           var args = Array.prototype.slice.call(arguments);
-          // Skip forwarding messages about xswd-response to prevent loops
           var firstArg = args[0];
           if (typeof firstArg === 'string' && firstArg.indexOf('xswd-response') !== -1) return;
           if (typeof firstArg === 'string' && firstArg.indexOf('received message') !== -1) return;
           
-          var msg = '[dApp:' + prefixes[method] + '] ' + args.map(function(a) {
+          // Build human-readable message
+          var msg = args.map(function(a) {
             if (a === null) return 'null';
             if (a === undefined) return 'undefined';
             if (typeof a === 'object') {
@@ -1994,28 +2142,63 @@ let addressInput = '';
             }
             return String(a);
           }).join(' ');
+          
+          // Safe-stringify args for structured payload (cap each at 4KB)
+          var safeArgs = args.map(function(a) {
+            if (a === null || a === undefined) return a;
+            if (typeof a === 'object') return safeStringify(a, 4096);
+            return String(a).substring(0, 4096);
+          });
+          
           isForwarding = true;
-          window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*');
+          sendLog({
+            source: 'dapp',
+            level: method,
+            message: msg,
+            args: safeArgs,
+            ts: Date.now()
+          });
           isForwarding = false;
         } catch(e) { isForwarding = false; }
       };
     });
   })();
   
-  // Capture uncaught errors
+  // Capture uncaught errors with full context
   window.addEventListener('error', function(e) {
     try {
-      var msg = '[dApp:UNCAUGHT] ' + (e.message || 'Unknown error') + ' at ' + (e.filename || 'unknown') + ':' + (e.lineno || '?');
-      window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*');
+      var stack = e.error && e.error.stack ? e.error.stack : null;
+      var msg = (e.message || 'Unknown error');
+      if (e.filename) msg += ' at ' + e.filename + ':' + (e.lineno || '?') + ':' + (e.colno || '?');
+      sendLog({
+        source: 'dapp-uncaught',
+        level: 'error',
+        message: msg,
+        location: {
+          href: location.href,
+          file: e.filename || null,
+          line: e.lineno || null,
+          column: e.colno || null
+        },
+        stack: stack,
+        ts: Date.now()
+      });
     } catch(ex) {}
   });
   
-  // Capture unhandled promise rejections
+  // Capture unhandled promise rejections with stack when available
   window.addEventListener('unhandledrejection', function(e) {
     try {
       var reason = e.reason;
-      var msg = '[dApp:REJECTION] ' + (reason instanceof Error ? reason.message : String(reason));
-      window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*');
+      var msg = reason instanceof Error ? reason.message : String(reason);
+      var stack = reason instanceof Error && reason.stack ? reason.stack : null;
+      sendLog({
+        source: 'dapp-rejection',
+        level: 'error',
+        message: msg,
+        stack: stack,
+        ts: Date.now()
+      });
     } catch(ex) {}
   });
   
@@ -2826,6 +3009,98 @@ let addressInput = '';
   function reload() {
     if (addressInput) navigate(true);
   }
+
+  // Tracks whether the currently-loaded app is saved via offline prefetch.
+  // Used by ReloadSplitButton to decide whether "Empty Cache & Reload"
+  // needs a confirmation dialog (offline copy would also be removed).
+  let isCurrentAppOfflineCached = false;
+
+  async function refreshOfflineCacheFlag() {
+    try {
+      const scid = currentMeta?.scid;
+      if (!scid) {
+        isCurrentAppOfflineCached = false;
+        return;
+      }
+      const res = await IsAppCachedOffline(scid);
+      isCurrentAppOfflineCached = !!(res && res.cached);
+    } catch {
+      isCurrentAppOfflineCached = false;
+    }
+  }
+
+  // Recompute whenever the active tab's SCID changes.
+  $: if (currentMeta?.scid) {
+    refreshOfflineCacheFlag();
+  } else {
+    isCurrentAppOfflineCached = false;
+  }
+
+  // Shared helper: call backend ClearAppCache, then re-navigate the tab.
+  // `mode` is "hard" or "empty"; "empty" also removes the on-disk clone
+  // and (optionally) the offline prefetch entry.
+  async function clearAndReload(mode, { clearOffline = false } = {}) {
+    if (!addressInput) return;
+    const scid = currentMeta?.scid || '';
+    const durl = currentMeta?.durl || '';
+    if (!scid && !durl) {
+      // No resolved metadata yet — fall back to a normal reload.
+      reload();
+      return;
+    }
+    try {
+      const res = await ClearAppCache(scid, durl, mode, clearOffline);
+      if (res && res.cleared && res.cleared.length) {
+        addConsoleLog({
+          type: 'info',
+          message: `[Cache] Cleared for this app: ${res.cleared.join(', ')}`,
+        });
+      }
+    } catch (e) {
+      addConsoleLog({
+        type: 'warn',
+        message: `[Cache] Clear failed: ${e?.message || e}`,
+      });
+    }
+    navigate(true);
+  }
+
+  function hardReload() {
+    clearAndReload('hard');
+  }
+
+  function emptyCacheAndReload() {
+    // Only pass clearOffline=true when the current app is actually
+    // prefetched; otherwise the backend no-ops that branch anyway.
+    clearAndReload('empty', { clearOffline: isCurrentAppOfflineCached });
+  }
+
+  // Browser-wide keyboard shortcuts for reload variants. Only fires when
+  // the Browser route is active and focus is not in a text input/textarea
+  // (so users typing in the address bar or console can still use ⌘R
+  // without triggering unintentionally).
+  function handleBrowserKeydown(event) {
+    const modifier = event.metaKey || event.ctrlKey;
+    if (!modifier) return;
+    if (event.key !== 'r' && event.key !== 'R') return;
+
+    // Skip when user is typing in an input/textarea/contenteditable.
+    const target = event.target;
+    if (target && target.tagName) {
+      const tag = target.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+      if (target.isContentEditable) return;
+    }
+
+    if (!addressInput || showWelcome) return;
+
+    event.preventDefault();
+    if (event.shiftKey) {
+      hardReload();
+    } else {
+      reload();
+    }
+  }
   
   // Per-tab navigation state - reactive based on current tab's history
   $: currentTab = tabs.find(t => t.id === activeTabId);
@@ -2963,6 +3238,8 @@ let addressInput = '';
   }
 </script>
 
+<svelte:window on:keydown={handleBrowserKeydown} />
+
 <div class="browser-layout">
   <!-- v6.1 Browser Tabs -->
   <div class="browser-tabs">
@@ -3020,15 +3297,14 @@ let addressInput = '';
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
           </svg>
         </button>
-        <button
-          on:click={reload}
-          class="nav-btn"
-          title="Reload"
-        >
-        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-          </svg>
-        </button>
+        <ReloadSplitButton
+          disabled={!addressInput || showWelcome}
+          isOfflineCached={isCurrentAppOfflineCached}
+          isTelaTab={!!currentMeta?.scid}
+          on:reload={reload}
+          on:hardReload={hardReload}
+          on:emptyCacheReload={emptyCacheAndReload}
+        />
         <button
           on:click={goHome}
           class="nav-btn"
@@ -3075,12 +3351,12 @@ let addressInput = '';
         <History size={14} />
       </button>
       
-      <!-- Console Toggle -->
+      <!-- JS Console Toggle -->
       <button
         on:click={toggleConsole}
         class="nav-btn"
         class:active={showConsole}
-        title="Toggle Console"
+        title="Toggle JS Console (Cmd/Ctrl+Shift+J)"
       >
       <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
@@ -3442,14 +3718,54 @@ let addressInput = '';
         <div class="browser-console-header">
           <span class="browser-console-title">
             <Icons name="terminal" size={12} />
-            CONSOLE
+            JS CONSOLE
+            {#if consoleErrorCount > 0 || consoleWarnCount > 0}
+              <span class="browser-console-counters">
+                {#if consoleErrorCount > 0}
+                  <span class="browser-console-counter counter-error">{consoleErrorCount} error{consoleErrorCount !== 1 ? 's' : ''}</span>
+                {/if}
+                {#if consoleWarnCount > 0}
+                  <span class="browser-console-counter counter-warn">{consoleWarnCount} warn{consoleWarnCount !== 1 ? 's' : ''}</span>
+                {/if}
+              </span>
+            {/if}
           </span>
-          <div class="browser-console-actions">
-            <button on:click={() => copyRecentLogs(25)} class="browser-console-btn" title="Copy last 25 lines">
-              Copy 25
+          <div class="browser-console-filters">
+            <button 
+              on:click={() => setSourceFilter('all')} 
+              class="browser-console-chip"
+              class:active={consoleFilterSource === 'all'}
+            >All</button>
+            <button 
+              on:click={() => setSourceFilter('dapp')} 
+              class="browser-console-chip"
+              class:active={consoleFilterSource === 'dapp'}
+            >dApp</button>
+            <button 
+              on:click={() => setSourceFilter('hologram')} 
+              class="browser-console-chip"
+              class:active={consoleFilterSource === 'hologram'}
+            >System</button>
+            <button 
+              on:click={() => setSourceFilter('bridge')} 
+              class="browser-console-chip"
+              class:active={consoleFilterSource === 'bridge'}
+            >Bridge</button>
+            <span class="browser-console-filter-divider"></span>
+            <button 
+              on:click={toggleErrorsOnlyFilter} 
+              class="browser-console-chip"
+              class:active={consoleFilterErrorsOnly}
+            >
+              {consoleFilterErrorsOnly ? '⚠ Errors' : 'Errors only'}
             </button>
-            <button on:click={() => copyRecentLogs(50)} class="browser-console-btn" title="Copy last 50 lines">
-              Copy 50
+          </div>
+          <div class="browser-console-actions">
+            <button on:click={copyDiagnostics} class="browser-console-btn" title="Copy diagnostic bundle for bug reports">
+              Diagnostics
+            </button>
+            <button on:click={() => copyAllLogs()} class="browser-console-btn" title="Copy all logs">
+              Copy All
             </button>
             <button on:click={clearConsoleLogs} class="browser-console-btn" title="Clear all logs">
               Clear
@@ -3461,13 +3777,52 @@ let addressInput = '';
         </div>
         <div class="browser-console-viewport" bind:this={consoleViewport} on:scroll={handleConsoleScroll}>
           {#if consoleLogs.length === 0}
-            <div class="browser-console-empty">Console ready. Navigate to an app to see logs.</div>
+            <div class="browser-console-empty">JS console ready. Navigate to a dApp to see its console.log output, warnings, errors, and uncaught exceptions.</div>
+          {:else if filteredConsoleLogs.length === 0}
+            <div class="browser-console-empty">No errors or warnings. <button class="browser-console-link-btn" on:click={toggleErrorsOnlyFilter}>Show all logs</button></div>
           {:else}
-            {#each consoleLogs as log}
+            {#each filteredConsoleLogs as log, index}
               <div class="browser-console-line {log.level === 'error' ? 'level-error' : log.level === 'warn' ? 'level-warn' : ''}">
                 <span class="browser-console-timestamp">[{log.timestamp || new Date().toLocaleTimeString()}]</span>
+                {#if log.source}
+                  <span class="browser-console-source browser-console-source-{log.source}">{log.source}</span>
+                {/if}
                 <span class="browser-console-message">{log.message}</span>
+                {#if hasExpandableContent(log)}
+                  <button 
+                    class="browser-console-expand-btn" 
+                    on:click={() => toggleLogExpanded(index)}
+                    title={expandedLogIndices.has(index) ? 'Collapse details' : 'Expand details'}
+                  >
+                    {expandedLogIndices.has(index) ? '▼' : '▶'}
+                  </button>
+                {/if}
               </div>
+              {#if expandedLogIndices.has(index) && hasExpandableContent(log)}
+                <div class="browser-console-expanded">
+                  {#if log.app}
+                    <div class="browser-console-app">
+                      📦 {log.app.name || 'App'}{#if log.app.durl} · <span class="browser-console-app-durl">{log.app.durl}</span>{/if}{#if log.app.scid} · <span class="browser-console-app-scid" title={log.app.scid}>{log.app.scid.substring(0, 12)}...</span>{/if}
+                    </div>
+                  {/if}
+                  {#if log.location}
+                    <div class="browser-console-location">
+                      📍 {log.location.file || log.location.href}:{log.location.line || '?'}:{log.location.column || '?'}
+                    </div>
+                  {/if}
+                  {#if log.stack}
+                    <pre class="browser-console-stack">{log.stack}</pre>
+                  {/if}
+                  {#if log.args && log.args.length > 0}
+                    <div class="browser-console-args">
+                      <span class="browser-console-args-label">Args:</span>
+                      {#each log.args as arg, i}
+                        <code class="browser-console-arg">{typeof arg === 'string' ? arg : JSON.stringify(arg)}</code>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
             {/each}
           {/if}
         </div>
@@ -3555,6 +3910,234 @@ let addressInput = '';
   :global(.browser-search-icon) {
     color: var(--text-4, #505068);
     flex-shrink: 0;
+  }
+  
+  
+  /* Source badge in console lines */
+  .browser-console-source {
+    display: inline-block;
+    padding: 1px 5px;
+    margin-right: 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  
+  .browser-console-source-dapp {
+    background: rgba(34, 197, 94, 0.2);
+    color: var(--green-400, #4ade80);
+  }
+  
+  .browser-console-source-dapp-uncaught,
+  .browser-console-source-dapp-rejection {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--status-err, #ef4444);
+  }
+  
+  .browser-console-source-hologram {
+    background: rgba(6, 182, 212, 0.2);
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .browser-console-source-bridge {
+    background: rgba(168, 85, 247, 0.2);
+    color: var(--purple-400, #a855f7);
+  }
+  
+  .browser-console-source-backend {
+    background: rgba(251, 191, 36, 0.2);
+    color: var(--amber-400, #fbbf24);
+  }
+  
+  .browser-console-source-unknown {
+    background: rgba(100, 116, 139, 0.2);
+    color: var(--text-muted, #94a3b8);
+  }
+  
+  /* Expand/collapse button for log details */
+  .browser-console-expand-btn {
+    margin-left: auto;
+    padding: 0 4px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted, #64748b);
+    font-size: 10px;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.15s ease;
+  }
+  
+  .browser-console-expand-btn:hover {
+    opacity: 1;
+  }
+  
+  /* Make console lines flex for expand button alignment */
+  .browser-console-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  
+  .browser-console-message {
+    flex: 1;
+    word-break: break-word;
+  }
+  
+  /* Expanded details section */
+  .browser-console-expanded {
+    margin-left: 20px;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.2);
+    border-left: 2px solid var(--border-subtle, #334155);
+    font-size: 11px;
+  }
+  
+  .browser-console-app {
+    color: var(--text-muted, #94a3b8);
+    margin-bottom: 4px;
+  }
+  
+  .browser-console-app-durl {
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .browser-console-app-scid {
+    color: var(--purple-400, #a855f7);
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    font-size: 10px;
+  }
+  
+  .browser-console-location {
+    color: var(--text-muted, #94a3b8);
+    margin-bottom: 4px;
+  }
+  
+  .browser-console-stack {
+    margin: 4px 0;
+    padding: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    font-size: 10px;
+    color: var(--status-err, #ef4444);
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-x: auto;
+    max-height: 200px;
+  }
+  
+  .browser-console-args {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    margin-top: 4px;
+  }
+  
+  .browser-console-args-label {
+    color: var(--text-muted, #94a3b8);
+    font-weight: 500;
+  }
+  
+  .browser-console-arg {
+    padding: 2px 6px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 3px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    font-size: 10px;
+    color: var(--cyan-300, #67e8f9);
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  /* Error/warning counters in console header */
+  .browser-console-counters {
+    display: inline-flex;
+    gap: 8px;
+    margin-left: 10px;
+  }
+  
+  .browser-console-counter {
+    font-size: 10px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+  
+  .browser-console-counter.counter-error {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--status-err, #ef4444);
+  }
+  
+  .browser-console-counter.counter-warn {
+    background: rgba(251, 191, 36, 0.2);
+    color: var(--amber-400, #fbbf24);
+  }
+  
+  /* Source filter chips row */
+  .browser-console-filters {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    margin-right: 8px;
+  }
+  
+  .browser-console-chip {
+    padding: 3px 8px;
+    background: transparent;
+    border: 1px solid var(--border-subtle, #334155);
+    border-radius: 4px;
+    color: var(--text-muted, #94a3b8);
+    font-size: 10px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  
+  .browser-console-chip:hover {
+    background: var(--void-up, #1e1e2e);
+    border-color: var(--cyan-500, #06b6d4);
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .browser-console-chip.active {
+    background: rgba(6, 182, 212, 0.15);
+    border-color: var(--cyan-500, #06b6d4);
+    color: var(--cyan-400, #22d3ee);
+  }
+  
+  .browser-console-filter-divider {
+    width: 1px;
+    height: 16px;
+    background: var(--border-subtle, #334155);
+    margin: 0 4px;
+  }
+  
+  /* Active state for filter button */
+  .browser-console-btn.active {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: var(--status-err, #ef4444);
+    color: var(--status-err, #ef4444);
+  }
+  
+  /* Link button in empty state */
+  .browser-console-link-btn {
+    background: transparent;
+    border: none;
+    color: var(--cyan-400, #22d3ee);
+    cursor: pointer;
+    text-decoration: underline;
+    font-size: inherit;
+    padding: 0;
+  }
+  
+  .browser-console-link-btn:hover {
+    color: var(--cyan-300, #67e8f9);
   }
   
   /* Rate button in app cards */

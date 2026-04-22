@@ -452,11 +452,62 @@ export function addToHistory(scid) {
   });
 }
 
-export function addConsoleLog(message, level = 'info') {
+/**
+ * Add a log entry to the console store.
+ * Accepts either:
+ *   - Legacy: addConsoleLog(message, level) where message is a string
+ *   - Structured: addConsoleLog({ message, level, source, args, location, stack, ts, app })
+ * 
+ * All entries are normalized to:
+ *   { timestamp, message, level, source, args, location, stack, app }
+ */
+export function addConsoleLog(messageOrObj, level = 'info') {
   const timestamp = new Date().toLocaleTimeString();
+  let entry;
+  
+  if (typeof messageOrObj === 'object' && messageOrObj !== null && 'message' in messageOrObj) {
+    // Structured payload from bridge or internal
+    const obj = messageOrObj;
+    entry = {
+      timestamp: obj.ts ? new Date(obj.ts).toLocaleTimeString() : timestamp,
+      message: obj.message || '',
+      level: obj.level || 'info',
+      source: obj.source || 'unknown',
+      args: obj.args || null,
+      location: obj.location || null,
+      stack: obj.stack || null,
+      app: obj.app || null, // { name, scid, durl } for dApp logs
+    };
+  } else {
+    // Legacy string payload - infer source from prefix if present
+    const message = String(messageOrObj);
+    let source = 'hologram';
+    
+    // Parse known prefixes to determine source
+    if (message.startsWith('[dApp:')) {
+      source = 'dapp';
+    } else if (message.startsWith('[Browser]') || message.startsWith('[XSWD]')) {
+      source = 'bridge';
+    } else if (message.startsWith('[Error]')) {
+      source = 'hologram';
+      level = 'error';
+    }
+    
+    entry = {
+      timestamp,
+      message,
+      level,
+      source,
+      args: null,
+      location: null,
+      stack: null,
+      app: null,
+    };
+  }
+  
   consoleLogs.update(logs => [
     ...logs.slice(-499), // Keep last 500 logs
-    { timestamp, message, level }
+    entry
   ]);
 }
 
