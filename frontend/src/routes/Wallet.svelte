@@ -1509,6 +1509,9 @@
     return addr.slice(0, 12) + '...' + addr.slice(-8);
   }
 
+  // Address placeholder matching visible address character count (12 + 3 + 8 = 23)
+  const ADDRESS_PLACEHOLDER = '•'.repeat(23);
+
   function getWalletFilename(path) {
     if (!path) return '';
     return path.split(/[\\/]/).pop() || path;
@@ -1748,6 +1751,11 @@
                 BALANCE
               </div>
               <div class="cmd-panel-meta">
+                {#if walletDisplayPath}
+                  <span class="badge badge-wallet-file" title={walletDisplayPath}>
+                    {getWalletFilename(walletDisplayPath)}
+                  </span>
+                {/if}
                 {#if isSyncing}
                   <span class="badge badge-syncing">
                     <Loader2 size={10} class="spin" /> SYNCING
@@ -1799,13 +1807,16 @@
               <div class="wallet-address-row">
                 <div class="address-row-content">
                   <span class="address-text">
-                    {$settingsState.hideAddress ? '••••••••••••••••' : formatAddress($walletState.address)}
+                    {$settingsState.hideAddress ? ADDRESS_PLACEHOLDER : formatAddress($walletState.address)}
                   </span>
-                  {#if !$settingsState.hideAddress}
-                    <button class="btn-icon-sm" on:click={copyAddress} title="Copy address">
-                      <Copy size={12} />
-                    </button>
-                  {/if}
+                  <button
+                    class="btn-icon-sm copy-address-btn"
+                    class:hidden={$settingsState.hideAddress}
+                    on:click={copyAddress}
+                    title="Copy address"
+                  >
+                    <Copy size={12} />
+                  </button>
                 </div>
                 <button
                   class="hide-toggle-btn fixed-right"
@@ -1820,11 +1831,6 @@
                   {/if}
                 </button>
               </div>
-              {#if walletDisplayPath}
-                <div class="wallet-path" title={walletDisplayPath}>
-                  {getWalletFilename(walletDisplayPath)}
-                </div>
-              {/if}
             </div>
           </div>
 
@@ -4073,26 +4079,30 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: 28px;
+    height: 28px;
     background: transparent;
-    border: 1px solid var(--border-1, #2a2a3a);
-    border-radius: var(--r-1);
+    border: none;
+    border-radius: var(--r-sm);
     color: var(--text-4);
     cursor: pointer;
     padding: 0;
-    transition: border-color 0.15s, color 0.15s;
+    transition: background 0.15s, color 0.15s;
     flex-shrink: 0;
   }
 
   .hide-toggle-btn:hover {
-    border-color: var(--cyan-400);
+    background: rgba(34, 211, 238, 0.08);
     color: var(--cyan-400);
   }
 
   .hide-toggle-btn.active {
-    border-color: var(--cyan-400);
     color: var(--cyan-400);
+  }
+
+  .hide-toggle-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
   }
 
   .hide-toggle-btn.fixed-right {
@@ -4118,6 +4128,26 @@
     font-family: var(--font-mono);
     font-size: 12px;
     color: var(--text-3);
+  }
+
+  /* Wallet filename badge — subtle metadata pill in panel header */
+  .badge-wallet-file {
+    border-color: var(--border-default);
+    color: var(--text-3);
+    background: var(--void-deep);
+    font-family: var(--font-mono);
+    text-transform: none;
+    letter-spacing: 0.02em;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Preserve layout space for copy button when address is hidden */
+  .copy-address-btn.hidden {
+    visibility: hidden;
+    pointer-events: none;
   }
   
   /* Icon Buttons */
@@ -5106,8 +5136,7 @@
   .mining-stat { color: rgba(255,255,255,0.7); }
   .mining-stat:first-child { color: #52c8db; font-weight: 600; }
 
-  /* Wallet Path Display */
-  .wallet-path { font-size: 0.7rem; color: rgba(255,255,255,0.35); font-family: var(--font-mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; margin: var(--s-1) auto 0 auto; text-align: center; }
+  /* Wallet path display moved to .balance-wallet-file in balance header */
 
   /* Contact Picker Dropdown */
   .contact-picker-dropdown {
