@@ -407,24 +407,24 @@ export async function syncNetworkMode() {
         currentEndpoint: endpoint,
       }));
       
-      // Update settingsState network label and persist.
-      // Do NOT touch daemonEndpoint here — it is loaded from disk by loadSettings()
-      // and updated only by TestAndConnectEndpoint. Overwriting it here would replace
-      // a user-configured remote endpoint with a constructed 127.0.0.1 URL.
+      // Update settingsState to mirror the backend's effective network state.
+      // Do not persist daemonEndpoint here; GetNetworkMode already returns the
+      // backend source of truth, including user-configured remote endpoints.
       const currentNetworkSetting = get(settingsState)?.network;
       if (currentNetworkSetting !== network) {
         settingsState.update(state => ({
           ...state,
           network: network,
+          daemonEndpoint: endpoint,
         }));
         await saveSetting('network', network);
       } else {
         settingsState.update(state => ({
           ...state,
           network: network,
+          daemonEndpoint: endpoint,
         }));
       }
-      
       console.log('[Network] Mode synced:', { network, endpoint });
     }
   } catch (error) {
