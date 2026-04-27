@@ -331,6 +331,10 @@
   
   async function doSwitchNetwork(networkId) {
     try {
+      if (networkId === $appState.network) {
+        showNetworkMenu = false;
+        return;
+      }
       // Use SetNetworkMode to properly update the backend
       const result = await SetNetworkMode(networkId);
       if (result.success) {

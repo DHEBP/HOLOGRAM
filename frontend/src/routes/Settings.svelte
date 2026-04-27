@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { settingsState, appState, consoleLogs, clearConsoleLogs, syncNetworkMode, saveSetting, loadSettings, updateStatus } from '../lib/stores/appState.js';
+  import { settingsState, appState, consoleLogs, clearConsoleLogs, syncNetworkMode, saveSetting, loadSettings, updateStatus, toast } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
   import { 
     SetSetting, StartGnomon, StopGnomon, ResyncGnomon, ResyncGnomonFromHeight,
@@ -212,6 +212,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     // Subscribe to network mode changes
     EventsOn('network-mode-changed', async () => {
       await syncNetworkMode();
+      customEndpoint = $appState.currentEndpoint || $settingsState.daemonEndpoint || customEndpoint;
     });
     
     // Listen for simulator crash events
@@ -915,15 +916,43 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   // Handle network mode change - syncs with backend
   async function handleNetworkChange(newNetwork) {
     try {
+      if (newNetwork === $appState.network) {
+        return;
+      }
+      if (newNetwork === 'simulator') {
+        const simulatorResult = await StartSimulatorMode();
+        if (simulatorResult.success) {
+          await refreshSimulatorStatus();
+          await syncNetworkMode();
+          customEndpoint = $appState.currentEndpoint || $settingsState.daemonEndpoint || customEndpoint;
+          toast.success(simulatorResult.message || 'Simulator mode activated');
+        } else {
+          toast.warning(simulatorResult.error || 'Failed to start simulator mode');
+        }
+        return;
+      }
+      if (newNetwork === 'mainnet' && $appState.network === 'simulator') {
+        const stopResult = await StopSimulatorMode();
+        if (!stopResult.success) {
+          toast.warning(stopResult.error || 'Failed to stop simulator mode');
+          return;
+        }
+        await refreshSimulatorStatus();
+        await syncNetworkMode();
+        customEndpoint = $appState.currentEndpoint || $settingsState.daemonEndpoint || customEndpoint;
+        return;
+      }
       // Update backend network mode
       const result = await SetNetworkMode(newNetwork);
       if (result.success) {
         // Sync network mode from backend (this updates appState and settingsState)
         await syncNetworkMode();
       } else {
+        toast.warning(result.error || 'Failed to set network mode');
         console.error('Failed to set network mode:', result.error);
       }
     } catch (error) {
+      toast.error(error.message || 'Failed to change network mode');
       console.error('Failed to change network mode:', error);
     }
   }

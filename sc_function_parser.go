@@ -18,8 +18,8 @@ type SCFunction struct {
 	Name       string    `json:"name"`
 	Params     []SCParam `json:"params"`
 	ReturnType string    `json:"returnType"`
-	UsesDERO   bool      `json:"usesDero"`  // DEROVALUE() detected
-	UsesAsset  bool      `json:"usesAsset"` // ASSETVALUE() detected
+	UsesDERO   bool      `json:"usesDero"`   // DEROVALUE() detected
+	UsesAsset  bool      `json:"usesAsset"`  // ASSETVALUE() detected
 	UsesSigner bool      `json:"usesSigner"` // SIGNER() detected - can't be anonymous
 }
 
@@ -269,6 +269,43 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 		}
 	}
 
+	// Validate SC arguments before building the transaction
+	if err := scArgs.Validate_Arguments(); err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] SC argument validation failed: %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Invalid SC arguments: " + err.Error(),
+		}
+	}
+	if a.simulatorManager != nil && a.simulatorManager.isInitialized {
+		return a.withSimulatorTransactionConnectivity(wallet, "scinvoke", func() map[string]interface{} {
+			return a.invokeSCFunctionSimulator(params, wallet, scArgs)
+		})
+	}
+
+	// Sync wallet with daemon before building the transaction
+	// (mirrors InternalWalletCall scinvoke path which does this and works correctly)
+	if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Pre-invoke wallet sync failed: %v", syncErr))
+	}
+
+	// Check daemon connectivity
+	if wallet.Get_Daemon_Height() == 0 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Wallet is not connected to the daemon. Please check your connection and try again.",
+		}
+	}
+
+	// Check wallet has balance for gas fees
+	mature, _ := wallet.Get_Balance()
+	if mature == 0 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Insufficient balance. Smart contract calls require gas fees — please fund your wallet first.",
+		}
+	}
+
 	// Build transfers
 	transfers := []rpc.Transfer{}
 
@@ -321,12 +358,53 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 		ringsize = 16
 	}
 
+	// Estimate gas via daemon RPC (same as Engram and InternalWalletCall paths)
+	gasStorage := uint64(0)
+	gasRPC := []map[string]interface{}{
+		{"name": "SC_ACTION", "datatype": "U", "value": uint64(0)},
+		{"name": "SC_ID", "datatype": "H", "value": params.SCID},
+		{"name": "entrypoint", "datatype": "S", "value": params.Function},
+	}
+	for name, value := range params.Params {
+		switch v := value.(type) {
+		case string:
+			gasRPC = append(gasRPC, map[string]interface{}{"name": name, "datatype": "S", "value": v})
+		case float64:
+			gasRPC = append(gasRPC, map[string]interface{}{"name": name, "datatype": "U", "value": uint64(v)})
+		}
+	}
+	gasParams := map[string]interface{}{
+		"sc_rpc":   gasRPC,
+		"ringsize": ringsize,
+		"signer":   wallet.GetAddress().String(),
+	}
+	if a.daemonClient != nil {
+		gasResult, gasErr := a.daemonClient.Call("DERO.GetGasEstimate", gasParams)
+		if gasErr != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Gas estimate failed (proceeding with 0): %v", gasErr))
+		} else if resultMap, ok := gasResult.(map[string]interface{}); ok {
+			if gs, ok := resultMap["gasstorage"].(float64); ok {
+				gasStorage = uint64(gs)
+			}
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[SC] Building TX: ringsize=%d gasStorage=%d transfers=%d", ringsize, gasStorage, len(transfers)))
+
 	// Build and send transaction
-	tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, 0, false)
+	tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, gasStorage, false)
 	if err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Transaction failed: " + err.Error(),
+		// Retry after resync (mirrors InternalWalletCall pattern)
+		a.logToConsole(fmt.Sprintf("[WARN] SC invoke build failed, retrying after resync: %v", err))
+		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
+		}
+		tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, gasStorage, false)
+		if err != nil {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Transaction failed: " + err.Error(),
+			}
 		}
 	}
 
@@ -346,6 +424,114 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 		"function": params.Function,
 		"message":  "Smart contract function called successfully",
 	}
+}
+
+func (a *App) invokeSCFunctionSimulator(params InvokeSCFunctionParams, wallet *walletapi.Wallet_Disk, scArgs rpc.Arguments) map[string]interface{} {
+	mature, _ := wallet.Get_Balance()
+	if mature == 0 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Insufficient balance. Smart contract calls require gas fees — please fund your simulator wallet first.",
+		}
+	}
+
+	destination := a.getSimulatorTransferDestination(wallet.GetAddress().String())
+	transfers := []rpc.Transfer{}
+	if params.DeroAmount > 0 {
+		transfers = append(transfers, rpc.Transfer{
+			Destination: destination,
+			Amount:      0,
+			Burn:        params.DeroAmount,
+		})
+	}
+	if params.AssetSCID != "" && params.AssetAmount > 0 {
+		transfers = append(transfers, rpc.Transfer{
+			Destination: destination,
+			SCID:        crypto.HashHexToHash(params.AssetSCID),
+			Amount:      0,
+			Burn:        params.AssetAmount,
+		})
+	}
+	if len(transfers) == 0 {
+		transfers = append(transfers, rpc.Transfer{
+			Destination: destination,
+			Amount:      0,
+		})
+	}
+
+	ringsize := uint64(2)
+	if params.Anonymous {
+		ringsize = 16
+	}
+
+	gasStorage := a.estimateSCInvokeGas(params, wallet, ringsize)
+	a.logToConsole(fmt.Sprintf("[SC] Building simulator TX: ringsize=%d gasStorage=%d transfers=%d", ringsize, gasStorage, len(transfers)))
+
+	tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, gasStorage, false)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Transaction failed: " + err.Error(),
+		}
+	}
+
+	if err := wallet.SendTransaction(tx); err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Failed to send transaction: " + err.Error(),
+		}
+	}
+
+	txid := tx.GetHash().String()
+	a.logToConsole(fmt.Sprintf("[OK] SC invoked successfully: %s...", txid[:16]))
+	return map[string]interface{}{
+		"success":  true,
+		"txid":     txid,
+		"function": params.Function,
+		"message":  "Smart contract function called successfully",
+	}
+}
+
+func (a *App) estimateSCInvokeGas(params InvokeSCFunctionParams, wallet *walletapi.Wallet_Disk, ringsize uint64) uint64 {
+	gasRPC := []map[string]interface{}{
+		{"name": "SC_ACTION", "datatype": "U", "value": uint64(0)},
+		{"name": "SC_ID", "datatype": "H", "value": params.SCID},
+		{"name": "entrypoint", "datatype": "S", "value": params.Function},
+	}
+	for name, value := range params.Params {
+		switch v := value.(type) {
+		case string:
+			gasRPC = append(gasRPC, map[string]interface{}{"name": name, "datatype": "S", "value": v})
+		case float64:
+			gasRPC = append(gasRPC, map[string]interface{}{"name": name, "datatype": "U", "value": uint64(v)})
+		case int:
+			gasRPC = append(gasRPC, map[string]interface{}{"name": name, "datatype": "U", "value": uint64(v)})
+		}
+	}
+
+	gasParams := map[string]interface{}{
+		"sc_rpc":   gasRPC,
+		"ringsize": ringsize,
+		"signer":   wallet.GetAddress().String(),
+	}
+	if a.daemonClient == nil {
+		return 0
+	}
+
+	gasResult, gasErr := a.daemonClient.Call("DERO.GetGasEstimate", gasParams)
+	if gasErr != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] Gas estimate failed (proceeding with 0): %v", gasErr))
+		return 0
+	}
+
+	resultMap, ok := gasResult.(map[string]interface{})
+	if !ok {
+		return 0
+	}
+	if gs, ok := resultMap["gasstorage"].(float64); ok {
+		return uint64(gs)
+	}
+	return 0
 }
 
 // invokeSCViaXSWD invokes SC function via XSWD connection
@@ -483,6 +669,7 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 
 		// Step 1: Close any lingering walletapi WebSocket (e.g. from OpenSimulatorTestWallet)
 		// BEFORE pausing Gnomon, so the daemon isn't juggling multiple connections.
+		walletapi.Daemon_Endpoint_Active = ""
 		a.disconnectWalletAPI()
 
 		// Step 2: Pause Gnomon (closes its persistent WebSocket)
@@ -492,6 +679,7 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		time.Sleep(300 * time.Millisecond)
 
 		if err := walletapi.Connect(endpoint); err != nil {
+			walletapi.Daemon_Endpoint_Active = ""
 			if gnomonWasRunning {
 				a.resumeGnomonForSimulator()
 			}
@@ -512,9 +700,12 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		senderAddr := wallet.GetAddress().String()
 		destAddr := a.getSimulatorTransferDestination(senderAddr)
 		transfers := []rpc.Transfer{{Destination: destAddr, Amount: 0}}
+		gasStorage := SimulatorGasFee
+		a.logToConsole(fmt.Sprintf("[GAS] Simulator mode — using fixed gas fee for SC install: %d", gasStorage))
 
-		tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, 0, false)
+		tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, gasStorage, false)
 		if err != nil {
+			walletapi.Daemon_Endpoint_Active = ""
 			a.disconnectWalletAPI()
 			if gnomonWasRunning {
 				a.resumeGnomonForSimulator()
@@ -526,6 +717,7 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		}
 
 		if err := wallet.SendTransaction(tx); err != nil {
+			walletapi.Daemon_Endpoint_Active = ""
 			a.disconnectWalletAPI()
 			if gnomonWasRunning {
 				a.resumeGnomonForSimulator()
@@ -539,6 +731,7 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		txid := tx.GetHash().String()
 
 		// Disconnect to free the daemon's single WebSocket slot
+		walletapi.Daemon_Endpoint_Active = ""
 		a.disconnectWalletAPI()
 		a.logToConsole(fmt.Sprintf("[OK] SC installed! TXID: %s (simulator, disconnected)", txid[:16]))
 
@@ -600,4 +793,3 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		"message": "Smart contract installed successfully. The SCID will be available once the transaction is confirmed.",
 	}
 }
-

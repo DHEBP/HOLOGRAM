@@ -1289,11 +1289,13 @@ func (a *App) withSimulatorTransactionConnectivity(wallet *walletapi.Wallet_Disk
 	endpoint := fmt.Sprintf("127.0.0.1:%d", GetNetworkConfig(NetworkSimulator).RPCPort)
 
 	// Close any stale walletapi socket first, then pause Gnomon so the simulator has one free slot.
+	walletapi.Daemon_Endpoint_Active = ""
 	a.disconnectWalletAPI()
 	gnomonWasRunning := a.pauseGnomonForSimulator()
 	time.Sleep(300 * time.Millisecond)
 
 	cleanup := func() {
+		walletapi.Daemon_Endpoint_Active = ""
 		a.disconnectWalletAPI()
 		if gnomonWasRunning {
 			time.Sleep(300 * time.Millisecond)
@@ -1302,6 +1304,7 @@ func (a *App) withSimulatorTransactionConnectivity(wallet *walletapi.Wallet_Disk
 	}
 
 	if err := walletapi.Connect(endpoint); err != nil {
+		walletapi.Daemon_Endpoint_Active = ""
 		cleanup()
 		return map[string]interface{}{
 			"success":        false,
@@ -3117,10 +3120,10 @@ func (a *App) VerifySignature(signedData string) map[string]interface{} {
 // registrationState tracks the PoW registration process
 type registrationState struct {
 	sync.RWMutex
-	inProgress   bool
-	hashCount    uint64
-	startTime    time.Time
-	cancelCh     chan struct{}
+	inProgress bool
+	hashCount  uint64
+	startTime  time.Time
+	cancelCh   chan struct{}
 }
 
 var regState = &registrationState{}
@@ -3244,8 +3247,8 @@ func (a *App) RegisterWallet() map[string]interface{} {
 			numThreads = 2 // Minimum 2 threads
 		}
 		a.logToConsole(fmt.Sprintf("[REGISTER] Starting PoW with %d threads (CPU cores: %d)", numThreads, goruntime.NumCPU()))
-		doneCh := make(chan struct{})   // Signals that registration is complete
-		var doneOnce sync.Once          // Ensure we only complete once
+		doneCh := make(chan struct{}) // Signals that registration is complete
+		var doneOnce sync.Once        // Ensure we only complete once
 		var wg sync.WaitGroup
 
 		for i := 0; i < numThreads; i++ {
@@ -3292,9 +3295,9 @@ func (a *App) RegisterWallet() map[string]interface{} {
 							// Found a valid hash! Send the transaction immediately before returning
 							doneOnce.Do(func() {
 								close(doneCh) // Signal other threads to stop
-								
+
 								a.logToConsole(fmt.Sprintf("[REGISTER] PoW solved! Hash: %x", hash))
-								
+
 								// Send the transaction RIGHT NOW while we have the valid TX
 								err := w.SendTransaction(regTx)
 								if err != nil {
@@ -3310,7 +3313,7 @@ func (a *App) RegisterWallet() map[string]interface{} {
 								txid := regTx.GetHash().String()
 								a.logToConsole(fmt.Sprintf("[REGISTER] Registration TX sent! TXID: %s", txid))
 								a.logToConsole("[REGISTER] Waiting for blockchain confirmation...")
-								
+
 								// Emit pending state to frontend
 								if a.ctx != nil {
 									runtime.EventsEmit(a.ctx, "wallet:registration_pending", map[string]interface{}{
@@ -3318,13 +3321,13 @@ func (a *App) RegisterWallet() map[string]interface{} {
 										"message": "Registration TX broadcast. Waiting for confirmation...",
 									})
 								}
-								
+
 								// Poll for confirmation - the TX needs to be included in a block
 								go func() {
 									maxAttempts := 30 // Try for ~90 seconds (30 * 3s)
 									for attempt := 1; attempt <= maxAttempts; attempt++ {
 										time.Sleep(3 * time.Second)
-										
+
 										// Check if wallet is still open
 										walletManager.RLock()
 										wallet := walletManager.wallet
@@ -3333,11 +3336,11 @@ func (a *App) RegisterWallet() map[string]interface{} {
 											a.logToConsole("[REGISTER] Wallet closed during confirmation wait")
 											return
 										}
-										
+
 										// Sync and check registration height
 										_ = wallet.Sync_Wallet_Memory_With_Daemon()
 										regHeight := wallet.Get_Registration_TopoHeight()
-										
+
 										if regHeight >= 0 {
 											a.logToConsole(fmt.Sprintf("[REGISTER] Registration confirmed at height %d!", regHeight))
 											if a.ctx != nil {
@@ -3348,12 +3351,12 @@ func (a *App) RegisterWallet() map[string]interface{} {
 											}
 											return
 										}
-										
+
 										if attempt%5 == 0 {
 											a.logToConsole(fmt.Sprintf("[REGISTER] Still waiting for confirmation... (attempt %d/%d)", attempt, maxAttempts))
 										}
 									}
-									
+
 									// If we get here, confirmation didn't happen in time
 									// The TX might still be pending in the mempool
 									a.logToConsole("[REGISTER] Confirmation taking longer than expected. TX is in mempool, will be confirmed soon.")
