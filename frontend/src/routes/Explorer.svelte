@@ -102,6 +102,10 @@
   function isHexEncoded(str) {
     if (typeof str !== 'string' || str.length === 0 || str.length % 2 !== 0) return false;
     if (!/^[0-9a-fA-F]+$/.test(str)) return false;
+    // DERO.GetSC can return uint64 values under stringkeys when the variable key
+    // itself is a string (e.g. score_0 = "50"). Do not decode decimal numerics
+    // as ASCII hex ("50" -> "P").
+    if (/^\d+$/.test(str)) return false;
     const decoded = tryHexDecode(str);
     return decoded !== str;
   }
