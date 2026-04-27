@@ -658,13 +658,17 @@
     showVersionHistory = true;
   }
   
+  // Track previous wallet address to detect actual changes
+  let previousWalletAddress = '';
+  
   // Auto-load My Content when switching to the tab
   $: if (activeTab === 'my-content' && !myContentLoaded && !myContentLoading && $walletState.isOpen) {
     loadMyContent();
   }
   
-  // Reload when wallet changes
-  $: if ($walletState.address) {
+  // Reload when wallet address ACTUALLY changes (not just any wallet state update)
+  $: if ($walletState.address && $walletState.address !== previousWalletAddress) {
+    previousWalletAddress = $walletState.address;
     myContentLoaded = false;
     if (activeTab === 'my-content') {
       loadMyContent();
