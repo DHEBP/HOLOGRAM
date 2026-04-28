@@ -1338,42 +1338,60 @@ func parseXSWDScArgs(params map[string]interface{}, scid string) rpc.Arguments {
 	hasEntrypointInScRpc := false
 	entrypointFromScRpc := ""
 
+	appendScArg := func(argMap map[string]interface{}) {
+		name, _ := argMap["name"].(string)
+		dtype, _ := argMap["datatype"].(string)
+		val := argMap["value"]
+		if name == "" {
+			return
+		}
+		if name == "entrypoint" {
+			hasEntrypointInScRpc = true
+			if ep, ok := val.(string); ok {
+				entrypointFromScRpc = ep
+			}
+		}
+		switch dtype {
+		case "U":
+			switch v := val.(type) {
+			case float64:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+			case uint64:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: v})
+			case int:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+			}
+		case "I":
+			switch v := val.(type) {
+			case float64:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: int64(v)})
+			case int64:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: v})
+			case int:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: int64(v)})
+			}
+		case "S":
+			if v, ok := val.(string); ok {
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
+			}
+		case "H":
+			if v, ok := val.(string); ok {
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
+			}
+		}
+	}
+
 	if args, ok := params["sc_rpc"].([]interface{}); ok {
 		for _, arg := range args {
-			a, ok := arg.(map[string]interface{})
+			argMap, ok := arg.(map[string]interface{})
 			if !ok {
 				continue
 			}
-			name, _ := a["name"].(string)
-			dtype, _ := a["datatype"].(string)
-			val := a["value"]
-			if name == "" {
-				continue
-			}
-			if name == "entrypoint" {
-				hasEntrypointInScRpc = true
-				if ep, ok := val.(string); ok {
-					entrypointFromScRpc = ep
-				}
-			}
-			switch dtype {
-			case "U":
-				if v, ok := val.(float64); ok {
-					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
-				}
-			case "I":
-				if v, ok := val.(float64); ok {
-					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: int64(v)})
-				}
-			case "S":
-				if v, ok := val.(string); ok {
-					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
-				}
-			case "H":
-				if v, ok := val.(string); ok {
-					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
-				}
-			}
+			appendScArg(argMap)
+		}
+	} else if args, ok := params["sc_rpc"].([]map[string]interface{}); ok {
+		for _, argMap := range args {
+			appendScArg(argMap)
 		}
 	}
 
@@ -1650,6 +1668,12 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 
 		// Parse SC arguments (shared helper handles all datatypes including I, U, S, H)
 		scArgs := parseXSWDScArgs(params, scid)
+		if len(scArgs) == 0 {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Invalid smart contract call. Missing or malformed 'entrypoint'/'sc_rpc' parameters.",
+			}
+		}
 
 		// sc_dero_deposit / sc_token_deposit -- amount attached to the SC call.
 		// These are top-level params distinct from the transfers array.
@@ -1728,6 +1752,30 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			fees := uint64(0)
 			if f, ok := params["fees"].(float64); ok && f > 0 {
 				fees = uint64(f)
+			}
+
+			// Guard against wallet library panic path: scinvoke with no transfers at all.
+			if len(transfers) == 0 {
+				destination := ""
+				if a.IsInSimulatorMode() {
+					destination = a.getSimulatorTransferDestination(wallet.GetAddress().String())
+				} else {
+					randos := wallet.Random_ring_members(crypto.ZEROHASH)
+					if len(randos) == 0 {
+						return map[string]interface{}{
+							"success": false,
+							"error":   "Could not get ring members for SC call. Please check daemon connection and retry.",
+						}
+					}
+					destination = randos[0]
+					if destination == wallet.GetAddress().String() && len(randos) > 1 {
+						destination = randos[1]
+					}
+				}
+				transfers = append(transfers, rpc.Transfer{
+					Destination: destination,
+					Amount:      0,
+				})
 			}
 			a.logToConsole(fmt.Sprintf("[XSWD] Building scinvoke TX with ringsize=%d fees=%d", ringsize, fees))
 

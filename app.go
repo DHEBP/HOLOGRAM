@@ -834,6 +834,7 @@ func (a *App) DaemonGetSC(scid string) map[string]interface{} {
 	if err != nil {
 		return ErrorResponse(err)
 	}
+	res = normalizeDEROGetSCResult(res)
 	return map[string]interface{}{"success": true, "result": res}
 }
 
