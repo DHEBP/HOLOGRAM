@@ -4839,14 +4839,7 @@
     font-size: 12px;
     color: var(--status-warn);
   }
-  
-  .backup-actions {
-    display: flex;
-    gap: var(--s-3);
-    justify-content: flex-end;
-    margin-top: var(--s-4);
-  }
-  
+
   /* Keys Display Styles */
   .keys-warning-critical {
     display: flex;
@@ -4863,87 +4856,6 @@
   
   .keys-warning-critical strong {
     font-weight: 600;
-  }
-  
-  .keys-display {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-4);
-  }
-  
-  .key-section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-3);
-  }
-  
-  .key-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--text-3);
-  }
-  
-  .key-label {
-    color: var(--text-2);
-  }
-  
-  .key-warning-badge {
-    padding: 2px 8px;
-    background: rgba(248, 113, 113, 0.15);
-    color: var(--status-err);
-    border-radius: var(--r-xs);
-    font-size: 9px;
-    font-weight: 600;
-  }
-  
-  .key-value-box {
-    padding: var(--s-3) var(--s-4);
-    background: var(--void-deep);
-    border: 1px solid var(--border-dim);
-    border-radius: var(--r-md);
-    word-break: break-all;
-  }
-  
-  .key-value {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-1);
-    line-height: 1.6;
-    display: block;
-  }
-  
-  .key-value.mono {
-    font-variant-numeric: tabular-nums;
-  }
-  
-  .key-warning-text {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    padding: var(--s-2) var(--s-3);
-    background: rgba(251, 191, 36, 0.1);
-    border-radius: var(--r-sm);
-    font-size: 11px;
-    color: var(--status-warn);
-  }
-  
-  .key-info-text {
-    padding: var(--s-2) var(--s-3);
-    font-size: 11px;
-    color: var(--text-4);
-    font-style: italic;
-  }
-  
-  .key-separator {
-    height: 1px;
-    background: var(--border-dim);
-    margin: var(--s-2) 0;
   }
 
   .tx-label { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: rgba(82, 200, 219, 0.15); border: 1px solid rgba(82, 200, 219, 0.3); border-radius: 4px; font-size: 0.75rem; color: #52c8db; }
