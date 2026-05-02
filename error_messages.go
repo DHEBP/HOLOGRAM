@@ -91,9 +91,9 @@ var TELADeploymentErrors = []TELADeploymentError{
 	// === Wallet/Account errors ===
 	{
 		Pattern:     `Account Unregistered|account unregistered|-32098.*unregistered`,
-		Title:       "Destination wallet is not registered",
-		Description: "The destination address for this transaction is not registered on the blockchain. In DERO, addresses must be registered before receiving transactions.",
-		Fix:         "Use a registered wallet address. In simulator mode, use one of the pre-seeded test wallets.",
+		Title:       "Recipient wallet is not registered",
+		Description: "The recipient's wallet address is not yet registered on the DERO blockchain. In DERO, addresses must be registered before they can receive transactions.",
+		Fix:         "The recipient needs to register their wallet first. They can do this by clicking 'Register Now' in their wallet app (Backup & Security section). Registration uses PoW and can take a few minutes. In simulator mode, use one of the pre-seeded test wallets which are already registered.",
 		Example:     "",
 	},
 	{
@@ -350,7 +350,7 @@ var UserFriendlyErrors = map[string]string{
 	"wallet file not found":        "Wallet file not found. Check the path.",
 	"insufficient balance":         "Not enough DERO for this transaction.",
 	"insufficient funds":           "Not enough DERO for this transaction.",
-	"account unregistered":         "Destination wallet is not registered on the blockchain.",
+	"account unregistered":         "Recipient's wallet is not registered on-chain. They need to open their wallet and click 'Register Now' (in Backup & Security) before they can receive DERO.",
 	"sending to self":              "Cannot send transactions to your own address.",
 	
 	// Transaction errors
@@ -384,7 +384,7 @@ var UserFriendlyErrors = map[string]string{
 	"-32601":                       "RPC method not found. Check method name.",
 	"-32700":                       "Invalid JSON in request.",
 	"-32602":                       "Invalid parameters for RPC method.",
-	"-32098":                       "DERO daemon error. Check the error details.",
+	"-32098":                       "Recipient's wallet is not registered on-chain. They need to open their wallet and click 'Register Now' (in Backup & Security) before they can receive DERO.",
 	
 	// Gnomon errors
 	"gnomon not running":           "Gnomon indexer is not running. Start it in Settings.",

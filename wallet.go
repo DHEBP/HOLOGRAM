@@ -3266,7 +3266,7 @@ func (a *App) GetRegistrationStatus() map[string]interface{} {
 	}
 
 	if !isRegistered {
-		result["message"] = "Wallet address not yet on-chain. You can either receive DERO (auto-registers) or manually register via PoW."
+		result["message"] = "Wallet address not yet on-chain. Run PoW registration first, then receive DERO."
 	} else {
 		result["message"] = "Wallet is registered on-chain"
 	}

@@ -1677,7 +1677,7 @@
                     <span>TX broadcast successfully. Waiting for blockchain confirmation...</span>
                   {:else}
                     <strong>New Wallet</strong>
-                    <span>Your address isn't on-chain yet. Receive DERO to auto-register, or register manually via PoW.</span>
+                    <span>Your address isn't on-chain yet. Click Register Now to complete on-chain registration via PoW before receiving DERO.</span>
                   {/if}
                 </div>
               </div>
