@@ -6679,8 +6679,4 @@
   .landing-status-simulator {
     color: var(--status-warn, #fbbf24);
   }
-
-  .landing-status-simulator .landing-status-icon {
-    color: var(--status-warn, #fbbf24);
-  }
 </style>
