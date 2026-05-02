@@ -205,6 +205,9 @@ func (a *App) searchSmartContract(query string) SearchResult {
 			Error:   fmt.Sprintf("Smart contract lookup failed: %v", err),
 		}
 	}
+	if normalized, ok := normalizeDEROGetSCResult(result).(map[string]interface{}); ok {
+		result = normalized
+	}
 
 	// Log what we got back from daemon
 	a.logToConsole(fmt.Sprintf("[SC] Result keys: %v", getMapKeys(result)))

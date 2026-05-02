@@ -18,6 +18,7 @@
   import SearchHistory from '../lib/components/SearchHistory.svelte';
   import VersionHistory from '../lib/components/VersionHistory.svelte';
   import SCFunctionInteractor from '../lib/components/SCFunctionInteractor.svelte';
+  import { formatSCDisplayKey, formatSCDisplayValue } from '../lib/utils/scValueDisplay.js';
   import { 
     Package, FileText, Coins, Clock, Copy, ArrowLeft, Home, X, ChevronLeft, ChevronRight,
     FileCode, User, Globe, Lock, Info, AlertTriangle, Check, Loader2, Shield, Pickaxe,
@@ -88,26 +89,12 @@
   // Hex toggle: tracks which string var keys are currently showing raw hex instead of decoded text
   let hexViewKeys = {};
   function toggleHexView(key) { hexViewKeys[key] = !hexViewKeys[key]; hexViewKeys = hexViewKeys; }
-  function tryHexDecode(hex) {
-    if (typeof hex !== 'string') return String(hex);
-    try {
-      const bytes = hex.match(/.{1,2}/g);
-      if (!bytes) return hex;
-      const decoded = new TextDecoder('utf-8', { fatal: true }).decode(
-        new Uint8Array(bytes.map(b => parseInt(b, 16)))
-      );
-      return decoded.replace(/\0+$/, '');
-    } catch { return hex; }
-  }
-  function isHexEncoded(str) {
-    if (typeof str !== 'string' || str.length === 0 || str.length % 2 !== 0) return false;
-    if (!/^[0-9a-fA-F]+$/.test(str)) return false;
-    // DERO.GetSC can return uint64 values under stringkeys when the variable key
-    // itself is a string (e.g. score_0 = "50"). Do not decode decimal numerics
-    // as ASCII hex ("50" -> "P").
-    if (/^\d+$/.test(str)) return false;
-    const decoded = tryHexDecode(str);
-    return decoded !== str;
+  function getSCDisplayName(data, fallback = 'Smart Contract') {
+    const stringkeys = data?.stringkeys || {};
+    const rawName = stringkeys.nameHdr ?? stringkeys.var_header_name ?? stringkeys.dURL;
+    if (rawName == null || rawName === '') return fallback;
+
+    return formatSCDisplayValue(rawName).display || fallback;
   }
   
   // SC Discovery state
@@ -1276,9 +1263,7 @@
     
     watchingInProgress = true;
     try {
-      const scName = searchResult?.data?.stringkeys?.nameHdr || 
-                     searchResult?.data?.stringkeys?.dURL || 
-                     searchQuery.substring(0, 16);
+      const scName = getSCDisplayName(searchResult?.data, searchQuery.substring(0, 16));
       const result = await WatchSmartContract(searchQuery, scName);
       if (result.success) {
         toast.success('Now watching this smart contract');
@@ -2341,19 +2326,16 @@
                 </div>
                 <div class="cmd-vars-list">
                   {#each Object.entries(searchResult.data.stringkeys) as [key, value]}
-                    {@const strVal = String(value)}
-                    {@const decodedKey = isHexEncoded(key) ? tryHexDecode(key) : key}
-                    {@const decodedVal = isHexEncoded(strVal) ? tryHexDecode(strVal) : strVal}
-                    {@const keyWasDecoded = decodedKey !== key}
-                    {@const valWasDecoded = decodedVal !== strVal}
+                    {@const displayKey = formatSCDisplayKey(key)}
+                    {@const displayVal = formatSCDisplayValue(value)}
                     {@const showingRaw = hexViewKeys[key]}
                     <div class="cmd-var-row">
-                      <span class="cmd-var-key string">{showingRaw ? key : decodedKey}</span>
+                      <span class="cmd-var-key string">{showingRaw ? displayKey.raw : displayKey.display}</span>
                       <div class="cmd-var-value-row">
-                        <span class="cmd-var-value" class:cmd-var-hex={showingRaw} title={showingRaw ? strVal : decodedVal}>
-                          {showingRaw ? strVal : decodedVal}
+                        <span class="cmd-var-value" class:cmd-var-hex={showingRaw} title={showingRaw ? displayVal.raw : displayVal.display}>
+                          {showingRaw ? displayVal.raw : displayVal.display}
                         </span>
-                        {#if keyWasDecoded || valWasDecoded}
+                        {#if displayKey.wasDecoded || displayVal.wasDecoded}
                           <button
                             class="cmd-hex-toggle"
                             class:active={showingRaw}
@@ -2414,9 +2396,7 @@
               <!-- SC Quick Actions (Phase 4) -->
               <SCQuickActions 
                 scid={searchQuery} 
-                scName={searchResult.data.stringkeys?.nameHdr ? 
-                  (typeof searchResult.data.stringkeys.nameHdr === 'string' ? 
-                    searchResult.data.stringkeys.nameHdr : 'Smart Contract') : 'Smart Contract'}
+                scName={getSCDisplayName(searchResult.data)}
               />
               
               <!-- Version History (for TELA INDEXes) -->
