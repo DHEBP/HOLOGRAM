@@ -644,6 +644,49 @@ func (a *App) GetWalletKeys(password string) map[string]interface{} {
 	}
 }
 
+// ClipboardClearIf atomically clears the native OS clipboard if it still
+// contains the value the caller previously placed there.
+//
+// Why this exists: navigator.clipboard.writeText("") in the embedded WebKit
+// is rejected with NotAllowedError when invoked outside a user-gesture
+// context (e.g. from a setTimeout 30s after a copy). The native pasteboard
+// has no such restriction, so we route the auto-clear through Go.
+//
+// Returns:
+//
+//	{ success: bool, cleared: bool, error?: string }
+//
+// `cleared` is true only when the clipboard contained `expected` and was
+// successfully overwritten with empty. If the user copied something else
+// in the meantime, `cleared` is false and we leave their data alone.
+func (a *App) ClipboardClearIf(expected string) map[string]interface{} {
+	current, err := runtime.ClipboardGetText(a.ctx)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"cleared": false,
+			"error":   "clipboard read failed: " + err.Error(),
+		}
+	}
+	if current != expected {
+		return map[string]interface{}{
+			"success": true,
+			"cleared": false,
+		}
+	}
+	if err := runtime.ClipboardSetText(a.ctx, ""); err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"cleared": false,
+			"error":   "clipboard write failed: " + err.Error(),
+		}
+	}
+	return map[string]interface{}{
+		"success": true,
+		"cleared": true,
+	}
+}
+
 // GetIntegratedAddress generates an integrated address with optional destination port (payment ID)
 // In DERO, "payment ID" is implemented as a destination port (uint64) embedded in the address.
 // The resulting address changes from dero.../deto... to deroi.../detoi... format.

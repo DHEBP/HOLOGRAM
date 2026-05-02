@@ -114,6 +114,10 @@ export function ClearSearchExclusions() {
   return window['go']['main']['App']['ClearSearchExclusions']();
 }
 
+export function ClipboardClearIf(arg1) {
+  return window['go']['main']['App']['ClipboardClearIf'](arg1);
+}
+
 export function CloneTELA(arg1, arg2) {
   return window['go']['main']['App']['CloneTELA'](arg1, arg2);
 }

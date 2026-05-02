@@ -15,6 +15,7 @@
   import QRCodeComponent from '../lib/components/QRCode.svelte';
   import AddContactModal from '../lib/components/AddContactModal.svelte';
   import PasswordInput from '../lib/components/PasswordInput.svelte';
+  import RevealSecretModal from '../lib/components/RevealSecretModal.svelte';
   
   // ============================================
   // NAVIGATION STATE
@@ -181,20 +182,14 @@
   // ============================================
   // BACKUP & SECURITY STATE
   // ============================================
-  let backupPassword = '';
-  let seedRevealed = false;
-  let revealedSeed = '';
-  let backupLoading = false;
-  let backupError = null;
-  
-  // Keys state
-  let keysPassword = '';
-  let keysRevealed = false;
-  let revealedSecretKey = '';
-  let revealedPublicKey = '';
-  let keysLoading = false;
-  let keysError = null;
-  
+  // NOTE: The decrypted seed and keys intentionally do NOT live here. They are
+  // owned by <RevealSecretModal/> children below so that unmounting the modal
+  // (close, ESC, wallet switch, wallet close, route change) drops the only
+  // reference and lets GC reclaim the secret. This matches Engram's invariant
+  // that the seed is only read live from the open wallet at render time.
+  let showSeedModal = false;
+  let showKeysModal = false;
+
   // Change Password state
   let changePasswordCurrent = '';
   let changePasswordNew = '';
@@ -1302,78 +1297,15 @@
   }
   
   // ============================================
-  // BACKUP & SECURITY FUNCTIONS
+  // BACKUP & SECURITY: REVEAL MODAL CONTROL
   // ============================================
-  async function revealSeed() {
-    if (!backupPassword.trim()) {
-      backupError = 'Please enter your wallet password';
-      return;
-    }
-    
-    backupLoading = true;
-    backupError = null;
-    
-    try {
-      const result = await GetSeedPhrase(backupPassword);
-      if (result.success) {
-        revealedSeed = result.seed;
-        seedRevealed = true;
-        backupPassword = ''; // Clear password from memory
-        toast.success('Seed phrase revealed');
-      } else {
-        backupError = handleBackendError(result, { showToast: false }) || 'Failed to retrieve seed phrase';
-      }
-    } catch (err) {
-      console.error('Error retrieving seed phrase:', err);
-      backupError = err.message || 'Failed to retrieve seed phrase';
-    } finally {
-      backupLoading = false;
-    }
-  }
-  
-  function resetBackup() {
-    seedRevealed = false;
-    revealedSeed = '';
-    backupPassword = '';
-    backupError = null;
-    showBackupPassword = false;
-  }
-  
-  async function revealKeys() {
-    if (!keysPassword.trim()) {
-      keysError = 'Please enter your wallet password';
-      return;
-    }
-    
-    keysLoading = true;
-    keysError = null;
-    
-    try {
-      const result = await GetWalletKeys(keysPassword);
-      if (result.success) {
-        revealedSecretKey = result.secretKey;
-        revealedPublicKey = result.publicKey;
-        keysRevealed = true;
-        keysPassword = ''; // Clear password from memory
-        toast.success('Wallet keys revealed');
-      } else {
-        keysError = handleBackendError(result, { showToast: false }) || 'Failed to retrieve wallet keys';
-      }
-    } catch (err) {
-      console.error('Error retrieving wallet keys:', err);
-      keysError = err.message || 'Failed to retrieve wallet keys';
-    } finally {
-      keysLoading = false;
-    }
-  }
-  
-  function resetKeys() {
-    keysRevealed = false;
-    revealedSecretKey = '';
-    revealedPublicKey = '';
-    keysPassword = '';
-    keysError = null;
-    showKeysPassword = false;
+  // The decrypted seed/keys live inside <RevealSecretModal/>. This route only
+  // toggles which modal is mounted. Whenever the active wallet path changes
+  // or the wallet is closed, both modals are dismissed so the child is
+  // unmounted and its local secret state is GC'd.
+  $: if (!$walletState.isOpen && (showSeedModal || showKeysModal)) {
+    showSeedModal = false;
+    showKeysModal = false;
   }
   
   // ============================================
@@ -1575,8 +1507,14 @@
     }
   }
 
-  // Keep wallet path display synced when wallet is switched outside this route
+  // Keep wallet path display synced when wallet is switched outside this route.
+  // Also dismiss any open reveal modal so the previous wallet's decrypted
+  // material cannot render under the new wallet (security: cross-wallet leak).
   $: if ($walletState.walletPath && $walletState.walletPath !== currentWalletPath) {
+    if (currentWalletPath && (showSeedModal || showKeysModal)) {
+      showSeedModal = false;
+      showKeysModal = false;
+    }
     currentWalletPath = $walletState.walletPath;
   }
 </script>
@@ -2847,83 +2785,22 @@
                 RECOVERY SEED
               </div>
             </div>
-            
+
             <div class="backup-content">
-              {#if !seedRevealed}
-                <!-- Password Prompt -->
-                <div class="backup-warning">
-                  <AlertTriangle size={16} />
-                  <span>Enter your wallet password to view your recovery seed phrase</span>
-                </div>
-                
-                <div class="form-group">
-                  <label class="form-label">Wallet Password</label>
-                  <PasswordInput bind:value={backupPassword} placeholder="Enter wallet password" />
-                </div>
-                
-                {#if backupError}
-                  <div class="alert alert-error">
-                    <AlertTriangle size={14} />
-                    <span>{backupError}</span>
-                  </div>
-                {/if}
-                
-                <div class="form-actions">
-                  <button 
-                    class="btn btn-primary" 
-                    on:click={revealSeed} 
-                    disabled={backupLoading || !backupPassword.trim()}
-                  >
-                    {#if backupLoading}
-                      <Loader2 size={14} class="spin" />
-                      Verifying...
-                    {:else}
-                      View Seed Phrase
-                    {/if}
-                  </button>
-                </div>
-              {:else}
-                <!-- Seed Display -->
-                <div class="seed-header">
-                  <AlertTriangle size={32} class="seed-warning-icon" />
-                  <h2 class="seed-title">Your Recovery Seed</h2>
-                  <p class="seed-subtitle">Write down these 25 words in order. This is the ONLY way to recover your wallet.</p>
-                </div>
-                
-                <div class="seed-grid">
-                  {#each revealedSeed.split(' ') as word, i}
-                    <div class="seed-word">
-                      <span class="seed-num">{i + 1}</span>
-                      <span class="seed-text">{word}</span>
-                    </div>
-                  {/each}
-                </div>
-                
-                <div class="seed-warnings">
-                  <div class="warning-item">
-                    <AlertTriangle size={16} />
-                    <span>NEVER share your seed with anyone</span>
-                  </div>
-                  <div class="warning-item">
-                    <AlertTriangle size={16} />
-                    <span>Hologram will NEVER ask for your seed</span>
-                  </div>
-                  <div class="warning-item">
-                    <AlertTriangle size={16} />
-                    <span>Store this offline in a safe place</span>
-                  </div>
-                </div>
-                
-                <div class="backup-actions">
-                  <button class="btn btn-secondary" on:click={() => copyToClipboard(revealedSeed, 'Seed phrase copied!')}>
-                    <Copy size={14} />
-                    Copy Seed Phrase
-                  </button>
-                  <button class="btn btn-ghost" on:click={resetBackup}>
-                    Hide Seed
-                  </button>
-                </div>
-              {/if}
+              <div class="backup-warning">
+                <AlertTriangle size={16} />
+                <span>Your password is required every time the seed is revealed. The seed is held only while open and is auto-hidden after 60 seconds.</span>
+              </div>
+
+              <div class="form-actions">
+                <button
+                  class="btn btn-primary"
+                  on:click={() => { showSeedModal = true; }}
+                >
+                  <Eye size={14} />
+                  View Seed Phrase
+                </button>
+              </div>
             </div>
           </div>
 
@@ -2935,97 +2812,29 @@
                 WALLET KEYS
               </div>
             </div>
-            
+
             <div class="backup-content">
-              {#if !keysRevealed}
-                <!-- Password Prompt -->
-                <div class="backup-warning">
-                  <AlertTriangle size={16} />
-                  <span>Enter your wallet password to view your secret and public keys</span>
+              <div class="backup-warning">
+                <AlertTriangle size={16} />
+                <span>Your password is required every time keys are revealed. Keys are held only while open and are auto-hidden after 60 seconds.</span>
+              </div>
+
+              <div class="keys-warning-critical">
+                <AlertTriangle size={16} />
+                <div>
+                  <strong>CRITICAL:</strong> Your secret key provides full control over your wallet. Never share it with anyone.
                 </div>
-                
-                <div class="keys-warning-critical">
-                  <AlertTriangle size={16} />
-                  <div>
-                    <strong>CRITICAL:</strong> Your secret key provides full control over your wallet. Never share it with anyone.
-                  </div>
-                </div>
-                
-                <div class="form-group">
-                  <label class="form-label">Wallet Password</label>
-                  <PasswordInput bind:value={keysPassword} placeholder="Enter wallet password" />
-                </div>
-                
-                {#if keysError}
-                  <div class="alert alert-error">
-                    <AlertTriangle size={14} />
-                    <span>{keysError}</span>
-                  </div>
-                {/if}
-                
-                <div class="form-actions">
-                  <button 
-                    class="btn btn-primary" 
-                    on:click={revealKeys} 
-                    disabled={keysLoading || !keysPassword.trim()}
-                  >
-                    {#if keysLoading}
-                      <Loader2 size={14} class="spin" />
-                      Verifying...
-                    {:else}
-                      View Keys
-                    {/if}
-                  </button>
-                </div>
-              {:else}
-                <!-- Keys Display -->
-                <div class="keys-display">
-                  <!-- Secret Key -->
-                  <div class="key-section">
-                    <div class="key-header">
-                      <span class="key-label">SECRET KEY</span>
-                      <span class="key-warning-badge">CRITICAL</span>
-                    </div>
-                    <div class="key-value-box">
-                      <code class="key-value mono">{revealedSecretKey}</code>
-                    </div>
-                    <button class="btn btn-secondary btn-sm" on:click={() => copyToClipboard(revealedSecretKey, 'Secret key copied!')}>
-                      <Copy size={14} />
-                      Copy Secret Key
-                    </button>
-                    <div class="key-warning-text">
-                      <AlertTriangle size={14} />
-                      <span>This key provides full wallet control. Keep it secure and never share it.</span>
-                    </div>
-                  </div>
-                  
-                  <!-- Separator -->
-                  <div class="key-separator"></div>
-                  
-                  <!-- Public Key -->
-                  <div class="key-section">
-                    <div class="key-header">
-                      <span class="key-label">PUBLIC KEY</span>
-                    </div>
-                    <div class="key-value-box">
-                      <code class="key-value mono">{revealedPublicKey}</code>
-                    </div>
-                    <button class="btn btn-secondary btn-sm" on:click={() => copyToClipboard(revealedPublicKey, 'Public key copied!')}>
-                      <Copy size={14} />
-                      Copy Public Key
-                    </button>
-                    <div class="key-info-text">
-                      <span>Public key can be shared safely. It's used to verify signatures.</span>
-                    </div>
-                  </div>
-                </div>
-                
-                <div class="backup-actions">
-                  <button class="btn btn-ghost" on:click={resetKeys}>
-                    Hide Keys
-                  </button>
-                </div>
-              {/if}
+              </div>
+
+              <div class="form-actions">
+                <button
+                  class="btn btn-primary"
+                  on:click={() => { showKeysModal = true; }}
+                >
+                  <Key size={14} />
+                  View Keys
+                </button>
+              </div>
             </div>
           </div>
 
@@ -3544,6 +3353,18 @@
   editContact={editingContact}
   on:saved={loadContacts}
   on:close={() => { editingContact = null; }}
+/>
+
+<!-- Reveal modals: own all decrypted seed/key state inside the child so
+     unmounting (close, ESC, wallet switch, wallet close) drops the only
+     reference and lets GC reclaim the secret. -->
+<RevealSecretModal
+  bind:show={showSeedModal}
+  kind="seed"
+/>
+<RevealSecretModal
+  bind:show={showKeysModal}
+  kind="keys"
 />
 
 <style>

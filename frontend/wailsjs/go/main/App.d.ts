@@ -59,6 +59,8 @@ export function ClearRecentWallets():Promise<Record<string, any>>;
 
 export function ClearSearchExclusions():Promise<Record<string, any>>;
 
+export function ClipboardClearIf(arg1:string):Promise<Record<string, any>>;
+
 export function CloneTELA(arg1:string,arg2:boolean):Promise<Record<string, any>>;
 
 export function CloseWallet():Promise<Record<string, any>>;
