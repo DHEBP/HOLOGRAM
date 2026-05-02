@@ -8,7 +8,7 @@
     Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe,
     LayoutDashboard, QrCode, History, Coins, Users, FileSignature, RefreshCw,
     Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield,
-    Key, Eye, EyeOff
+    Key, Eye, EyeOff, X
   } from 'lucide-svelte';
   
   import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
@@ -54,6 +54,8 @@
   let error = null;
   let recentWallets = [];
   let recentWalletsInfo = [];
+  let showClearWalletsConfirm = false;
+  let clearingRecentWallets = false;
   
   // Test wallets (Simulator mode)
   let testWallets = [];
@@ -315,25 +317,7 @@
         dashboardLoading = false;
       }
       
-      // Load enhanced wallet info for recent wallets
-      try {
-        const infos = await GetRecentWalletsWithInfo();
-        if (infos && infos.length > 0) {
-          recentWalletsInfo = infos;
-          recentWallets = infos.map(w => w.path);
-        }
-      } catch (e) {
-        // Fallback to simple list
-        const recents = await ListRecentWallets();
-        if (recents && recents.length > 0) {
-          recentWallets = recents;
-          recentWalletsInfo = recents.map(p => ({ 
-            path: p, 
-            filename: getWalletFilename(p), 
-            addressPrefix: '' 
-          }));
-        }
-      }
+      await refreshRecentWallets();
       
       // Load test wallets if in simulator mode
       if ($settingsState.network === 'simulator') {
@@ -795,6 +779,33 @@
   // ============================================
   // WALLET MANAGEMENT
   // ============================================
+  async function refreshRecentWallets() {
+    try {
+      const infos = await GetRecentWalletsWithInfo();
+      if (infos) {
+        recentWalletsInfo = infos;
+        recentWallets = infos.map(w => w.path);
+        return;
+      }
+    } catch (e) {
+      // Fallback to simple list
+    }
+
+    try {
+      const recents = await ListRecentWallets();
+      recentWallets = recents || [];
+      recentWalletsInfo = recentWallets.map(p => ({
+        path: p,
+        filename: getWalletFilename(p),
+        addressPrefix: ''
+      }));
+    } catch (e) {
+      console.error('Failed to refresh recent wallets:', e);
+      recentWallets = [];
+      recentWalletsInfo = [];
+    }
+  }
+
   async function openWallet() {
     // Context-aware validation messages (Bug #33 fix)
     if (!walletPath && !password) {
@@ -839,8 +850,7 @@
         loadWalletPath();
         SubscribeToWalletEvents().catch(() => {});
         
-        const recents = await ListRecentWallets();
-        if (recents) recentWallets = recents;
+        await refreshRecentWallets();
       } else {
         error = handleBackendError(result, { showToast: false }) || 'Failed to open wallet';
       }
@@ -872,6 +882,7 @@
         integratedPort = '';
         integratedComment = '';
         resetSendForm();
+        await refreshRecentWallets();
       }
     } catch (err) {
       console.error('Failed to close wallet:', err);
@@ -898,17 +909,34 @@
   }
   
   // Clear all recent wallets
-  async function handleClearRecentWallets() {
-    if (!confirm('Clear all recent wallets from the list?')) return;
+  function requestClearRecentWallets() {
+    showClearWalletsConfirm = true;
+  }
+
+  function cancelClearRecentWallets() {
+    if (clearingRecentWallets) return;
+    showClearWalletsConfirm = false;
+  }
+
+  async function confirmClearRecentWallets() {
+    if (clearingRecentWallets) return;
+    clearingRecentWallets = true;
     try {
       const result = await ClearRecentWallets();
       if (result.success) {
         recentWalletsInfo = [];
         recentWallets = [];
         walletPath = '';
+        showClearWalletsConfirm = false;
+        toast.success('Recent wallet list cleared');
+      } else {
+        toast.error(result.error || 'Failed to clear recent wallets');
       }
     } catch (err) {
       console.error('Failed to clear recent wallets:', err);
+      toast.error('Failed to clear recent wallets');
+    } finally {
+      clearingRecentWallets = false;
     }
   }
   
@@ -3020,7 +3048,7 @@
                 </button>
               </button>
             {/each}
-            <button class="sidebar-clear-btn" on:click={handleClearRecentWallets}>
+            <button class="sidebar-clear-btn" on:click={requestClearRecentWallets}>
               <Trash2 size={12} />
               Clear All
             </button>
@@ -3367,6 +3395,48 @@
   kind="keys"
 />
 
+{#if showClearWalletsConfirm}
+  <div class="modal-overlay" on:click={cancelClearRecentWallets}>
+    <div class="modal-content clear-wallets-modal" on:click|stopPropagation>
+      <div class="modal-header">
+        <div class="modal-title">
+          <span class="modal-icon error"><Trash2 size={16} /></span>
+          <span>Clear Recent Wallets</span>
+        </div>
+        <button class="modal-close" on:click={cancelClearRecentWallets} disabled={clearingRecentWallets}>
+          <X size={18} />
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="clear-wallets-lead">
+          Remove saved wallet shortcuts from the sidebar.
+        </p>
+        <div class="clear-wallets-meta">
+          <span class="clear-wallets-count">{recentWalletsInfo.length}</span>
+          <span class="clear-wallets-label">recent {recentWalletsInfo.length === 1 ? 'wallet' : 'wallets'}</span>
+        </div>
+        <div class="clear-wallets-warning">
+          <AlertTriangle size={16} />
+          <span>Wallet files remain on disk. You can reopen them later with Browse.</span>
+        </div>
+      </div>
+      <div class="modal-footer modal-footer-spread">
+        <button class="btn btn-secondary" on:click={cancelClearRecentWallets} disabled={clearingRecentWallets}>
+          Cancel
+        </button>
+        <button class="btn btn-danger" on:click={confirmClearRecentWallets} disabled={clearingRecentWallets}>
+          {#if clearingRecentWallets}
+            <Loader2 size={14} class="spin" />
+            Clearing...
+          {:else}
+            Clear All
+          {/if}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   /* ============================================
      WALLET PAGE STYLES
@@ -3621,6 +3691,62 @@
     border-color: var(--border-accent);
   }
   .sidebar-sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  :global(.clear-wallets-modal) {
+    max-width: 420px;
+  }
+
+  .clear-wallets-lead {
+    margin: 0 0 var(--s-4);
+    color: var(--text-2);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .clear-wallets-meta {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: var(--s-4);
+    margin-bottom: var(--s-4);
+    background: linear-gradient(90deg, rgba(248, 113, 113, 0.12) 0%, rgba(248, 113, 113, 0.04) 50%, transparent 100%);
+    border: 1px solid rgba(248, 113, 113, 0.2);
+    border-radius: var(--r-md);
+  }
+
+  .clear-wallets-count {
+    font-family: var(--font-mono);
+    font-size: 28px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--status-err);
+  }
+
+  .clear-wallets-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+
+  .clear-wallets-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-4);
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.18);
+    border-radius: var(--r-md);
+    color: var(--status-warn);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .clear-wallets-warning :global(svg) {
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
   
   /* Test wallet mini balance in sidebar */
   .test-wallet-balance-mini {
