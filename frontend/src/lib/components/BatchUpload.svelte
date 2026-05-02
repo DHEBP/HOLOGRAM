@@ -1355,7 +1355,7 @@
           <input
             type="text"
             bind:value={indexIcon}
-            placeholder="https://example.com/icon.png or SCID"
+            placeholder="Icon DOC SCID (recommended) or URL"
             disabled={deploying}
             class="config-input"
             class:input-valid={indexIcon && iconValidation.valid && !iconValidation.warning}
@@ -1378,6 +1378,8 @@
           <p class="icon-hint" class:hint-valid={iconValidation.valid && !iconValidation.warning} class:hint-warning={iconValidation.warning} class:hint-error={!iconValidation.valid}>
             {iconValidation.message}
           </p>
+        {:else}
+          <p class="icon-hint">Recommended: use an on-chain icon DOC SCID (100x100 SVG/PNG works well).</p>
         {/if}
       </div>
       

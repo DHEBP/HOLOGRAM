@@ -198,7 +198,7 @@
           <input
             type="text"
             bind:value={indexIconURL}
-            placeholder="https://example.com/icon.png or SCID"
+            placeholder="Icon DOC SCID (recommended) or URL"
             class="input"
             class:input-valid={indexIconURL && indexIconValidation.valid && !indexIconValidation.warning}
             class:input-warning={indexIconValidation.warning}
@@ -221,7 +221,7 @@
             {indexIconValidation.message}
           </p>
         {:else}
-          <p class="form-hint">URL or SCID of an image for the app icon</p>
+          <p class="form-hint">Recommended: use an on-chain icon DOC SCID (100x100 SVG/PNG works well).</p>
         {/if}
       </div>
       
