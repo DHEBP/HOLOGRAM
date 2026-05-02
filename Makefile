@@ -40,6 +40,18 @@ else
     SIMULATOR_BIN = simulator-linux-$(GOARCH)
 endif
 
+# Linux: link against webkit2gtk-4.1 (libsoup3) instead of the default
+# webkit2gtk-4.0 (libsoup2). All current distros (Ubuntu 24.04+, Debian 13,
+# Fedora 40+, Arch) ship 4.1 only — building without this tag fails to link
+# or crashes at runtime due to libsoup2 ↔ libsoup3 conflicts.
+# Override on the command line if you really need the legacy 4.0 binding:
+#   make WAILS_TAGS= ...
+ifeq ($(GOOS),linux)
+    WAILS_TAGS ?= -tags webkit2_41
+else
+    WAILS_TAGS ?=
+endif
+
 # Build directories
 BUILD_DIR = build/bin
 DEROHE_PKG = github.com/deroproject/derohe
@@ -65,13 +77,13 @@ endif
 # Build HOLOGRAM using wails (dev/local build with metadata)
 hologram:
 	@echo "🔨 Building HOLOGRAM ($(VERSION), $(COMMIT))..."
-	wails build -ldflags "$(LDFLAGS)"
+	wails build $(WAILS_TAGS) -ldflags "$(LDFLAGS)"
 	@echo "✅ HOLOGRAM built"
 
 # Release build — clean, trimpath, metadata injected (use this for distribution)
 release: derod simulator
 	@echo "🚀 Building HOLOGRAM release ($(VERSION), $(COMMIT))..."
-	wails build -ldflags "$(LDFLAGS)" -clean -trimpath
+	wails build $(WAILS_TAGS) -ldflags "$(LDFLAGS)" -clean -trimpath
 	@echo "✅ Release build complete: $(BUILD_DIR)/$(HOLOGRAM_BIN)"
 
 # Build derod from derohe source
@@ -125,7 +137,7 @@ test-mtp-integration: mtp-anchor
 
 # Development mode
 dev:
-	wails dev
+	wails dev $(WAILS_TAGS)
 
 # Clean build artifacts
 clean:

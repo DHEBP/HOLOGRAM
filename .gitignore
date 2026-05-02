@@ -53,6 +53,7 @@ datashards/
 docs/*
 !docs/ARCHITECTURE.md
 !docs/DESIGN-SYSTEM-RULEBOOK.md
+!docs/LINUX-BUILD.md
 
 # Compiled binaries (should be built, not committed)
 TELA-Browser-Wails
