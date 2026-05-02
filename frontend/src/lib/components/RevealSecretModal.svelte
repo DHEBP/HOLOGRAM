@@ -20,7 +20,7 @@
   import { GetSeedPhrase, GetWalletKeys, ClipboardClearIf } from '../../../wailsjs/go/main/App.js';
   import { toast, handleBackendError } from '../stores/appState.js';
   import PasswordInput from './PasswordInput.svelte';
-  import { AlertTriangle, Copy, Loader2, Lock, Shield, X, Eye } from 'lucide-svelte';
+  import { AlertTriangle, Copy, Loader2, Lock, Shield, X, Eye, Key } from 'lucide-svelte';
 
   export let show = false;
   /** @type {'seed' | 'keys'} */
@@ -50,7 +50,7 @@
   /** @type {{ timer: any, value: string } | null} */
   let clipboardScrub = null;
 
-  $: title = kind === 'seed' ? 'Recovery Seed' : 'Wallet Keys';
+  $: title = kind === 'seed' ? 'RECOVERY SEED' : 'WALLET KEYS';
   $: lockSubtitle =
     kind === 'seed'
       ? 'Enter your wallet password to view your recovery seed phrase'
@@ -69,7 +69,7 @@
       autoHideRemainingMs = Math.max(0, AUTO_HIDE_MS - (Date.now() - startedAt));
     }, TICK_MS);
     autoHideTimer = setTimeout(() => {
-      toast.info('Auto-hidden after 60s of inactivity');
+      toast.info('Auto-hidden after 60s');
       close('auto-hide');
     }, AUTO_HIDE_MS);
   }
@@ -98,9 +98,8 @@
   $: if (show !== prevShow) {
     if (show) {
       scrubLocalSecrets('open');
-      // Focus password on next tick so the field exists in the DOM
       tick().then(() => {
-        const el = document.querySelector('.reveal-modal .password-input input');
+        const el = document.querySelector('.reveal-modal-overlay .password-input input');
         if (el) el.focus();
       });
     } else {
@@ -118,7 +117,6 @@
         ? await GetSeedPhrase(password)
         : await GetWalletKeys(password);
 
-      // Scrub the password we just used regardless of outcome
       password = '';
 
       if (result?.success) {
@@ -156,11 +154,6 @@
     clipboardScrub = {
       value,
       timer: setTimeout(async () => {
-        // Browser clipboard API requires a user-gesture context, which is
-        // gone 30s after the click. Route the conditional clear through Go,
-        // which talks to the native pasteboard directly with no such
-        // restriction. The Go side reads first and only clears if the value
-        // still matches what we placed, so we never clobber user content.
         try {
           const result = await ClipboardClearIf(value);
           if (result?.cleared) {
@@ -194,32 +187,42 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if show}
-  <div class="modal-overlay reveal-modal" on:click|self={() => close('overlay-click')}>
-    <div class="modal-content reveal-content">
+  <div class="modal-overlay reveal-modal-overlay" on:click|self={() => close('overlay-click')}>
+    <div class="modal-content modal-content-wide seed-modal-content">
+      <!-- Modal Header -->
       <div class="modal-header">
         <div class="modal-title">
           {#if kind === 'seed'}
-            <Eye size={18} />
-            <span>{title}</span>
+            <span class="modal-icon warning"><Eye size={16} /></span>
           {:else}
-            <Shield size={18} />
-            <span>{title}</span>
+            <span class="modal-icon warning"><Key size={16} /></span>
           {/if}
+          <span>{title}</span>
         </div>
-        <button class="modal-close" on:click={() => close('close-button')} title="Close">
-          <X size={18} />
-        </button>
+        <div class="modal-header-right">
+          {#if revealed}
+            <div class="auto-hide-pill">
+              <Lock size={12} />
+              <span>Auto-hides in {secondsRemaining}s</span>
+            </div>
+          {/if}
+          <button class="modal-close" on:click={() => close('close-button')} title="Close">
+            <X size={18} />
+          </button>
+        </div>
       </div>
 
+      <!-- Modal Body -->
       <div class="modal-body">
         {#if !revealed}
-          <div class="lock-banner">
-            <Lock size={16} />
+          <!-- Password Prompt State -->
+          <div class="backup-warning">
+            <AlertTriangle size={16} />
             <span>{lockSubtitle}</span>
           </div>
 
           {#if kind === 'keys'}
-            <div class="critical-banner">
+            <div class="keys-warning-critical">
               <AlertTriangle size={16} />
               <div>
                 <strong>CRITICAL:</strong> Your secret key provides full control over your wallet. Never share it with anyone.
@@ -241,14 +244,10 @@
             </div>
           {/if}
         {:else}
-          <div class="auto-hide-pill" title="Auto-hides for your protection">
-            <Lock size={12} />
-            <span>Auto-hides in {secondsRemaining}s</span>
-          </div>
-
+          <!-- Revealed State -->
           {#if kind === 'seed'}
-            <div class="seed-header">
-              <AlertTriangle size={28} class="seed-warning-icon" />
+            <!-- Seed Display -->
+            <div class="seed-header-compact">
               <h2 class="seed-title">Your Recovery Seed</h2>
               <p class="seed-subtitle">Write down these 25 words in order. This is the ONLY way to recover your wallet.</p>
             </div>
@@ -264,59 +263,66 @@
 
             <div class="seed-warnings">
               <div class="warning-item">
-                <AlertTriangle size={14} />
+                <AlertTriangle size={12} />
                 <span>NEVER share your seed with anyone</span>
               </div>
               <div class="warning-item">
-                <AlertTriangle size={14} />
+                <AlertTriangle size={12} />
                 <span>Hologram will NEVER ask for your seed</span>
               </div>
               <div class="warning-item">
-                <AlertTriangle size={14} />
+                <AlertTriangle size={12} />
                 <span>Store this offline in a safe place</span>
               </div>
             </div>
           {:else}
-            <div class="key-section">
-              <div class="key-header">
-                <span class="key-label">SECRET KEY</span>
-                <span class="key-warning-badge">CRITICAL</span>
+            <!-- Keys Display -->
+            <div class="keys-display">
+              <!-- Secret Key -->
+              <div class="key-section">
+                <div class="key-header">
+                  <span class="key-label">SECRET KEY</span>
+                  <span class="key-warning-badge">CRITICAL</span>
+                </div>
+                <div class="key-value-box">
+                  <code class="key-value mono">{secretKey}</code>
+                </div>
+                <button class="btn btn-secondary btn-sm" on:click={() => copyAndScheduleClear(secretKey, 'Secret key copied')}>
+                  <Copy size={14} />
+                  Copy Secret Key
+                </button>
+                <div class="key-warning-text">
+                  <AlertTriangle size={14} />
+                  <span>This key grants full wallet control. Never share it.</span>
+                </div>
               </div>
-              <div class="key-value-box">
-                <code class="key-value mono">{secretKey}</code>
-              </div>
-              <button class="btn btn-secondary btn-sm" on:click={() => copyAndScheduleClear(secretKey, 'Secret key copied')}>
-                <Copy size={14} />
-                Copy Secret Key
-              </button>
-              <div class="key-warning-text">
-                <AlertTriangle size={14} />
-                <span>This key provides full wallet control. Keep it secure and never share it.</span>
-              </div>
-            </div>
 
-            <div class="key-separator"></div>
+              <!-- Separator -->
+              <div class="key-separator"></div>
 
-            <div class="key-section">
-              <div class="key-header">
-                <span class="key-label">PUBLIC KEY</span>
-              </div>
-              <div class="key-value-box">
-                <code class="key-value mono">{publicKey}</code>
-              </div>
-              <button class="btn btn-secondary btn-sm" on:click={() => copyAndScheduleClear(publicKey, 'Public key copied')}>
-                <Copy size={14} />
-                Copy Public Key
-              </button>
-              <div class="key-info-text">
-                <span>Public key can be shared safely. It's used to verify signatures.</span>
+              <!-- Public Key -->
+              <div class="key-section">
+                <div class="key-header">
+                  <span class="key-label">PUBLIC KEY</span>
+                </div>
+                <div class="key-value-box">
+                  <code class="key-value mono">{publicKey}</code>
+                </div>
+                <button class="btn btn-secondary btn-sm" on:click={() => copyAndScheduleClear(publicKey, 'Public key copied')}>
+                  <Copy size={14} />
+                  Copy Public Key
+                </button>
+                <div class="key-info-text">
+                  <span>Public key can be shared safely. It's used to verify signatures.</span>
+                </div>
               </div>
             </div>
           {/if}
         {/if}
       </div>
 
-      <div class="modal-footer">
+      <!-- Modal Footer -->
+      <div class="modal-footer modal-footer-spread">
         {#if !revealed}
           <button class="btn btn-ghost" on:click={() => close('cancel')}>Cancel</button>
           <button class="btn btn-primary" disabled={loading || !password.trim()} on:click={reveal}>
@@ -345,176 +351,228 @@
 {/if}
 
 <style>
-  .reveal-content {
-    max-width: 560px;
-    width: calc(100vw - 48px);
+  /* Use HOLOGRAM design system tokens and patterns */
+
+  /* Seed modal needs extra height to show all content comfortably */
+  :global(.seed-modal-content) {
+    max-height: 92vh;
+    min-height: 580px;
   }
 
-  .lock-banner {
+  :global(.seed-modal-content > .modal-body) {
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* Modal header right section */
+  .modal-header-right {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 10px 12px;
-    border: 1px solid var(--border-warning, #b8860b);
-    background: rgba(184, 134, 11, 0.08);
-    color: var(--text-warning, #ffb84d);
-    border-radius: 6px;
-    font-size: 13px;
-    margin-bottom: 12px;
+    gap: var(--s-3);
   }
 
-  .critical-banner {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 10px 12px;
-    border: 1px solid var(--border-danger, #b22222);
-    background: rgba(178, 34, 34, 0.08);
-    color: var(--text-danger, #ff6666);
-    border-radius: 6px;
-    font-size: 13px;
-    margin-bottom: 12px;
-    line-height: 1.4;
-  }
-
+  /* Auto-hide countdown pill - now in header */
   .auto-hide-pill {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    align-self: flex-end;
-    padding: 4px 10px;
-    border: 1px solid var(--border-subtle, #2b3340);
-    border-radius: 999px;
+    gap: var(--s-2);
+    padding: var(--s-1) var(--s-3);
+    background: var(--void-deep);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-full);
     font-size: 11px;
-    color: var(--text-muted, #8a96a8);
-    margin-bottom: 8px;
-    margin-left: auto;
+    color: var(--text-4);
   }
 
-  .seed-header {
+  /* Seed Display - compact header without large icon */
+  .seed-header-compact {
     text-align: center;
-    margin-bottom: 12px;
+    margin-bottom: var(--s-4);
   }
 
   .seed-title {
-    margin: 6px 0 4px;
-    font-size: 18px;
-    font-weight: 700;
+    font-family: var(--font-mono);
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-1);
+    margin: 0 0 var(--s-1) 0;
   }
 
-  .seed-subtitle {
-    margin: 0;
-    font-size: 12px;
-    color: var(--text-muted, #8a96a8);
+  .seed-subtitle { 
+    font-size: 12px; 
+    color: var(--text-3); 
+    margin: 0; 
   }
 
   .seed-grid {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
-    gap: 6px;
-    margin-bottom: 12px;
+    gap: var(--s-2);
+    background: var(--void-deep);
+    padding: var(--s-4);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
   }
 
   .seed-word {
     display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
-    background: rgba(19, 25, 34, 0.85);
-    border: 1px solid var(--border-subtle, #2b3340);
-    border-radius: 4px;
-    font-size: 12px;
-  }
-
-  .seed-num {
-    color: var(--text-muted, #8a96a8);
-    font-size: 10px;
-    min-width: 18px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .seed-text {
-    font-weight: 600;
-    font-family: var(--font-mono);
-  }
-
-  .seed-warnings {
-    display: flex;
     flex-direction: column;
-    gap: 6px;
-    margin-bottom: 8px;
+    align-items: center;
+    padding: var(--s-2);
+    background: var(--void-mid);
+    border-radius: var(--r-sm);
+  }
+
+  .seed-num { 
+    font-size: 9px; 
+    color: var(--text-4); 
+    margin-bottom: 2px; 
+  }
+
+  .seed-text { 
+    font-family: var(--font-mono); 
+    font-size: 11px; 
+    color: var(--text-1); 
+    font-weight: 500; 
+  }
+
+  .seed-warnings { 
+    display: flex; 
+    flex-direction: column; 
+    gap: 6px; 
   }
 
   .warning-item {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--s-2);
+    padding: 6px var(--s-3);
+    background: rgba(251, 191, 36, 0.08);
+    border-radius: var(--r-sm);
+    font-size: 11px;
+    color: var(--status-warn);
+  }
+
+  /* Backup Warning Banner */
+  .backup-warning {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-4);
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid rgba(251, 191, 36, 0.2);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
     font-size: 12px;
-    color: var(--text-muted, #8a96a8);
+    color: var(--status-warn);
+  }
+
+  /* Keys Display - matches original Wallet.svelte styling */
+  .keys-warning-critical {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-4);
+    background: rgba(248, 113, 113, 0.1);
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-4);
+    font-size: 12px;
+    color: var(--status-err);
+  }
+
+  .keys-warning-critical strong {
+    font-weight: 600;
+  }
+
+  .keys-display {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
   }
 
   .key-section {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    margin-bottom: 12px;
+    gap: var(--s-3);
   }
 
   .key-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    font-family: var(--font-mono);
     font-size: 11px;
-    letter-spacing: 0.06em;
-    color: var(--text-muted, #8a96a8);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+  }
+
+  .key-label {
+    color: var(--text-2);
   }
 
   .key-warning-badge {
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: rgba(178, 34, 34, 0.15);
-    color: var(--text-danger, #ff6666);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
+    padding: 2px 8px;
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--status-err);
+    border-radius: var(--r-xs);
+    font-size: 9px;
+    font-weight: 600;
   }
 
   .key-value-box {
-    padding: 10px;
-    border: 1px solid var(--border-subtle, #2b3340);
-    border-radius: 4px;
-    background: rgba(19, 25, 34, 0.85);
+    padding: var(--s-3) var(--s-4);
+    background: var(--void-deep);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-md);
     word-break: break-all;
   }
 
   .key-value {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: 11px;
+    color: var(--text-1);
+    line-height: 1.6;
+    display: block;
   }
 
-  .key-warning-text,
-  .key-info-text {
+  .key-value.mono {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .key-warning-text {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: rgba(251, 191, 36, 0.1);
+    border-radius: var(--r-sm);
     font-size: 11px;
-    color: var(--text-muted, #8a96a8);
+    color: var(--status-warn);
+  }
+
+  .key-info-text {
+    padding: var(--s-2) var(--s-3);
+    font-size: 11px;
+    color: var(--text-4);
+    font-style: italic;
   }
 
   .key-separator {
     height: 1px;
-    background: var(--border-subtle, #2b3340);
-    margin: 4px 0 12px;
+    background: var(--border-dim);
+    margin: var(--s-2) 0;
   }
 
-  .mono {
-    font-family: var(--font-mono);
-    font-size: 12px;
+  /* Spin Animation */
+  :global(.spin) {
+    animation: spin 1s linear infinite;
   }
 
-  :global(.reveal-modal .modal-body) {
-    display: flex;
-    flex-direction: column;
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 </style>
