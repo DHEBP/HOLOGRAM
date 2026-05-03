@@ -3212,6 +3212,9 @@ func (a *App) VerifySignature(signedData string) map[string]interface{} {
 type registrationState struct {
 	sync.RWMutex
 	inProgress bool
+	pending    bool
+	pendingTx  string
+	pendingAt  time.Time
 	hashCount  uint64
 	startTime  time.Time
 	cancelCh   chan struct{}
@@ -3240,21 +3243,33 @@ func (a *App) GetRegistrationStatus() map[string]interface{} {
 	regHeight := wallet.Get_Registration_TopoHeight()
 	isRegistered := regHeight >= 0
 
-	// Check if registration is in progress
-	regState.RLock()
+	// Check if registration is in progress or awaiting confirmation.
+	regState.Lock()
+	if isRegistered && regState.pending {
+		regState.pending = false
+		regState.pendingTx = ""
+		regState.pendingAt = time.Time{}
+	}
 	inProgress := regState.inProgress
+	pending := regState.pending && !isRegistered
+	pendingTx := regState.pendingTx
 	hashCount := regState.hashCount
 	var elapsedSeconds float64
 	if inProgress {
 		elapsedSeconds = time.Since(regState.startTime).Seconds()
 	}
-	regState.RUnlock()
+	var pendingSeconds float64
+	if pending && !regState.pendingAt.IsZero() {
+		pendingSeconds = time.Since(regState.pendingAt).Seconds()
+	}
+	regState.Unlock()
 
 	result := map[string]interface{}{
 		"success":              true,
 		"isRegistered":         isRegistered,
 		"registrationHeight":   regHeight,
 		"registrationProgress": inProgress,
+		"registrationPending":  pending,
 	}
 
 	if inProgress {
@@ -3265,7 +3280,11 @@ func (a *App) GetRegistrationStatus() map[string]interface{} {
 		}
 	}
 
-	if !isRegistered {
+	if pending {
+		result["registrationTxid"] = pendingTx
+		result["pendingSeconds"] = pendingSeconds
+		result["message"] = "Registration TX broadcast. Waiting for blockchain confirmation."
+	} else if !isRegistered {
 		result["message"] = "Wallet address not yet on-chain. Run PoW registration first, then receive DERO."
 	} else {
 		result["message"] = "Wallet is registered on-chain"
@@ -3309,6 +3328,9 @@ func (a *App) RegisterWallet() map[string]interface{} {
 
 	// Start registration
 	regState.inProgress = true
+	regState.pending = false
+	regState.pendingTx = ""
+	regState.pendingAt = time.Time{}
 	regState.hashCount = 0
 	regState.startTime = time.Now()
 	regState.cancelCh = make(chan struct{})
@@ -3392,6 +3414,11 @@ func (a *App) RegisterWallet() map[string]interface{} {
 								// Send the transaction RIGHT NOW while we have the valid TX
 								err := w.SendTransaction(regTx)
 								if err != nil {
+									regState.Lock()
+									regState.pending = false
+									regState.pendingTx = ""
+									regState.pendingAt = time.Time{}
+									regState.Unlock()
 									a.logToConsole(fmt.Sprintf("[REGISTER] Failed to broadcast registration TX: %v", err))
 									if a.ctx != nil {
 										runtime.EventsEmit(a.ctx, "wallet:registration_failed", map[string]interface{}{
@@ -3402,6 +3429,12 @@ func (a *App) RegisterWallet() map[string]interface{} {
 								}
 
 								txid := regTx.GetHash().String()
+								regState.Lock()
+								regState.pending = true
+								regState.pendingTx = txid
+								regState.pendingAt = time.Now()
+								regState.Unlock()
+
 								a.logToConsole(fmt.Sprintf("[REGISTER] Registration TX sent! TXID: %s", txid))
 								a.logToConsole("[REGISTER] Waiting for blockchain confirmation...")
 
@@ -3433,6 +3466,11 @@ func (a *App) RegisterWallet() map[string]interface{} {
 										regHeight := wallet.Get_Registration_TopoHeight()
 
 										if regHeight >= 0 {
+											regState.Lock()
+											regState.pending = false
+											regState.pendingTx = ""
+											regState.pendingAt = time.Time{}
+											regState.Unlock()
 											a.logToConsole(fmt.Sprintf("[REGISTER] Registration confirmed at height %d!", regHeight))
 											if a.ctx != nil {
 												runtime.EventsEmit(a.ctx, "wallet:registration_complete", map[string]interface{}{
@@ -3452,7 +3490,7 @@ func (a *App) RegisterWallet() map[string]interface{} {
 									// The TX might still be pending in the mempool
 									a.logToConsole("[REGISTER] Confirmation taking longer than expected. TX is in mempool, will be confirmed soon.")
 									if a.ctx != nil {
-										runtime.EventsEmit(a.ctx, "wallet:registration_complete", map[string]interface{}{
+										runtime.EventsEmit(a.ctx, "wallet:registration_pending", map[string]interface{}{
 											"txid":    txid,
 											"message": "Registration TX sent! It may take a few more blocks to confirm.",
 										})
@@ -3502,6 +3540,9 @@ func (a *App) CancelRegistration() map[string]interface{} {
 
 	close(regState.cancelCh)
 	regState.inProgress = false
+	regState.pending = false
+	regState.pendingTx = ""
+	regState.pendingAt = time.Time{}
 
 	a.logToConsole("[REGISTER] Registration cancelled by user")
 

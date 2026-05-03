@@ -732,11 +732,19 @@
           isRegistered: result.isRegistered,
           registrationHeight: result.registrationHeight,
           registrationProgress: result.registrationProgress,
+          registrationPending: result.registrationPending,
+          registrationTxid: result.registrationTxid,
           hashCount: result.hashCount,
           elapsedSeconds: result.elapsedSeconds,
           message: result.message
         };
         isRegistering = result.registrationProgress || false;
+        registrationPending = result.registrationPending || false;
+        registrationTxid = result.registrationTxid || '';
+        if (result.isRegistered) {
+          registrationPending = false;
+          registrationTxid = '';
+        }
         if (result.hashCount) registrationHashCount = result.hashCount;
         if (result.elapsedSeconds) registrationElapsed = result.elapsedSeconds;
       }
