@@ -203,7 +203,7 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 	// Check if we got at least HTML
 	if content.HTML == "" {
 		// Attempt shard assembly if this is a shard index dURL
-		if du, ok := content.Meta["durl"].(string); ok && isShardIndexDURL(du) {
+		if du, ok := content.Meta["durl"].(string); ok && isEmbeddedShardsINDEX(du) {
 			a.logToConsole("[LINK] Shard index detected; assembling shard files")
 			assembled := assembleShardFiles(content)
 			if assembled != "" {
@@ -248,10 +248,10 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 	return content, nil
 }
 
-// isShardIndexDURL returns true if the dURL ends with .shards (embedded shard INDEX)
+// isShardIndexDURL returns true if the dURL ends with .tela.shards (embedded shard INDEX)
 func isShardIndexDURL(durl string) bool {
 	s := strings.ToLower(strings.TrimSpace(durl))
-	return strings.HasSuffix(s, ".shards")
+	return strings.HasSuffix(s, ".tela.shards")
 }
 
 // isEmbeddedINDEX returns true if the contract is an INDEX (not a DOC)
@@ -369,10 +369,17 @@ func (a *App) reassembleShardChunks(content *TELAContent) {
 	}
 }
 
-// isLibraryDURL returns true if the dURL ends with .lib (embedded library INDEX)
+// isLibraryDURL returns true if the dURL ends with .tela.lib (TELA library INDEX)
 func isLibraryDURL(durl string) bool {
 	s := strings.ToLower(strings.TrimSpace(durl))
-	return strings.HasSuffix(s, ".lib")
+	return strings.HasSuffix(s, ".tela.lib")
+}
+
+// isEmbeddedShardsINDEX returns true if the dURL ends with .shards (embedded shard INDEX)
+// This is used for detecting embedded INDEX contracts like rive.wasm-2.35.3.shards
+func isEmbeddedShardsINDEX(durl string) bool {
+	s := strings.ToLower(strings.TrimSpace(durl))
+	return strings.HasSuffix(s, ".shards")
 }
 
 // fetchSingleDOC renders a standalone DOC contract directly (not part of an INDEX)
@@ -948,7 +955,7 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 		}
 
 		// Handle embedded .shards INDEX (e.g., rive.js-2.35.3.shards)
-		if isShardIndexDURL(dURL) {
+		if isEmbeddedShardsINDEX(dURL) {
 			scid := ""
 			if scidStr, ok := docData["scid"].(string); ok {
 				scid = scidStr
