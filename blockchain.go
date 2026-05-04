@@ -156,6 +156,8 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 		if docData == nil {
 			continue // Skip failed fetches
 		}
+		// Add SCID to docData so processDOC can access it
+		docData["scid"] = docSCIDs[i]
 		if err := a.processDOC(docData, content); err != nil {
 			a.logToConsole(fmt.Sprintf("  [WARN]  Failed to process DOC %d: %v", i+1, err))
 			failedDOCs = append(failedDOCs, i)
@@ -170,7 +172,7 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 
 		for _, i := range failedDOCs {
 			scid := docSCIDs[i]
-			a.logToConsole(fmt.Sprintf("  [RETRY] Re-fetching DOC %d: %s...", i+1, scid[:16]))
+			a.logToConsole(fmt.Sprintf("  [RETRY] Re-fetching DOC %d: %s...", i+1, truncateSCID(scid, 16)))
 
 			// Re-fetch the DOC
 			data, err := a.fetchSmartContract(scid, true, true)
@@ -178,6 +180,9 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 				a.logToConsole(fmt.Sprintf("  [ERR] Retry fetch failed for DOC %d: %v", i+1, err))
 				continue
 			}
+
+			// Add SCID to data so processDOC can access it
+			data["scid"] = scid
 
 			// Try to process again
 			if err := a.processDOC(data, content); err != nil {
@@ -243,10 +248,29 @@ func (a *App) FetchTELAContent(scid string) (*TELAContent, error) {
 	return content, nil
 }
 
-// isShardIndexDURL returns true if the dURL ends with .tela.shards
+// isShardIndexDURL returns true if the dURL ends with .shards (embedded shard INDEX)
 func isShardIndexDURL(durl string) bool {
 	s := strings.ToLower(strings.TrimSpace(durl))
-	return strings.HasSuffix(s, ".tela.shards")
+	return strings.HasSuffix(s, ".shards")
+}
+
+// isEmbeddedINDEX returns true if the contract is an INDEX (not a DOC)
+// by checking for telaVersion or DOC1 keys in stringkeys
+func isEmbeddedINDEX(stringKeys map[string]interface{}) bool {
+	if stringKeys == nil {
+		return false
+	}
+	_, hasTelaVersion := stringKeys["telaVersion"]
+	_, hasDOC1 := stringKeys["DOC1"]
+	return hasTelaVersion || hasDOC1
+}
+
+// truncateSCID safely truncates a SCID for logging (prevents slice bounds panic)
+func truncateSCID(scid string, maxLen int) string {
+	if len(scid) <= maxLen {
+		return scid
+	}
+	return scid[:maxLen]
 }
 
 // isShardChunkName returns true if the filename matches the shard naming pattern
@@ -345,10 +369,10 @@ func (a *App) reassembleShardChunks(content *TELAContent) {
 	}
 }
 
-// isLibraryDURL returns true if the dURL ends with .tela.lib
+// isLibraryDURL returns true if the dURL ends with .lib (embedded library INDEX)
 func isLibraryDURL(durl string) bool {
 	s := strings.ToLower(strings.TrimSpace(durl))
-	return strings.HasSuffix(s, ".tela.lib")
+	return strings.HasSuffix(s, ".lib")
 }
 
 // fetchSingleDOC renders a standalone DOC contract directly (not part of an INDEX)
@@ -915,6 +939,29 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 		}
 	}
 
+	// Check if this is actually an embedded INDEX (not a DOC)
+	// Embedded INDEXes have telaVersion or DOC1 keys but no docType
+	if isEmbeddedINDEX(stringKeys) {
+		dURL := fallbackMeta.DURL
+		if durlHex, ok := stringKeys["dURL"].(string); ok {
+			dURL = decodeHexString(durlHex)
+		}
+
+		// Handle embedded .shards INDEX (e.g., rive.js-2.35.3.shards)
+		if isShardIndexDURL(dURL) {
+			scid := ""
+			if scidStr, ok := docData["scid"].(string); ok {
+				scid = scidStr
+			}
+			a.logToConsole(fmt.Sprintf("  [EMBED] Detected embedded .shards INDEX: %s (%s...)", dURL, truncateSCID(scid, 16)))
+			return a.processEmbeddedShardsINDEX(docData, content)
+		}
+
+		// For other embedded INDEXes (.lib), we can add support later
+		a.logToConsole(fmt.Sprintf("  [WARN] Embedded INDEX detected but not .shards: %s (skipping)", dURL))
+		return nil
+	}
+
 	// Get docType (hex-encoded) - with nil check
 	docType := fallbackMeta.DocType
 	if docTypeHex, ok := stringKeys["docType"].(string); ok {
@@ -1035,6 +1082,172 @@ func (a *App) processDOC(docData map[string]interface{}, content *TELAContent) e
 	content.Files = append(content.Files, DocFile{
 		Name:    fileName,
 		Content: fileContent,
+		DocType: docType,
+	})
+
+	return nil
+}
+
+// processEmbeddedShardsINDEX handles an embedded INDEX with .shards dURL
+// This is used for sharded libraries like rive.js that are split across multiple DOC contracts
+// The function fetches all DOCs from the embedded INDEX, concatenates them, and decompresses
+func (a *App) processEmbeddedShardsINDEX(indexData map[string]interface{}, content *TELAContent) error {
+	// Get the embedded INDEX's dURL to derive the output filename
+	stringKeys, _ := indexData["stringkeys"].(map[string]interface{})
+	code, _ := indexData["code"].(string)
+	fallbackMeta := extractDOCMetadataFromCode(code)
+
+	dURL := fallbackMeta.DURL
+	if durlHex, ok := stringKeys["dURL"].(string); ok {
+		dURL = decodeHexString(durlHex)
+	}
+
+	// For HTTP serving, the browser requests the full path: /rive.wasm-2.35.3.shards/rive.wasm
+	// - Directory name: dURL (e.g., "rive.wasm-2.35.3.shards")
+	// - Filename: base name without version (e.g., "rive.wasm")
+	// We need BOTH:
+	// - Full path for HTTP serving: "rive.wasm-2.35.3.shards/rive.wasm"
+	// - Simple name for HTML inlining: "rive.wasm"
+
+	// Get base name by stripping .shards and version
+	baseName := strings.TrimSuffix(dURL, ".shards")
+	versionRe := regexp.MustCompile(`^(.+)-\d+\.\d+\.\d+$`)
+	if m := versionRe.FindStringSubmatch(baseName); len(m) > 1 {
+		baseName = m[1]
+	}
+
+	// Full path for HTTP serving: "dURL/baseName"
+	fullPath := dURL + "/" + baseName
+
+	// We'll store under both names
+	outputName := baseName
+
+	a.logToConsole(fmt.Sprintf("  [EMBED] Processing embedded shards: %s -> %s (HTTP: %s)", dURL, outputName, fullPath))
+
+	// Extract DOC SCIDs from the embedded INDEX
+	docSCIDs := extractDOCsSCIDs(indexData)
+	if len(docSCIDs) == 0 {
+		return fmt.Errorf("no DOC SCIDs found in embedded INDEX %s", dURL)
+	}
+
+	a.logToConsole(fmt.Sprintf("  [EMBED] Found %d shard DOCs in %s", len(docSCIDs), dURL))
+
+	// Fetch all DOC contracts and extract their content in order
+	var shardContents []string
+	var compression string
+
+	for i, docSCID := range docSCIDs {
+		docData, err := a.fetchSmartContract(docSCID, true, false)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("  [EMBED] Failed to fetch shard DOC %d (%s...): %v", i+1, truncateSCID(docSCID, 16), err))
+			continue
+		}
+
+		docCode, ok := docData["code"].(string)
+		if !ok || docCode == "" {
+			a.logToConsole(fmt.Sprintf("  [EMBED] Shard DOC %d has no code", i+1))
+			continue
+		}
+
+		// Extract shard content from the DOC's comment block
+		shardContent := extractFileContentFromCode(docCode)
+		if shardContent == "" {
+			a.logToConsole(fmt.Sprintf("  [EMBED] Failed to extract content from shard DOC %d", i+1))
+			continue
+		}
+
+		// Detect compression from first shard's filename
+		if i == 0 {
+			docStringKeys, _ := docData["stringkeys"].(map[string]interface{})
+			docMeta := extractDOCMetadataFromCode(docCode)
+			docFileName := docMeta.FileName
+			if fnHex, ok := docStringKeys["var_header_name"].(string); ok {
+				docFileName = decodeHexString(fnHex)
+			} else if fnHex, ok := docStringKeys["nameHdr"].(string); ok {
+				docFileName = decodeHexString(fnHex)
+			}
+				if strings.HasSuffix(docFileName, ".gz") {
+				compression = ".gz"
+			}
+		}
+
+		shardContents = append(shardContents, shardContent)
+	}
+
+	if len(shardContents) == 0 {
+		return fmt.Errorf("no shard content extracted from embedded INDEX %s", dURL)
+	}
+
+	a.logToConsole(fmt.Sprintf("  [EMBED] Extracted %d shard chunks for %s", len(shardContents), outputName))
+
+	// Concatenate all shard contents
+	concatenated := strings.Join(shardContents, "")
+
+	// Decompress if shards were compressed
+	var finalContent string
+	if compression == ".gz" {
+		decompressed, err := decompressGzip(concatenated)
+		if err != nil {
+			a.logToConsole(fmt.Sprintf("  [EMBED] Decompression failed for %s: %v", outputName, err))
+			return fmt.Errorf("failed to decompress shards for %s: %w", outputName, err)
+		}
+		finalContent = decompressed
+		a.logToConsole(fmt.Sprintf("  [EMBED] Decompressed %s: %d bytes -> %d bytes", outputName, len(concatenated), len(finalContent)))
+	} else {
+		finalContent = concatenated
+		a.logToConsole(fmt.Sprintf("  [EMBED] Assembled %s: %d bytes (uncompressed)", outputName, len(finalContent)))
+	}
+
+	// Determine docType based on file extension
+	docType := "TELA-STATIC-1"
+	ext := strings.ToLower(filepath.Ext(outputName))
+	switch ext {
+	case ".js":
+		docType = "TELA-JS-1"
+	case ".css":
+		docType = "TELA-CSS-1"
+	case ".html", ".htm":
+		docType = "TELA-HTML-1"
+	case ".wasm":
+		docType = "TELA-STATIC-1"
+	}
+
+	// Store by type (similar to regular DOC processing)
+	// Store under BOTH:
+	// - Simple name (for HTML inlining): "rive.wasm"
+	// - Full path (for HTTP serving): "rive.wasm-2.35.3.shards/rive.wasm"
+	switch {
+	case strings.HasPrefix(docType, "TELA-JS"):
+		content.JS = append(content.JS, finalContent)
+		if content.JSByName == nil {
+			content.JSByName = make(map[string]string)
+		}
+		content.JSByName[outputName] = finalContent
+		content.JSByName[fullPath] = finalContent
+		a.logToConsole(fmt.Sprintf("  [EMBED] Stored %s as JS (%d bytes)", outputName, len(finalContent)))
+
+	case strings.HasPrefix(docType, "TELA-CSS"):
+		content.CSS = append(content.CSS, finalContent)
+		if content.CSSByName == nil {
+			content.CSSByName = make(map[string]string)
+		}
+		content.CSSByName[outputName] = finalContent
+		content.CSSByName[fullPath] = finalContent
+		a.logToConsole(fmt.Sprintf("  [EMBED] Stored %s as CSS (%d bytes)", outputName, len(finalContent)))
+
+	default:
+		if content.StaticByName == nil {
+			content.StaticByName = make(map[string]string)
+		}
+		content.StaticByName[outputName] = finalContent
+		content.StaticByName[fullPath] = finalContent
+		a.logToConsole(fmt.Sprintf("  [EMBED] Stored %s as static (%d bytes)", outputName, len(finalContent)))
+	}
+
+	// Record raw file
+	content.Files = append(content.Files, DocFile{
+		Name:    outputName,
+		Content: finalContent,
 		DocType: docType,
 	})
 
