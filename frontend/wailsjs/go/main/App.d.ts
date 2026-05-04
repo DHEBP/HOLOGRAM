@@ -329,6 +329,8 @@ export function GetSCStateAtHeight(arg1:string,arg2:number):Promise<Record<strin
 
 export function GetSCStateHistory(arg1:string):Promise<Record<string, any>>;
 
+export function GetSCVariable(arg1:string,arg2:Array<string>):Promise<Record<string, any>>;
+
 export function GetSCVariables(arg1:string):Promise<Record<string, any>>;
 
 export function GetSearchExclusions():Promise<Record<string, any>>;
@@ -550,6 +552,8 @@ export function SearchMyDOCs(arg1:string):Promise<Record<string, any>>;
 export function SearchMyINDEXes():Promise<Record<string, any>>;
 
 export function SelectFile():Promise<string>;
+
+export function SelectFileWithContent(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function SelectFiles():Promise<Record<string, any>>;
 

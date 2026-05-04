@@ -654,6 +654,10 @@ export function GetSCStateHistory(arg1) {
   return window['go']['main']['App']['GetSCStateHistory'](arg1);
 }
 
+export function GetSCVariable(arg1, arg2) {
+  return window['go']['main']['App']['GetSCVariable'](arg1, arg2);
+}
+
 export function GetSCVariables(arg1) {
   return window['go']['main']['App']['GetSCVariables'](arg1);
 }
@@ -1096,6 +1100,10 @@ export function SearchMyINDEXes() {
 
 export function SelectFile() {
   return window['go']['main']['App']['SelectFile']();
+}
+
+export function SelectFileWithContent(arg1, arg2) {
+  return window['go']['main']['App']['SelectFileWithContent'](arg1, arg2);
 }
 
 export function SelectFiles() {
