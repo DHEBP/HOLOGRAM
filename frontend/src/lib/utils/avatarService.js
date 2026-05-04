@@ -1,5 +1,5 @@
 import VillagerIdenticon from './villager-identicon.js';
-import { CallXSWD } from '../../../wailsjs/go/main/App.js';
+import { GetSCVariable } from '../../../wailsjs/go/main/App.js';
 
 // Villager Smart Contract ID (Mainnet)
 let VILLAGER_SCID = 'f0b29081c1ed35fe942cb3402cd9d7bf0cf27639201bbc96223bdc99c4c6aa9f';
@@ -36,7 +36,7 @@ function hexToString(hex) {
 }
 
 /**
- * Fetch avatar pixels from smart contract
+ * Fetch avatar pixels from smart contract using direct daemon call
  * @param {string} address - Wallet address
  * @returns {Promise<string|null>} - 576-character pixel string or null if not found
  */
@@ -49,19 +49,11 @@ async function fetchAvatarPixels(address) {
     }
     
     try {
-        // Call smart contract to get avatar
-        const response = await CallXSWD(JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "DERO.GetSC",
-            params: {
-                scid: VILLAGER_SCID,
-                keysstring: [`avatar_${address}`]
-            }
-        }));
+        // Call smart contract using direct daemon RPC (works without XSWD)
+        const response = await GetSCVariable(VILLAGER_SCID, [`avatar_${address}`]);
         
-        if (response?.result?.valuesstring?.[0]) {
-            const avatarHex = response.result.valuesstring[0];
+        if (response?.success && response?.valuesstring?.[0]) {
+            const avatarHex = response.valuesstring[0];
             // Decode hex to 576-char string
             const avatarStr = hexToString(avatarHex);
             
@@ -80,7 +72,7 @@ async function fetchAvatarPixels(address) {
 
 /**
  * Get avatar URL for an address
- * Renders frame instantly, fetches custom pixels in background
+ * Fetches custom pixels from blockchain and renders with identicon frame
  * @param {string} address - Wallet address
  * @param {number} size - Requested size in pixels (default: 40)
  * @returns {Promise<string>} - Object URL for the avatar image
@@ -96,31 +88,19 @@ export async function getAvatarUrl(address, size = 40) {
         return avatarUrlCache.get(cacheKey);
     }
     
-    // Start with empty avatar (frame only) - renders instantly
+    // Fetch custom pixels from blockchain (or use empty if none found)
     let avatarStr = EMPTY_AVATAR;
-    
-    // Try to fetch custom pixels (non-blocking)
-    fetchAvatarPixels(address).then(pixels => {
+    try {
+        const pixels = await fetchAvatarPixels(address);
         if (pixels && pixels.length === 576) {
-            // Update cache with custom pixels
-            avatarPixelCache.set(address, pixels);
-            
-            // Re-render with custom pixels
-            // Clear old cache entry
-            avatarUrlCache.delete(cacheKey);
-            
-            // Generate new avatar with custom pixels
-            VillagerIdenticon.render(address, pixels, size).then(url => {
-                avatarUrlCache.set(cacheKey, url);
-            }).catch(err => {
-                console.error('Failed to render avatar with custom pixels:', err);
-            });
+            avatarStr = pixels;
         }
-    }).catch(err => {
+    } catch (err) {
         console.error('Failed to fetch avatar pixels:', err);
-    });
+        // Continue with empty avatar
+    }
     
-    // Render immediately with empty pixels (frame only)
+    // Render avatar with identicon frame
     try {
         const url = await VillagerIdenticon.render(address, avatarStr, size);
         avatarUrlCache.set(cacheKey, url);

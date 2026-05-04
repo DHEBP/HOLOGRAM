@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
-  import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode, toast, combinedSyncProgress } from '../stores/appState.js';
+  import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode, toast, combinedSyncProgress, navigateTo } from '../stores/appState.js';
   import { 
     GetEpochStats, SetNetworkMode,
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus,
@@ -481,11 +481,16 @@
     }
   }
   
-  // Avatar editing is moving to Villager; keep a clear temporary action for now.
+  // Launch Villager avatar editor when clicking on the avatar
   function handleAvatarClick(event) {
     event.stopPropagation();
     event.preventDefault();
-    toast.info('Villager avatar editor coming soon');
+    
+    // Navigate to villager.tela
+    navigateTo('villager.tela');
+    
+    // Switch to Browser tab
+    window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'browser' }));
   }
   
   async function handleConnectWallet() {
@@ -1087,7 +1092,7 @@
           <img 
             src={walletAvatarUrl} 
             alt="Wallet avatar"
-            title="Villager avatar editor coming soon"
+            title="Edit avatar in Villager"
             class="wallet-avatar wallet-avatar-collapsed wallet-avatar-clickable"
             class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
             on:click={handleAvatarClick}
@@ -1127,7 +1132,7 @@
             <img 
               src={walletAvatarUrl} 
               alt="Wallet avatar"
-              title="Villager avatar editor coming soon"
+              title="Edit avatar in Villager"
               class="wallet-avatar wallet-avatar-expanded wallet-avatar-clickable"
               class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
               on:click={handleAvatarClick}
@@ -1301,15 +1306,15 @@
             </div>
           {/if}
 
-          <!-- Manage Avatar Placeholder -->
+          <!-- Manage Avatar -->
           <div class="wallet-menu-action">
             <button
               on:click|stopPropagation={handleAvatarClick}
               class="manage-avatar-btn"
-              title="Villager avatar editor coming soon"
+              title="Edit your avatar in Villager"
             >
               <span class="manage-avatar-title">Manage Avatar</span>
-              <span class="manage-avatar-subtitle">Coming soon (Villager on TELA)</span>
+              <span class="manage-avatar-subtitle">Edit in Villager</span>
             </button>
           </div>
           

@@ -838,6 +838,44 @@ func (a *App) DaemonGetSC(scid string) map[string]interface{} {
 	return map[string]interface{}{"success": true, "result": res}
 }
 
+// GetSCVariable queries specific keys from a smart contract
+// Used for fetching individual variables like avatar data without fetching all contract data
+func (a *App) GetSCVariable(scid string, keys []string) map[string]interface{} {
+	if a.daemonClient == nil {
+		return map[string]interface{}{"success": false, "error": "Not connected to any node. Please connect to a network first."}
+	}
+	if scid == "" {
+		return map[string]interface{}{"success": false, "error": "SCID is required"}
+	}
+	if len(keys) == 0 {
+		return map[string]interface{}{"success": false, "error": "At least one key is required"}
+	}
+
+	params := map[string]interface{}{
+		"scid":       scid,
+		"code":       false,
+		"variables":  false,
+		"keysstring": keys,
+	}
+
+	res, err := a.daemonClient.Call("DERO.GetSC", params)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] GetSCVariable failed for %s: %v", scid[:16], err))
+		return ErrorResponse(err)
+	}
+
+	// Extract valuesstring from result
+	if resMap, ok := res.(map[string]interface{}); ok {
+		return map[string]interface{}{
+			"success":      true,
+			"scid":         scid,
+			"valuesstring": resMap["valuesstring"],
+		}
+	}
+
+	return map[string]interface{}{"success": true, "result": res}
+}
+
 // ================== NRS & Explorer Features ==================
 
 func (a *App) ResolveDeroName(name string) map[string]interface{} {
