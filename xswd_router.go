@@ -46,6 +46,9 @@ func (a *App) routeDaemonCall(method string, params map[string]interface{}) XSWD
 		log.Printf("[ERR] Daemon call failed: %v", err)
 		return xswdError(FriendlyError(err), err.Error())
 	}
+	if method == "DERO.GetSC" {
+		result = normalizeDEROGetSCResult(result)
+	}
 	return xswdSuccess(result)
 }
 

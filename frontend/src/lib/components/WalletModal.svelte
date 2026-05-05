@@ -416,36 +416,67 @@
               
               <!-- Transfers (DERO or token amounts) -->
               {#if request.payload.transfers && request.payload.transfers.length > 0}
-                {#each request.payload.transfers as transfer}
+                {@const deroTransfers = request.payload.transfers.filter(t => !t.scid || t.scid === '0000000000000000000000000000000000000000000000000000000000000000')}
+                <!-- Sum all cost fields: amount, burn (if numeric), fees from transfers AND top-level fees -->
+                {@const totalAmount = deroTransfers.reduce((sum, t) => sum + (t.amount || 0), 0)}
+                {@const totalBurn = deroTransfers.reduce((sum, t) => sum + (typeof t.burn === 'number' ? t.burn : 0), 0)}
+                {@const transferFees = deroTransfers.reduce((sum, t) => sum + (t.fees || 0), 0)}
+                {@const topLevelFees = request.payload.fees || 0}
+                {@const totalFees = transferFees + topLevelFees}
+                {@const totalDero = totalAmount + totalBurn + totalFees}
+                {@const hasBurnField = deroTransfers.some(t => t.burn)}
+                
+                <!-- Show total DERO cost -->
+                {#if deroTransfers.length > 0}
                   <div class="modal-tx-field">
-                    <div class="modal-tx-label">
-                      {#if transfer.burn}
-                        BURN AMOUNT
-                      {:else}
-                        AMOUNT
-                      {/if}
-                    </div>
-                    <div class="modal-tx-amount">
-                      {#if transfer.scid && transfer.scid !== '0000000000000000000000000000000000000000000000000000000000000000'}
-                        {transfer.amount || 0} token(s)
-                        <span class="modal-tx-token-scid" title={transfer.scid}>
-                          ({transfer.scid.slice(0, 6)}...)
-                        </span>
-                      {:else}
-                        {((transfer.amount || 0) / 100000).toLocaleString()} DERO
-                      {/if}
+                    <div class="modal-tx-label">TOTAL COST</div>
+                    <div class="modal-tx-amount modal-tx-amount-total">
+                      {(totalDero / 100000).toLocaleString()} DERO
                     </div>
                   </div>
-                  {#if transfer.destination}
-                    <div class="modal-tx-field">
-                      <div class="modal-tx-label">DESTINATION</div>
-                      <div class="modal-tx-destination">
-                        {transfer.destination}
+                {/if}
+                
+                <!-- Show breakdown of costs if any non-zero values -->
+                {#if totalAmount > 0 || totalBurn > 0 || totalFees > 0}
+                  <div class="modal-tx-breakdown">
+                    <div class="modal-tx-label modal-tx-label-small">BREAKDOWN</div>
+                    {#if totalBurn > 0}
+                      <div class="modal-tx-breakdown-item">
+                        <span class="modal-tx-breakdown-label">Burn:</span>
+                        <span class="modal-tx-breakdown-value">{(totalBurn / 100000).toLocaleString()} DERO</span>
                       </div>
+                    {/if}
+                    {#if totalFees > 0}
+                      <div class="modal-tx-breakdown-item">
+                        <span class="modal-tx-breakdown-label">Fees:</span>
+                        <span class="modal-tx-breakdown-value">{(totalFees / 100000).toLocaleString()} DERO</span>
+                      </div>
+                    {/if}
+                    {#if totalAmount > 0}
+                      <div class="modal-tx-breakdown-item">
+                        <span class="modal-tx-breakdown-label">Amount:</span>
+                        <span class="modal-tx-breakdown-value">{(totalAmount / 100000).toLocaleString()} DERO</span>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+                
+                <!-- Show destination if present (usually same for all burns to SC) -->
+                {#if request.payload.transfers[0]?.destination}
+                  <div class="modal-tx-field">
+                    <div class="modal-tx-label">DESTINATION</div>
+                    <div class="modal-tx-destination">
+                      {request.payload.transfers[0].destination}
                     </div>
-                  {/if}
-                {/each}
-              {:else if !request.payload.scid}
+                  </div>
+                {/if}
+              {:else if request.payload.scid}
+                <!-- SC call with no explicit transfers - show 0 DERO burn -->
+                <div class="modal-tx-field">
+                  <div class="modal-tx-label">BURN AMOUNT</div>
+                  <div class="modal-tx-amount">0 DERO</div>
+                </div>
+              {:else}
                 <!-- No transfers and no SC - unusual, show warning -->
                 <div class="modal-tx-field">
                   <div class="modal-tx-label">AMOUNT</div>
@@ -943,6 +974,43 @@
   .modal-tx-amount-zero {
     color: var(--text-5);
     font-style: italic;
+  }
+  
+  .modal-tx-amount-total {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  
+  .modal-tx-breakdown {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+    padding: var(--s-2);
+    background: rgba(8, 8, 14, 0.3);
+    border-radius: var(--r-sm);
+    margin-top: var(--s-1);
+  }
+  
+  .modal-tx-label-small {
+    font-size: 9px;
+    margin-bottom: var(--s-1);
+  }
+  
+  .modal-tx-breakdown-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  
+  .modal-tx-breakdown-label {
+    color: var(--text-5);
+  }
+  
+  .modal-tx-breakdown-value {
+    color: var(--text-3);
   }
   
   .modal-tx-ringsize {

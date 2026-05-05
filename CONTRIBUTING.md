@@ -33,22 +33,26 @@ Thank you for your interest in contributing to HOLOGRAM — a native desktop DER
 
 ### Prerequisites
 
-- **Go** 1.24.0+
+- **Go** 1.24.0+ — install from [go.dev/dl](https://go.dev/dl). Distro packages (`apt install golang-go`, etc.) are usually too old; HOLOGRAM will not build on Go 1.22.
 - **Wails v2 CLI:** `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 - **Node.js** 18+
 
 ### Linux users
 
+All current distros (Ubuntu 24.04+, Debian 13, Fedora 40+, Arch) ship `webkit2gtk-4.1` (libsoup3). The Makefile auto-applies `-tags webkit2_41` on Linux — install the matching system packages:
+
 ```bash
 # Ubuntu/Debian
-sudo apt install libgtk-3-dev libglib2.0-dev libwebkit2gtk-4.0-dev
+sudo apt install libgtk-3-dev libglib2.0-dev libwebkit2gtk-4.1-dev
 
 # Fedora
 sudo dnf install gtk3-devel glib2-devel webkit2gtk4.1-devel
 
 # Arch Linux
-sudo pacman -S gtk3 glib2 webkit2gtk
+sudo pacman -S gtk3 glib2 webkit2gtk-4.1
 ```
+
+> Build error, runtime crash, or vite timeout on Linux? See **[docs/LINUX-BUILD.md](docs/LINUX-BUILD.md)** — covers the libsoup conflict, OOM during `make all`, and stale dev-server cleanup.
 
 ### Run in development mode
 
@@ -56,17 +60,25 @@ sudo pacman -S gtk3 glib2 webkit2gtk
 git clone https://github.com/DHEBP/HOLOGRAM.git
 cd HOLOGRAM
 cd frontend && npm install && cd ..
+
+# macOS / Windows
 wails dev
+
+# Linux
+wails dev -tags webkit2_41
+# or, equivalently:
+make dev
 ```
 
 ### Build
 
 ```bash
-# Full build (HOLOGRAM + derod + simulator)
+# Full build (HOLOGRAM + derod + simulator) — auto-tags on Linux
 make all
 
 # HOLOGRAM only
-wails build
+wails build              # macOS / Windows
+wails build -tags webkit2_41   # Linux
 ```
 
 ### Run Go tests

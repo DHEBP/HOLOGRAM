@@ -232,10 +232,11 @@
           <input
             type="text"
             bind:value={updateIndexIcon}
-            placeholder="https://..."
+            placeholder="Icon DOC SCID (recommended) or URL"
             class="input"
             disabled={!canUpdateIndex()}
           />
+          <p class="form-hint">Recommended: use an on-chain icon DOC SCID (100x100 SVG/PNG works well). Note: older INDEX versions may require a contract upgrade before header icon changes persist.</p>
         </div>
       </div>
       

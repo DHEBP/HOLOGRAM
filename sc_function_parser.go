@@ -223,7 +223,11 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 		}
 	}
 
-	a.logToConsole(fmt.Sprintf("[SC] Invoking %s on %s...", params.Function, params.SCID[:16]))
+	scidPrefix := params.SCID
+	if len(scidPrefix) > 16 {
+		scidPrefix = scidPrefix[:16]
+	}
+	a.logToConsole(fmt.Sprintf("[SC] Invoking %s on %s...", params.Function, scidPrefix))
 
 	// Check wallet
 	wallet := GetWallet()
@@ -238,186 +242,73 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 		}
 	}
 
-	// Build SC arguments
-	scArgs := rpc.Arguments{
-		{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_CALL)},
-		{Name: rpc.SCID, DataType: rpc.DataHash, Value: crypto.HashHexToHash(params.SCID)},
-		{Name: "entrypoint", DataType: rpc.DataString, Value: params.Function},
+	// Route through the wallet's built-in scinvoke path (same path used by dApps),
+	// which keeps SC arg handling consistent across Studio and XSWD calls.
+	scRPC := []interface{}{
+		map[string]interface{}{"name": "entrypoint", "datatype": "S", "value": params.Function},
 	}
-
-	// Add function parameters
 	for name, value := range params.Params {
 		switch v := value.(type) {
 		case string:
-			scArgs = append(scArgs, rpc.Argument{
-				Name:     name,
-				DataType: rpc.DataString,
-				Value:    v,
+			scRPC = append(scRPC, map[string]interface{}{
+				"name": name, "datatype": "S", "value": v,
 			})
-		case float64: // JSON numbers come as float64
-			scArgs = append(scArgs, rpc.Argument{
-				Name:     name,
-				DataType: rpc.DataUint64,
-				Value:    uint64(v),
+		case float64:
+			scRPC = append(scRPC, map[string]interface{}{
+				"name": name, "datatype": "U", "value": v,
 			})
 		case int:
-			scArgs = append(scArgs, rpc.Argument{
-				Name:     name,
-				DataType: rpc.DataUint64,
-				Value:    uint64(v),
+			scRPC = append(scRPC, map[string]interface{}{
+				"name": name, "datatype": "U", "value": float64(v),
+			})
+		case uint64:
+			scRPC = append(scRPC, map[string]interface{}{
+				"name": name, "datatype": "U", "value": float64(v),
 			})
 		}
 	}
 
-	// Validate SC arguments before building the transaction
-	if err := scArgs.Validate_Arguments(); err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] SC argument validation failed: %v", err))
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Invalid SC arguments: " + err.Error(),
-		}
+	walletParams := map[string]interface{}{
+		"scid":     params.SCID,
+		"sc_rpc":   scRPC,
+		"ringsize": float64(2),
 	}
-	if a.simulatorManager != nil && a.simulatorManager.isInitialized {
-		return a.withSimulatorTransactionConnectivity(wallet, "scinvoke", func() map[string]interface{} {
-			return a.invokeSCFunctionSimulator(params, wallet, scArgs)
-		})
-	}
-
-	// Sync wallet with daemon before building the transaction
-	// (mirrors InternalWalletCall scinvoke path which does this and works correctly)
-	if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Pre-invoke wallet sync failed: %v", syncErr))
-	}
-
-	// Check daemon connectivity
-	if wallet.Get_Daemon_Height() == 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet is not connected to the daemon. Please check your connection and try again.",
-		}
-	}
-
-	// Check wallet has balance for gas fees
-	mature, _ := wallet.Get_Balance()
-	if mature == 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Insufficient balance. Smart contract calls require gas fees — please fund your wallet first.",
-		}
-	}
-
-	// Build transfers
-	transfers := []rpc.Transfer{}
-
-	// Ensure daemon connection before Random_ring_members (needs daemon to fetch decoy outputs)
-	a.ensureWalletDaemonConnectivity(a.getDaemonEndpointForWallet())
-
-	// Get random destination for the transfer
-	randos := wallet.Random_ring_members(crypto.ZEROHASH)
-	if len(randos) == 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Could not get ring members - check daemon connection",
-		}
-	}
-	destination := randos[0]
-	if destination == wallet.GetAddress().String() && len(randos) > 1 {
-		destination = randos[1]
-	}
-
-	// Add DERO transfer if needed
-	if params.DeroAmount > 0 {
-		transfers = append(transfers, rpc.Transfer{
-			Destination: destination,
-			Amount:      0,
-			Burn:        params.DeroAmount,
-		})
-	}
-
-	// Add asset transfer if needed
-	if params.AssetSCID != "" && params.AssetAmount > 0 {
-		transfers = append(transfers, rpc.Transfer{
-			Destination: destination,
-			SCID:        crypto.HashHexToHash(params.AssetSCID),
-			Amount:      0,
-			Burn:        params.AssetAmount,
-		})
-	}
-
-	// If no transfers, add a minimal one
-	if len(transfers) == 0 {
-		transfers = append(transfers, rpc.Transfer{
-			Destination: destination,
-			Amount:      0,
-		})
-	}
-
-	// Set ringsize
-	ringsize := uint64(2)
 	if params.Anonymous {
-		ringsize = 16
+		walletParams["ringsize"] = float64(16)
+	}
+	if params.DeroAmount > 0 {
+		walletParams["sc_dero_deposit"] = float64(params.DeroAmount)
+	}
+	if params.AssetSCID != "" && params.AssetAmount > 0 {
+		walletParams["sc_token_deposit"] = float64(params.AssetAmount)
+		walletParams["sc_token_deposit_scid"] = params.AssetSCID
 	}
 
-	// Estimate gas via daemon RPC (same as Engram and InternalWalletCall paths)
-	gasStorage := uint64(0)
-	gasRPC := []map[string]interface{}{
-		{"name": "SC_ACTION", "datatype": "U", "value": uint64(0)},
-		{"name": "SC_ID", "datatype": "H", "value": params.SCID},
-		{"name": "entrypoint", "datatype": "S", "value": params.Function},
-	}
-	for name, value := range params.Params {
-		switch v := value.(type) {
-		case string:
-			gasRPC = append(gasRPC, map[string]interface{}{"name": name, "datatype": "S", "value": v})
-		case float64:
-			gasRPC = append(gasRPC, map[string]interface{}{"name": name, "datatype": "U", "value": uint64(v)})
+	a.logToConsole(fmt.Sprintf("[SC] Forwarding invoke through wallet scinvoke path (args=%d)", len(scRPC)-1))
+	invokeResult := a.InternalWalletCall("scinvoke", walletParams, "")
+	if success, _ := invokeResult["success"].(bool); !success {
+		errorMessage := "Transaction failed"
+		if errText, ok := invokeResult["error"].(string); ok && errText != "" {
+			errorMessage = errText
 		}
-	}
-	gasParams := map[string]interface{}{
-		"sc_rpc":   gasRPC,
-		"ringsize": ringsize,
-		"signer":   wallet.GetAddress().String(),
-	}
-	if a.daemonClient != nil {
-		gasResult, gasErr := a.daemonClient.Call("DERO.GetGasEstimate", gasParams)
-		if gasErr != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] Gas estimate failed (proceeding with 0): %v", gasErr))
-		} else if resultMap, ok := gasResult.(map[string]interface{}); ok {
-			if gs, ok := resultMap["gasstorage"].(float64); ok {
-				gasStorage = uint64(gs)
-			}
-		}
-	}
-
-	a.logToConsole(fmt.Sprintf("[SC] Building TX: ringsize=%d gasStorage=%d transfers=%d", ringsize, gasStorage, len(transfers)))
-
-	// Build and send transaction
-	tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, gasStorage, false)
-	if err != nil {
-		// Retry after resync (mirrors InternalWalletCall pattern)
-		a.logToConsole(fmt.Sprintf("[WARN] SC invoke build failed, retrying after resync: %v", err))
-		if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
-		}
-		tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, gasStorage, false)
-		if err != nil {
-			return map[string]interface{}{
-				"success": false,
-				"error":   "Transaction failed: " + err.Error(),
-			}
-		}
-	}
-
-	if err := wallet.SendTransaction(tx); err != nil {
-		return map[string]interface{}{
+		resp := map[string]interface{}{
 			"success": false,
-			"error":   "Failed to send transaction: " + err.Error(),
+			"error":   errorMessage,
+		}
+		if technicalError, ok := invokeResult["technicalError"].(string); ok && technicalError != "" {
+			resp["technicalError"] = technicalError
+		}
+		return resp
+	}
+
+	txid := ""
+	if resultMap, ok := invokeResult["result"].(map[string]interface{}); ok {
+		if tx, ok := resultMap["txid"].(string); ok {
+			txid = tx
 		}
 	}
 
-	txid := tx.GetHash().String()
-	a.logToConsole(fmt.Sprintf("[OK] SC invoked successfully: %s...", txid[:16]))
-
+	a.logToConsole(fmt.Sprintf("[OK] SC invoked successfully: %s...", txid))
 	return map[string]interface{}{
 		"success":  true,
 		"txid":     txid,

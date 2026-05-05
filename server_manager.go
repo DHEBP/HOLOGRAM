@@ -45,6 +45,18 @@ var proxyRegistry = struct {
 	ports:   make(map[string]int),
 }
 
+// In-memory server registry - for serving DocShards content assembled by HOLOGRAM
+var memoryServerRegistry = struct {
+	sync.RWMutex
+	servers map[string]*http.Server // SCID -> in-memory server
+	ports   map[string]int          // SCID -> port
+	content map[string]*TELAContent // SCID -> assembled content
+}{
+	servers: make(map[string]*http.Server),
+	ports:   make(map[string]int),
+	content: make(map[string]*TELAContent),
+}
+
 // findAvailableProxyPort finds an available port for the proxy server
 func findAvailableProxyPort() (int, error) {
 	// Use port range 50000-60000 for proxy servers (separate from tela servers)
@@ -181,6 +193,155 @@ func createProxyServer(targetURL, scid string) (string, error) {
 	proxyURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	return proxyURL, nil
+}
+
+// serveDocShardsContent creates an in-memory HTTP server for assembled DocShards content.
+// This bypasses the tela library (which doesn't support DocShards) and serves content
+// directly from memory, including binary files like WASM that can't be inlined into HTML.
+func (a *App) serveDocShardsContent(scid string, content *TELAContent) (string, error) {
+	a.logToConsole("[MEM] Creating in-memory server for DocShards content")
+
+	// Check if server already exists for this SCID
+	memoryServerRegistry.RLock()
+	if existingServer := memoryServerRegistry.servers[scid]; existingServer != nil {
+		port := memoryServerRegistry.ports[scid]
+		memoryServerRegistry.RUnlock()
+		serverURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+		a.logToConsole(fmt.Sprintf("[MEM] Reusing existing in-memory server: %s", serverURL))
+		return serverURL, nil
+	}
+	memoryServerRegistry.RUnlock()
+
+	// Find available port
+	port, err := findAvailableProxyPort()
+	if err != nil {
+		return "", fmt.Errorf("failed to find available port: %w", err)
+	}
+
+	// Create HTTP handler that serves content from memory
+	mux := http.NewServeMux()
+
+	// Serve HTML at root
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == "/" || path == "/index.html" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			// Inject XSWD bridge script for wallet connectivity
+			html := content.HTML
+			bridgeScript := getXSWDBridgeScript()
+			html = injectScriptIntoHTML(html, bridgeScript)
+			w.Write([]byte(html))
+			return
+		}
+
+		// Strip leading slash for filename lookup
+		filename := strings.TrimPrefix(path, "/")
+
+		// Try to serve from JSByName
+		if js, ok := content.JSByName[filename]; ok {
+			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Write([]byte(js))
+			return
+		}
+
+		// Try to serve from CSSByName
+		if css, ok := content.CSSByName[filename]; ok {
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Write([]byte(css))
+			return
+		}
+
+		// Try to serve from StaticByName (WASM, RIV, images, etc.)
+		if static, ok := content.StaticByName[filename]; ok {
+			ext := strings.ToLower(filepath.Ext(filename))
+			var contentType string
+			switch ext {
+			case ".wasm":
+				contentType = "application/wasm"
+			case ".riv":
+				contentType = "application/octet-stream"
+			case ".json":
+				contentType = "application/json"
+			case ".svg":
+				contentType = "image/svg+xml"
+			case ".png":
+				contentType = "image/png"
+			case ".jpg", ".jpeg":
+				contentType = "image/jpeg"
+			case ".gif":
+				contentType = "image/gif"
+			case ".webp":
+				contentType = "image/webp"
+			case ".ico":
+				contentType = "image/x-icon"
+			default:
+				contentType = "application/octet-stream"
+			}
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Write([]byte(static))
+			return
+		}
+
+		// File not found
+		http.NotFound(w, r)
+	})
+
+	// Create and start server
+	server := &http.Server{
+		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
+		Handler: mux,
+	}
+
+	// Start server in goroutine
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			a.logToConsole(fmt.Sprintf("[MEM] Server error for %s: %v", scid, err))
+		}
+	}()
+
+	// Register server
+	memoryServerRegistry.Lock()
+	memoryServerRegistry.servers[scid] = server
+	memoryServerRegistry.ports[scid] = port
+	memoryServerRegistry.content[scid] = content
+	memoryServerRegistry.Unlock()
+
+	serverURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	a.logToConsole(fmt.Sprintf("[MEM] In-memory server started: %s", serverURL))
+
+	// Log what files are available
+	if len(content.JSByName) > 0 {
+		for name := range content.JSByName {
+			a.logToConsole(fmt.Sprintf("  [MEM] Serving JS: /%s", name))
+		}
+	}
+	if len(content.StaticByName) > 0 {
+		for name := range content.StaticByName {
+			a.logToConsole(fmt.Sprintf("  [MEM] Serving static: /%s", name))
+		}
+	}
+
+	return serverURL, nil
+}
+
+// injectScriptIntoHTML injects a script into HTML, preferably into <head>
+func injectScriptIntoHTML(html, script string) string {
+	// Try to inject after <head>
+	if idx := strings.Index(strings.ToLower(html), "<head>"); idx != -1 {
+		insertPos := idx + 6
+		return html[:insertPos] + "\n" + script + "\n" + html[insertPos:]
+	}
+	// Try to inject after <!DOCTYPE html>
+	if idx := strings.Index(strings.ToLower(html), "<!doctype html>"); idx != -1 {
+		insertPos := idx + 15
+		return html[:insertPos] + "\n" + script + "\n" + html[insertPos:]
+	}
+	// Prepend to HTML
+	return script + "\n" + html
 }
 
 // getXSWDBridgeScript returns the XSWD bridge script to inject into TELA apps
@@ -633,6 +794,146 @@ func getXSWDBridgeScript() string {
 
     log('[Bridge] Download interceptor installed');
   })();
+
+  // ── File input interceptor ────────────────────────────────────────────────
+  // Intercepts file input elements so dApps can select files through HOLOGRAM's
+  // native file dialog. This works around iframe sandbox restrictions that
+  // prevent file inputs from working in Wails WebView.
+  (function() {
+    // Override click on file inputs to route through parent
+    function interceptFileInputClick(input) {
+      var accept = input.getAttribute('accept') || '';
+      var title = input.getAttribute('title') || input.getAttribute('data-title') || 'Select File';
+      
+      log('[File] Intercepting file input click: accept=' + accept);
+      
+      request('selectFile', { title: title, accept: accept }).then(function(result) {
+        if (result && result.success && result.base64) {
+          log('[OK] File selected: ' + result.filename + ' (' + result.size + ' bytes)');
+          
+          // Convert base64 to Blob and create a File object
+          var byteString = atob(result.base64);
+          var ab = new ArrayBuffer(byteString.length);
+          var ia = new Uint8Array(ab);
+          for (var i = 0; i < byteString.length; i++) {
+            ia[i] = byteString.charCodeAt(i);
+          }
+          var blob = new Blob([ab], { type: result.mimeType || 'application/octet-stream' });
+          
+          // Create a File object (for browser compatibility)
+          var file;
+          try {
+            file = new File([blob], result.filename, { type: result.mimeType || 'application/octet-stream' });
+          } catch(e) {
+            // Safari workaround - File constructor may not work in some contexts
+            file = blob;
+            file.name = result.filename;
+            file.lastModified = Date.now();
+          }
+          
+          // Create a synthetic FileList-like object
+          var dt = new DataTransfer();
+          dt.items.add(file);
+          
+          // Set the files on the input (this triggers any onchange handlers)
+          try {
+            input.files = dt.files;
+          } catch(e) {
+            log('[Warn] Could not set input.files: ' + e.message);
+          }
+          
+          // Dispatch change event so dApp knows a file was selected
+          var changeEvent = new Event('change', { bubbles: true, cancelable: false });
+          input.dispatchEvent(changeEvent);
+          
+          // Also dispatch input event for completeness
+          var inputEvent = new Event('input', { bubbles: true, cancelable: false });
+          input.dispatchEvent(inputEvent);
+          
+          log('[File] File data injected and events dispatched');
+        } else if (result && result.cancelled) {
+          log('[File] User cancelled file selection');
+        } else {
+          log('[File] Selection failed: ' + (result && result.error || 'unknown'));
+        }
+      }).catch(function(e) {
+        log('[Error] File selection error: ' + e.message);
+      });
+    }
+    
+    // Method 1: Intercept programmatic .click() calls on file inputs
+    var _origInputClick = HTMLInputElement.prototype.click;
+    HTMLInputElement.prototype.click = function() {
+      if (this.type === 'file') {
+        interceptFileInputClick(this);
+        return;
+      }
+      return _origInputClick.call(this);
+    };
+    
+    // Method 2: Intercept direct click events on file inputs
+    document.addEventListener('click', function(e) {
+      var el = e.target;
+      if (el && el.tagName === 'INPUT' && el.type === 'file') {
+        e.preventDefault();
+        e.stopPropagation();
+        interceptFileInputClick(el);
+      }
+    }, true);
+    
+    // Method 3: Override showOpenFilePicker if it exists (modern File System Access API)
+    if (window.showOpenFilePicker) {
+      var _origShowOpenFilePicker = window.showOpenFilePicker;
+      window.showOpenFilePicker = function(options) {
+        log('[File] showOpenFilePicker intercepted');
+        options = options || {};
+        var accept = '';
+        if (options.types && options.types.length > 0) {
+          var exts = [];
+          options.types.forEach(function(t) {
+            if (t.accept) {
+              Object.keys(t.accept).forEach(function(mime) {
+                t.accept[mime].forEach(function(ext) {
+                  exts.push(ext);
+                });
+              });
+            }
+          });
+          accept = exts.join(',');
+        }
+        
+        return new Promise(function(resolve, reject) {
+          request('selectFile', { title: 'Select File', accept: accept }).then(function(result) {
+            if (result && result.success && result.base64) {
+              var byteString = atob(result.base64);
+              var ab = new ArrayBuffer(byteString.length);
+              var ia = new Uint8Array(ab);
+              for (var i = 0; i < byteString.length; i++) {
+                ia[i] = byteString.charCodeAt(i);
+              }
+              var blob = new Blob([ab], { type: result.mimeType || 'application/octet-stream' });
+              
+              // Create a mock FileSystemFileHandle
+              var mockHandle = {
+                kind: 'file',
+                name: result.filename,
+                getFile: function() {
+                  return Promise.resolve(new File([blob], result.filename, { type: result.mimeType }));
+                }
+              };
+              resolve([mockHandle]);
+            } else if (result && result.cancelled) {
+              reject(new DOMException('The user aborted a request.', 'AbortError'));
+            } else {
+              reject(new Error(result && result.error || 'File selection failed'));
+            }
+          }).catch(reject);
+        });
+      };
+    }
+    
+    log('[Bridge] File input interceptor installed');
+  })();
 })();
 </script>`
 }
@@ -647,6 +948,20 @@ func shutdownProxyServer(scid string) {
 		server.Close()
 		delete(proxyRegistry.proxies, scid)
 		delete(proxyRegistry.ports, scid)
+	}
+}
+
+// shutdownMemoryServer shuts down an in-memory DocShards server by SCID
+func shutdownMemoryServer(scid string) {
+	memoryServerRegistry.Lock()
+	defer memoryServerRegistry.Unlock()
+
+	server, exists := memoryServerRegistry.servers[scid]
+	if exists {
+		server.Close()
+		delete(memoryServerRegistry.servers, scid)
+		delete(memoryServerRegistry.ports, scid)
+		delete(memoryServerRegistry.content, scid)
 	}
 }
 
@@ -751,6 +1066,18 @@ func (a *App) ShutdownAllServers() map[string]interface{} {
 	proxyRegistry.ports = make(map[string]int)
 	proxyRegistry.Unlock()
 
+	// Shutdown all in-memory DocShards servers
+	memoryServerRegistry.Lock()
+	for scid := range memoryServerRegistry.servers {
+		if server, exists := memoryServerRegistry.servers[scid]; exists {
+			server.Close()
+		}
+	}
+	memoryServerRegistry.servers = make(map[string]*http.Server)
+	memoryServerRegistry.ports = make(map[string]int)
+	memoryServerRegistry.content = make(map[string]*TELAContent)
+	memoryServerRegistry.Unlock()
+
 	// Shutdown via tela library - get all servers and shut each down
 	telaServers := tela.GetServerInfo()
 	for _, ts := range telaServers {
@@ -785,6 +1112,8 @@ func (a *App) ShutdownTELAServers() map[string]interface{} {
 		if !server.IsLocal {
 			// Shutdown proxy for this SCID
 			shutdownProxyServer(server.SCID)
+			// Shutdown in-memory server for this SCID (if any)
+			shutdownMemoryServer(server.SCID)
 			tela.ShutdownServer(name)
 			delete(serverRegistry.servers, name)
 			shutdownCount++
@@ -888,14 +1217,58 @@ func (a *App) ServeTELAContent(scid string) map[string]interface{} {
 	telaLink, err := tela.ServeTELA(scid, endpoint)
 	if err != nil {
 		// DocShards INDEX contracts are assembled by HOLOGRAM, not the tela library.
-		// The tela library doesn't support serving them, so use srcdoc mode directly.
+		// Since the tela library doesn't support serving DocShards, HOLOGRAM serves
+		// the assembled content via its own HTTP server. This is necessary because
+		// WASM files cannot be inlined into HTML and must be fetched via HTTP.
 		if strings.Contains(err.Error(), "DocShards") {
-			a.logToConsole("[OK] DocShards content — using srcdoc mode (HOLOGRAM handles shard assembly)")
+			a.logToConsole("[MEM] DocShards detected — fetching and assembling content")
+			
+			// Fetch and assemble the content (same as FetchSCID does)
+			content, fetchErr := a.FetchTELAContent(scid)
+			if fetchErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] Failed to fetch DocShards content: %v", fetchErr))
+				return map[string]interface{}{
+					"success": false,
+					"error":   fmt.Sprintf("Failed to fetch DocShards content: %v", fetchErr),
+				}
+			}
+			
+			// Create in-memory HTTP server to serve the assembled content
+			memURL, memErr := a.serveDocShardsContent(scid, content)
+			if memErr != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] Failed to create in-memory server: %v", memErr))
+				return map[string]interface{}{
+					"success": false,
+					"error":   fmt.Sprintf("Failed to serve DocShards: %v", memErr),
+				}
+			}
+			
+			// Register the in-memory server as the active server
+			durl := ""
+			if du, ok := content.Meta["durl"].(string); ok {
+				durl = du
+			}
+			serverName := durl
+			if serverName == "" {
+				serverName = scid[:16]
+			}
+			
+			serverRegistry.Lock()
+			serverRegistry.servers[serverName] = &ActiveServer{
+				Name:    serverName,
+				SCID:    scid,
+				URL:     memURL,
+				IsLocal: false,
+			}
+			serverRegistry.Unlock()
+			
+			a.logToConsole(fmt.Sprintf("[OK] DocShards content served via in-memory HTTP: %s", memURL))
 			return map[string]interface{}{
-				"success":    true,
-				"srcdocOnly": true,
-				"scid":       scid,
-				"message":    "DocShards content served via srcdoc mode",
+				"success": true,
+				"name":    serverName,
+				"scid":    scid,
+				"url":     memURL,
+				"message": "DocShards content served via in-memory HTTP server",
 			}
 		}
 		// Retry once if a stale clone already exists

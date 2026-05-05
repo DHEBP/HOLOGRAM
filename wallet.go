@@ -644,6 +644,49 @@ func (a *App) GetWalletKeys(password string) map[string]interface{} {
 	}
 }
 
+// ClipboardClearIf atomically clears the native OS clipboard if it still
+// contains the value the caller previously placed there.
+//
+// Why this exists: navigator.clipboard.writeText("") in the embedded WebKit
+// is rejected with NotAllowedError when invoked outside a user-gesture
+// context (e.g. from a setTimeout 30s after a copy). The native pasteboard
+// has no such restriction, so we route the auto-clear through Go.
+//
+// Returns:
+//
+//	{ success: bool, cleared: bool, error?: string }
+//
+// `cleared` is true only when the clipboard contained `expected` and was
+// successfully overwritten with empty. If the user copied something else
+// in the meantime, `cleared` is false and we leave their data alone.
+func (a *App) ClipboardClearIf(expected string) map[string]interface{} {
+	current, err := runtime.ClipboardGetText(a.ctx)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"cleared": false,
+			"error":   "clipboard read failed: " + err.Error(),
+		}
+	}
+	if current != expected {
+		return map[string]interface{}{
+			"success": true,
+			"cleared": false,
+		}
+	}
+	if err := runtime.ClipboardSetText(a.ctx, ""); err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"cleared": false,
+			"error":   "clipboard write failed: " + err.Error(),
+		}
+	}
+	return map[string]interface{}{
+		"success": true,
+		"cleared": true,
+	}
+}
+
 // GetIntegratedAddress generates an integrated address with optional destination port (payment ID)
 // In DERO, "payment ID" is implemented as a destination port (uint64) embedded in the address.
 // The resulting address changes from dero.../deto... to deroi.../detoi... format.
@@ -1338,42 +1381,60 @@ func parseXSWDScArgs(params map[string]interface{}, scid string) rpc.Arguments {
 	hasEntrypointInScRpc := false
 	entrypointFromScRpc := ""
 
+	appendScArg := func(argMap map[string]interface{}) {
+		name, _ := argMap["name"].(string)
+		dtype, _ := argMap["datatype"].(string)
+		val := argMap["value"]
+		if name == "" {
+			return
+		}
+		if name == "entrypoint" {
+			hasEntrypointInScRpc = true
+			if ep, ok := val.(string); ok {
+				entrypointFromScRpc = ep
+			}
+		}
+		switch dtype {
+		case "U":
+			switch v := val.(type) {
+			case float64:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+			case uint64:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: v})
+			case int:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
+			}
+		case "I":
+			switch v := val.(type) {
+			case float64:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: int64(v)})
+			case int64:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: v})
+			case int:
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: int64(v)})
+			}
+		case "S":
+			if v, ok := val.(string); ok {
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
+			}
+		case "H":
+			if v, ok := val.(string); ok {
+				scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
+			}
+		}
+	}
+
 	if args, ok := params["sc_rpc"].([]interface{}); ok {
 		for _, arg := range args {
-			a, ok := arg.(map[string]interface{})
+			argMap, ok := arg.(map[string]interface{})
 			if !ok {
 				continue
 			}
-			name, _ := a["name"].(string)
-			dtype, _ := a["datatype"].(string)
-			val := a["value"]
-			if name == "" {
-				continue
-			}
-			if name == "entrypoint" {
-				hasEntrypointInScRpc = true
-				if ep, ok := val.(string); ok {
-					entrypointFromScRpc = ep
-				}
-			}
-			switch dtype {
-			case "U":
-				if v, ok := val.(float64); ok {
-					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "U", Value: uint64(v)})
-				}
-			case "I":
-				if v, ok := val.(float64); ok {
-					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "I", Value: int64(v)})
-				}
-			case "S":
-				if v, ok := val.(string); ok {
-					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "S", Value: v})
-				}
-			case "H":
-				if v, ok := val.(string); ok {
-					scArgs = append(scArgs, rpc.Argument{Name: name, DataType: "H", Value: crypto.HashHexToHash(v)})
-				}
-			}
+			appendScArg(argMap)
+		}
+	} else if args, ok := params["sc_rpc"].([]map[string]interface{}); ok {
+		for _, argMap := range args {
+			appendScArg(argMap)
 		}
 	}
 
@@ -1650,6 +1711,12 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 
 		// Parse SC arguments (shared helper handles all datatypes including I, U, S, H)
 		scArgs := parseXSWDScArgs(params, scid)
+		if len(scArgs) == 0 {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Invalid smart contract call. Missing or malformed 'entrypoint'/'sc_rpc' parameters.",
+			}
+		}
 
 		// sc_dero_deposit / sc_token_deposit -- amount attached to the SC call.
 		// These are top-level params distinct from the transfers array.
@@ -1728,6 +1795,30 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			fees := uint64(0)
 			if f, ok := params["fees"].(float64); ok && f > 0 {
 				fees = uint64(f)
+			}
+
+			// Guard against wallet library panic path: scinvoke with no transfers at all.
+			if len(transfers) == 0 {
+				destination := ""
+				if a.IsInSimulatorMode() {
+					destination = a.getSimulatorTransferDestination(wallet.GetAddress().String())
+				} else {
+					randos := wallet.Random_ring_members(crypto.ZEROHASH)
+					if len(randos) == 0 {
+						return map[string]interface{}{
+							"success": false,
+							"error":   "Could not get ring members for SC call. Please check daemon connection and retry.",
+						}
+					}
+					destination = randos[0]
+					if destination == wallet.GetAddress().String() && len(randos) > 1 {
+						destination = randos[1]
+					}
+				}
+				transfers = append(transfers, rpc.Transfer{
+					Destination: destination,
+					Amount:      0,
+				})
 			}
 			a.logToConsole(fmt.Sprintf("[XSWD] Building scinvoke TX with ringsize=%d fees=%d", ringsize, fees))
 
@@ -3121,6 +3212,9 @@ func (a *App) VerifySignature(signedData string) map[string]interface{} {
 type registrationState struct {
 	sync.RWMutex
 	inProgress bool
+	pending    bool
+	pendingTx  string
+	pendingAt  time.Time
 	hashCount  uint64
 	startTime  time.Time
 	cancelCh   chan struct{}
@@ -3149,21 +3243,33 @@ func (a *App) GetRegistrationStatus() map[string]interface{} {
 	regHeight := wallet.Get_Registration_TopoHeight()
 	isRegistered := regHeight >= 0
 
-	// Check if registration is in progress
-	regState.RLock()
+	// Check if registration is in progress or awaiting confirmation.
+	regState.Lock()
+	if isRegistered && regState.pending {
+		regState.pending = false
+		regState.pendingTx = ""
+		regState.pendingAt = time.Time{}
+	}
 	inProgress := regState.inProgress
+	pending := regState.pending && !isRegistered
+	pendingTx := regState.pendingTx
 	hashCount := regState.hashCount
 	var elapsedSeconds float64
 	if inProgress {
 		elapsedSeconds = time.Since(regState.startTime).Seconds()
 	}
-	regState.RUnlock()
+	var pendingSeconds float64
+	if pending && !regState.pendingAt.IsZero() {
+		pendingSeconds = time.Since(regState.pendingAt).Seconds()
+	}
+	regState.Unlock()
 
 	result := map[string]interface{}{
 		"success":              true,
 		"isRegistered":         isRegistered,
 		"registrationHeight":   regHeight,
 		"registrationProgress": inProgress,
+		"registrationPending":  pending,
 	}
 
 	if inProgress {
@@ -3174,8 +3280,12 @@ func (a *App) GetRegistrationStatus() map[string]interface{} {
 		}
 	}
 
-	if !isRegistered {
-		result["message"] = "Wallet address not yet on-chain. You can either receive DERO (auto-registers) or manually register via PoW."
+	if pending {
+		result["registrationTxid"] = pendingTx
+		result["pendingSeconds"] = pendingSeconds
+		result["message"] = "Registration TX broadcast. Waiting for blockchain confirmation."
+	} else if !isRegistered {
+		result["message"] = "Wallet address not yet on-chain. Run PoW registration first, then receive DERO."
 	} else {
 		result["message"] = "Wallet is registered on-chain"
 	}
@@ -3218,6 +3328,9 @@ func (a *App) RegisterWallet() map[string]interface{} {
 
 	// Start registration
 	regState.inProgress = true
+	regState.pending = false
+	regState.pendingTx = ""
+	regState.pendingAt = time.Time{}
 	regState.hashCount = 0
 	regState.startTime = time.Now()
 	regState.cancelCh = make(chan struct{})
@@ -3301,6 +3414,11 @@ func (a *App) RegisterWallet() map[string]interface{} {
 								// Send the transaction RIGHT NOW while we have the valid TX
 								err := w.SendTransaction(regTx)
 								if err != nil {
+									regState.Lock()
+									regState.pending = false
+									regState.pendingTx = ""
+									regState.pendingAt = time.Time{}
+									regState.Unlock()
 									a.logToConsole(fmt.Sprintf("[REGISTER] Failed to broadcast registration TX: %v", err))
 									if a.ctx != nil {
 										runtime.EventsEmit(a.ctx, "wallet:registration_failed", map[string]interface{}{
@@ -3311,6 +3429,12 @@ func (a *App) RegisterWallet() map[string]interface{} {
 								}
 
 								txid := regTx.GetHash().String()
+								regState.Lock()
+								regState.pending = true
+								regState.pendingTx = txid
+								regState.pendingAt = time.Now()
+								regState.Unlock()
+
 								a.logToConsole(fmt.Sprintf("[REGISTER] Registration TX sent! TXID: %s", txid))
 								a.logToConsole("[REGISTER] Waiting for blockchain confirmation...")
 
@@ -3342,6 +3466,11 @@ func (a *App) RegisterWallet() map[string]interface{} {
 										regHeight := wallet.Get_Registration_TopoHeight()
 
 										if regHeight >= 0 {
+											regState.Lock()
+											regState.pending = false
+											regState.pendingTx = ""
+											regState.pendingAt = time.Time{}
+											regState.Unlock()
 											a.logToConsole(fmt.Sprintf("[REGISTER] Registration confirmed at height %d!", regHeight))
 											if a.ctx != nil {
 												runtime.EventsEmit(a.ctx, "wallet:registration_complete", map[string]interface{}{
@@ -3361,7 +3490,7 @@ func (a *App) RegisterWallet() map[string]interface{} {
 									// The TX might still be pending in the mempool
 									a.logToConsole("[REGISTER] Confirmation taking longer than expected. TX is in mempool, will be confirmed soon.")
 									if a.ctx != nil {
-										runtime.EventsEmit(a.ctx, "wallet:registration_complete", map[string]interface{}{
+										runtime.EventsEmit(a.ctx, "wallet:registration_pending", map[string]interface{}{
 											"txid":    txid,
 											"message": "Registration TX sent! It may take a few more blocks to confirm.",
 										})
@@ -3411,6 +3540,9 @@ func (a *App) CancelRegistration() map[string]interface{} {
 
 	close(regState.cancelCh)
 	regState.inProgress = false
+	regState.pending = false
+	regState.pendingTx = ""
+	regState.pendingAt = time.Time{}
 
 	a.logToConsole("[REGISTER] Registration cancelled by user")
 

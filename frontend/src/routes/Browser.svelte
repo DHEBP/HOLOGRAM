@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline } from '../../wailsjs/go/main/App.js';
   import ReloadSplitButton from '../lib/components/browser/ReloadSplitButton.svelte';
   import { EventsOn, EventsOff, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
@@ -44,6 +44,40 @@ function getPermissionDescription(permId) {
     'sc_invoke': 'Can request smart contract interactions (requires approval each time)'
   };
   return descriptions[permId] || 'Unknown permission';
+}
+
+// Parse SC payload from raw DERO RPC format for display in wallet modal
+// Extracts entrypoint and sc_args from sc_rpc array
+function parseScPayload(params) {
+  if (!params) return params;
+  
+  const scRpc = params.sc_rpc || params.sc_data || [];
+  
+  // Extract entrypoint from sc_rpc if present
+  let entrypoint = params.entrypoint;
+  if (!entrypoint && Array.isArray(scRpc)) {
+    const entrypointArg = scRpc.find(arg => arg.name === 'entrypoint');
+    if (entrypointArg) {
+      entrypoint = entrypointArg.value;
+    }
+  }
+  
+  // Extract SC arguments (excluding entrypoint) for display
+  let scArgs = [];
+  if (Array.isArray(scRpc)) {
+    scArgs = scRpc.filter(arg => arg.name !== 'entrypoint').map(arg => ({
+      name: arg.name,
+      type: arg.datatype,
+      value: arg.value
+    }));
+  }
+  
+  return {
+    ...params,
+    entrypoint,
+    sc_args: scArgs,
+    sc_data: scRpc
+  };
 }
 
 function closeExternalLinkModal() {
@@ -1177,11 +1211,13 @@ let addressInput = '';
                 
                 if (isSigningMethod) {
                   // Signing methods need user approval each time
+                  // Parse SC payload for proper display in wallet modal
+                  const parsedPayload = parseScPayload(params);
                   const approval = await requestWalletApproval({
                     type: 'sign',
                     appName: currentMeta.name || 'App',
                     origin: addressInput,
-                    payload: params
+                    payload: parsedPayload
                   });
                   
                   if (approval.approved) {
@@ -1226,6 +1262,21 @@ let addressInput = '';
             }
             break;
             
+          case 'selectFile': {
+            // File picker request from bridge script (allows dApps to select files)
+            const { title, accept } = payload || {};
+            addConsoleLog(`[Browser] Opening file picker: title="${title || 'Select File'}", accept="${accept || '*'}"`);
+            result = await SelectFileWithContent(title || '', accept || '');
+            if (result && result.success) {
+              addConsoleLog(`[OK] File selected: ${result.filename} (${result.size} bytes)`);
+            } else if (result && result.cancelled) {
+              addConsoleLog(`[Browser] File picker cancelled by user`);
+            } else {
+              addConsoleLog(`[ERR] File picker failed: ${result?.error || 'unknown error'}`);
+            }
+            break;
+          }
+
           case 'saveFile': {
             // Download request from bridge script (works for cross-origin HTTP-served apps)
             const { filename, base64, mimeType } = payload;
@@ -2623,11 +2674,13 @@ ${logsText || '(no logs)'}
             const methodLower = method.toLowerCase().replace('dero.', '');
             
             if (settings.integratedWallet && signingMethods.includes(methodLower)) {
+              // Parse SC payload for proper display in wallet modal
+              const parsedPayload = parseScPayload(params);
               const approval = await requestWalletApproval({
                 type: 'sign',
                 appName: currentMeta.name || 'App',
                 origin: addressInput,
-                payload: params
+                payload: parsedPayload
               });
               
               if (approval.approved) {

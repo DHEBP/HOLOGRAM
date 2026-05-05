@@ -312,9 +312,9 @@ func (a *App) GetCoinbaseMiner(txid string) map[string]interface{} {
 
 	if txHex == "" {
 		return map[string]interface{}{
-			"success":   true,
+			"success":    true,
 			"isCoinbase": false,
-			"message":   "No raw transaction hex available",
+			"message":    "No raw transaction hex available",
 		}
 	}
 
@@ -547,7 +547,7 @@ func (a *App) SearchAddress(address string) map[string]interface{} {
 	if a.gnomonClient.IsRunning() {
 		// Search through Gnomon for SCIDs owned by this address
 		ownedSCIDs := a.getOwnedSCIDs(address)
-		
+
 		return map[string]interface{}{
 			"success":    true,
 			"address":    address,
@@ -910,7 +910,7 @@ func (a *App) GetBlockchainStats() map[string]interface{} {
 
 	// Extract relevant stats - info is already map[string]interface{}
 	stats := map[string]interface{}{}
-	
+
 	stats["height"] = info["height"]
 	stats["topoheight"] = info["topoheight"]
 	stats["difficulty"] = info["difficulty"]
@@ -1192,7 +1192,7 @@ func (a *App) GetMempoolExtended(maxCount int) map[string]interface{} {
 func (a *App) GetSCInfo(scid string) map[string]interface{} {
 	// Normalize SCID to lowercase (DERO requires lowercase hex)
 	normalizedSCID := strings.ToLower(strings.TrimSpace(scid))
-	
+
 	a.logToConsole(fmt.Sprintf("[...] Getting SC info: %s", normalizedSCID[:16]+"..."))
 
 	params := map[string]interface{}{
@@ -1205,6 +1205,7 @@ func (a *App) GetSCInfo(scid string) map[string]interface{} {
 	if err != nil {
 		return ErrorResponse(err)
 	}
+	result = normalizeDEROGetSCResult(result)
 
 	scData := map[string]interface{}{}
 	if resultMap, ok := result.(map[string]interface{}); ok {
@@ -1248,7 +1249,7 @@ func (a *App) GetRingMembers(txid string) map[string]interface{} {
 							"index":   idx,
 							"members": []string{},
 						}
-						
+
 						if addresses, ok := payload.([]interface{}); ok {
 							members := []string{}
 							for _, addr := range addresses {
@@ -1258,12 +1259,12 @@ func (a *App) GetRingMembers(txid string) map[string]interface{} {
 							}
 							payloadRing["members"] = members
 							payloadRing["count"] = len(members)
-							
+
 							if len(members) > ringSize {
 								ringSize = len(members)
 							}
 						}
-						
+
 						ringData = append(ringData, payloadRing)
 					}
 				}
@@ -1274,10 +1275,10 @@ func (a *App) GetRingMembers(txid string) map[string]interface{} {
 	a.logToConsole(fmt.Sprintf("[OK] Found %d ring groups, max size %d", len(ringData), ringSize))
 
 	return map[string]interface{}{
-		"success":    true,
-		"txid":       txid,
-		"rings":      ringData,
-		"ringCount":  len(ringData),
+		"success":     true,
+		"txid":        txid,
+		"rings":       ringData,
+		"ringCount":   len(ringData),
 		"maxRingSize": ringSize,
 	}
 }
@@ -1294,15 +1295,14 @@ func (a *App) GetTransactionWithRings(txid string) map[string]interface{} {
 
 	// Get ring members
 	ringResult := a.GetRingMembers(txid)
-	
+
 	// Combine results
 	return map[string]interface{}{
-		"success":    true,
-		"txid":       txid,
-		"tx":         txResult["tx"],
-		"rings":      ringResult["rings"],
-		"ringCount":  ringResult["ringCount"],
+		"success":     true,
+		"txid":        txid,
+		"tx":          txResult["tx"],
+		"rings":       ringResult["rings"],
+		"ringCount":   ringResult["ringCount"],
 		"maxRingSize": ringResult["maxRingSize"],
 	}
 }
-

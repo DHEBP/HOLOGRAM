@@ -8,13 +8,14 @@
     Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe,
     LayoutDashboard, QrCode, History, Coins, Users, FileSignature, RefreshCw,
     Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield,
-    Key, Eye, EyeOff
+    Key, Eye, EyeOff, X
   } from 'lucide-svelte';
   
   import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
   import QRCodeComponent from '../lib/components/QRCode.svelte';
   import AddContactModal from '../lib/components/AddContactModal.svelte';
   import PasswordInput from '../lib/components/PasswordInput.svelte';
+  import RevealSecretModal from '../lib/components/RevealSecretModal.svelte';
   
   // ============================================
   // NAVIGATION STATE
@@ -53,6 +54,8 @@
   let error = null;
   let recentWallets = [];
   let recentWalletsInfo = [];
+  let showClearWalletsConfirm = false;
+  let clearingRecentWallets = false;
   
   // Test wallets (Simulator mode)
   let testWallets = [];
@@ -181,20 +184,14 @@
   // ============================================
   // BACKUP & SECURITY STATE
   // ============================================
-  let backupPassword = '';
-  let seedRevealed = false;
-  let revealedSeed = '';
-  let backupLoading = false;
-  let backupError = null;
-  
-  // Keys state
-  let keysPassword = '';
-  let keysRevealed = false;
-  let revealedSecretKey = '';
-  let revealedPublicKey = '';
-  let keysLoading = false;
-  let keysError = null;
-  
+  // NOTE: The decrypted seed and keys intentionally do NOT live here. They are
+  // owned by <RevealSecretModal/> children below so that unmounting the modal
+  // (close, ESC, wallet switch, wallet close, route change) drops the only
+  // reference and lets GC reclaim the secret. This matches Engram's invariant
+  // that the seed is only read live from the open wallet at render time.
+  let showSeedModal = false;
+  let showKeysModal = false;
+
   // Change Password state
   let changePasswordCurrent = '';
   let changePasswordNew = '';
@@ -320,25 +317,7 @@
         dashboardLoading = false;
       }
       
-      // Load enhanced wallet info for recent wallets
-      try {
-        const infos = await GetRecentWalletsWithInfo();
-        if (infos && infos.length > 0) {
-          recentWalletsInfo = infos;
-          recentWallets = infos.map(w => w.path);
-        }
-      } catch (e) {
-        // Fallback to simple list
-        const recents = await ListRecentWallets();
-        if (recents && recents.length > 0) {
-          recentWallets = recents;
-          recentWalletsInfo = recents.map(p => ({ 
-            path: p, 
-            filename: getWalletFilename(p), 
-            addressPrefix: '' 
-          }));
-        }
-      }
+      await refreshRecentWallets();
       
       // Load test wallets if in simulator mode
       if ($settingsState.network === 'simulator') {
@@ -753,11 +732,19 @@
           isRegistered: result.isRegistered,
           registrationHeight: result.registrationHeight,
           registrationProgress: result.registrationProgress,
+          registrationPending: result.registrationPending,
+          registrationTxid: result.registrationTxid,
           hashCount: result.hashCount,
           elapsedSeconds: result.elapsedSeconds,
           message: result.message
         };
         isRegistering = result.registrationProgress || false;
+        registrationPending = result.registrationPending || false;
+        registrationTxid = result.registrationTxid || '';
+        if (result.isRegistered) {
+          registrationPending = false;
+          registrationTxid = '';
+        }
         if (result.hashCount) registrationHashCount = result.hashCount;
         if (result.elapsedSeconds) registrationElapsed = result.elapsedSeconds;
       }
@@ -800,6 +787,33 @@
   // ============================================
   // WALLET MANAGEMENT
   // ============================================
+  async function refreshRecentWallets() {
+    try {
+      const infos = await GetRecentWalletsWithInfo();
+      if (infos) {
+        recentWalletsInfo = infos;
+        recentWallets = infos.map(w => w.path);
+        return;
+      }
+    } catch (e) {
+      // Fallback to simple list
+    }
+
+    try {
+      const recents = await ListRecentWallets();
+      recentWallets = recents || [];
+      recentWalletsInfo = recentWallets.map(p => ({
+        path: p,
+        filename: getWalletFilename(p),
+        addressPrefix: ''
+      }));
+    } catch (e) {
+      console.error('Failed to refresh recent wallets:', e);
+      recentWallets = [];
+      recentWalletsInfo = [];
+    }
+  }
+
   async function openWallet() {
     // Context-aware validation messages (Bug #33 fix)
     if (!walletPath && !password) {
@@ -844,8 +858,7 @@
         loadWalletPath();
         SubscribeToWalletEvents().catch(() => {});
         
-        const recents = await ListRecentWallets();
-        if (recents) recentWallets = recents;
+        await refreshRecentWallets();
       } else {
         error = handleBackendError(result, { showToast: false }) || 'Failed to open wallet';
       }
@@ -877,6 +890,7 @@
         integratedPort = '';
         integratedComment = '';
         resetSendForm();
+        await refreshRecentWallets();
       }
     } catch (err) {
       console.error('Failed to close wallet:', err);
@@ -903,17 +917,34 @@
   }
   
   // Clear all recent wallets
-  async function handleClearRecentWallets() {
-    if (!confirm('Clear all recent wallets from the list?')) return;
+  function requestClearRecentWallets() {
+    showClearWalletsConfirm = true;
+  }
+
+  function cancelClearRecentWallets() {
+    if (clearingRecentWallets) return;
+    showClearWalletsConfirm = false;
+  }
+
+  async function confirmClearRecentWallets() {
+    if (clearingRecentWallets) return;
+    clearingRecentWallets = true;
     try {
       const result = await ClearRecentWallets();
       if (result.success) {
         recentWalletsInfo = [];
         recentWallets = [];
         walletPath = '';
+        showClearWalletsConfirm = false;
+        toast.success('Recent wallet list cleared');
+      } else {
+        toast.error(result.error || 'Failed to clear recent wallets');
       }
     } catch (err) {
       console.error('Failed to clear recent wallets:', err);
+      toast.error('Failed to clear recent wallets');
+    } finally {
+      clearingRecentWallets = false;
     }
   }
   
@@ -1302,78 +1333,15 @@
   }
   
   // ============================================
-  // BACKUP & SECURITY FUNCTIONS
+  // BACKUP & SECURITY: REVEAL MODAL CONTROL
   // ============================================
-  async function revealSeed() {
-    if (!backupPassword.trim()) {
-      backupError = 'Please enter your wallet password';
-      return;
-    }
-    
-    backupLoading = true;
-    backupError = null;
-    
-    try {
-      const result = await GetSeedPhrase(backupPassword);
-      if (result.success) {
-        revealedSeed = result.seed;
-        seedRevealed = true;
-        backupPassword = ''; // Clear password from memory
-        toast.success('Seed phrase revealed');
-      } else {
-        backupError = handleBackendError(result, { showToast: false }) || 'Failed to retrieve seed phrase';
-      }
-    } catch (err) {
-      console.error('Error retrieving seed phrase:', err);
-      backupError = err.message || 'Failed to retrieve seed phrase';
-    } finally {
-      backupLoading = false;
-    }
-  }
-  
-  function resetBackup() {
-    seedRevealed = false;
-    revealedSeed = '';
-    backupPassword = '';
-    backupError = null;
-    showBackupPassword = false;
-  }
-  
-  async function revealKeys() {
-    if (!keysPassword.trim()) {
-      keysError = 'Please enter your wallet password';
-      return;
-    }
-    
-    keysLoading = true;
-    keysError = null;
-    
-    try {
-      const result = await GetWalletKeys(keysPassword);
-      if (result.success) {
-        revealedSecretKey = result.secretKey;
-        revealedPublicKey = result.publicKey;
-        keysRevealed = true;
-        keysPassword = ''; // Clear password from memory
-        toast.success('Wallet keys revealed');
-      } else {
-        keysError = handleBackendError(result, { showToast: false }) || 'Failed to retrieve wallet keys';
-      }
-    } catch (err) {
-      console.error('Error retrieving wallet keys:', err);
-      keysError = err.message || 'Failed to retrieve wallet keys';
-    } finally {
-      keysLoading = false;
-    }
-  }
-  
-  function resetKeys() {
-    keysRevealed = false;
-    revealedSecretKey = '';
-    revealedPublicKey = '';
-    keysPassword = '';
-    keysError = null;
-    showKeysPassword = false;
+  // The decrypted seed/keys live inside <RevealSecretModal/>. This route only
+  // toggles which modal is mounted. Whenever the active wallet path changes
+  // or the wallet is closed, both modals are dismissed so the child is
+  // unmounted and its local secret state is GC'd.
+  $: if (!$walletState.isOpen && (showSeedModal || showKeysModal)) {
+    showSeedModal = false;
+    showKeysModal = false;
   }
   
   // ============================================
@@ -1575,8 +1543,14 @@
     }
   }
 
-  // Keep wallet path display synced when wallet is switched outside this route
+  // Keep wallet path display synced when wallet is switched outside this route.
+  // Also dismiss any open reveal modal so the previous wallet's decrypted
+  // material cannot render under the new wallet (security: cross-wallet leak).
   $: if ($walletState.walletPath && $walletState.walletPath !== currentWalletPath) {
+    if (currentWalletPath && (showSeedModal || showKeysModal)) {
+      showSeedModal = false;
+      showKeysModal = false;
+    }
     currentWalletPath = $walletState.walletPath;
   }
 </script>
@@ -1711,7 +1685,7 @@
                     <span>TX broadcast successfully. Waiting for blockchain confirmation...</span>
                   {:else}
                     <strong>New Wallet</strong>
-                    <span>Your address isn't on-chain yet. Receive DERO to auto-register, or register manually via PoW.</span>
+                    <span>Your address isn't on-chain yet. Click Register Now to complete on-chain registration via PoW before receiving DERO.</span>
                   {/if}
                 </div>
               </div>
@@ -2847,83 +2821,22 @@
                 RECOVERY SEED
               </div>
             </div>
-            
+
             <div class="backup-content">
-              {#if !seedRevealed}
-                <!-- Password Prompt -->
-                <div class="backup-warning">
-                  <AlertTriangle size={16} />
-                  <span>Enter your wallet password to view your recovery seed phrase</span>
-                </div>
-                
-                <div class="form-group">
-                  <label class="form-label">Wallet Password</label>
-                  <PasswordInput bind:value={backupPassword} placeholder="Enter wallet password" />
-                </div>
-                
-                {#if backupError}
-                  <div class="alert alert-error">
-                    <AlertTriangle size={14} />
-                    <span>{backupError}</span>
-                  </div>
-                {/if}
-                
-                <div class="form-actions">
-                  <button 
-                    class="btn btn-primary" 
-                    on:click={revealSeed} 
-                    disabled={backupLoading || !backupPassword.trim()}
-                  >
-                    {#if backupLoading}
-                      <Loader2 size={14} class="spin" />
-                      Verifying...
-                    {:else}
-                      View Seed Phrase
-                    {/if}
-                  </button>
-                </div>
-              {:else}
-                <!-- Seed Display -->
-                <div class="seed-header">
-                  <AlertTriangle size={32} class="seed-warning-icon" />
-                  <h2 class="seed-title">Your Recovery Seed</h2>
-                  <p class="seed-subtitle">Write down these 25 words in order. This is the ONLY way to recover your wallet.</p>
-                </div>
-                
-                <div class="seed-grid">
-                  {#each revealedSeed.split(' ') as word, i}
-                    <div class="seed-word">
-                      <span class="seed-num">{i + 1}</span>
-                      <span class="seed-text">{word}</span>
-                    </div>
-                  {/each}
-                </div>
-                
-                <div class="seed-warnings">
-                  <div class="warning-item">
-                    <AlertTriangle size={16} />
-                    <span>NEVER share your seed with anyone</span>
-                  </div>
-                  <div class="warning-item">
-                    <AlertTriangle size={16} />
-                    <span>Hologram will NEVER ask for your seed</span>
-                  </div>
-                  <div class="warning-item">
-                    <AlertTriangle size={16} />
-                    <span>Store this offline in a safe place</span>
-                  </div>
-                </div>
-                
-                <div class="backup-actions">
-                  <button class="btn btn-secondary" on:click={() => copyToClipboard(revealedSeed, 'Seed phrase copied!')}>
-                    <Copy size={14} />
-                    Copy Seed Phrase
-                  </button>
-                  <button class="btn btn-ghost" on:click={resetBackup}>
-                    Hide Seed
-                  </button>
-                </div>
-              {/if}
+              <div class="backup-warning">
+                <AlertTriangle size={16} />
+                <span>Your password is required every time the seed is revealed. The seed is held only while open and is auto-hidden after 60 seconds.</span>
+              </div>
+
+              <div class="form-actions">
+                <button
+                  class="btn btn-primary"
+                  on:click={() => { showSeedModal = true; }}
+                >
+                  <Eye size={14} />
+                  View Seed Phrase
+                </button>
+              </div>
             </div>
           </div>
 
@@ -2935,97 +2848,29 @@
                 WALLET KEYS
               </div>
             </div>
-            
+
             <div class="backup-content">
-              {#if !keysRevealed}
-                <!-- Password Prompt -->
-                <div class="backup-warning">
-                  <AlertTriangle size={16} />
-                  <span>Enter your wallet password to view your secret and public keys</span>
+              <div class="backup-warning">
+                <AlertTriangle size={16} />
+                <span>Your password is required every time keys are revealed. Keys are held only while open and are auto-hidden after 60 seconds.</span>
+              </div>
+
+              <div class="keys-warning-critical">
+                <AlertTriangle size={16} />
+                <div>
+                  <strong>CRITICAL:</strong> Your secret key provides full control over your wallet. Never share it with anyone.
                 </div>
-                
-                <div class="keys-warning-critical">
-                  <AlertTriangle size={16} />
-                  <div>
-                    <strong>CRITICAL:</strong> Your secret key provides full control over your wallet. Never share it with anyone.
-                  </div>
-                </div>
-                
-                <div class="form-group">
-                  <label class="form-label">Wallet Password</label>
-                  <PasswordInput bind:value={keysPassword} placeholder="Enter wallet password" />
-                </div>
-                
-                {#if keysError}
-                  <div class="alert alert-error">
-                    <AlertTriangle size={14} />
-                    <span>{keysError}</span>
-                  </div>
-                {/if}
-                
-                <div class="form-actions">
-                  <button 
-                    class="btn btn-primary" 
-                    on:click={revealKeys} 
-                    disabled={keysLoading || !keysPassword.trim()}
-                  >
-                    {#if keysLoading}
-                      <Loader2 size={14} class="spin" />
-                      Verifying...
-                    {:else}
-                      View Keys
-                    {/if}
-                  </button>
-                </div>
-              {:else}
-                <!-- Keys Display -->
-                <div class="keys-display">
-                  <!-- Secret Key -->
-                  <div class="key-section">
-                    <div class="key-header">
-                      <span class="key-label">SECRET KEY</span>
-                      <span class="key-warning-badge">CRITICAL</span>
-                    </div>
-                    <div class="key-value-box">
-                      <code class="key-value mono">{revealedSecretKey}</code>
-                    </div>
-                    <button class="btn btn-secondary btn-sm" on:click={() => copyToClipboard(revealedSecretKey, 'Secret key copied!')}>
-                      <Copy size={14} />
-                      Copy Secret Key
-                    </button>
-                    <div class="key-warning-text">
-                      <AlertTriangle size={14} />
-                      <span>This key provides full wallet control. Keep it secure and never share it.</span>
-                    </div>
-                  </div>
-                  
-                  <!-- Separator -->
-                  <div class="key-separator"></div>
-                  
-                  <!-- Public Key -->
-                  <div class="key-section">
-                    <div class="key-header">
-                      <span class="key-label">PUBLIC KEY</span>
-                    </div>
-                    <div class="key-value-box">
-                      <code class="key-value mono">{revealedPublicKey}</code>
-                    </div>
-                    <button class="btn btn-secondary btn-sm" on:click={() => copyToClipboard(revealedPublicKey, 'Public key copied!')}>
-                      <Copy size={14} />
-                      Copy Public Key
-                    </button>
-                    <div class="key-info-text">
-                      <span>Public key can be shared safely. It's used to verify signatures.</span>
-                    </div>
-                  </div>
-                </div>
-                
-                <div class="backup-actions">
-                  <button class="btn btn-ghost" on:click={resetKeys}>
-                    Hide Keys
-                  </button>
-                </div>
-              {/if}
+              </div>
+
+              <div class="form-actions">
+                <button
+                  class="btn btn-primary"
+                  on:click={() => { showKeysModal = true; }}
+                >
+                  <Key size={14} />
+                  View Keys
+                </button>
+              </div>
             </div>
           </div>
 
@@ -3211,7 +3056,7 @@
                 </button>
               </button>
             {/each}
-            <button class="sidebar-clear-btn" on:click={handleClearRecentWallets}>
+            <button class="sidebar-clear-btn" on:click={requestClearRecentWallets}>
               <Trash2 size={12} />
               Clear All
             </button>
@@ -3546,6 +3391,60 @@
   on:close={() => { editingContact = null; }}
 />
 
+<!-- Reveal modals: own all decrypted seed/key state inside the child so
+     unmounting (close, ESC, wallet switch, wallet close) drops the only
+     reference and lets GC reclaim the secret. -->
+<RevealSecretModal
+  bind:show={showSeedModal}
+  kind="seed"
+/>
+<RevealSecretModal
+  bind:show={showKeysModal}
+  kind="keys"
+/>
+
+{#if showClearWalletsConfirm}
+  <div class="modal-overlay" on:click={cancelClearRecentWallets}>
+    <div class="modal-content clear-wallets-modal" on:click|stopPropagation>
+      <div class="modal-header">
+        <div class="modal-title">
+          <span class="modal-icon error"><Trash2 size={16} /></span>
+          <span>Clear Recent Wallets</span>
+        </div>
+        <button class="modal-close" on:click={cancelClearRecentWallets} disabled={clearingRecentWallets}>
+          <X size={18} />
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="clear-wallets-lead">
+          Remove saved wallet shortcuts from the sidebar.
+        </p>
+        <div class="clear-wallets-meta">
+          <span class="clear-wallets-count">{recentWalletsInfo.length}</span>
+          <span class="clear-wallets-label">recent {recentWalletsInfo.length === 1 ? 'wallet' : 'wallets'}</span>
+        </div>
+        <div class="clear-wallets-warning">
+          <AlertTriangle size={16} />
+          <span>Wallet files remain on disk. You can reopen them later with Browse.</span>
+        </div>
+      </div>
+      <div class="modal-footer modal-footer-spread">
+        <button class="btn btn-secondary" on:click={cancelClearRecentWallets} disabled={clearingRecentWallets}>
+          Cancel
+        </button>
+        <button class="btn btn-danger" on:click={confirmClearRecentWallets} disabled={clearingRecentWallets}>
+          {#if clearingRecentWallets}
+            <Loader2 size={14} class="spin" />
+            Clearing...
+          {:else}
+            Clear All
+          {/if}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   /* ============================================
      WALLET PAGE STYLES
@@ -3800,6 +3699,62 @@
     border-color: var(--border-accent);
   }
   .sidebar-sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  :global(.clear-wallets-modal) {
+    max-width: 420px;
+  }
+
+  .clear-wallets-lead {
+    margin: 0 0 var(--s-4);
+    color: var(--text-2);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .clear-wallets-meta {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: var(--s-4);
+    margin-bottom: var(--s-4);
+    background: linear-gradient(90deg, rgba(248, 113, 113, 0.12) 0%, rgba(248, 113, 113, 0.04) 50%, transparent 100%);
+    border: 1px solid rgba(248, 113, 113, 0.2);
+    border-radius: var(--r-md);
+  }
+
+  .clear-wallets-count {
+    font-family: var(--font-mono);
+    font-size: 28px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--status-err);
+  }
+
+  .clear-wallets-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+
+  .clear-wallets-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-4);
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.18);
+    border-radius: var(--r-md);
+    color: var(--status-warn);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .clear-wallets-warning :global(svg) {
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
   
   /* Test wallet mini balance in sidebar */
   .test-wallet-balance-mini {
@@ -5018,14 +4973,7 @@
     font-size: 12px;
     color: var(--status-warn);
   }
-  
-  .backup-actions {
-    display: flex;
-    gap: var(--s-3);
-    justify-content: flex-end;
-    margin-top: var(--s-4);
-  }
-  
+
   /* Keys Display Styles */
   .keys-warning-critical {
     display: flex;
@@ -5042,87 +4990,6 @@
   
   .keys-warning-critical strong {
     font-weight: 600;
-  }
-  
-  .keys-display {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-4);
-  }
-  
-  .key-section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-3);
-  }
-  
-  .key-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--text-3);
-  }
-  
-  .key-label {
-    color: var(--text-2);
-  }
-  
-  .key-warning-badge {
-    padding: 2px 8px;
-    background: rgba(248, 113, 113, 0.15);
-    color: var(--status-err);
-    border-radius: var(--r-xs);
-    font-size: 9px;
-    font-weight: 600;
-  }
-  
-  .key-value-box {
-    padding: var(--s-3) var(--s-4);
-    background: var(--void-deep);
-    border: 1px solid var(--border-dim);
-    border-radius: var(--r-md);
-    word-break: break-all;
-  }
-  
-  .key-value {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-1);
-    line-height: 1.6;
-    display: block;
-  }
-  
-  .key-value.mono {
-    font-variant-numeric: tabular-nums;
-  }
-  
-  .key-warning-text {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    padding: var(--s-2) var(--s-3);
-    background: rgba(251, 191, 36, 0.1);
-    border-radius: var(--r-sm);
-    font-size: 11px;
-    color: var(--status-warn);
-  }
-  
-  .key-info-text {
-    padding: var(--s-2) var(--s-3);
-    font-size: 11px;
-    color: var(--text-4);
-    font-style: italic;
-  }
-  
-  .key-separator {
-    height: 1px;
-    background: var(--border-dim);
-    margin: var(--s-2) 0;
   }
 
   .tx-label { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: rgba(82, 200, 219, 0.15); border: 1px solid rgba(82, 200, 219, 0.3); border-radius: 4px; font-size: 0.75rem; color: #52c8db; }

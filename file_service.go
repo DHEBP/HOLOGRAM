@@ -551,6 +551,159 @@ func (a *App) SelectFile() string {
 	return selection
 }
 
+// SelectFileWithContent opens a native file picker dialog and returns the file content as base64.
+// This is used by TELA dApps that need to select files (e.g., importing images).
+// The accept parameter is a comma-separated list of MIME types (e.g., "image/png,image/jpeg")
+// or file extensions (e.g., ".png,.jpg"). If empty, all files are shown.
+func (a *App) SelectFileWithContent(title string, accept string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[FILE] SelectFileWithContent: title=%s, accept=%s", title, accept))
+
+	// Build file filters from accept parameter
+	filters := []runtime.FileFilter{}
+	if accept != "" {
+		// Parse accept string to build filters
+		parts := strings.Split(accept, ",")
+		patterns := []string{}
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if strings.HasPrefix(part, ".") {
+				// Extension like ".png"
+				patterns = append(patterns, "*"+part)
+			} else if strings.Contains(part, "/") {
+				// MIME type like "image/png"
+				switch part {
+				case "image/png":
+					patterns = append(patterns, "*.png")
+				case "image/jpeg":
+					patterns = append(patterns, "*.jpg", "*.jpeg")
+				case "image/gif":
+					patterns = append(patterns, "*.gif")
+				case "image/svg+xml":
+					patterns = append(patterns, "*.svg")
+				case "image/*":
+					patterns = append(patterns, "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.webp")
+				case "text/plain":
+					patterns = append(patterns, "*.txt")
+				case "text/html":
+					patterns = append(patterns, "*.html", "*.htm")
+				case "text/css":
+					patterns = append(patterns, "*.css")
+				case "application/javascript", "text/javascript":
+					patterns = append(patterns, "*.js")
+				case "application/json":
+					patterns = append(patterns, "*.json")
+				}
+			}
+		}
+		if len(patterns) > 0 {
+			filters = append(filters, runtime.FileFilter{
+				DisplayName: "Allowed Files",
+				Pattern:     strings.Join(patterns, ";"),
+			})
+		}
+	}
+	// Always add "All Files" as fallback
+	filters = append(filters, runtime.FileFilter{
+		DisplayName: "All Files",
+		Pattern:     "*.*",
+	})
+
+	dialogTitle := title
+	if dialogTitle == "" {
+		dialogTitle = "Select File"
+	}
+
+	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:   dialogTitle,
+		Filters: filters,
+	})
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] SelectFileWithContent: Dialog error - %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("File dialog error: %v", err),
+		}
+	}
+
+	// User cancelled
+	if selection == "" {
+		a.logToConsole("[FILE] SelectFileWithContent: User cancelled")
+		return map[string]interface{}{
+			"success":   false,
+			"cancelled": true,
+		}
+	}
+
+	// Read the file
+	info, err := os.Stat(selection)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] SelectFileWithContent: Stat error - %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Cannot read file: %v", err),
+		}
+	}
+
+	// Limit file size to 50MB for safety
+	const maxSize = 50 * 1024 * 1024
+	if info.Size() > maxSize {
+		a.logToConsole(fmt.Sprintf("[ERR] SelectFileWithContent: File too large (%d bytes)", info.Size()))
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("File too large (%d bytes). Maximum is 50MB.", info.Size()),
+		}
+	}
+
+	data, err := os.ReadFile(selection)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] SelectFileWithContent: Read error - %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to read file: %v", err),
+		}
+	}
+
+	// Detect MIME type from extension
+	ext := strings.ToLower(filepath.Ext(selection))
+	mimeType := "application/octet-stream"
+	switch ext {
+	case ".png":
+		mimeType = "image/png"
+	case ".jpg", ".jpeg":
+		mimeType = "image/jpeg"
+	case ".gif":
+		mimeType = "image/gif"
+	case ".svg":
+		mimeType = "image/svg+xml"
+	case ".webp":
+		mimeType = "image/webp"
+	case ".txt":
+		mimeType = "text/plain"
+	case ".html", ".htm":
+		mimeType = "text/html"
+	case ".css":
+		mimeType = "text/css"
+	case ".js":
+		mimeType = "application/javascript"
+	case ".json":
+		mimeType = "application/json"
+	}
+
+	// Encode as base64
+	base64Data := base64.StdEncoding.EncodeToString(data)
+
+	a.logToConsole(fmt.Sprintf("[OK] SelectFileWithContent: Selected %s (%d bytes)", info.Name(), info.Size()))
+
+	return map[string]interface{}{
+		"success":  true,
+		"filename": info.Name(),
+		"path":     selection,
+		"size":     info.Size(),
+		"mimeType": mimeType,
+		"base64":   base64Data,
+	}
+}
+
 // ReadTextFile reads a text file and returns its content.
 // Used by the Deploy SC flow to load .bas files from disk.
 func (a *App) ReadTextFile(filePath string) map[string]interface{} {
