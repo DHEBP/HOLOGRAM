@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
-  import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode, toast, combinedSyncProgress, navigateTo } from '../stores/appState.js';
+  import { appState, walletState, settingsState, requestWalletApproval, syncNetworkMode, toast, combinedSyncProgress, navigateTo, saveSetting } from '../stores/appState.js';
   import { 
     GetEpochStats, SetNetworkMode,
     StartSimulatorMode, StopSimulatorMode, GetSimulatorStatus,
@@ -15,7 +15,8 @@
   import { 
     Globe, Palette, Blocks, Wallet, Settings, 
     Diamond,
-    Globe2, FlaskConical, Gamepad2, Radio, FolderOpen
+    Globe2, FlaskConical, Gamepad2, Radio, FolderOpen,
+    Shield, Lock, Eye, EyeOff
   } from 'lucide-svelte';
   import { getAvatarUrl, clearAvatarCache } from '../utils/avatarService.js';
   
@@ -100,6 +101,55 @@
   let walletAvatarUrl = null;
   let loadingAvatar = false;
   let currentAvatarSize = null;
+
+  // Privacy Controls
+  let privacyHoverTimer = null;
+  let showPrivacyIcon = false;
+  
+  function handleAvatarMouseEnter() {
+    if (!$settingsState.privacyMode) {
+      // Show icon timer (5s) for hiding
+      startPrivacyTimer(5000);
+    }
+  }
+  
+  function handleAvatarMouseLeave() {
+    if (privacyHoverTimer) {
+      clearTimeout(privacyHoverTimer);
+      privacyHoverTimer = null;
+    }
+    if (!$settingsState.privacyMode) {
+      showPrivacyIcon = false;
+    }
+  }
+  
+  function startPrivacyTimer(duration) {
+    if (privacyHoverTimer) clearTimeout(privacyHoverTimer);
+    privacyHoverTimer = setTimeout(() => {
+      // Show the blue privacy icon
+      showPrivacyIcon = true;
+    }, duration);
+  }
+
+  function handleRevertClick(event) {
+    event.stopPropagation();
+    saveSetting('privacyMode', false);
+    showPrivacyIcon = false;
+    toast.info('Privacy mode disabled. Restoring visibility preferences.');
+  }
+  
+  async function handlePrivacyIconClick(event) {
+    event.stopPropagation();
+    // Enable global privacy mode (Hide All)
+    await saveSetting('privacyMode', true);
+    showPrivacyIcon = false;
+    toast.info('Privacy mode enabled. All sensitive data hidden.');
+  }
+
+  $: isPrivacyActive = $settingsState.privacyMode;
+  $: isAddressHidden = isPrivacyActive || $settingsState.hideAddress;
+  $: isBalanceHidden = isPrivacyActive || $settingsState.hideBalance;
+  $: isAvatarHidden = isPrivacyActive || $settingsState.avatarHidden;
   
   // Load avatar when wallet connects or address changes
   $: if (walletDisplayAddress && walletIsConnected) {
@@ -1078,30 +1128,53 @@
   
   <!-- v6.2 Wallet Anchor - Smart States -->
   <div class="wallet-section" class:wallet-section-collapsed={collapsed}>
-    <button
+    <div
       class="wallet-anchor"
       class:wallet-anchor-connected={walletIsConnected && !$appState.pendingXSWDRequests?.length}
       class:wallet-anchor-disconnected={!walletIsConnected && !xswdReadyNoWallet}
       class:wallet-anchor-xswd-only={xswdReadyNoWallet}
       class:wallet-anchor-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
       on:click|stopPropagation={(e) => handleStatusClick('wallet', e)}
+      on:mouseenter={collapsed ? handleAvatarMouseEnter : null}
+      on:mouseleave={collapsed ? handleAvatarMouseLeave : null}
     >
       {#if collapsed}
         <!-- v6.3 Edge Rail: Avatar or Dot + badge -->
-        {#if walletIsConnected && walletAvatarUrl}
-          <img 
-            src={walletAvatarUrl} 
-            alt="Wallet avatar"
-            title="Edit avatar in Villager"
-            class="wallet-avatar wallet-avatar-collapsed wallet-avatar-clickable"
-            class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
-            on:click={handleAvatarClick}
-          />
+        {#if walletIsConnected}
+          {#if !isAvatarHidden && walletAvatarUrl}
+            <img 
+              src={walletAvatarUrl} 
+              alt="Wallet avatar"
+              title="Edit avatar in Villager"
+              class="wallet-avatar wallet-avatar-collapsed wallet-avatar-clickable"
+              class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
+              on:click={handleAvatarClick}
+            />
+          {:else if isAvatarHidden}
+            <div class="avatar-placeholder-sm" on:click={handleRevertClick} title="Click to restore visibility">
+              <Lock size={12} />
+            </div>
+          {:else}
+            <span class="wallet-dot" 
+              class:dot-ok={walletIsConnected && !$appState.pendingXSWDRequests?.length}
+              class:dot-err={!walletIsConnected && !xswdReadyNoWallet}
+              class:dot-warn={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
+              class:dot-cyan={xswdReadyNoWallet}></span>
+          {/if}
+
+          {#if collapsed && showPrivacyIcon && !$settingsState.privacyMode}
+            <div 
+              class="privacy-icon-overlay privacy-icon-overlay-sm" 
+              on:click={handlePrivacyIconClick}
+              title="Hide all"
+            >
+              <Shield size={14} />
+            </div>
+          {/if}
         {:else}
           <span class="wallet-dot" 
-            class:dot-ok={walletIsConnected && !$appState.pendingXSWDRequests?.length}
-            class:dot-err={!walletIsConnected && !xswdReadyNoWallet}
-            class:dot-warn={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
+            class:dot-ok={false}
+            class:dot-err={!xswdReadyNoWallet}
             class:dot-cyan={xswdReadyNoWallet}></span>
         {/if}
         {#if connectedApps.length > 0}
@@ -1112,7 +1185,7 @@
           <span class="rail-tooltip-label">Wallet</span>
           {#if walletMode === 'integrated'}
             <span class="rail-tooltip-value tt-ok">
-              {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
+              {isAddressHidden ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
             </span>
             <span class="rail-tooltip-value tt-dim">Wallet Ready</span>
             {#if connectedApps.length > 0}
@@ -1127,16 +1200,34 @@
           {/if}
         </div>
       {:else}
-        <span class="dot-column">
-          {#if walletIsConnected && walletAvatarUrl}
-            <img 
-              src={walletAvatarUrl} 
-              alt="Wallet avatar"
-              title="Edit avatar in Villager"
-              class="wallet-avatar wallet-avatar-expanded wallet-avatar-clickable"
-              class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
-              on:click={handleAvatarClick}
-            />
+        <span class="dot-column" on:mouseenter={handleAvatarMouseEnter} on:mouseleave={handleAvatarMouseLeave}>
+          {#if walletIsConnected}
+            <div class="avatar-container">
+              {#if !isAvatarHidden}
+                <img 
+                  src={walletAvatarUrl} 
+                  alt="Wallet avatar"
+                  title="Edit avatar in Villager"
+                  class="wallet-avatar wallet-avatar-expanded wallet-avatar-clickable"
+                  class:wallet-avatar-pending={walletIsConnected && $appState.pendingXSWDRequests?.length > 0}
+                  on:click={handleAvatarClick}
+                />
+              {:else}
+                <div class="avatar-placeholder" on:click={handleRevertClick} title="Click to restore visibility">
+                  <Lock size={16} />
+                </div>
+              {/if}
+
+              {#if showPrivacyIcon}
+                <div 
+                  class="privacy-icon-overlay" 
+                  on:click={handlePrivacyIconClick}
+                  title="Hide all"
+                >
+                  <Shield size={18} />
+                </div>
+              {/if}
+            </div>
           {:else}
             <span class="wallet-dot" 
               class:dot-ok={walletIsConnected && !$appState.pendingXSWDRequests?.length}
@@ -1148,7 +1239,7 @@
         <div class="wallet-anchor-content">
           <span class="wallet-anchor-address" class:disconnected={!walletIsConnected} class:xswd-only={xswdReadyNoWallet}>
             {#if walletIsConnected}
-              {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
+              {isAddressHidden ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
             {:else}
               Connect Wallet
             {/if}
@@ -1178,7 +1269,7 @@
           </span>
         </div>
       {/if}
-    </button>
+    </div>
     
     <!-- Wallet Menu - Rendered in Sidebar -->
     {#if showWalletMenu && !collapsed}
@@ -1188,7 +1279,7 @@
           <p class="wallet-menu-label">CURRENT WALLET</p>
           <p class="wallet-menu-address">
             {#if $walletState.address}
-              {$settingsState.hideAddress ? '••••••••••••••' : `${$walletState.address.slice(0, 12)}...${$walletState.address.slice(-8)}`}
+              {isAddressHidden ? '••••••••••••••' : `${$walletState.address.slice(0, 12)}...${$walletState.address.slice(-8)}`}
             {:else if $appState.engramConnected}
               Engram Wallet (External)
             {:else if xswdReadyNoWallet}
@@ -1199,7 +1290,7 @@
           </p>
           {#if $walletState.balance !== undefined && $walletState.isOpen}
             <p class="wallet-menu-balance">
-              {$settingsState.hideBalance ? '••••••••' : `${($walletState.balance / 100000).toFixed(5)} DERO`}
+              {isBalanceHidden ? '••••••••' : `${($walletState.balance / 100000).toFixed(5)} DERO`}
             </p>
           {/if}
           {#if walletNetworkMismatch && $walletState.isOpen}
@@ -1261,8 +1352,8 @@
                     <div class="wallet-option-info">
                       <p class="wallet-option-name">Test Wallet #{wallet.index}</p>
                       <p class="wallet-option-addr">
-                        {$settingsState.hideAddress ? '••••••••' : formatAddressForDisplay(wallet.address)} ·
-                        {$settingsState.hideBalance ? '••••' : `${formatBalanceAtomic(wallet.balance)} DERO`}
+                        {isAddressHidden ? '••••••••' : formatAddressForDisplay(wallet.address)} ·
+                        {isBalanceHidden ? '••••' : `${formatBalanceAtomic(wallet.balance)} DERO`}
                       </p>
                     </div>
                     {#if isCurrentSimWallet}
@@ -1290,7 +1381,7 @@
                     <div class="wallet-option-info">
                       <p class="wallet-option-name">{wallet.filename}</p>
                       {#if wallet.addressPrefix}
-                        <p class="wallet-option-addr">{wallet.addressPrefix}</p>
+                        <p class="wallet-option-addr">{isAddressHidden ? '••••••••' : wallet.addressPrefix}</p>
                       {/if}
                     </div>
                   </button>
@@ -3270,5 +3361,65 @@
     color: var(--text-4);
     text-align: center;
     letter-spacing: 0.02em;
+  }
+  .avatar-container {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .avatar-placeholder {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--bg-surface-lighter);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    cursor: pointer;
+    border: 1px solid var(--border-subtle);
+  }
+
+  .privacy-icon-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #00bcd4; /* Vibrant blue/cyan */
+    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    box-shadow: 0 0 12px rgba(0, 188, 212, 0.6);
+    cursor: pointer;
+    z-index: 100;
+    transition: all 0.2s ease;
+  }
+
+  .privacy-icon-overlay:hover {
+    transform: translate(-50%, -50%) scale(1.1);
+    box-shadow: 0 0 18px rgba(0, 188, 212, 0.8);
+  }
+  .avatar-placeholder-sm {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--bg-surface-lighter);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    cursor: pointer;
+    border: 1px solid var(--border-subtle);
+  }
+
+  .privacy-icon-overlay-sm {
+    width: 20px;
+    height: 20px;
   }
 </style>
