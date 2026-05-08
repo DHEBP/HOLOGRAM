@@ -5,7 +5,7 @@
   import { favorites } from '../lib/stores/favorites.js';
   import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline } from '../../wailsjs/go/main/App.js';
   import ReloadSplitButton from '../lib/components/browser/ReloadSplitButton.svelte';
-  import { EventsOn, EventsOff, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
+  import { EventsOn, EventsOff, ClipboardSetText, ClipboardGetText } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
 import RatingsBreakdown from '../lib/components/RatingsBreakdown.svelte';
@@ -1012,6 +1012,29 @@ let addressInput = '';
         return;
       }
 
+      // TELA iframe: Clipboard API fallback via native Wails clipboard (keep in sync with server_manager.go getHologramClipboardBridgeScript)
+      if (event.data && event.data.type === 'hologram-clipboard-request') {
+        const { id, op, text } = event.data;
+        if (!id || !op || !event.source || typeof event.source.postMessage !== 'function') return;
+        void (async () => {
+          try {
+            if (op === 'write') {
+              await ClipboardSetText(text == null ? '' : String(text));
+              event.source.postMessage({ type: 'hologram-clipboard-response', id, ok: true }, '*');
+            } else if (op === 'read') {
+              const t = await ClipboardGetText();
+              event.source.postMessage({ type: 'hologram-clipboard-response', id, ok: true, text: t == null ? '' : String(t) }, '*');
+            } else {
+              event.source.postMessage({ type: 'hologram-clipboard-response', id, ok: false, error: 'unknown clipboard op' }, '*');
+            }
+          } catch (e) {
+            const msg = e && e.message ? e.message : String(e);
+            event.source.postMessage({ type: 'hologram-clipboard-response', id, ok: false, error: msg }, '*');
+          }
+        })();
+        return;
+      }
+
       if (!event.data || event.data.type !== 'xswd-request') {
         return;
       }
@@ -1830,8 +1853,9 @@ ${logsText || '(no logs)'}
       const bridgeScript = getXSWDBridgeScript();
       html = injectIntoHtmlDocument(html, bridgeScript);
       html = injectIntoHtmlDocument(html, getExternalLinkGuardScript());
-      
-      addConsoleLog('[OK] Injected XSWD bridge, external-link guard, and telaHost placeholder into HTML');
+      html = injectIntoHtmlDocument(html, getHologramClipboardBridgeScript());
+
+      addConsoleLog('[OK] Injected XSWD bridge, external-link guard, clipboard bridge, and telaHost placeholder into HTML');
       
       currentMeta = {
         name: dirName,
@@ -2587,6 +2611,58 @@ ${logsText || '(no logs)'}
 <\/script>`;
   }
 
+  /** Keep script body in sync with server_manager.go getHologramClipboardBridgeScript(). */
+  function getHologramClipboardBridgeScript() {
+    return `<script>
+(function() {
+  'use strict';
+  try {
+    if (!navigator || !navigator.clipboard || window.parent === window) return;
+    var clip = navigator.clipboard;
+    var ow = clip.writeText && clip.writeText.bind(clip);
+    var or = clip.readText && clip.readText.bind(clip);
+
+    function viaBridge(op, text) {
+      return new Promise(function(resolve, reject) {
+        var id = 'hcb_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+        function onMsg(ev) {
+          var d = ev.data;
+          if (!d || d.type !== 'hologram-clipboard-response' || d.id !== id) return;
+          window.removeEventListener('message', onMsg);
+          clearTimeout(tmo);
+          if (d.ok) {
+            if (op === 'read') resolve(typeof d.text === 'string' ? d.text : '');
+            else resolve();
+          } else reject(new Error(d.error || 'Clipboard operation failed'));
+        }
+        window.addEventListener('message', onMsg);
+        var tmo = setTimeout(function() {
+          window.removeEventListener('message', onMsg);
+          reject(new Error('Clipboard bridge timeout'));
+        }, 15000);
+        try {
+          window.parent.postMessage({ type: 'hologram-clipboard-request', id: id, op: op, text: text === undefined || text === null ? '' : String(text) }, '*');
+        } catch (e) {
+          window.removeEventListener('message', onMsg);
+          clearTimeout(tmo);
+          reject(e);
+        }
+      });
+    }
+
+    clip.writeText = function(txt) {
+      if (!ow) return viaBridge('write', txt);
+      return ow(txt).catch(function() { return viaBridge('write', txt); });
+    };
+    clip.readText = function() {
+      if (!or) return viaBridge('read');
+      return or().catch(function() { return viaBridge('read'); });
+    };
+  } catch (e) {}
+})();
+<\/script>`;
+  }
+
   function injectIntoHtmlDocument(html, snippet) {
     if (!snippet) return html;
 
@@ -2623,6 +2699,7 @@ ${logsText || '(no logs)'}
         const bridgeScript = getXSWDBridgeScript();
         injectedHtml = injectIntoHtmlDocument(html, bridgeScript);
         injectedHtml = injectIntoHtmlDocument(injectedHtml, getExternalLinkGuardScript());
+        injectedHtml = injectIntoHtmlDocument(injectedHtml, getHologramClipboardBridgeScript());
       }
       
       // Remove src attribute - we're using srcdoc for inline content

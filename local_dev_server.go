@@ -324,9 +324,10 @@ func serveHTMLWithBridge(w http.ResponseWriter, r *http.Request, directory strin
 		return
 	}
 	
-	// Inject the XSWD bridge script at the very beginning
+	// Inject bridge scripts at the very beginning (XSWD + clipboard fallback for Browser iframe)
 	bridgeScript := getLocalDevXSWDBridgeScript()
-	injectedContent := bridgeScript + string(content)
+	clipboardScript := getHologramClipboardBridgeScript()
+	injectedContent := bridgeScript + clipboardScript + string(content)
 	
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(injectedContent)))
 	w.Write([]byte(injectedContent))

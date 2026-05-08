@@ -152,9 +152,9 @@ func createProxyServer(targetURL, scid string) (string, error) {
 			}
 			r.Body.Close()
 			
-			// Inject bridge script at the beginning of HTML (before any other scripts)
+			// Inject bridge scripts at the beginning of HTML (before any other scripts)
 			bodyStr := string(body)
-			modifiedBody := xswdBridgeScript + bodyStr
+			modifiedBody := xswdBridgeScript + getHologramClipboardBridgeScript() + bodyStr
 			
 			// Update content length
 			r.ContentLength = int64(len(modifiedBody))
@@ -231,6 +231,7 @@ func (a *App) serveDocShardsContent(scid string, content *TELAContent) (string, 
 			html := content.HTML
 			bridgeScript := getXSWDBridgeScript()
 			html = injectScriptIntoHTML(html, bridgeScript)
+			html = injectScriptIntoHTML(html, getHologramClipboardBridgeScript())
 			w.Write([]byte(html))
 			return
 		}
@@ -342,6 +343,60 @@ func injectScriptIntoHTML(html, script string) string {
 	}
 	// Prepend to HTML
 	return script + "\n" + html
+}
+
+// getHologramClipboardBridgeScript wraps navigator.clipboard read/write inside the TELA iframe.
+// WKWebKit/WebKitGTK often rejects the Clipboard API in embedded frames even with sandbox flags;
+// the parent resolves operations via Wails ClipboardGetText / ClipboardSetText (see Browser.svelte).
+func getHologramClipboardBridgeScript() string {
+	return `<script>
+(function() {
+  'use strict';
+  try {
+    if (!navigator || !navigator.clipboard || window.parent === window) return;
+    var clip = navigator.clipboard;
+    var ow = clip.writeText && clip.writeText.bind(clip);
+    var or = clip.readText && clip.readText.bind(clip);
+
+    function viaBridge(op, text) {
+      return new Promise(function(resolve, reject) {
+        var id = 'hcb_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+        function onMsg(ev) {
+          var d = ev.data;
+          if (!d || d.type !== 'hologram-clipboard-response' || d.id !== id) return;
+          window.removeEventListener('message', onMsg);
+          clearTimeout(tmo);
+          if (d.ok) {
+            if (op === 'read') resolve(typeof d.text === 'string' ? d.text : '');
+            else resolve();
+          } else reject(new Error(d.error || 'Clipboard operation failed'));
+        }
+        window.addEventListener('message', onMsg);
+        var tmo = setTimeout(function() {
+          window.removeEventListener('message', onMsg);
+          reject(new Error('Clipboard bridge timeout'));
+        }, 15000);
+        try {
+          window.parent.postMessage({ type: 'hologram-clipboard-request', id: id, op: op, text: text === undefined || text === null ? '' : String(text) }, '*');
+        } catch (e) {
+          window.removeEventListener('message', onMsg);
+          clearTimeout(tmo);
+          reject(e);
+        }
+      });
+    }
+
+    clip.writeText = function(txt) {
+      if (!ow) return viaBridge('write', txt);
+      return ow(txt).catch(function() { return viaBridge('write', txt); });
+    };
+    clip.readText = function() {
+      if (!or) return viaBridge('read');
+      return or().catch(function() { return viaBridge('read'); });
+    };
+  } catch (e) {}
+})();
+</script>`
 }
 
 // getXSWDBridgeScript returns the XSWD bridge script to inject into TELA apps
