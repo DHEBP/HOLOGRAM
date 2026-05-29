@@ -1,5 +1,5 @@
 <script>
-  import { walletState, appState, settingsState, saveSetting, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
+  import { walletState, appState, settingsState, addressMasked, balanceMasked, toast, handleBackendError, syncNetworkMode } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
   import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents, GetRegistrationStatus, RegisterWallet, CancelRegistration } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
@@ -8,7 +8,7 @@
     Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe,
     LayoutDashboard, QrCode, History, Coins, Users, FileSignature, RefreshCw,
     Loader2, Download, Search, ChevronRight, ExternalLink, Edit, Trash2, Send, Shield,
-    Key, Eye, EyeOff, X
+    Key, Eye, X
   } from 'lucide-svelte';
   
   import TokenPortfolio from '../lib/components/TokenPortfolio.svelte';
@@ -283,14 +283,30 @@
   // ============================================
   // POLLING
   // ============================================
-  let balanceInterval;
-  
+  // Heartbeat is intentionally tight (Engram-style "pulse") so the dashboard
+  // feels live. Per-tick work is three in-memory walletapi reads -- balance,
+  // height, daemon height -- plus a transaction-history reload only when the
+  // wallet height has actually advanced. Push channels (wallet:newTransaction,
+  // wallet:balanceChanged) supplement this when XSWD is subscribed. A full
+  // SyncWallet is reserved for explicit user actions (manual Refresh, wallet
+  // open, registration complete) where the user is waiting on freshness.
+  const WALLET_REFRESH_INTERVAL_MS = 5000;
+  let refreshInterval;
+  let activeRefresh = null;
+  let lastSyncedWalletHeight = 0;
+
   function startPolling() {
-    balanceInterval = setInterval(refreshBalance, 15000);
+    stopPolling();
+    refreshInterval = setInterval(() => {
+      refreshWalletSnapshot({ notifyIncoming: true });
+    }, WALLET_REFRESH_INTERVAL_MS);
   }
-  
+
   function stopPolling() {
-    if (balanceInterval) clearInterval(balanceInterval);
+    if (refreshInterval) {
+      clearInterval(refreshInterval);
+      refreshInterval = null;
+    }
   }
   
   // ============================================
@@ -307,8 +323,7 @@
           walletPath: status.path,
         }));
         walletPath = status.path || '';
-        await refreshBalance();
-        await loadTransactionHistory();
+        await refreshWalletSnapshot({ forceSync: true });
         dashboardLoading = false;
         startPolling();
         loadWalletPath();
@@ -338,6 +353,14 @@
       });
       EventsOn('wallet:daemon_connection_warning', (data) => {
         console.warn('[WALLET] Daemon connection warning:', data);
+      });
+
+      EventsOn('wallet:newTransaction', () => {
+        refreshWalletSnapshot({ forceHistory: true, notifyIncoming: true });
+      });
+
+      EventsOn('wallet:balanceChanged', () => {
+        refreshWalletSnapshot();
       });
       
       // Listen for wallet unregistered status (new wallets)
@@ -443,6 +466,8 @@
     EventsOff('network-mode-changed');
     EventsOff('wallet:sync_warning');
     EventsOff('wallet:daemon_connection_warning');
+    EventsOff('wallet:newTransaction');
+    EventsOff('wallet:balanceChanged');
     EventsOff('wallet:unregistered');
     EventsOff('wallet:registration_started');
     EventsOff('wallet:registration_progress');
@@ -575,8 +600,7 @@
           address: result.address,
           walletPath: result.path,
         }));
-        await refreshBalance();
-        await loadTransactionHistory();
+        await refreshWalletSnapshot({ forceSync: true });
         startPolling();
         loadWalletPath();
         SubscribeToWalletEvents().catch(() => {});
@@ -663,6 +687,59 @@
       isSyncing = false;
     }
   }
+
+  // Coalesces concurrent refreshes. A cheap refresh piggybacks on any
+  // in-flight refresh; a forceSync or forceHistory refresh waits for the
+  // in-flight one and then runs a fresh pass so manual Refresh and push
+  // events always reflect daemon state.
+  //
+  // History reload is gated on real signals (height advance, push event, or
+  // explicit force) instead of firing every tick. This matches Engram's
+  // height-bounded Show_Transfers pattern: when no block has been seen, no
+  // tx can have arrived, so re-fetching history is wasted work.
+  async function refreshWalletSnapshot({
+    forceSync = false,
+    forceHistory = false,
+    notifyIncoming = false,
+  } = {}) {
+    if (!$walletState.isOpen) return;
+
+    if (activeRefresh) {
+      await activeRefresh;
+      if (!forceSync && !forceHistory) return;
+    }
+
+    const previousLatestTxId = transactionHistory[0]?.txid || null;
+
+    activeRefresh = (async () => {
+      try {
+        await refreshBalance(forceSync);
+
+        const newHeight = syncStatus?.walletHeight ?? 0;
+        const heightAdvanced = newHeight > lastSyncedWalletHeight;
+
+        if (forceSync || forceHistory || heightAdvanced) {
+          await loadTransactionHistory();
+          if (newHeight > 0) lastSyncedWalletHeight = newHeight;
+        }
+
+        const latestTx = transactionHistory[0];
+        if (
+          notifyIncoming &&
+          previousLatestTxId &&
+          latestTx &&
+          latestTx.txid !== previousLatestTxId &&
+          (latestTx.incoming || latestTx.coinbase)
+        ) {
+          toast.success(`Received ${formatBalance(latestTx.amount)} DERO`);
+        }
+      } finally {
+        activeRefresh = null;
+      }
+    })();
+
+    await activeRefresh;
+  }
   
   async function loadTransactionHistory(limit = historyLimit) {
     try {
@@ -709,11 +786,9 @@
   
   
   async function refreshAll() {
-    // Force sync when user manually refreshes
-    await refreshBalance(true);
-    await loadTransactionHistory();
+    await refreshWalletSnapshot({ forceSync: true });
     await checkRegistrationStatus();
-    
+
     if (syncStatus && !syncStatus.synced && syncStatus.behindBlocks > 0) {
       toast.info(`Syncing: ${syncStatus.behindBlocks} blocks behind`);
     } else {
@@ -850,8 +925,7 @@
           toast.warning(result.networkWarning);
         }
         
-        await refreshBalance();
-        await loadTransactionHistory();
+        await refreshWalletSnapshot({ forceSync: true });
         await checkRegistrationStatus();
         dashboardLoading = false;
         startPolling();
@@ -884,6 +958,8 @@
           walletPath: '',
         }));
         transactionHistory = [];
+        lastSyncedWalletHeight = 0;
+        syncStatus = null;
         activeSection = 'dashboard';
         addressType = 'standard';
         integratedAddress = '';
@@ -1080,8 +1156,7 @@
         sendTxid = result.result?.txid || result.txid;
         sendStep = 3;
         toast.success('Transaction sent successfully!');
-        await refreshBalance();
-        await loadTransactionHistory();
+        await refreshWalletSnapshot();
       } else {
         sendError = handleBackendError(result, { showToast: false }) || 'Transaction failed';
       }
@@ -1756,24 +1831,12 @@
               <div class="balance-main">
                 <div class="balance-main-left">
                   <span class="balance-value">
-                    {$settingsState.hideBalance ? '••••••••' : formatBalance($walletState.balance)}
+                    {$balanceMasked ? '••••••••' : formatBalance($walletState.balance)}
                   </span>
                   <span class="balance-unit">DERO</span>
                 </div>
-                <button
-                  class="hide-toggle-btn fixed-right"
-                  class:active={$settingsState.hideBalance}
-                  on:click={() => saveSetting('hideBalance', !$settingsState.hideBalance)}
-                  title={$settingsState.hideBalance ? 'Show balance' : 'Hide balance'}
-                >
-                  {#if $settingsState.hideBalance}
-                    <EyeOff size={13} />
-                  {:else}
-                    <Eye size={13} />
-                  {/if}
-                </button>
               </div>
-              {#if $walletState.lockedBalance > 0 && !$settingsState.hideBalance}
+              {#if $walletState.lockedBalance > 0 && !$balanceMasked}
                 <div class="balance-locked">
                   + {formatBalance($walletState.lockedBalance)} locked
                 </div>
@@ -1781,29 +1844,17 @@
               <div class="wallet-address-row">
                 <div class="address-row-content">
                   <span class="address-text">
-                    {$settingsState.hideAddress ? ADDRESS_PLACEHOLDER : formatAddress($walletState.address)}
+                    {$addressMasked ? ADDRESS_PLACEHOLDER : formatAddress($walletState.address)}
                   </span>
                   <button
                     class="btn-icon-sm copy-address-btn"
-                    class:hidden={$settingsState.hideAddress}
+                    class:hidden={$addressMasked}
                     on:click={copyAddress}
                     title="Copy address"
                   >
                     <Copy size={12} />
                   </button>
                 </div>
-                <button
-                  class="hide-toggle-btn fixed-right"
-                  class:active={$settingsState.hideAddress}
-                  on:click={() => saveSetting('hideAddress', !$settingsState.hideAddress)}
-                  title={$settingsState.hideAddress ? 'Show address' : 'Hide address'}
-                >
-                  {#if $settingsState.hideAddress}
-                    <EyeOff size={13} />
-                  {:else}
-                    <Eye size={13} />
-                  {/if}
-                </button>
               </div>
             </div>
           </div>
@@ -1862,7 +1913,7 @@
                     </div>
                   </div>
                   <span class="tx-amt" class:tx-amt-in={tx.incoming || tx.coinbase} class:tx-amt-out={!tx.incoming && !tx.coinbase}>
-                    {$settingsState.hideBalance ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
+                    {$balanceMasked ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
                   </span>
                   {#if tx.label}
                     <span class="tx-label">{tx.label}</span>
@@ -2388,7 +2439,7 @@
                     </div>
                     <div class="tx-meta">
                       <span class="tx-amount" class:positive={tx.incoming || tx.coinbase} class:negative={!tx.incoming && !tx.coinbase}>
-                        {$settingsState.hideBalance ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
+                        {$balanceMasked ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
                       </span>
                       <span class="tx-timestamp">{formatTime(tx.time)}</span>
                     </div>
@@ -2426,7 +2477,7 @@
                       <div class="tx-detail-row">
                         <span class="tx-detail-label">Amount</span>
                         <span class="tx-detail-value tx-detail-amount" class:positive={tx.incoming || tx.coinbase} class:negative={!tx.incoming && !tx.coinbase}>
-                          {$settingsState.hideBalance ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
+                          {$balanceMasked ? '••••••' : `${tx.incoming || tx.coinbase ? '+' : '-'}${formatBalance(tx.amount)} DERO`}
                         </span>
                       </div>
 
@@ -2434,7 +2485,7 @@
                       {#if tx.fees && tx.fees > 0}
                         <div class="tx-detail-row">
                           <span class="tx-detail-label">Transaction Fee</span>
-                          <span class="tx-detail-value">{$settingsState.hideBalance ? '••••••' : `${formatBalance(tx.fees)} DERO`}</span>
+                          <span class="tx-detail-value">{$balanceMasked ? '••••••' : `${formatBalance(tx.fees)} DERO`}</span>
                         </div>
                       {/if}
 
@@ -2442,7 +2493,7 @@
                       {#if tx.burn && tx.burn > 0}
                         <div class="tx-detail-row">
                           <span class="tx-detail-label">Burned</span>
-                          <span class="tx-detail-value tx-detail-burn">{$settingsState.hideBalance ? '••••••' : `${formatBalance(tx.burn)} DERO`}</span>
+                          <span class="tx-detail-value tx-detail-burn">{$balanceMasked ? '••••••' : `${formatBalance(tx.burn)} DERO`}</span>
                         </div>
                       {/if}
 
@@ -4030,42 +4081,6 @@
     gap: var(--s-2);
   }
 
-  .hide-toggle-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    background: transparent;
-    border: none;
-    border-radius: var(--r-sm);
-    color: var(--text-4);
-    cursor: pointer;
-    padding: 0;
-    transition: background 0.15s, color 0.15s;
-    flex-shrink: 0;
-  }
-
-  .hide-toggle-btn:hover {
-    background: rgba(34, 211, 238, 0.08);
-    color: var(--cyan-400);
-  }
-
-  .hide-toggle-btn.active {
-    color: var(--cyan-400);
-  }
-
-  .hide-toggle-btn:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
-  }
-
-  .hide-toggle-btn.fixed-right {
-    position: absolute;
-    right: 0;
-    top: 50%;
-    transform: translateY(-50%);
-  }
   
   .wallet-address-row {
     display: flex;
