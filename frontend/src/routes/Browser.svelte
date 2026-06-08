@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
   import { writable, get } from 'svelte/store';
-  import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState } from '../lib/stores/appState.js';
+  import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState, requestPayment } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
   import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline } from '../../wailsjs/go/main/App.js';
   import ReloadSplitButton from '../lib/components/browser/ReloadSplitButton.svelte';
@@ -449,7 +449,7 @@ let addressInput = '';
       versionHistoryScid = scid;
       showVersionHistory = true;
     } else {
-      toast.warn('No TELA app loaded. Navigate to a TELA app first.');
+      toast.warning('No TELA app loaded. Navigate to a TELA app first.');
     }
   }
   
@@ -945,16 +945,6 @@ let addressInput = '';
     window.addEventListener('search-result', handleSearchResult);
     
     // Handle direct browser navigation from Explorer (when user searches for a .tela domain)
-    const handleBrowserNavigate = (e) => {
-      const { durl } = e.detail;
-      if (durl) {
-        // Strip dero:// prefix if present (the navigate function handles it)
-        addressInput = durl.replace(/^dero:\/\//i, '');
-        setTimeout(() => navigate(), 50);
-      }
-    };
-    window.addEventListener('browser-navigate', handleBrowserNavigate);
-    
     // PostMessage handler for XSWD bridge communication from iframe
     const handleXSWDMessage = async (event) => {
       try {
@@ -1179,9 +1169,9 @@ let addressInput = '';
           }
             
             // Wallet methods that require authorization
-            const walletMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
+            const walletMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID',
                                    'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
-                                   'SplitIntegratedAddress', 'QueryKey', 'SignData', 'CheckSignature',
+                                   'SplitIntegratedAddress', 'SignData', 'CheckSignature',
                                    'transfer', 'Transfer', 'transfer_split',
                                    'scinvoke', 'SC_Invoke', 'Login'];
             
@@ -1221,9 +1211,9 @@ let addressInput = '';
             } else {
               // Route through XSWD/wallet
               const signingMethods = ['transfer', 'scinvoke', 'sign', 'Transfer', 'SC_Invoke', 'transfer_split', 'SignData'];
-              const readMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID', 
+              const readMethods = ['GetAddress', 'GetBalance', 'GetHeight', 'GetTransferbyTXID',
                                    'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
-                                   'SplitIntegratedAddress', 'QueryKey', 'CheckSignature'];
+                                   'SplitIntegratedAddress', 'CheckSignature'];
               
               const isWalletMethod = walletMethodsLower.includes(methodLower);
               const isSigningMethod = signingMethods.map(m => m.toLowerCase()).includes(methodLower);
@@ -1363,7 +1353,6 @@ let addressInput = '';
     
     return () => {
       window.removeEventListener('search-result', handleSearchResult);
-      window.removeEventListener('browser-navigate', handleBrowserNavigate);
       window.removeEventListener('message', handleXSWDMessage);
       window.removeEventListener('keydown', handleKeydown);
     };
@@ -1382,8 +1371,14 @@ let addressInput = '';
   // ========== LOCAL DEV MODE HELPERS ==========
   
   // Inline CSS files to avoid cross-origin issues with doc.write()
-  async function inlineLocalDevCSS(html, baseUrl) {
+  // cacheTs (optional): shared reload timestamp so HTML/CSS/JS rewrites in one pass all share
+  // the same ?_t=. When omitted (initial-load path), URLs are NOT cache-busted — preserves
+  // normal browser caching for static assets.
+  async function inlineLocalDevCSS(html, baseUrl, cacheTs) {
     const base = baseUrl.replace(/\/$/, '');
+    const appendBust = (path) => cacheTs != null
+      ? path + (path.includes('?') ? '&' : '?') + '_t=' + cacheTs
+      : path;
     const matches = [];
     
     // Find all <link> tags with stylesheet
@@ -1421,8 +1416,8 @@ let addressInput = '';
         const cleanHref = href.replace(/^\//, '');
         const cssUrl = `${base}/${cleanHref}`;
         
-        // Add cache-busting for CSS too
-        const cssFetchUrl = cssUrl + (cssUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
+        // Add cache-busting for CSS too (shared timestamp across the whole reload pass)
+        const cssFetchUrl = appendBust(cssUrl);
         addConsoleLog(`[CSS] Fetching: ${cssFetchUrl}`);
         const cssResponse = await fetch(cssFetchUrl);
         
@@ -1430,9 +1425,9 @@ let addressInput = '';
           let fetchedCSS = await cssResponse.text();
           addConsoleLog(`[CSS] Fetched: ${fetchedCSS.length} bytes`);
           
-          // Rewrite url() references in CSS to be absolute
-          fetchedCSS = fetchedCSS.replace(/url\(['"]?(?!http|https|data:|\/\/)([^'")]+)['"]?\)/gi, 
-            `url('${base}/$1')`);
+          // Rewrite url() references in CSS to be absolute (skip hash-only fragments like url(#gradient))
+          fetchedCSS = fetchedCSS.replace(/url\(['"]?(?!http|https|data:|\/\/|#)([^'")]+)['"]?\)/gi,
+            (_, p) => `url('${base}/${appendBust(p)}')`);
           
           // Replace the <link> with inline style (use array join to avoid confusing PostCSS)
           const styleOpen = ['<', 'style data-inlined-from="', href, '">'].join('');
@@ -1452,31 +1447,58 @@ let addressInput = '';
   }
   
   // Rewrite relative URLs in HTML to point to local dev server
-  function rewriteLocalDevUrls(html, baseUrl) {
+  // cacheTs (optional): when provided (hot-reload path), every rewritten URL gets ?_t=<ts>
+  // appended so the iframe's JS engine can't serve a stale cached module/asset. Top-level
+  // <script src> tags also get crossorigin="anonymous" so the bridge's window.error listener
+  // sees real error details instead of the CORS-redacted 'Script error.'.
+  function rewriteLocalDevUrls(html, baseUrl, cacheTs) {
     // Ensure baseUrl ends with trailing slash for base tag
     const baseWithSlash = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
     const base = baseUrl.replace(/\/$/, '');
-    
+    const appendBust = (path) => cacheTs != null
+      ? path + (path.includes('?') ? '&' : '?') + '_t=' + cacheTs
+      : path;
+
     // Inject <base> tag right after <head> to handle any URLs we might miss
     if (html.includes('<head>')) {
       html = html.replace('<head>', `<head>\n<base href="${baseWithSlash}">`);
     } else if (html.includes('<HEAD>')) {
       html = html.replace('<HEAD>', `<HEAD>\n<base href="${baseWithSlash}">`);
     }
-    
+
+    // Rewrite <script src="..."> first and inject crossorigin="anonymous" so the iframe's
+    // window.addEventListener('error') handler in the bridge can read full error details
+    // (filename/lineno/colno/stack) instead of an opaque 'Script error.' with nulls. The
+    // dev server sets Access-Control-Allow-Origin: * (local_dev_server.go), which is the
+    // precondition that lets the browser expose cross-origin script errors.
+    html = html.replace(
+      /<script\b([^>]*?)\bsrc\s*=\s*["'](?!http|https|data:|\/\/)([^"']+)["']([^>]*)>/gi,
+      (_, pre, path, post) => {
+        const hasCrossorigin = /\bcrossorigin\s*=/i.test(pre + post);
+        const co = hasCrossorigin ? '' : ' crossorigin="anonymous"';
+        return `<script${pre} src="${base}/${appendBust(path)}"${post}${co}>`;
+      }
+    );
+
     // Rewrite href="..." for CSS and links (not starting with http/https/data/mailto/#)
-    html = html.replace(/href="(?!http|https|data:|mailto:|#|\/\/)([^"]*)"/gi, `href="${base}/$1"`);
-    
-    // Rewrite src="..." for scripts and images (not starting with http/https/data)
-    html = html.replace(/src="(?!http|https|data:|\/\/)([^"]*)"/gi, `src="${base}/$1"`);
-    
-    // Rewrite url() in inline styles (for background images, etc.)
-    html = html.replace(/url\(['"]?(?!http|https|data:|\/\/)([^'")]+)['"]?\)/gi, `url('${base}/$1')`);
-    
+    html = html.replace(/href="(?!http|https|data:|mailto:|#|\/\/)([^"]*)"/gi,
+      (_, p) => `href="${base}/${appendBust(p)}"`);
+
+    // Rewrite src="..." for non-script tags (images, iframes, etc.) — script tags above
+    // are already absolute now and skipped by the (?!http|https|...) lookahead.
+    html = html.replace(/src="(?!http|https|data:|\/\/)([^"]*)"/gi,
+      (_, p) => `src="${base}/${appendBust(p)}"`);
+
+    // Rewrite url() in inline styles (skip hash fragments like url(#svgGradient))
+    html = html.replace(/url\(['"]?(?!http|https|data:|\/\/|#)([^'")]+)['"]?\)/gi,
+      (_, p) => `url('${base}/${appendBust(p)}')`);
+
     // Handle single-quoted attributes too
-    html = html.replace(/href='(?!http|https|data:|mailto:|#|\/\/)([^']*)'/gi, `href='${base}/$1'`);
-    html = html.replace(/src='(?!http|https|data:|\/\/)([^']*)'/gi, `src='${base}/$1'`);
-    
+    html = html.replace(/href='(?!http|https|data:|mailto:|#|\/\/)([^']*)'/gi,
+      (_, p) => `href='${base}/${appendBust(p)}'`);
+    html = html.replace(/src='(?!http|https|data:|\/\/)([^']*)'/gi,
+      (_, p) => `src='${base}/${appendBust(p)}'`);
+
     return html;
   }
   
@@ -1489,21 +1511,25 @@ let addressInput = '';
         // Set flag to auto-approve XSWD reconnection during hot reload
         hotReloadInProgress = true;
         
-        // Refetch the HTML from local server with cache-busting (same as initial load)
-        const cacheBuster = `?_t=${Date.now()}`;
-        const fetchUrl = localDevUrl + cacheBuster;
+        // One shared timestamp for the whole reload pass so HTML + CSS + all rewritten
+        // asset URLs (script src, link href, url(...), nested @imports, etc.) carry the
+        // same ?_t= — correlatable in the network log, and defeats the iframe JS engine's
+        // in-memory module-graph cache that would otherwise serve a stale main.js even
+        // after the HTTP request comes back fresh.
+        const reloadTs = Date.now();
+        const fetchUrl = localDevUrl + '?_t=' + reloadTs;
         addConsoleLog(`[Reload] Fetching: ${fetchUrl}`);
-        
+
         const response = await fetch(fetchUrl);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
-        
+
         let html = await response.text();
-        
-        // Inline CSS and rewrite URLs (same as initial load)
-        html = await inlineLocalDevCSS(html, localDevUrl);
-        html = rewriteLocalDevUrls(html, localDevUrl);
+
+        // Inline CSS and rewrite URLs (same as initial load) — thread the shared timestamp
+        html = await inlineLocalDevCSS(html, localDevUrl, reloadTs);
+        html = rewriteLocalDevUrls(html, localDevUrl, reloadTs);
         
         // Re-render with XSWD bridge injection
         renderContent(html);
@@ -1651,7 +1677,17 @@ ${logsText || '(no logs)'}
       cleanInput = cleanInput.slice(7);
       addressInput = cleanInput; // Update display to not show redundant prefix
     }
-    
+
+    // Payment URI pasted into the address bar — reroute to Wallet via the pendingPayment store.
+    if (/^(dero|deto)i?1[02-9ac-hj-np-z]{55,}/i.test(cleanInput)) {
+      toast.warning('Payment URI detected — opening in Wallet');
+      requestPayment(`dero://${cleanInput}`);
+      window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'wallet' }));
+      loading = false;
+      showWelcome = true;
+      return;
+    }
+
     addConsoleLog(`Navigating to: ${cleanInput}`);
     
     // Handle local:// URLs for local dev mode

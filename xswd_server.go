@@ -266,8 +266,6 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		method = "MakeIntegratedAddress"
 	case "split_integrated_address":
 		method = "SplitIntegratedAddress"
-	case "query_key":
-		method = "QueryKey"
 	case "transfer_split":
 		method = "Transfer"
 	case "getdaemon":
@@ -360,7 +358,15 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		}
 		s.sendResponse(conn, req.ID, result, errRes)
 
-	case "GetHeight", "DERO.GetHeight":
+	// Wallet-side GetHeight only. DERO.GetHeight (daemon-side chain tip) is
+	// intentionally NOT in this case — it falls through to the default branch
+	// below, which proxies all DERO.* methods to the daemon via routeDaemonCall.
+	// Intercepting DERO.GetHeight here would (a) return the wallet's sync
+	// height instead of the daemon's chain tip (wrong data), and (b) gate a
+	// public chain read on PermissionViewBalance, contrary to the XSWD spec
+	// (walletapi/xswd/xswd.go:651-693 treats DERO.* as always-permitted
+	// post-handshake).
+	case "GetHeight":
 		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
 			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
 			s.sendResponse(conn, req.ID, nil, errRes)
@@ -502,27 +508,6 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		}
 		s.sendResponse(conn, req.ID, result, errRes)
 
-	case "QueryKey":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionSignTransaction) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: Sign Transaction permission not granted"}
-			s.sendResponse(conn, req.ID, nil, errRes)
-			return
-		}
-		if !walletManager.isOpen {
-			errRes = &JSONRPCError{Code: -32000, Message: "Wallet not open"}
-		} else {
-			var params map[string]interface{}
-			json.Unmarshal(req.Params, &params)
-			keyType, _ := params["key_type"].(string)
-			switch strings.ToLower(keyType) {
-			case "mnemonic":
-				result = map[string]interface{}{"key": walletManager.wallet.GetSeed()}
-			default:
-				errRes = &JSONRPCError{Code: -32602, Message: "Invalid key type, must be mnemonic"}
-			}
-		}
-		s.sendResponse(conn, req.ID, result, errRes)
-
 	case "SignData", "DecryptPayload":
 		// Check if base permission granted (still requires per-request approval)
 		if pm != nil && origin != "" {
@@ -568,7 +553,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			"GetPublicKey": true,
 			"Transfer":     true, "transfer": true, "scinvoke": true, "SC_Invoke": true,
 			"GetTransfers": true, "GetTransferbyTXID": true, "MakeIntegratedAddress": true,
-			"SplitIntegratedAddress": true, "QueryKey": true, "SignData": true,
+			"SplitIntegratedAddress": true, "SignData": true,
 			"CheckSignature": true, "DecryptPayload": true, "Subscribe": true, "Unsubscribe": true,
 			"GetDaemon": true, "HasMethod": true, "Echo": true, "Ping": true,
 		}

@@ -1049,10 +1049,51 @@ func (a *App) GetTokenPortfolio() map[string]interface{} {
 }
 
 func (a *App) CreatePaymentRequest(amount uint64, comment string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[PayReq] CreatePaymentRequest entry: amount=%d comment_len=%d", amount, len(comment)))
+
+	// Prefer the in-app wallet (same path the Receive view uses). The XSWD
+	// route only fires when HOLOGRAM is acting as a host for an external
+	// wallet (Engram, G45, etc.) and the integrated wallet is unavailable.
+	walletManager.RLock()
+	hasLocalWallet := walletManager.isOpen && walletManager.wallet != nil
+	walletManager.RUnlock()
+
+	if hasLocalWallet {
+		local := a.GetIntegratedAddress(0, comment, amount)
+		if ok, _ := local["success"].(bool); !ok {
+			errMsg := "Failed to generate integrated address"
+			if msg, _ := local["error"].(string); msg != "" {
+				errMsg = msg
+			}
+			a.logToConsole(fmt.Sprintf("[PayReq] ERROR: local wallet path failed: %s", errMsg))
+			return map[string]interface{}{
+				"success": false,
+				"error":   errMsg,
+			}
+		}
+		integratedAddr, _ := local["integratedAddress"].(string)
+		if integratedAddr == "" {
+			a.logToConsole("[PayReq] ERROR: local wallet returned empty integrated address")
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Wallet returned no integrated address",
+			}
+		}
+		a.logToConsole(fmt.Sprintf("[PayReq] OK (local): %s...", integratedAddr[:16]))
+		return map[string]interface{}{
+			"success":            true,
+			"integrated_address": integratedAddr,
+			"amount":             amount,
+			"amount_formatted":   formatDEROAmount(amount),
+			"comment":            comment,
+		}
+	}
+
 	if !a.xswdClient.IsConnected() {
+		a.logToConsole("[PayReq] ERROR: no local wallet and XSWD not connected")
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Wallet not connected via XSWD",
+			"error":   "No wallet available (open the integrated wallet or connect via XSWD)",
 		}
 	}
 
@@ -1079,6 +1120,7 @@ func (a *App) CreatePaymentRequest(amount uint64, comment string) map[string]int
 	})
 
 	if err != nil {
+		a.logToConsole(fmt.Sprintf("[PayReq] ERROR: XSWD MakeIntegratedAddress failed: %v", err))
 		return ErrorResponse(err)
 	}
 
@@ -1088,6 +1130,16 @@ func (a *App) CreatePaymentRequest(amount uint64, comment string) map[string]int
 			integratedAddr = addr
 		}
 	}
+
+	if integratedAddr == "" {
+		a.logToConsole(fmt.Sprintf("[PayReq] ERROR: response had no integrated_address field; raw=%v", result))
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Wallet returned no integrated address",
+		}
+	}
+
+	a.logToConsole(fmt.Sprintf("[PayReq] OK (xswd): %s...", integratedAddr[:16]))
 
 	return map[string]interface{}{
 		"success":            true,
@@ -1100,18 +1152,73 @@ func (a *App) CreatePaymentRequest(amount uint64, comment string) map[string]int
 }
 
 func (a *App) DecodeIntegratedAddress(integratedAddr string) map[string]interface{} {
-	if !a.xswdClient.IsConnected() {
+	a.logToConsole(fmt.Sprintf("[DecodeIntAddr] entry: %s", integratedAddr))
+
+	// Prefer the local parser. SplitIntegratedAddress only needs rpc.NewAddress
+	// (it does NOT require an open wallet), so it is safe to run whenever the
+	// integrated wallet path is available OR whenever XSWD is not connected.
+	walletManager.RLock()
+	hasLocalWallet := walletManager.isOpen && walletManager.wallet != nil
+	walletManager.RUnlock()
+
+	preferLocal := hasLocalWallet || !a.xswdClient.IsConnected()
+
+	if preferLocal {
+		local := a.SplitIntegratedAddress(integratedAddr)
+		if ok, _ := local["success"].(bool); !ok {
+			errMsg := "Failed to decode integrated address"
+			if msg, _ := local["error"].(string); msg != "" {
+				errMsg = msg
+			}
+			a.logToConsole(fmt.Sprintf("[DecodeIntAddr] ERROR (local): %s", errMsg))
+			return map[string]interface{}{"success": false, "error": errMsg}
+		}
+
+		// Reshape the flat local response into the {address, payload:[{name,value}...]}
+		// envelope that Wallet.svelte normalizeDecoded() already understands.
+		// Field name codes match the frontend: A=amount, C=comment, D=destinationPort.
+		baseAddress, _ := local["baseAddress"].(string)
+		payload := []map[string]interface{}{}
+		if amt, ok := local["amount"].(uint64); ok && amt > 0 {
+			payload = append(payload, map[string]interface{}{
+				"name":     "A",
+				"datatype": "U",
+				"value":    amt,
+			})
+		}
+		if cmt, ok := local["comment"].(string); ok && cmt != "" {
+			payload = append(payload, map[string]interface{}{
+				"name":     "C",
+				"datatype": "S",
+				"value":    cmt,
+			})
+		}
+		if port, ok := local["destinationPort"].(uint64); ok {
+			payload = append(payload, map[string]interface{}{
+				"name":     "D",
+				"datatype": "U",
+				"value":    port,
+			})
+		}
+
+		decoded := map[string]interface{}{
+			"address": baseAddress,
+			"payload": payload,
+		}
+		a.logToConsole(fmt.Sprintf("[DecodeIntAddr] OK (local): base=%s payload=%d", baseAddress, len(payload)))
 		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet not connected via XSWD",
+			"success": true,
+			"decoded": decoded,
 		}
 	}
 
+	// XSWD fallback — only when no local wallet AND XSWD is connected.
 	result, err := a.xswdClient.Call("SplitIntegratedAddress", map[string]interface{}{
 		"integrated_address": integratedAddr,
 	})
 
 	if err != nil {
+		a.logToConsole(fmt.Sprintf("[DecodeIntAddr] ERROR (xswd): %v", err))
 		return ErrorResponse(err)
 	}
 
@@ -1131,6 +1238,7 @@ func (a *App) DecodeIntegratedAddress(integratedAddr string) map[string]interfac
 		}
 	}
 
+	a.logToConsole("[DecodeIntAddr] OK (xswd)")
 	return map[string]interface{}{
 		"success": true,
 		"decoded": decoded,
