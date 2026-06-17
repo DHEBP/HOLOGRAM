@@ -101,31 +101,49 @@
   let walletAvatarUrl = null;
   let loadingAvatar = false;
   let currentAvatarSize = null;
+  // The address the currently-shown avatar belongs to. Tracked so a wallet SWITCH
+  // (address changes while a stale avatar is still loaded at the same size) forces a
+  // reload instead of leaving the previous identity's avatar on screen.
+  let previousAvatarAddress = null;
 
   // Signal Dark (stealth mode) — the wallet identity loses signal lock.
   // Armed from the wild-card panel ("GO DARK"); masks address, balance, tokens and the
-  // identity core in one synchronized beat. Reuses the existing privacyMode setting, so
-  // persistence (app_settings.go / appState.js) is unchanged.
+  // identity core in one synchronized beat. Backed by its own signal_dark setting —
+  // deliberately independent of privacy_mode, the NETWORK seal toggled in Settings.
   let signalDropping = false; // drives the one-shot power-down/up flicker on the core
 
   async function toggleSignalDark(event) {
     event?.stopPropagation();
-    const goingDark = !$settingsState.privacyMode;
+    const goingDark = !$settingsState.signalDark;
     signalDropping = true;
-    await saveSetting('privacyMode', goingDark);
+    await saveSetting('signalDark', goingDark);
     toast.info(goingDark ? 'Signal dark — identity masked' : 'Signal restored');
     setTimeout(() => { signalDropping = false; }, 620);
   }
 
-  $: isPrivacyActive = $settingsState.privacyMode;
-  $: isAddressHidden = isPrivacyActive || $settingsState.hideAddress;
-  $: isBalanceHidden = isPrivacyActive || $settingsState.hideBalance;
-  $: isAvatarHidden = isPrivacyActive || $settingsState.avatarHidden;
+  $: isSignalDark = $settingsState.signalDark;
+  // Network seal (Privacy Mode) — surfaced on the anchor status line when nothing
+  // more urgent is showing. Signal Dark outranks it; warnings outrank both.
+  $: isPrivacySealed = $settingsState.privacyMode;
+  $: isAddressHidden = isSignalDark || $settingsState.hideAddress;
+  $: isBalanceHidden = isSignalDark || $settingsState.hideBalance;
+  $: isAvatarHidden = isSignalDark || $settingsState.avatarHidden;
   
   // Load avatar when wallet connects or address changes
   $: if (walletDisplayAddress && walletIsConnected) {
     const avatarSize = collapsed ? 24 : 40;
-    // Only reload if size changed or avatar not loaded
+    // A wallet switch changes the address while walletAvatarUrl is still the PREVIOUS
+    // wallet's avatar at the same size — the size/loaded guard below would then skip the
+    // reload and leave the wrong identity's avatar on screen (a cross-wallet leak in a
+    // privacy tool). Detect the address change explicitly and drop the stale avatar so the
+    // reload fires for the new identity.
+    if (walletDisplayAddress !== previousAvatarAddress) {
+      if (previousAvatarAddress) clearAvatarCache(previousAvatarAddress);
+      previousAvatarAddress = walletDisplayAddress;
+      walletAvatarUrl = null;
+      currentAvatarSize = null;
+    }
+    // Only reload if size changed or avatar not loaded (now also true right after a switch).
     if (currentAvatarSize !== avatarSize || !walletAvatarUrl) {
       loadWalletAvatar(walletDisplayAddress, avatarSize);
     }
@@ -137,6 +155,8 @@
       }
       walletAvatarUrl = null;
       currentAvatarSize = null;
+      // Forget the shown identity so a reconnect (even of the same wallet) reloads cleanly.
+      previousAvatarAddress = null;
     }
   }
   
@@ -1151,14 +1171,16 @@
             <span class="rail-tooltip-value tt-ok">
               {isAddressHidden ? '••••••••' : formatAddressForDisplay(walletDisplayAddress)}
             </span>
-            <span class="rail-tooltip-value" class:tt-dim={!isPrivacyActive} class:tt-dark={isPrivacyActive}>
-              {isPrivacyActive ? 'SIGNAL DARK' : 'Wallet Ready'}
+            <span class="rail-tooltip-value" class:tt-dim={!isSignalDark && !isPrivacySealed} class:tt-dark={isSignalDark} class:tt-seal={!isSignalDark && isPrivacySealed}>
+              {isSignalDark ? 'SIGNAL DARK' : isPrivacySealed ? 'PRIVACY MODE' : 'Wallet Ready'}
             </span>
             {#if connectedApps.length > 0}
               <span class="rail-tooltip-value tt-dim">{connectedApps.length} {connectedApps.length === 1 ? 'app' : 'apps'}</span>
             {/if}
           {:else if walletMode === 'engram'}
             <span class="rail-tooltip-value tt-ok">Engram Connected</span>
+          {:else if isPrivacySealed}
+            <span class="rail-tooltip-value tt-seal">PRIVACY MODE</span>
           {:else if xswdReadyNoWallet}
             <span class="rail-tooltip-value tt-cyan">XSWD Active</span>
           {:else}
@@ -1206,7 +1228,7 @@
             {/if}
           </span>
           <span class="wallet-anchor-status">
-            {#if isPrivacyActive}
+            {#if isSignalDark}
               <span class="status-dark">SIGNAL DARK</span>
             {:else if $appState.pendingXSWDRequests?.length > 0}
               <span class="status-warn">{$appState.pendingXSWDRequests.length === 1 ? 'App requesting access' : `${$appState.pendingXSWDRequests.length} apps requesting access`}</span>
@@ -1215,6 +1237,8 @@
                 <span class="status-warn">Network mismatch ({walletAddressNetwork === 'simulator' ? 'deto' : 'dero'})</span>
               {:else if effectiveNetwork === 'simulator'}
                 <span class="status-sim">Simulator Wallet</span>
+              {:else if isPrivacySealed}
+                <span class="status-seal">PRIVACY MODE</span>
               {:else}
                 <span class="status-ok">Wallet Ready</span>
               {/if}
@@ -1224,6 +1248,8 @@
               {/if}
             {:else if walletMode === 'engram'}
               <span class="status-ok">Engram Connected</span>
+            {:else if isPrivacySealed}
+              <span class="status-seal">PRIVACY MODE</span>
             {:else if xswdReadyNoWallet}
               <span class="status-xswd">XSWD Active</span>
             {:else}
@@ -1236,20 +1262,20 @@
     
     <!-- Wallet Menu - Rendered in Sidebar -->
     {#if showWalletMenu && !collapsed}
-      <div class="wallet-menu identity-console" class:stealth={isPrivacyActive} on:click|stopPropagation>
+      <div class="wallet-menu identity-console" class:stealth={isSignalDark} on:click|stopPropagation>
         <!-- Identity console — the lock-reactor core IS the privacy control -->
         <div class="console-identity" class:signal-dropping={signalDropping}>
           <button
             class="reactor-core"
-            class:armed={isPrivacyActive}
+            class:armed={isSignalDark}
             class:signal-dropping={signalDropping}
             on:click|stopPropagation={toggleSignalDark}
-            title={isPrivacyActive ? 'Stealth on — tap to go live' : 'Tap to go dark'}
-            aria-label={isPrivacyActive ? 'Privacy mode on — tap to disable' : 'Tap to enable privacy mode'}
+            title={isSignalDark ? 'Stealth on — tap to go live' : 'Tap to go dark'}
+            aria-label={isSignalDark ? 'Privacy mode on — tap to disable' : 'Tap to enable privacy mode'}
           >
             <span class="reactor-sonar" aria-hidden="true"></span>
             <span class="reactor-glyph">
-              {#if isPrivacyActive}
+              {#if isSignalDark}
                 <Lock size={26} strokeWidth={1.75} />
               {:else}
                 <Unlock size={26} strokeWidth={1.75} />
@@ -3325,6 +3351,20 @@
 
   .rail-tooltip-value.tt-dark {
     color: var(--cyan-400);
+    letter-spacing: 0.1em;
+  }
+
+  /* Network-seal (Privacy Mode) status label — same treatment as SIGNAL DARK, armed-green. */
+  .wallet-anchor-status .status-seal {
+    color: var(--status-ok);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .rail-tooltip-value.tt-seal {
+    color: var(--status-ok);
     letter-spacing: 0.1em;
   }
 </style>

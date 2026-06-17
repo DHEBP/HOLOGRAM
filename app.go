@@ -33,17 +33,18 @@ var deroSCID = crypto.ZEROHASH.String()
 
 // App struct
 type App struct {
-	ctx          context.Context
-	xswdClient   *XSWDClient
-	daemonClient BlockchainClient
-	gnomonClient *GnomonClient
-	cache        ContentCache
-	xswdServer   *XSWDServer
-	liveStats    *LiveStatsService
-	settings     map[string]interface{}
-	history      []string
-	consoleLogs  []ConsoleLog
-	launchURL    string
+	ctx           context.Context
+	xswdClient    *XSWDClient
+	daemonClient  BlockchainClient
+	gnomonClient  *GnomonClient
+	cache         ContentCache
+	xswdServer    *XSWDServer
+	liveStats     *LiveStatsService
+	settings      map[string]interface{}
+	history       []string
+	consoleLogs   []ConsoleLog
+	consoleLogsMu sync.Mutex // guards consoleLogs (logToConsole is called concurrently)
+	launchURL     string
 
 	// EPOCH (Developer Support)
 	epochHandler     *EpochHandler
@@ -81,6 +82,12 @@ type App struct {
 
 	// EPOCH address monitor lifecycle
 	epochMonitorStop chan struct{}
+
+	// Token scan re-entrancy guard. Toggled with atomic CAS so a double-click or
+	// the manual Scan racing the first-view auto-scan can't spawn two concurrent
+	// worker-pool sweeps (which would double the daemon load and interleave two
+	// progress streams). 0 = idle, 1 = a scan is running.
+	scanInFlight int32
 }
 
 // NewApp creates a new App application struct
@@ -105,7 +112,8 @@ func NewApp() *App {
 			"hide_balance":       false,
 			"hide_address":       false,
 			"avatar_hidden":      false,
-			"privacy_mode":       false,
+			"privacy_mode":       false, // network seal (Privacy Mode)
+			"signal_dark":        false, // display masking (Signal Dark) — independent of the seal
 		},
 		history:     make([]string, 0),
 		consoleLogs: make([]ConsoleLog, 0),
@@ -137,11 +145,22 @@ func (a *App) shutdown(ctx context.Context) {
 // startup is called when the app starts
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// Install the Privacy Mode transport chokepoint before any client connects, so
+	// every outbound HTTP/WS connection is gated at the dialer (no-op while the mode is
+	// off). See privacy_transport.go.
+	installPrivacyTransport(a)
+
 	a.logToConsole("[START] TELA Browser starting up...")
 
 	// Load persisted settings (daemon_endpoint, network, etc.) before any connections
 	// This ensures user-configured endpoints survive app restarts
 	a.loadSettings()
+
+	// Re-arm Privacy Mode from persisted settings before anything dials out
+	// (reconcileDaemonEndpoint below tests the daemon connection). Without this,
+	// an enabled kill switch silently disarms on every restart.
+	a.restorePrivacyModeFromSettings()
 
 	// Reconcile daemon_endpoint with the actual network after loading persisted settings.
 	// Bug #39 fix: persisted settings may contain a stale endpoint (e.g. simulator :20000)
@@ -1008,6 +1027,12 @@ func (a *App) GetTokenPortfolio() map[string]interface{} {
 	if resultMap, ok := result.(map[string]interface{}); ok {
 		if balances, ok := resultMap["balances"].(map[string]interface{}); ok {
 			for scid, balance := range balances {
+				// Native DERO is the base coin, not a contract token. Skip the
+				// zero SCID so it never appears in the contract-token list (its
+				// balance/send live on the Dashboard). Mirrors GetTrackedTokens.
+				if scid == deroSCID {
+					continue
+				}
 				token := map[string]interface{}{
 					"scid":    scid,
 					"balance": balance,
@@ -1028,12 +1053,6 @@ func (a *App) GetTokenPortfolio() map[string]interface{} {
 							token["description"] = decodeHexString(fmt.Sprintf("%v", v.Value))
 						}
 					}
-				}
-
-				if scid == deroSCID {
-					token["name"] = "DERO"
-					token["symbol"] = "DERO"
-					token["native"] = true
 				}
 
 				tokens = append(tokens, token)

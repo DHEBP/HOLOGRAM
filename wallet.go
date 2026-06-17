@@ -11,11 +11,13 @@ import (
 	goruntime "runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/deroproject/derohe/cryptography/bn256"
 	"github.com/deroproject/derohe/cryptography/crypto"
-	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
 	"github.com/deroproject/derohe/walletapi"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -42,6 +44,58 @@ var walletManager = NewWalletManager()
 
 // walletapi uses global connectivity; start it once per process.
 var walletConnectivityOnce sync.Once
+
+// balanceMu serializes HOLOGRAM's reads of the wallet's per-SCID balance map
+// (Get_Balance / Get_Balance_scid) and any on-demand Sync against each other.
+// The walletapi background sync_loop writes account.Balance[scid] under the
+// wallet's own lock every ~5s, but Get_Balance* read that map lock-free, so
+// concurrent HOLOGRAM readers (XSWD handlers, the portfolio render) would
+// otherwise race the loop's writes — a fatal "concurrent map read and map
+// write". Holding balanceMu around our reads/syncs makes them mutually
+// exclusive on our side; the reads are O(1) map lookups, so this never blocks
+// on I/O. Callers must hold a stable wallet pointer (captured under
+// walletManager's lock) before calling these helpers.
+var balanceMu sync.Mutex
+
+// trackedTokensMu serializes the read-modify-write of tracked_tokens.json so a
+// manual AddTrackedToken/RemoveTrackedToken can't interleave with the scan's
+// add loop (or another add) and clobber the whole-file rewrite — a lost-update
+// race, since load() and save() are not individually atomic. Held across the
+// load…modify…save span by every mutating path.
+var trackedTokensMu sync.Mutex
+
+// readNativeBalance returns the cached native DERO mature balance, serialized
+// against the sync_loop via balanceMu.
+func readNativeBalance(wallet *walletapi.Wallet_Disk) uint64 {
+	balanceMu.Lock()
+	defer balanceMu.Unlock()
+	mature, _ := wallet.Get_Balance()
+	return mature
+}
+
+// readTokenBalance returns the cached mature balance for an scid, serialized
+// against the sync_loop via balanceMu. It does NOT sync — it reads whatever the
+// background loop (or a prior add-time sync) last decrypted.
+func readTokenBalance(wallet *walletapi.Wallet_Disk, scid crypto.Hash) uint64 {
+	balanceMu.Lock()
+	defer balanceMu.Unlock()
+	mature, _ := wallet.Get_Balance_scid(scid)
+	return mature
+}
+
+// syncAndReadTokenBalance fetches+decrypts an scid's balance from the daemon on
+// demand (for callers that can't rely on the token being pre-registered, e.g.
+// the XSWD bridge serving an arbitrary dApp query) then returns it, all
+// serialized against the sync_loop via balanceMu.
+func syncAndReadTokenBalance(wallet *walletapi.Wallet_Disk, scid crypto.Hash) (uint64, error) {
+	balanceMu.Lock()
+	defer balanceMu.Unlock()
+	if err := wallet.Sync_Wallet_Memory_With_Daemon_internal(scid); err != nil {
+		return 0, err
+	}
+	mature, _ := wallet.Get_Balance_scid(scid)
+	return mature, nil
+}
 
 func normalizeDaemonEndpointForWallet(endpoint string) string {
 	// walletapi.Wallet_* typically expects host:port (no scheme) here.
@@ -81,6 +135,12 @@ func (a *App) ensureWalletDaemonConnectivity(endpoint string) {
 	}
 	if endpoint == "" {
 		endpoint = "127.0.0.1:10102"
+	}
+
+	// Privacy Mode: refuse a non-allowlisted remote daemon before walletapi opens its
+	// own socket (it has no dialer hook). The opt-in event is emitted by the policy check.
+	if !a.checkDaemonEndpointPolicy(endpoint) {
+		return
 	}
 
 	if err := walletapi.Connect(endpoint); err != nil {
@@ -138,12 +198,14 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 		filePath = filepath.Join(getDatashardsDir(), "wallets", name+".db")
 	}
 
-	// Determine current network mode - check multiple ways for robustness
+	// Network comes from nodeManager — the same source the sidebar and
+	// IsInSimulatorMode read. Do NOT consult globals.Arguments["--simulator"]:
+	// every simulator start path sets that package-global true but it's only
+	// cleared on app launch, so after a simulator→mainnet switch it goes stale
+	// and would open a mainnet wallet flagged testnet (deto1 address,
+	// "unregistered", sync wedged against the dead simulator).
 	currentNetwork := "mainnet"
-	simArg := globals.Arguments["--simulator"]
-
-	// Check if simulator (can be bool or interface{})
-	if simArg == true || simArg == "true" || fmt.Sprintf("%v", simArg) == "true" {
+	if a.IsInSimulatorMode() {
 		currentNetwork = "simulator"
 	}
 
@@ -297,6 +359,16 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 			}
 		case <-time.After(10 * time.Second):
 			a.logToConsole("[WARN] Initial wallet sync timed out (10s) — will continue syncing in background")
+		}
+
+		// Register previously tracked tokens with the wallet engine so their
+		// encrypted balances are fetched and kept fresh by the ongoing sync.
+		// Without this, non-native token balances would read 0 until the user
+		// re-adds them. Errors are benign (e.g. "token already added").
+		for _, t := range loadTrackedTokens() {
+			if err := wallet.TokenAdd(crypto.HashHexToHash(strings.ToLower(t.SCID))); err != nil {
+				continue
+			}
 		}
 	}()
 
@@ -1249,13 +1321,10 @@ func (a *App) RestoreWallet(filePath, password, seed string) map[string]interfac
 	}
 
 	// Set network before GetAddress() so the address prefix is correct
-	// (dero1 for mainnet, deto1 for testnet/simulator)
-	isMainnet := true
-	simArg := globals.Arguments["--simulator"]
-	if simArg == true || simArg == "true" || fmt.Sprintf("%v", simArg) == "true" {
-		isMainnet = false
-	}
-	wallet.SetNetwork(isMainnet)
+	// (dero1 for mainnet, deto1 for testnet/simulator). Derived from
+	// nodeManager, not the globals --simulator flag, which goes stale after a
+	// simulator→mainnet switch (see OpenWallet).
+	wallet.SetNetwork(!a.IsInSimulatorMode())
 
 	address := wallet.GetAddress().String()
 	wallet.Close_Encrypted_Wallet()
@@ -1473,6 +1542,49 @@ func parseXSWDScArgs(params map[string]interface{}, scid string) rpc.Arguments {
 	return append(prefix, scArgs...)
 }
 
+// detectDestructiveBurn scans transfers for a burn that would permanently destroy native
+// DERO. A burn on a non-zero SCID moves token value within that asset's pool (a normal
+// token transfer); a burn on the zero SCID (native DERO) with no smart contract attached
+// to the transaction destroys the coins forever. The latter is never a legitimate native
+// send, so it is rejected. hasSCCall reports whether the overall tx carries an SC call.
+func detectDestructiveBurn(transfers []rpc.Transfer, hasSCCall bool) (uint64, bool) {
+	if hasSCCall {
+		return 0, false
+	}
+	for _, t := range transfers {
+		if t.Burn > 0 && t.SCID == crypto.ZEROHASH {
+			return t.Burn, true
+		}
+	}
+	return 0, false
+}
+
+// shouldBlockBurn applies the destruction policy: a destructive native-DERO burn (zero SCID,
+// no contract attached) is ALWAYS blocked. HOLOGRAM is a consumer wallet and never burns DERO
+// -- a burn with no contract only destroys coins, so there is no legitimate path for it here.
+// Anyone who genuinely intends to burn DERO must use the DERO CLI wallet. There is no override.
+func shouldBlockBurn(transfers []rpc.Transfer, hasSCCall bool) (uint64, bool) {
+	return detectDestructiveBurn(transfers, hasSCCall)
+}
+
+// buildTokenTransfer constructs the transfer for a plain wallet-to-wallet token (or native
+// DERO) send. The recipient is credited from Amount on the named SCID -- Burn must be 0.
+// Burn is value attached to a smart-contract call (the SC then credits it); with no SC on
+// the other end, Amount:0/Burn:amount would debit the sender and credit no one, destroying
+// the funds. (Engram's transferAsset uses Amount too.) This was the v1.0.6 incident: native
+// DERO sent through the token path with Burn:amount on the zero SCID was destroyed. Kept as
+// a standalone helper so the exact production construction is unit-testable without a wallet.
+func buildTokenTransfer(scid, destination string, amount uint64) []rpc.Transfer {
+	return []rpc.Transfer{
+		{
+			Destination: destination,
+			Amount:      amount, // token amount the recipient receives (on this SCID)
+			Burn:        0,
+			SCID:        crypto.HashHexToHash(scid),
+		},
+	}
+}
+
 // InternalWalletCall executes a wallet method directly using the embedded wallet
 func (a *App) InternalWalletCall(method string, params map[string]interface{}, password string) map[string]interface{} {
 	walletManager.Lock()
@@ -1519,10 +1631,40 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		}
 
 	case "GetBalance", "DERO.GetBalance", "getbalance":
-		balance, lockedBalance := wallet.Get_Balance()
+		// Honor the optional "scid" param so a dApp can query a token balance.
+		// A DERO token balance is an encrypted per-account leaf, fetched by
+		// syncing that SCID from the daemon then reading Get_Balance_scid —
+		// mirroring the canonical wallet RPC. Without an scid (or the zero hash)
+		// return native DERO. This is the bridge path the embedded TELA app uses
+		// (the XSWD WebSocket handler has the equivalent fix).
+		scidStr := ""
+		if raw, ok := params["scid"].(string); ok {
+			scidStr = strings.ToLower(sanitizeSCID(raw))
+		}
+
+		if scidStr != "" && scidStr != deroSCID {
+			scid := crypto.HashHexToHash(scidStr)
+			// HashHexToHash silently yields the ZERO hash on malformed input,
+			// which would otherwise alias the native DERO balance. Reject
+			// anything that doesn't round-trip to the lowercased hex we received.
+			if scid.String() != scidStr {
+				return map[string]interface{}{"success": false, "error": "Invalid scid: must be 64 hexadecimal characters"}
+			}
+			mature, err := syncAndReadTokenBalance(wallet, scid)
+			if err != nil {
+				return map[string]interface{}{"success": false, "error": fmt.Sprintf("Failed to fetch token balance: %v", err)}
+			}
+			// Match canonical GetBalance_Result: {balance, unlocked_balance} only.
+			return map[string]interface{}{
+				"success": true,
+				"result":  map[string]uint64{"balance": mature, "unlocked_balance": mature},
+			}
+		}
+
+		mature := readNativeBalance(wallet)
 		return map[string]interface{}{
 			"success": true,
-			"result":  map[string]uint64{"balance": balance, "unlocked_balance": balance - lockedBalance, "locked_balance": lockedBalance},
+			"result":  map[string]uint64{"balance": mature, "unlocked_balance": mature},
 		}
 
 	case "GetHeight", "DERO.GetHeight", "getheight":
@@ -1636,6 +1778,19 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			return map[string]interface{}{"success": false, "error": "Please specify a transfer amount and destination, or a smart contract call."}
 		}
 
+		// Reject any burn that would permanently destroy native DERO. A native-DERO (zero-SCID)
+		// burn with no smart contract attached does not send funds anywhere -- it destroys them
+		// irrecoverably. HOLOGRAM never burns DERO; there is no override. Anyone who genuinely
+		// intends to burn DERO must use the DERO CLI wallet. This is a hard, unconditional block.
+		if burnAmt, block := shouldBlockBurn(transfers, len(scArgs) > 0); block {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED native-DERO burn: %s DERO with no contract attached", formatDEROAmount(burnAmt)))
+			return map[string]interface{}{
+				"success":        false,
+				"error":          fmt.Sprintf("HOLOGRAM does not allow burning DERO. This request would permanently destroy %s DERO -- a burn with no smart contract attached sends the coins to no one and cannot be undone. If you intend to deliberately burn DERO, use the DERO CLI wallet.", formatDEROAmount(burnAmt)),
+				"technicalError": fmt.Sprintf("rejected native-DERO burn of %d atomic units (zero SCID, no SC call); HOLOGRAM prohibits burns", burnAmt),
+			}
+		}
+
 		runTransfer := func() map[string]interface{} {
 			if !a.IsInSimulatorMode() {
 				if errResp := checkDaemonConnectivity(wallet); errResp != nil {
@@ -1718,19 +1873,39 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			}
 		}
 
-		// sc_dero_deposit / sc_token_deposit -- amount attached to the SC call.
-		// These are top-level params distinct from the transfers array.
+		// sc_dero_deposit / sc_token_deposit -- value attached to (deposited into)
+		// the SC call. A DVM contract reads this via DEROVALUE()/ASSETVALUE(),
+		// which the chain sources from the transfer's BURN value
+		// (blockchain/transaction_execute.go: incoming_value[scid] = BurnValue) --
+		// NOT Amount, which is an ordinary transfer to a destination the contract
+		// never sees. So deposits MUST use Burn, mirroring canonical ScInvoke
+		// (walletapi/rpcserver/rpc_scinvoke.go). The native-DERO deposit also needs
+		// a destination (a random ring member), since a non-zero zero-SCID transfer
+		// with an empty destination is rejected by the wallet library.
 		var scDeposit []rpc.Transfer
 		if deroDeposit, ok := params["sc_dero_deposit"].(float64); ok && deroDeposit > 0 {
-			scDeposit = append(scDeposit, rpc.Transfer{Amount: uint64(deroDeposit)})
+			dest := ""
+			if a.IsInSimulatorMode() {
+				dest = a.getSimulatorTransferDestination(wallet.GetAddress().String())
+			} else {
+				randos := wallet.Random_ring_members(crypto.ZEROHASH)
+				if len(randos) == 0 {
+					return map[string]interface{}{"success": false, "error": "Could not get ring members for SC DERO deposit. Check daemon connection and retry."}
+				}
+				dest = randos[0]
+				if dest == wallet.GetAddress().String() && len(randos) > 1 {
+					dest = randos[1]
+				}
+			}
+			scDeposit = append(scDeposit, rpc.Transfer{Destination: dest, Amount: 0, Burn: uint64(deroDeposit)})
 		}
 		if tokenDeposit, ok := params["sc_token_deposit"].(float64); ok && tokenDeposit > 0 {
 			tokenSCIDStr, _ := params["sc_token_deposit_scid"].(string)
 			var tokenSCID crypto.Hash
 			if tokenSCIDStr != "" {
-				tokenSCID = crypto.HashHexToHash(tokenSCIDStr)
+				tokenSCID = crypto.HashHexToHash(sanitizeSCID(tokenSCIDStr))
 			}
-			scDeposit = append(scDeposit, rpc.Transfer{Amount: uint64(tokenDeposit), SCID: tokenSCID})
+			scDeposit = append(scDeposit, rpc.Transfer{SCID: tokenSCID, Amount: 0, Burn: uint64(tokenDeposit)})
 		}
 
 		// Transfers attached to the SC call (burns for dev donations, etc.)
@@ -1768,6 +1943,19 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		}
 		// Merge deposit entries in front of any explicit transfers
 		transfers = append(scDeposit, transfers...)
+
+		// Defense in depth: a native-DERO (zero-SCID) burn is only safe here when it routes to
+		// a real contract call. Block it explicitly at this broadcast site too, so the burn
+		// prohibition does not silently depend on chain-side refund behavior if this path is
+		// ever refactored. HOLOGRAM never burns DERO; deliberate burns belong in the CLI.
+		if burnAmt, block := shouldBlockBurn(transfers, len(scArgs) > 0); block {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED native-DERO burn in scinvoke: %s DERO with no contract attached", formatDEROAmount(burnAmt)))
+			return map[string]interface{}{
+				"success":        false,
+				"error":          fmt.Sprintf("HOLOGRAM does not allow burning DERO. This request would permanently destroy %s DERO with no contract attached. If you intend to deliberately burn DERO, use the DERO CLI wallet.", formatDEROAmount(burnAmt)),
+				"technicalError": fmt.Sprintf("rejected native-DERO burn of %d atomic units in scinvoke (zero SCID, no SC call); HOLOGRAM prohibits burns", burnAmt),
+			}
+		}
 
 		runSCInvoke := func() map[string]interface{} {
 			if !a.IsInSimulatorMode() {
@@ -2259,11 +2447,11 @@ func addToRecentWalletsWithInfo(path, address string) {
 	// Load existing data
 	existing := loadRecentWalletsData()
 
-	// Determine current network mode - check multiple ways for robustness
+	// Stamp the network from nodeManager, not the globals --simulator flag —
+	// the flag goes stale after a simulator→mainnet switch and would record a
+	// mainnet session as "simulator", poisoning the last-used-network warnings.
 	network := "mainnet"
-	simArg := globals.Arguments["--simulator"]
-
-	if simArg == true || simArg == "true" || fmt.Sprintf("%v", simArg) == "true" {
+	if nodeManager.networkMode == NetworkSimulator {
 		network = "simulator"
 	}
 
@@ -2451,10 +2639,12 @@ func (a *App) GetCurrentWalletPath() string {
 
 // TrackedToken represents a user-tracked token
 type TrackedToken struct {
-	SCID    string `json:"scid"`
-	Name    string `json:"name"`
-	Symbol  string `json:"symbol"`
-	AddedAt int64  `json:"addedAt"`
+	SCID        string `json:"scid"`
+	Name        string `json:"name"`
+	Symbol      string `json:"symbol"`
+	Icon        string `json:"icon,omitempty"`
+	Description string `json:"description,omitempty"`
+	AddedAt     int64  `json:"addedAt"`
 }
 
 // GetTrackedTokens returns the list of user-tracked tokens with balances
@@ -2465,60 +2655,63 @@ func (a *App) GetTrackedTokens() map[string]interface{} {
 	// If we have a local wallet open, get balances
 	walletManager.RLock()
 	localWalletOpen := walletManager.isOpen && walletManager.wallet != nil
-	var walletAddress string
-	if localWalletOpen {
-		walletAddress = walletManager.wallet.GetAddress().String()
-	}
+	wallet := walletManager.wallet
 	walletManager.RUnlock()
 
 	result := make([]map[string]interface{}, 0)
 
-	// Always include native DERO first if wallet is open
-	if localWalletOpen {
-		walletManager.RLock()
-		mature, _ := walletManager.wallet.Get_Balance()
-		walletManager.RUnlock()
+	// Native DERO is the base coin, not a contract token: it is intentionally NOT
+	// listed here. Its balance and send/receive live on the Dashboard. Listing it
+	// among contract tokens routed native sends through the token-transfer path,
+	// which is reserved for non-zero SCIDs. This list is contract-assets only.
 
-		result = append(result, map[string]interface{}{
-			"scid":    deroSCID,
-			"name":    "DERO",
-			"symbol":  "DERO",
-			"balance": mature,
-			"native":  true,
-		})
-	}
-
-	// For each tracked token, try to get balance from Gnomon or SC query
+	// For each tracked token, read the cached encrypted balance the wallet
+	// engine already maintains. A DERO token balance is an encrypted per-account
+	// leaf in the chain balance tree — NOT a plaintext Gnomon SC variable. We do
+	// NOT sync the daemon here: OpenWallet registers every tracked token
+	// (TokenAdd), and the walletapi background sync_loop refreshes each
+	// registered SCID every ~5s, so the cached value is current. Syncing per
+	// render would add N blocking daemon round-trips to a UI path (and break the
+	// simulator's single-WebSocket constraint). Gnomon is used only to backfill
+	// missing name/symbol metadata.
 	for _, token := range tokens {
 		tokenData := map[string]interface{}{
-			"scid":    token.SCID,
-			"name":    token.Name,
-			"symbol":  token.Symbol,
-			"balance": uint64(0),
-			"native":  false,
+			"scid":           token.SCID,
+			"name":           token.Name,
+			"symbol":         token.Symbol,
+			"icon":           token.Icon,
+			"balance":        uint64(0),
+			"native":         false,
+			"balanceUnknown": false,
 		}
 
-		// Try to get balance from Gnomon if running
-		if a.gnomonClient != nil && a.gnomonClient.IsRunning() && walletAddress != "" {
-			// Look up balance in SC variables
-			vars := a.gnomonClient.GetAllSCIDVariableDetails(token.SCID)
-			for _, v := range vars {
-				key := fmt.Sprintf("%v", v.Key)
-				// Token balances are typically stored as address keys
-				if key == walletAddress {
-					if balance, ok := v.Value.(uint64); ok {
-						tokenData["balance"] = balance
-					} else if balance, ok := v.Value.(float64); ok {
-						tokenData["balance"] = uint64(balance)
-					}
-				}
-				// Also try common naming patterns
-				if token.Name == "" && key == "nameHdr" {
-					tokenData["name"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
-				if token.Symbol == "" && key == "symbolHdr" {
-					tokenData["symbol"] = decodeHexString(fmt.Sprintf("%v", v.Value))
-				}
+		if localWalletOpen && wallet != nil {
+			scidHash := crypto.HashHexToHash(token.SCID)
+			// Ensure the wallet tracks this SCID so the background sync_loop
+			// keeps it fresh ("already added" is benign).
+			_ = wallet.TokenAdd(scidHash)
+			tokenData["balance"] = readTokenBalance(wallet, scidHash)
+		} else {
+			// No open wallet — we genuinely can't know the balance; show "—"
+			// rather than a misleading 0.
+			tokenData["balanceUnknown"] = true
+		}
+
+		// Backfill missing metadata from Gnomon (never balance) for display only.
+		// Reuse fetchTokenHeader so this render path gets the same canonical
+		// var_header_* keys and sanitizing as the add path. allowIndex is false: the
+		// render path must stay cheap and non-blocking, and it deliberately does NOT
+		// write back to disk — persistence happens only on the explicit add path
+		// (AddTrackedToken / addTrackedTokensBatch), so an attacker who controls a
+		// tracked SCID can't poison a still-empty field into permanent storage just
+		// by being rendered. A token whose metadata only resolves at render time
+		// re-resolves cheaply each render until it's re-added.
+		if token.Name == "" || token.Symbol == "" || token.Icon == "" {
+			n, s, ic, _ := a.fetchTokenHeader(token.SCID, token.Name, token.Symbol, false)
+			tokenData["name"] = n
+			tokenData["symbol"] = s
+			if token.Icon == "" && ic != "" {
+				tokenData["icon"] = ic
 			}
 		}
 
@@ -2532,6 +2725,147 @@ func (a *App) GetTrackedTokens() map[string]interface{} {
 	}
 }
 
+// sanitizeIconURL gates the on-chain icon header before it can be persisted or
+// rendered. The icon URL is fully attacker-controlled (anyone can deploy an NFA
+// with a crafted iconURLHdr) and the portfolio renders it as <img src=…>, so a
+// remote URL would fire a silent outbound GET on render — leaking the user's IP
+// and online-timing the instant a dust airdrop auto-lands. For a privacy wallet
+// that defeats the whole point. We allow ONLY inline data:image/ icons (no
+// network fetch — this is also how HOLOGRAM's own base64 icons are encoded) and
+// drop every remote scheme; a dropped icon degrades to the ⬡ glyph in the UI.
+func sanitizeIconURL(icon string) string {
+	if strings.HasPrefix(strings.ToLower(icon), "data:image/") {
+		return icon
+	}
+	return ""
+}
+
+// Token text headers are fully attacker-controlled and unbounded on-chain; a
+// multi-megabyte value would bloat tracked_tokens.json and every render's parse.
+// Names/symbols are short by nature; descriptions get more room.
+const (
+	tokenNameLimit = 256
+	tokenDescLimit = 1024
+)
+
+// sanitizeTokenText gates an on-chain text header (name/symbol/description) the way
+// sanitizeIconURL gates the icon: the value is attacker-controlled and the portfolio
+// renders it directly, so we distrust it. Svelte escapes HTML (no XSS), but raw
+// control, bidi-override (U+202E etc.), and zero-width characters still let a crafted
+// NFA spoof a well-known token's visible identity or hide characters — so we strip
+// them, collapse whitespace, and length-cap to limit runes. Returns "" for an
+// all-junk value, which degrades to the existing "Unknown Token"/⬡ fallbacks.
+func sanitizeTokenText(s string, limit int) string {
+	if s == "" {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == utf8.RuneError:
+			continue
+		case r == '\t' || r == ' ':
+			b.WriteRune(' ') // normalize whitespace to a plain space
+		case unicode.IsControl(r):
+			continue // strips \n \r and other C0/C1 controls
+		case unicode.Is(unicode.Bidi_Control, r) || unicode.Is(unicode.Join_Control, r):
+			continue // RLO/LRO/PDF and ZWJ/ZWNJ — bidi/zero-width spoofing
+		case (r >= '\u200b' && r <= '\u200f') || r == '\u2060' || r == '\ufeff':
+			continue // ZW space, LRM/RLM, word joiner, BOM — zero-width spoofing
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if utf8.RuneCountInString(out) > limit {
+		// Cap on a rune boundary, not a byte boundary, so we never split a rune.
+		out = string([]rune(out)[:limit])
+	}
+	return out
+}
+
+// fetchTokenHeader pulls an NFA's display metadata from Gnomon's indexed SC
+// variables. It reads the canonical Artificer V2 keys (var_header_name/_symbol/
+// _icon/_description) first and falls back to the legacy V1 keys (nameHdr/
+// symbolHdr/iconURLHdr/descrHdr) — matching Engram's getContractHeader precedence
+// — so a contract that publishes only the canonical keys still resolves instead of
+// rendering as "Unknown Token". Any passed-in name/symbol (e.g. a manual add) wins
+// over the on-chain value. Returned text is passed through sanitizeTokenText
+// (length-capped, control/bidi/zero-width stripped) and the icon through
+// sanitizeIconURL (data:image only), since every header value is attacker-controlled.
+//
+// allowIndex controls the on-demand AddSCIDToIndex fallback for an unindexed SCID:
+// pass true on the one-time add path (worth a network round-trip to resolve an
+// older NFA), false on the per-render read path (must stay cheap and non-blocking —
+// the add-time index, plus a one-shot render-time retry that persists, cover it).
+func (a *App) fetchTokenHeader(scid, name, symbol string, allowIndex bool) (string, string, string, string) {
+	var icon, description string
+	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
+		return name, symbol, icon, description
+	}
+	// A caller-supplied name/symbol is authoritative and never overwritten.
+	// Otherwise the canonical V2 key (var_header_*) wins over the legacy V1 key
+	// (*Hdr) regardless of Gnomon's iteration order: canonical keys assign
+	// unconditionally, legacy keys only fill a still-empty field. This mirrors
+	// Engram's getContractHeader precedence.
+	nameLocked := name != ""
+	symbolLocked := symbol != ""
+	vars := a.gnomonClient.GetAllSCIDVariableDetails(scid)
+	// If the SCID isn't in the local index, Gnomon's fastsync never saw it (e.g. a
+	// contract deployed before this node's fastsync start height — common for older
+	// NFAs), so it has no variables to read and the token would render "Unknown
+	// Token". Pull just this SCID into the index on demand, then re-read — mirroring
+	// Engram's getContractHeader, which does the same AddSCIDToIndex-then-read.
+	//
+	// varstoreonly=true is load-bearing: the indexer early-returns for a SCID already
+	// in its validated set, which skips the variable-store refresh. An older NFA can
+	// be validated yet have no stored vars (deployed pre-fastsync), so without
+	// varstoreonly the re-read below still comes back empty. true forces the var
+	// refresh past that early return — matching the value Engram passes.
+	if len(vars) == 0 && allowIndex {
+		if err := a.gnomonClient.AddSCIDToIndex(scid, true, false); err != nil {
+			a.logToConsole(fmt.Sprintf("[Wallet] On-demand index of %s... failed: %v", scid[:16], err))
+		} else {
+			vars = a.gnomonClient.GetAllSCIDVariableDetails(scid)
+		}
+	}
+	for _, v := range vars {
+		key := fmt.Sprintf("%v", v.Key)
+		val := fmt.Sprintf("%v", v.Value)
+		switch key {
+		case "var_header_name":
+			if !nameLocked {
+				name = sanitizeTokenText(decodeHexString(val), tokenNameLimit)
+			}
+		case "nameHdr":
+			if !nameLocked && name == "" {
+				name = sanitizeTokenText(decodeHexString(val), tokenNameLimit)
+			}
+		case "var_header_symbol":
+			if !symbolLocked {
+				symbol = sanitizeTokenText(decodeHexString(val), tokenNameLimit)
+			}
+		case "symbolHdr":
+			if !symbolLocked && symbol == "" {
+				symbol = sanitizeTokenText(decodeHexString(val), tokenNameLimit)
+			}
+		case "var_header_icon":
+			icon = sanitizeIconURL(decodeHexString(val))
+		case "iconURLHdr", "fileURL":
+			if icon == "" {
+				icon = sanitizeIconURL(decodeHexString(val))
+			}
+		case "var_header_description":
+			description = sanitizeTokenText(decodeHexString(val), tokenDescLimit)
+		case "descrHdr":
+			if description == "" {
+				description = sanitizeTokenText(decodeHexString(val), tokenDescLimit)
+			}
+		}
+	}
+	return name, symbol, icon, description
+}
+
 // AddTrackedToken adds a token SCID to the tracked list
 func (a *App) AddTrackedToken(scid, name, symbol string) map[string]interface{} {
 	// Validate SCID format (64 hex chars)
@@ -2542,52 +2876,533 @@ func (a *App) AddTrackedToken(scid, name, symbol string) map[string]interface{} 
 		}
 	}
 
-	// Check if already tracked
+	// Normalize to lowercase hex so dedupe, storage, and HashHexToHash are
+	// consistent regardless of how the user typed the SCID.
+	scid = strings.ToLower(scid)
+
+	// Fetch token metadata from Gnomon up front (no shared state, may do I/O) so
+	// the tracked-list critical section below stays short. Mirrors Engram's
+	// Artificer NFA header fetch: name/symbol plus icon/description when present.
+	name, symbol, icon, description := a.fetchTokenHeader(scid, name, symbol, true)
+
+	newToken := TrackedToken{
+		SCID:        scid,
+		Name:        name,
+		Symbol:      symbol,
+		Icon:        icon,
+		Description: description,
+		AddedAt:     time.Now().Unix(),
+	}
+
+	// Serialize the dedup-check…append…save so concurrent adds (e.g. the scan's
+	// add loop running while the user manually adds one) can't clobber each
+	// other's whole-file rewrite.
+	trackedTokensMu.Lock()
 	tokens := loadTrackedTokens()
 	for _, t := range tokens {
 		if t.SCID == scid {
+			trackedTokensMu.Unlock()
 			return map[string]interface{}{
 				"success": false,
 				"error":   "Token already tracked",
 			}
 		}
 	}
-
-	// Try to fetch token metadata from Gnomon
-	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
-		vars := a.gnomonClient.GetAllSCIDVariableDetails(scid)
-		for _, v := range vars {
-			key := fmt.Sprintf("%v", v.Key)
-			if name == "" && key == "nameHdr" {
-				name = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-			if symbol == "" && key == "symbolHdr" {
-				symbol = decodeHexString(fmt.Sprintf("%v", v.Value))
-			}
-		}
-	}
-
-	// Add to tracked list
-	newToken := TrackedToken{
-		SCID:    scid,
-		Name:    name,
-		Symbol:  symbol,
-		AddedAt: time.Now().Unix(),
-	}
 	tokens = append(tokens, newToken)
 	saveTrackedTokens(tokens)
+	trackedTokensMu.Unlock()
 
 	a.logToConsole(fmt.Sprintf("[Wallet] Added tracked token: %s (%s)", name, scid[:16]+"..."))
+
+	// Register the SCID with the wallet engine and pull its encrypted balance
+	// once, so the portfolio shows the real amount immediately rather than
+	// waiting for the background sync_loop's next tick. A DERO token balance
+	// lives in the encrypted per-account balance tree, fetched via the daemon —
+	// not from Gnomon SC variables. TokenAdd also enrolls the SCID in the
+	// sync_loop so it stays fresh thereafter. Failure here is non-fatal: the
+	// token is still tracked and will resolve on the next loop tick.
+	walletManager.RLock()
+	wallet := walletManager.wallet
+	walletOpen := walletManager.isOpen && wallet != nil
+	walletManager.RUnlock()
+
+	if walletOpen {
+		scidHash := crypto.HashHexToHash(scid)
+		if err := wallet.TokenAdd(scidHash); err != nil {
+			// "token already added" is benign; anything else is just logged.
+			a.logToConsole(fmt.Sprintf("[Wallet] TokenAdd(%s): %v", scid[:16]+"...", err))
+		}
+		if _, err := syncAndReadTokenBalance(wallet, scidHash); err != nil {
+			a.logToConsole(fmt.Sprintf("[Wallet] Initial balance sync for %s failed: %v", scid[:16]+"...", err))
+		}
+	}
 
 	return map[string]interface{}{
 		"success": true,
 		"token":   newToken,
 		"message": "Token added to portfolio",
+		// Lets the frontend distinguish "named and ready" from "added blind":
+		// metadata resolution silently no-ops when Gnomon is off, and the token
+		// then renders as "Unknown Token" with no hint as to why.
+		"metadataResolved": name != "",
+		"gnomonRunning":    a.gnomonClient != nil && a.gnomonClient.IsRunning(),
+	}
+}
+
+// RefreshTokenMetadata re-resolves a tracked token's on-chain metadata and,
+// only when apply is true, persists it to tracked_tokens.json. This is the
+// user-triggered escape hatch for a token added while Gnomon was off (or before
+// its SCID was indexed): the render path deliberately never writes resolved
+// metadata to disk, so without this the entry heals on screen but stays empty
+// in storage. apply=false is a pure preview — fetch fresh values (indexing the
+// SCID on demand if needed), report what would change, write nothing.
+//
+// overwriteNames=false keeps the existing Name/Symbol authoritative (fill-empty
+// only, same lock rule as fetchTokenHeader); true lets the chain values replace
+// them — the explicit opt-in for "I typed the wrong name". In both modes an
+// empty fresh value never blanks an existing one.
+func (a *App) RefreshTokenMetadata(scid string, apply bool, overwriteNames bool) map[string]interface{} {
+	scid = strings.ToLower(scid)
+	if len(scid) != 64 {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Invalid SCID format - must be 64 hexadecimal characters",
+		}
+	}
+
+	trackedTokensMu.Lock()
+	tokens := loadTrackedTokens()
+	var current *TrackedToken
+	for i := range tokens {
+		if tokens[i].SCID == scid {
+			t := tokens[i]
+			current = &t
+			break
+		}
+	}
+	trackedTokensMu.Unlock()
+
+	if current == nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Token not found in tracked list",
+		}
+	}
+
+	// Resolve outside the lock — this may do an on-demand AddSCIDToIndex
+	// (network round-trip). The wrapper preserves the Gnomon owner row, so
+	// re-indexing here is safe for already-indexed SCIDs.
+	lockName, lockSymbol := current.Name, current.Symbol
+	if overwriteNames {
+		lockName, lockSymbol = "", ""
+	}
+	freshName, freshSymbol, freshIcon, freshDesc := a.fetchTokenHeader(scid, lockName, lockSymbol, true)
+
+	merged := *current
+	if freshName != "" {
+		merged.Name = freshName
+	}
+	if freshSymbol != "" {
+		merged.Symbol = freshSymbol
+	}
+	if freshIcon != "" {
+		merged.Icon = freshIcon
+	}
+	if freshDesc != "" {
+		merged.Description = freshDesc
+	}
+	changed := merged.Name != current.Name || merged.Symbol != current.Symbol ||
+		merged.Icon != current.Icon || merged.Description != current.Description
+
+	result := map[string]interface{}{
+		"success": true,
+		"scid":    scid,
+		"current": map[string]string{
+			"name": current.Name, "symbol": current.Symbol,
+			"icon": current.Icon, "description": current.Description,
+		},
+		"fresh": map[string]string{
+			"name": merged.Name, "symbol": merged.Symbol,
+			"icon": merged.Icon, "description": merged.Description,
+		},
+		"changed":       changed,
+		"gnomonRunning": a.gnomonClient != nil && a.gnomonClient.IsRunning(),
+	}
+
+	if !apply || !changed {
+		return result
+	}
+
+	// Commit: re-read under the lock so a concurrent add/remove isn't clobbered
+	// by our earlier snapshot.
+	trackedTokensMu.Lock()
+	tokens = loadTrackedTokens()
+	updated := false
+	for i := range tokens {
+		if tokens[i].SCID != scid {
+			continue
+		}
+		if freshName != "" {
+			tokens[i].Name = freshName
+		}
+		if freshSymbol != "" {
+			tokens[i].Symbol = freshSymbol
+		}
+		if freshIcon != "" {
+			tokens[i].Icon = freshIcon
+		}
+		if freshDesc != "" {
+			tokens[i].Description = freshDesc
+		}
+		updated = true
+		break
+	}
+	if updated {
+		saveTrackedTokens(tokens)
+	}
+	trackedTokensMu.Unlock()
+
+	if updated {
+		a.logToConsole(fmt.Sprintf("[Wallet] Refreshed token metadata: %s (%s)", merged.Name, scid[:16]+"..."))
+	}
+	result["updated"] = updated
+	return result
+}
+
+// addTrackedTokensBatch adds many discovered SCIDs in one pass and returns how
+// many were newly tracked. It exists because the scan's auto-add-all-non-zero
+// policy can yield a large hit list, and calling AddTrackedToken per hit does an
+// O(n) full-file load+rewrite of tracked_tokens.json under the lock for every
+// single token — O(n^2) disk churn with the lock held the whole time. Here the
+// tracked-list read-modify-write happens ONCE under trackedTokensMu; the
+// per-token Gnomon metadata fetch and wallet-engine registration (both I/O,
+// neither touches the tracked list) run OUTSIDE the lock. Single-add callers
+// keep using AddTrackedToken.
+func (a *App) addTrackedTokensBatch(scids []string) int {
+	if len(scids) == 0 {
+		return 0
+	}
+
+	// Pre-resolve metadata for each SCID without holding the tracked-list lock.
+	type pending struct {
+		token TrackedToken
+	}
+	candidates := make([]pending, 0, len(scids))
+	for _, scid := range scids {
+		scid = strings.ToLower(scid)
+		if len(scid) != 64 {
+			continue
+		}
+		name, symbol, icon, description := a.fetchTokenHeader(scid, "", "", true)
+		candidates = append(candidates, pending{token: TrackedToken{
+			SCID:        scid,
+			Name:        name,
+			Symbol:      symbol,
+			Icon:        icon,
+			Description: description,
+			AddedAt:     time.Now().Unix(),
+		}})
+	}
+
+	// Single critical section: load once, append all genuinely-new tokens, save
+	// once. Collect the SCIDs we actually added so the wallet-engine registration
+	// below only runs for new entries.
+	trackedTokensMu.Lock()
+	tokens := loadTrackedTokens()
+	existing := make(map[string]struct{}, len(tokens))
+	for _, t := range tokens {
+		existing[t.SCID] = struct{}{}
+	}
+	addedHashes := make([]crypto.Hash, 0, len(candidates))
+	addedNames := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if _, dup := existing[c.token.SCID]; dup {
+			continue
+		}
+		existing[c.token.SCID] = struct{}{} // guard against duplicate SCIDs within the batch
+		tokens = append(tokens, c.token)
+		addedHashes = append(addedHashes, crypto.HashHexToHash(c.token.SCID))
+		addedNames = append(addedNames, c.token.Name)
+	}
+	if len(addedHashes) > 0 {
+		saveTrackedTokens(tokens)
+	}
+	trackedTokensMu.Unlock()
+
+	if len(addedHashes) == 0 {
+		return 0
+	}
+
+	// Register the new SCIDs with the wallet engine and pull their balances once,
+	// outside the tracked-list lock. Failures are non-fatal — the token is tracked
+	// and the background sync_loop will resolve it on the next tick.
+	walletManager.RLock()
+	wallet := walletManager.wallet
+	walletOpen := walletManager.isOpen && wallet != nil
+	walletManager.RUnlock()
+
+	for i, scidHash := range addedHashes {
+		a.logToConsole(fmt.Sprintf("[Wallet] Added tracked token: %s (%s)", addedNames[i], scidHash.String()[:16]+"..."))
+		if !walletOpen {
+			continue
+		}
+		if err := wallet.TokenAdd(scidHash); err != nil {
+			a.logToConsole(fmt.Sprintf("[Wallet] TokenAdd(%s): %v", scidHash.String()[:16]+"...", err))
+		}
+		if _, err := syncAndReadTokenBalance(wallet, scidHash); err != nil {
+			a.logToConsole(fmt.Sprintf("[Wallet] Initial balance sync for %s failed: %v", scidHash.String()[:16]+"...", err))
+		}
+	}
+
+	return len(addedHashes)
+}
+
+// scanWorkers bounds the concurrency of the token-discovery sweep. Each worker
+// does an independent daemon read; a single daemon serves them, so this trades
+// off daemon load against wall-clock. Engram uses 50; we stay conservative.
+const scanWorkers = 16
+
+// scanBalanceTimeout caps a single per-SCID balance read so a hung daemon call
+// can't stall a worker (and thus the whole scan) indefinitely.
+const scanBalanceTimeout = 15 * time.Second
+
+// ScanWalletForTokens auto-discovers tokens the open wallet holds and adds the
+// non-zero ones to the tracked list, mirroring (and outpacing) Engram's scan.
+//
+// DERO has no chain-side "list my assets" — encrypted balances are keyed by
+// (address, SCID), so discovery is always "resolve a candidate SCID set, then
+// check my balance in each." We use Gnomon's full index as that candidate set,
+// exactly as Engram does. Tokens already tracked are skipped up front.
+//
+// Parallelism without a lock — the subtle part. GetDecryptedBalanceAtTopoHeight
+// with topoheight == -1 WRITES shared wallet state (account.TopoHeight, the
+// encrypted-balance cache, package-global event trackers — daemon_communication.go
+// lines 455-477), so concurrent -1 calls race; that write path is exactly what
+// balanceMu guards. But every one of those writes is gated on topoheight == -1.
+// By pinning a single real topoheight (fetched once below) and passing it to
+// every worker, we skip the entire mutating block: the call reduces to an RPC +
+// decrypt-with-immutable-key + return, which is genuinely read-only and safe to
+// fan out across a worker pool with no balanceMu. Pinning also gives a consistent
+// chain snapshot across the whole sweep. Results stream via "wallet:scanProgress"
+// / "wallet:scanComplete"; the method returns once the candidate set is known.
+func (a *App) ScanWalletForTokens() map[string]interface{} {
+	// Re-entrancy guard: only one scan at a time. If we can't flip 0->1 a scan is
+	// already running. Ownership of the flag transfers to the worker goroutine
+	// once it launches (released in its defer); every early-return path below
+	// hands it back via scanLaunched=false.
+	if !atomic.CompareAndSwapInt32(&a.scanInFlight, 0, 1) {
+		return map[string]interface{}{"success": false, "error": "A token scan is already in progress."}
+	}
+	scanLaunched := false
+	defer func() {
+		if !scanLaunched {
+			atomic.StoreInt32(&a.scanInFlight, 0)
+		}
+	}()
+
+	walletManager.RLock()
+	wallet := walletManager.wallet
+	walletOpen := walletManager.isOpen && wallet != nil
+	walletManager.RUnlock()
+
+	if !walletOpen {
+		return map[string]interface{}{"success": false, "error": "Open a wallet before scanning for tokens."}
+	}
+
+	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
+		return map[string]interface{}{"success": false, "error": "Gnomon is not running. Start it in Settings to scan for tokens."}
+	}
+
+	address := wallet.GetAddress().String()
+
+	// Pin the daemon topoheight so every worker reads at one consistent snapshot
+	// AND skips the topoheight==-1 shared-state writes (the reason we can run
+	// lock-free). A non-positive height means the daemon isn't ready to serve a
+	// fixed-height read.
+	pinnedTopo := wallet.Get_Daemon_TopoHeight()
+	if pinnedTopo <= 0 {
+		return map[string]interface{}{"success": false, "error": "Daemon not synced yet — try again once the node is caught up."}
+	}
+
+	// Detect partial index coverage. Gnomon only knows about SCIDs up to its last
+	// indexed height; if it's still catching up, GetAllOwnersAndSCIDs returns a
+	// truncated candidate set and the scan can silently miss tokens the wallet
+	// actually holds — a false-negative on the user's own funds. We can't fix the
+	// gap mid-scan, but we MUST let the user distinguish "scanned everything, found
+	// nothing" from "scanned a partial index." The coverage flag rides the
+	// scanComplete event so the frontend can caveat the result.
+	coveragePct := 100.0
+	partialCoverage := false
+	if status := a.gnomonClient.GetStatus(); status != nil {
+		indexedH, _ := status["indexed_height"].(int64)
+		chainH, _ := status["chain_height"].(int64)
+		// Allow a small lag tolerance: a few blocks behind the tip is normal and
+		// not worth alarming the user over.
+		if chainH > 0 {
+			coveragePct = (float64(indexedH) / float64(chainH)) * 100.0
+			if chainH-indexedH > 5 {
+				partialCoverage = true
+			}
+		}
+	}
+
+	// Build the candidate set from every SCID Gnomon has indexed, minus the ones
+	// we already track (no point re-checking known tokens).
+	indexed := a.gnomonClient.GetAllOwnersAndSCIDs()
+	tracked := make(map[string]struct{})
+	for _, t := range loadTrackedTokens() {
+		tracked[t.SCID] = struct{}{}
+	}
+
+	candidates := make([]string, 0, len(indexed))
+	for scid := range indexed {
+		scid = strings.ToLower(scid)
+		if scid == deroSCID {
+			continue // native DERO is always shown, never a "token" to add
+		}
+		if _, known := tracked[scid]; known {
+			continue
+		}
+		candidates = append(candidates, scid)
+	}
+
+	total := len(candidates)
+	a.logToConsole(fmt.Sprintf("[Wallet] Token scan started: %d candidate SCIDs (%d indexed, %d already tracked)", total, len(indexed), len(tracked)))
+
+	if total == 0 {
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "wallet:scanComplete", map[string]interface{}{
+				"found": 0, "added": 0, "scanned": 0, "errors": 0,
+				"partial": partialCoverage, "coverage": coveragePct,
+			})
+		}
+		return map[string]interface{}{"success": true, "message": "No new contracts to scan.", "total": 0}
+	}
+
+	scanLaunched = true // the goroutine now owns the re-entrancy flag (released in its defer)
+	go func() {
+		startUnix := time.Now().Unix()
+
+		var (
+			mu       sync.Mutex
+			hits     = make([]string, 0)
+			scanned  int
+			errCount int
+			added    int
+		)
+
+		// Always emit scanComplete, no matter how this goroutine exits — a panic in
+		// AddTrackedToken or an app teardown mid-scan must still flip the frontend's
+		// `scanning` flag off so the progress bar can't pin forever. Guard on a.ctx
+		// (cancelled on shutdown) like every other emit in this file.
+		defer func() {
+			// Release the re-entrancy guard last, so the next scan can't start until
+			// this one's scanComplete has been emitted.
+			defer atomic.StoreInt32(&a.scanInFlight, 0)
+			if r := recover(); r != nil {
+				a.logToConsole(fmt.Sprintf("[Wallet] Token scan goroutine recovered from panic: %v", r))
+			}
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "wallet:scanComplete", map[string]interface{}{
+					"found":      len(hits),
+					"added":      added,
+					"scanned":    total,
+					"errors":     errCount,
+					"partial":    partialCoverage,
+					"coverage":   coveragePct,
+					"durationMs": (time.Now().Unix() - startUnix) * 1000,
+				})
+			}
+		}()
+
+		work := make(chan string)
+		var wg sync.WaitGroup
+
+		for w := 0; w < scanWorkers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for scid := range work {
+					bal, err := readScanBalance(wallet, crypto.HashHexToHash(scid), address, pinnedTopo)
+
+					mu.Lock()
+					scanned++
+					if err != nil {
+						errCount++
+					} else if bal > 0 {
+						hits = append(hits, scid)
+					}
+					// Throttle progress to ~every 25 checks (and the final one) so a
+					// large index doesn't flood the event bus. Snapshot the values
+					// under the lock, emit AFTER releasing it (EventsEmit may block).
+					emit := scanned%25 == 0 || scanned == total
+					sScanned, sFound := scanned, len(hits)
+					mu.Unlock()
+
+					if emit && a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "wallet:scanProgress", map[string]interface{}{
+							"scanned": sScanned,
+							"total":   total,
+							"found":   sFound,
+						})
+					}
+				}
+			}()
+		}
+
+		for _, scid := range candidates {
+			work <- scid
+		}
+		close(work)
+		wg.Wait()
+
+		// Add all hits in one batched pass after the sweep — a single
+		// load-modify-save of tracked_tokens.json under the lock, with per-token
+		// Gnomon metadata backfill and wallet-engine registration done outside it.
+		added = a.addTrackedTokensBatch(hits)
+
+		if errCount > 0 {
+			a.logToConsole(fmt.Sprintf("[Wallet] Token scan: %d SCIDs errored during balance check (transient daemon issue?) — re-scan to retry", errCount))
+		}
+		a.logToConsole(fmt.Sprintf("[Wallet] Token scan complete: %d held, %d added, %d errored (%d scanned)", len(hits), added, errCount, total))
+		// scanComplete is emitted by the deferred handler above.
+	}()
+
+	return map[string]interface{}{"success": true, "message": "Scan started", "total": total}
+}
+
+// readScanBalance reads a single SCID's decrypted balance straight from the
+// daemon at a PINNED topoheight (never -1), with a timeout so a hung call can't
+// pin a worker. The pinned height skips GetDecryptedBalanceAtTopoHeight's
+// topoheight==-1 shared-state writes, so this touches no shared wallet state and
+// is safe to call concurrently without balanceMu (see ScanWalletForTokens). On
+// timeout the inner goroutine is orphaned but harmless: the channel is buffered,
+// the send never blocks, and with a pinned height the late call mutates nothing.
+func readScanBalance(wallet *walletapi.Wallet_Disk, scid crypto.Hash, address string, topo int64) (uint64, error) {
+	type res struct {
+		bal uint64
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		bal, _, err := wallet.GetDecryptedBalanceAtTopoHeight(scid, topo, address)
+		ch <- res{bal, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.bal, r.err
+	case <-time.After(scanBalanceTimeout):
+		return 0, fmt.Errorf("balance read timed out for %s", scid.String()[:16])
 	}
 }
 
 // RemoveTrackedToken removes a token from the tracked list
 func (a *App) RemoveTrackedToken(scid string) map[string]interface{} {
+	// loadTrackedTokens normalizes stored SCIDs to lowercase, so match on the
+	// same casing.
+	scid = strings.ToLower(scid)
+
+	trackedTokensMu.Lock()
 	tokens := loadTrackedTokens()
 	newTokens := make([]TrackedToken, 0)
 	found := false
@@ -2601,6 +3416,7 @@ func (a *App) RemoveTrackedToken(scid string) map[string]interface{} {
 	}
 
 	if !found {
+		trackedTokensMu.Unlock()
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Token not found in tracked list",
@@ -2608,6 +3424,7 @@ func (a *App) RemoveTrackedToken(scid string) map[string]interface{} {
 	}
 
 	saveTrackedTokens(newTokens)
+	trackedTokensMu.Unlock()
 
 	return map[string]interface{}{
 		"success": true,
@@ -2646,15 +3463,23 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 
 	a.logToConsole(fmt.Sprintf("[Transfer] Transferring %d units of token %s to %s", amount, scid[:16]+"...", destination[:16]+"..."))
 
-	// Build transfer with asset (token)
-	// For DERO tokens, transfers include the SCID as the asset
-	transfers := []rpc.Transfer{
-		{
-			Destination: destination,
-			Amount:      0,      // DERO amount (0 for pure token transfer)
-			Burn:        amount, // Token amount to transfer
-			SCID:        crypto.HashHexToHash(scid),
-		},
+	// Credit the recipient from Amount on the named SCID; never Burn (see helper for why).
+	transfers := buildTokenTransfer(scid, destination, amount)
+
+	// Centralized burn prohibition. TransferToken builds transfers directly and does NOT go
+	// through InternalWalletCall, so the XSWD-path guard never runs here. Enforce the same
+	// policy at this chokepoint: a zero-SCID (native DERO) burn with no contract destroys
+	// coins and is never legitimate. buildTokenTransfer already uses Amount (Burn:0)
+	// for a normal send; this guard makes the function structurally incapable of emitting a
+	// destructive burn no matter who calls it (TransferToken is an exported binding) or how
+	// the construction is later edited.
+	if burnAmt, block := shouldBlockBurn(transfers, false); block {
+		a.logToConsole(fmt.Sprintf("[Transfer] BLOCKED native-DERO burn: %s DERO with no contract attached", formatDEROAmount(burnAmt)))
+		return map[string]interface{}{
+			"success":        false,
+			"error":          fmt.Sprintf("HOLOGRAM does not allow burning DERO. This request would permanently destroy %s DERO -- a burn with no smart contract attached sends the coins to no one and cannot be undone. If you intend to deliberately burn DERO, use the DERO CLI wallet.", formatDEROAmount(burnAmt)),
+			"technicalError": fmt.Sprintf("rejected native-DERO burn of %d atomic units (zero SCID, no SC call) in TransferToken; HOLOGRAM prohibits burns", burnAmt),
+		}
 	}
 
 	if ringsize < 2 {
@@ -2694,6 +3519,12 @@ func loadTrackedTokens() []TrackedToken {
 	var tokens []TrackedToken
 	if err := json.Unmarshal(data, &tokens); err != nil {
 		return []TrackedToken{}
+	}
+
+	// Normalize stored SCIDs to lowercase so dedupe and lookups are consistent
+	// regardless of how a legacy entry was cased when first saved.
+	for i := range tokens {
+		tokens[i].SCID = strings.ToLower(tokens[i].SCID)
 	}
 
 	return tokens

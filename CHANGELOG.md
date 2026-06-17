@@ -7,6 +7,48 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.7] - 2026-06-18
+
+Privacy Mode, automatic token discovery, clearer asset handling, hardened transfer validation, and Linux release binaries that run on current distros out of the box.
+
+### Added
+- **Privacy Mode** — seals HOLOGRAM's network connections behind your approval. Switch it on and the app blocks every outbound connection until you approve the destination, so nothing reaches the network without your say-so. Its armed state shows on the wallet anchor.
+- **Signal Dark** — display masking for your address, balances, tokens, and avatar, now an independent control separate from Privacy Mode.
+- Wallet: automatic token discovery via Gnomon — held tokens and NFAs are detected and added to the portfolio without manual SCID entry.
+
+### Changed
+- Wallet: native DERO is managed as the base coin (Dashboard / Send), separate from the contract-token portfolio — which now lists contract assets only.
+- Wallet: refreshed token portfolio rows with per-token actions (send, refresh metadata, remove) and an improved empty state.
+
+### Fixed
+- Wallet: hardened transfer validation so a native-DERO burn is consistently rejected across all send paths.
+- Wallet: token transfers are credited via the amount field on the token's SCID, and per-token encrypted balances and metadata resolve correctly (including unindexed SCIDs).
+- XSWD: canonical response shapes, correct SC deposit semantics, scid-aware balance reads for the TELA bridge, and a permission-tracking data-race fix.
+- Linux: release binaries are built against `webkit2gtk-4.1` (libsoup3) instead of the discontinued `4.0`, so they launch on Ubuntu 24.04+, Debian 13+, Fedora 40+, and Arch without a manual library symlink. CI now fails the release if a Linux binary links the old `4.0` runtime.
+
+---
+
+## [1.0.6] - 2026-06-08
+
+Payment URI workflow, unified storage controls, and XSWD bridge fixes.
+
+### Added
+- Wallet: smart-paste payment URI field with a 7-state input model
+- Settings: Data & Storage section — a unified clear/reset surface
+
+### Changed
+- Tightened the XSWD RPC surface and hardened CI checks
+
+### Fixed
+- XSWD: route `DERO.GetHeight` through the daemon proxy and reclassify it as read-public-data
+- XSWD bridge: dispatch message events to `addEventListener` handlers
+- Wallet: `CreatePaymentRequest` uses the local wallet path; failures are surfaced instead of swallowed
+- Payment URI: dual-path integrated-address decode + address-aware OmniSearch
+- Studio: accept `InitializePrivate` as a valid SC entrypoint
+- Dev server: hot reload actually reloads, and real errors are surfaced
+
+---
+
 ## [1.0.2] - 2026-04-20
 
 Wallet registration and expanded platform support.

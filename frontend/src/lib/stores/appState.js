@@ -15,7 +15,6 @@ const settingsKeyMap = {
   'daemon_endpoint': 'daemonEndpoint',
   'network': 'network',
   'integrated_wallet': 'integratedWallet',
-  'cypherpunk_mode': 'cypherpunkMode',
   'last_wallet_path': 'lastWalletPath',
   // FirstRunWizard settings
   'use_embedded_node': 'useEmbeddedNode',
@@ -28,6 +27,7 @@ const settingsKeyMap = {
   'hide_address': 'hideAddress',
   'avatar_hidden': 'avatarHidden',
   'privacy_mode': 'privacyMode',
+  'signal_dark': 'signalDark',
 };
 
 // Reverse map for saving (frontend → backend)
@@ -158,14 +158,14 @@ export async function approveWalletRequest(id, password, txid = null, permission
   // Find the request
   const requests = get(walletRequests);
   const request = requests.find(r => r.id === id);
-  
+
   if (request) {
     // Log to history
     logWalletRequest(request, 'approved', txid);
-    
+
     // We resolve with the password and permissions so the caller can use them
     request.resolve({ approved: true, password, permissions });
-    
+
     // Remove from queue
     walletRequests.update(reqs => reqs.filter(r => r.id !== id));
   }
@@ -207,6 +207,7 @@ export const appState = writable({
   gnomonIndexedHeight: 0,
   gnomonChainHeight: 0,
   gnomonAppsLoaded: false, // True when GetDiscoveredApps() has completed at least once
+  gnomonReindexing: false, // True during the one-time filter-change re-index (token discovery update)
   telaSession: null,
   browserSession: null,
   appDiscoveryCache: {
@@ -247,21 +248,23 @@ export const settingsState = writable({
   gnomonEnabled: false,
   network: 'mainnet',
   daemonEndpoint: 'http://127.0.0.1:10102',
-  cypherpunkMode: false,
   integratedWallet: true,
   lastWalletPath: '', // Store the last used wallet path for quick connection
   hideBalance: false,
   hideAddress: false,
   avatarHidden: false,
-  privacyMode: false,
+  privacyMode: false, // network seal (Privacy Mode) — mirrors the backend filter state
+  signalDark: false,  // display masking (Signal Dark) — independent of the network seal
 });
 
 // Effective privacy masks — single source of truth for "is this masked right now".
-// Signal Dark (privacyMode) is the one privacy model: when armed it masks every
+// Signal Dark (signalDark) is the display-privacy model: when armed it masks every
 // sensitive field at once. (The legacy per-field hideBalance/hideAddress toggles
-// were retired in favor of this single control.) Components read these for *display*.
-export const addressMasked = derived(settingsState, $s => $s.privacyMode);
-export const balanceMasked = derived(settingsState, $s => $s.privacyMode);
+// were retired in favor of this single control.) It is deliberately independent of
+// privacyMode, the NETWORK seal toggled in Settings — masking what's on screen and
+// sealing egress are different decisions. Components read these for *display*.
+export const addressMasked = derived(settingsState, $s => $s.signalDark);
+export const balanceMasked = derived(settingsState, $s => $s.signalDark);
 
 // Load settings from backend and sync to frontend store
 export async function loadSettings() {

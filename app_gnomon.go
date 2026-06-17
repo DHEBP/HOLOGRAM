@@ -10,9 +10,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // Gnomon Functions
@@ -147,14 +150,14 @@ func (a *App) resolveIconSCID(iconValue string) string {
 			docType = docTypeHex // Maybe it's not hex-encoded
 		}
 	}
-	
+
 	a.logToConsole(fmt.Sprintf("[ICON] SCID %s docType: %s", iconValue[:16], docType))
 
 	// Only process SVG/STATIC types (be more lenient)
 	isImageType := strings.Contains(strings.ToUpper(docType), "STATIC") ||
 		strings.Contains(strings.ToLower(docType), "svg") ||
 		strings.Contains(strings.ToLower(docType), "image")
-	
+
 	if docType != "" && !isImageType {
 		a.logToConsole(fmt.Sprintf("[ICON] SCID %s is not an image type: %s", iconValue[:16], docType))
 		return ""
@@ -238,6 +241,20 @@ func (a *App) StartGnomon() map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[Gnomon] Connecting to daemon: %s (network: %s)", endpoint, network))
 
+	// Privacy Mode: Gnomon's indexer dials the daemon over its own WebSocket (no
+	// dialer hook), so validate the endpoint before Start opens that socket.
+	if !a.checkDaemonEndpointPolicy(endpoint) {
+		return ErrorResponse(fmt.Errorf("daemon endpoint %s blocked by Privacy Mode (allowlist the host to permit it)", endpoint))
+	}
+
+	// One-time index migration: if the search-filter set changed since this DB was
+	// built (e.g. a build that widened discovery to include tokens/NFAs), the new
+	// filter would only apply to blocks indexed going forward — Gnomon never
+	// re-examines already-indexed history. Clean the existing DB so the upcoming
+	// Start re-fastsyncs the full SC snapshot under the new filter. Skipped on a
+	// fresh DB (nothing indexed yet) and when the version already matches.
+	a.migrateGnomonFilterVersionIfNeeded(network)
+
 	err := a.gnomonClient.Start(endpoint, network)
 	if err != nil {
 		a.logToConsole(fmt.Sprintf("[ERR] Gnomon start failed: %v", err))
@@ -247,12 +264,58 @@ func (a *App) StartGnomon() map[string]interface{} {
 	a.logToConsole("[OK] Gnomon indexer started successfully")
 	a.settings["gnomon_enabled"] = true
 
+	// Record the filter version now that the index is (re)building under it, so the
+	// migration above fires at most once per filter change.
+	writeFilterVersion(network)
+
 	// Start a connection monitor goroutine to provide feedback
 	go a.monitorGnomonConnection(endpoint)
 
 	return map[string]interface{}{
 		"success": true,
 		"message": "Gnomon indexer started",
+	}
+}
+
+// migrateGnomonFilterVersionIfNeeded performs the one-time index reset when the
+// active search-filter set differs from the one a network's existing index was
+// built with. It cleans the DB so the next Start re-fastsyncs under the new
+// filter; the new version is written by StartGnomon after a successful start.
+// No-op on a fresh DB (no stored version) or when the version already matches.
+func (a *App) migrateGnomonFilterVersionIfNeeded(network string) {
+	stored := readStoredFilterVersion(network)
+	if stored == "" {
+		// Fresh DB, or a pre-versioning index. For a pre-versioning index we DO
+		// want to migrate (its filter predates token discovery), but only if it
+		// actually holds data — otherwise there's nothing to re-index.
+		dir, err := gnomonDBDir(network)
+		if err != nil {
+			return
+		}
+		if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+			return // truly fresh — nothing to migrate
+		}
+	} else if stored == currentFilterVersion() {
+		return // already on the current filter — nothing to do
+	}
+
+	a.logToConsole("[Gnomon] Token discovery filter changed — re-indexing once so held tokens/NFAs are detected...")
+	// Surface a one-time progress signal so the UI can show "Updating token index…"
+	// rather than appearing to hang during the re-fastsync.
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "gnomon:reindexing", map[string]interface{}{
+			"reason":  "filter-version-change",
+			"network": network,
+		})
+	}
+
+	if a.gnomonClient.IsRunning() {
+		a.StopGnomon()
+	}
+	if err := a.gnomonClient.CleanDB(network); err != nil {
+		// Non-fatal: if the clean fails the index just keeps its old coverage; the
+		// next start still proceeds. Log so it's visible.
+		a.logToConsole(fmt.Sprintf("[Gnomon] Filter-change re-index: clean failed (%v) — continuing with existing index", err))
 	}
 }
 
@@ -372,10 +435,14 @@ func (a *App) AddSCIDToIndex(scid string) map[string]interface{} {
 		}
 	}
 
-	// Call GnomonClient method with default parameters:
-	// varstoreonly=false (fetch full code+vars for better classification)
-	// skipfsrecheck=false (re-validate even if previously seen)
-	err := a.gnomonClient.AddSCIDToIndex(scid, false, false)
+	// varstoreonly=true is load-bearing: the indexer only stores a SCID's variables
+	// if its code matches the search filter OR varstoreonly is set. This button's
+	// whole purpose is indexing contracts the TELA filter didn't catch (NFAs, older
+	// deploys), and those fail the filter re-check too — with varstoreonly=false the
+	// add "succeeds" but stores zero variables. true bypasses the filter and stores
+	// vars directly, matching Engram's getContractHeader and the wallet add path.
+	// skipfsrecheck=false still fetches code+vars via RPC for validation.
+	err := a.gnomonClient.AddSCIDToIndex(scid, true, false)
 	if err != nil {
 		a.logToConsole(fmt.Sprintf("[GNOMON] AddSCIDToIndex failed: %v", err))
 		return map[string]interface{}{
@@ -395,6 +462,20 @@ func (a *App) AddSCIDToIndex(scid string) map[string]interface{} {
 		"success":    true,
 		"scid":       scid,
 		"vars_count": varCount,
+	}
+
+	// A 0-var result with Gnomon still behind the chain tip usually means the
+	// fetch ran against a stale height, not that the contract is empty — the
+	// indexer reports success either way, so surface the distinction for the UI.
+	if varCount == 0 {
+		if status := a.gnomonClient.GetStatus(); status != nil {
+			indexed, _ := status["indexed_height"].(int64)
+			chain, _ := status["chain_height"].(int64)
+			if chain > 0 && indexed < chain-5 {
+				result["gnomonSyncing"] = true
+				result["syncProgress"] = status["progress"]
+			}
+		}
 	}
 
 	// Parse TELA metadata if available
@@ -858,11 +939,11 @@ func (a *App) GetAppDetails(scid string) map[string]interface{} {
 		// V1 headers (ART-NFA standard) - fallback if V2 not set
 		case "nameHdr":
 			if details["name"] == nil {
-			details["name"] = decodeHexString(value)
+				details["name"] = decodeHexString(value)
 			}
 		case "descrHdr":
 			if details["description"] == nil {
-			details["description"] = decodeHexString(value)
+				details["description"] = decodeHexString(value)
 			}
 		case "iconURLHdr":
 			if details["icon"] == nil {
@@ -1223,10 +1304,9 @@ func (a *App) GetGnomonWSStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"running":  a.gnomonWSServer.IsRunning(),
-		"address":  a.gnomonWSServer.GetAddress(),
-		"port":     a.gnomonWSServer.GetPort(),
-		"clients":  a.gnomonWSServer.GetClientCount(),
+		"running": a.gnomonWSServer.IsRunning(),
+		"address": a.gnomonWSServer.GetAddress(),
+		"port":    a.gnomonWSServer.GetPort(),
+		"clients": a.gnomonWSServer.GetClientCount(),
 	}
 }
-

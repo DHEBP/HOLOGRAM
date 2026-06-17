@@ -5,10 +5,15 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/deroproject/derohe/globals"
 )
 
 // ============== WalletManager Tests ==============
@@ -453,7 +458,7 @@ func TestInternalWalletCall_SCInvoke_MissingSCID(t *testing.T) {
 	// Note: Without a real wallet, we can't test parameter validation in isolation
 	// because the code checks wallet.isOpen && wallet != nil first.
 	// This test verifies the error path when wallet state is inconsistent.
-	
+
 	walletManager.Lock()
 	originalIsOpen := walletManager.isOpen
 	originalWallet := walletManager.wallet
@@ -491,7 +496,7 @@ func TestInternalWalletCall_UnsupportedMethod(t *testing.T) {
 	// Note: Without a real wallet, we can't test the unsupported method path
 	// because the code checks wallet state first.
 	// This test verifies behavior when wallet object is nil.
-	
+
 	walletManager.Lock()
 	originalIsOpen := walletManager.isOpen
 	originalWallet := walletManager.wallet
@@ -739,9 +744,9 @@ func TestMiningRewardType_Classification(t *testing.T) {
 		amount       uint64
 		expectedType string
 	}{
-		{200000, "block"},    // Exactly 2 DERO
-		{300000, "block"},    // 3 DERO
-		{1000000, "block"},   // 10 DERO
+		{200000, "block"},     // Exactly 2 DERO
+		{300000, "block"},     // 3 DERO
+		{1000000, "block"},    // 10 DERO
 		{199999, "miniblock"}, // Just under 2 DERO
 		{100000, "miniblock"}, // 1 DERO
 		{50000, "miniblock"},  // 0.5 DERO
@@ -835,5 +840,228 @@ func BenchmarkListRecentWallets(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		app.ListRecentWallets()
+	}
+}
+
+// ============== Tracked-token concurrency ==============
+
+// TestAddTrackedToken_ConcurrentNoLostUpdates verifies that trackedTokensMu
+// serializes the load-modify-save of tracked_tokens.json: concurrent adds of
+// distinct SCIDs must all persist, with none clobbered by a racing whole-file
+// rewrite. Run under -race, it also flags any data race on the shared file.
+func TestAddTrackedToken_ConcurrentNoLostUpdates(t *testing.T) {
+	dir := t.TempDir()
+	prev := testDataDirOverride
+	testDataDirOverride = dir
+	defer func() { testDataDirOverride = prev }()
+
+	// No wallet open: AddTrackedToken still runs the persistence path and skips
+	// the wallet-registration block.
+	walletManager.Lock()
+	walletManager.isOpen = false
+	walletManager.wallet = nil
+	walletManager.Unlock()
+
+	app := &App{settings: make(map[string]interface{}), consoleLogs: make([]ConsoleLog, 0)}
+
+	const n = 50
+	scids := make([]string, n)
+	for i := range scids {
+		// distinct, valid 64-hex SCIDs
+		scids[i] = fmt.Sprintf("%064x", i+1)
+	}
+
+	var wg sync.WaitGroup
+	for _, s := range scids {
+		wg.Add(1)
+		go func(scid string) {
+			defer wg.Done()
+			app.AddTrackedToken(scid, "T", "T")
+		}(s)
+	}
+	wg.Wait()
+
+	got := loadTrackedTokens()
+	if len(got) != n {
+		t.Fatalf("expected %d tracked tokens after concurrent adds, got %d (lost-update race?)", n, len(got))
+	}
+
+	seen := make(map[string]bool, n)
+	for _, tok := range got {
+		seen[tok.SCID] = true
+	}
+	for _, s := range scids {
+		if !seen[s] {
+			t.Errorf("SCID %s missing — clobbered by a concurrent write", s)
+		}
+	}
+}
+
+// ============== Token Metadata Sanitization ==============
+
+// TestSanitizeTokenText pins the on-chain-metadata defenses: an NFA's name/symbol/
+// description headers are attacker-controlled, so a crafted token must not be able
+// to smuggle bidi-override or zero-width characters into the rendered identity, nor
+// bloat tracked_tokens.json with an unbounded value. A regression here re-opens the
+// spoofing/DoS surface, so it should fail loud.
+func TestSanitizeTokenText(t *testing.T) {
+	const (
+		rlo = "\u202e" // right-to-left override (bidi spoofing)
+		lro = "\u202d" // left-to-right override
+		zwj = "\u200d" // zero-width joiner
+		zws = "\u200b" // zero-width space
+		bom = "\ufeff" // byte-order mark / zero-width no-break space
+		wj  = "\u2060" // word joiner
+	)
+	cases := []struct {
+		name  string
+		in    string
+		limit int
+		want  string
+	}{
+		{"plain passes through", "Lotto", tokenNameLimit, "Lotto"},
+		{"empty stays empty", "", tokenNameLimit, ""},
+		{"bidi override stripped", "abc" + rlo + "def" + lro, tokenNameLimit, "abcdef"},
+		{"zero-width family stripped", "DE" + zws + "RO" + zwj + bom + wj, tokenNameLimit, "DERO"},
+		{"control chars stripped", "a\x00b\x07c\x1bd", tokenNameLimit, "abcd"},
+		{"newlines/tabs collapse to space", "line1\nline2\ttail", tokenNameLimit, "line1line2 tail"},
+		{"surrounding space trimmed", "  spaced  ", tokenNameLimit, "spaced"},
+		{"all-junk degrades to empty", rlo + zws + bom + "\x00", tokenNameLimit, ""},
+		{"length cap by rune count", strings.Repeat("x", tokenNameLimit+50), tokenNameLimit, strings.Repeat("x", tokenNameLimit)},
+		{"description gets wider cap", strings.Repeat("y", tokenDescLimit+1), tokenDescLimit, strings.Repeat("y", tokenDescLimit)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeTokenText(tc.in, tc.limit)
+			if got != tc.want {
+				t.Errorf("sanitizeTokenText(%q, %d) = %q; want %q", tc.in, tc.limit, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSanitizeTokenText_MultibyteCapBoundary guards that the length cap never splits
+// a multi-byte rune (a byte-slice cap would corrupt the trailing character).
+func TestSanitizeTokenText_MultibyteCapBoundary(t *testing.T) {
+	in := strings.Repeat("é", tokenNameLimit+10) // 2 bytes per rune
+	got := sanitizeTokenText(in, tokenNameLimit)
+	if rc := utf8.RuneCountInString(got); rc != tokenNameLimit {
+		t.Errorf("expected %d runes after cap, got %d", tokenNameLimit, rc)
+	}
+	if !utf8.ValidString(got) {
+		t.Error("cap split a multi-byte rune — result is not valid UTF-8")
+	}
+}
+
+// TestRefreshTokenMetadata_NeverBlanksExisting pins the merge rule: an empty
+// fresh value (Gnomon off, or the chain has no header) must never blank a
+// stored name/symbol — even in overwriteNames mode, which only lets non-empty
+// chain values replace existing ones. A regression here would let a metadata
+// refresh silently wipe a user's token labels.
+func TestRefreshTokenMetadata_NeverBlanksExisting(t *testing.T) {
+	dir := t.TempDir()
+	prev := testDataDirOverride
+	testDataDirOverride = dir
+	defer func() { testDataDirOverride = prev }()
+
+	app := &App{settings: make(map[string]interface{}), consoleLogs: make([]ConsoleLog, 0)}
+	scid := fmt.Sprintf("%064x", 0xbeef)
+
+	saveTrackedTokens([]TrackedToken{{SCID: scid, Name: "MyToken", Symbol: "MTK"}})
+
+	// gnomonClient is nil → fetchTokenHeader returns the lock inputs unchanged.
+	// overwriteNames=true passes empty locks, so fresh comes back all-empty —
+	// the exact case that must not blank stored values.
+	result := app.RefreshTokenMetadata(scid, true, true)
+	if result["success"] != true {
+		t.Fatalf("expected success, got %v", result["error"])
+	}
+	if result["changed"] != false {
+		t.Error("all-empty fresh values must report changed=false")
+	}
+
+	got := loadTrackedTokens()
+	if len(got) != 1 || got[0].Name != "MyToken" || got[0].Symbol != "MTK" {
+		t.Errorf("stored metadata was modified: %+v", got)
+	}
+}
+
+// TestRefreshTokenMetadata_PreviewWritesNothing pins apply=false as a pure
+// read: even if values would change, nothing reaches disk.
+func TestRefreshTokenMetadata_PreviewWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	prev := testDataDirOverride
+	testDataDirOverride = dir
+	defer func() { testDataDirOverride = prev }()
+
+	app := &App{settings: make(map[string]interface{}), consoleLogs: make([]ConsoleLog, 0)}
+	scid := fmt.Sprintf("%064x", 0xcafe)
+	saveTrackedTokens([]TrackedToken{{SCID: scid, Name: "", Symbol: ""}})
+
+	result := app.RefreshTokenMetadata(scid, false, false)
+	if result["success"] != true {
+		t.Fatalf("expected success, got %v", result["error"])
+	}
+	if _, hasUpdated := result["updated"]; hasUpdated {
+		t.Error("preview must not include an updated field (nothing persisted)")
+	}
+
+	if got := loadTrackedTokens(); got[0].Name != "" {
+		t.Errorf("preview persisted data: %+v", got)
+	}
+}
+
+// TestRefreshTokenMetadata_UnknownSCID pins the not-tracked error path.
+func TestRefreshTokenMetadata_UnknownSCID(t *testing.T) {
+	dir := t.TempDir()
+	prev := testDataDirOverride
+	testDataDirOverride = dir
+	defer func() { testDataDirOverride = prev }()
+
+	app := &App{settings: make(map[string]interface{}), consoleLogs: make([]ConsoleLog, 0)}
+	result := app.RefreshTokenMetadata(fmt.Sprintf("%064x", 0xdead), true, false)
+	if result["success"] != false {
+		t.Error("refresh of an untracked SCID must fail")
+	}
+}
+
+// TestNetworkDerivation_IgnoresStaleSimulatorFlag pins the fix for the
+// simulator→mainnet wallet bug: every simulator start path sets the derohe
+// package-global --simulator flag, but it was only cleared on app launch, so a
+// wallet opened after switching back to mainnet was flagged testnet — deto1
+// address, "unregistered" on mainnet, sync wedged. Wallet network derivation
+// must follow nodeManager.networkMode and ignore the stale global entirely.
+func TestNetworkDerivation_IgnoresStaleSimulatorFlag(t *testing.T) {
+	dir := t.TempDir()
+	prev := testDataDirOverride
+	testDataDirOverride = dir
+	defer func() { testDataDirOverride = prev }()
+
+	// Simulate the leak: a simulator session set the global and nothing reset it.
+	prevFlag := globals.Arguments["--simulator"]
+	globals.Arguments["--simulator"] = true
+	defer func() { globals.Arguments["--simulator"] = prevFlag }()
+
+	prevMode := nodeManager.networkMode
+	nodeManager.networkMode = NetworkMainnet
+	defer func() { nodeManager.networkMode = prevMode }()
+
+	// addToRecentWalletsWithInfo stamps the session network using the same
+	// derivation OpenWallet uses — it must say mainnet despite the stale flag.
+	addToRecentWalletsWithInfo(filepath.Join(dir, "guard.db"), "dero1qyguardaddressxxxxxxxxxxxxxxxxxxxxxxxx")
+	data := loadRecentWalletsData()
+	if len(data) == 0 {
+		t.Fatal("expected a recent-wallets entry")
+	}
+	if data[0].Network != "mainnet" {
+		t.Errorf("network derivation followed the stale --simulator global: got %q, want mainnet", data[0].Network)
+	}
+
+	// And the inverse: simulator mode must still be honored.
+	nodeManager.networkMode = NetworkSimulator
+	addToRecentWalletsWithInfo(filepath.Join(dir, "guard2.db"), "deto1qyguardaddressxxxxxxxxxxxxxxxxxxxxxxxx")
+	data = loadRecentWalletsData()
+	if data[0].Network != "simulator" {
+		t.Errorf("simulator mode not honored: got %q, want simulator", data[0].Network)
 	}
 }

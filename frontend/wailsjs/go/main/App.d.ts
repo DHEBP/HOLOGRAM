@@ -217,8 +217,6 @@ export function GetContentFilterStats():Promise<Record<string, any>>;
 
 export function GetCurrentWalletPath():Promise<string>;
 
-export function GetCypherpunkMode():Promise<boolean>;
-
 export function GetDevSupportStats():Promise<Record<string, any>>;
 
 export function GetDevSupportStatus():Promise<Record<string, any>>;
@@ -296,6 +294,8 @@ export function GetOfflineCacheStats():Promise<Record<string, any>>;
 export function GetPermissionTypes():Promise<Array<Record<string, any>>>;
 
 export function GetPersonalTransfers(arg1:Record<string, any>):Promise<Record<string, any>>;
+
+export function GetPrivacyMode():Promise<boolean>;
 
 export function GetRandomSmartContracts(arg1:number):Promise<Record<string, any>>;
 
@@ -497,6 +497,8 @@ export function RefreshLocalDevServer():Promise<Record<string, any>>;
 
 export function RefreshTestWalletBalance(arg1:number):Promise<Record<string, any>>;
 
+export function RefreshTokenMetadata(arg1:string,arg2:boolean,arg3:boolean):Promise<Record<string, any>>;
+
 export function RefreshWatchedSCs():Promise<Record<string, any>>;
 
 export function RegisterWallet():Promise<Record<string, any>>;
@@ -547,6 +549,8 @@ export function SaveFileWithDialog(arg1:string,arg2:string,arg3:string,arg4:stri
 
 export function ScanFolder(arg1:string):Promise<Record<string, any>>;
 
+export function ScanWalletForTokens():Promise<Record<string, any>>;
+
 export function SearchAddress(arg1:string):Promise<Record<string, any>>;
 
 export function SearchApps(arg1:string):Promise<Record<string, any>>;
@@ -579,8 +583,6 @@ export function ServeTELAContent(arg1:string):Promise<Record<string, any>>;
 
 export function SetContentFilterConfig(arg1:boolean,arg2:number,arg3:boolean,arg4:boolean,arg5:boolean,arg6:boolean,arg7:string,arg8:number):Promise<Record<string, any>>;
 
-export function SetCypherpunkMode(arg1:boolean):Promise<Record<string, any>>;
-
 export function SetDevSupportEnabled(arg1:boolean):Promise<Record<string, any>>;
 
 export function SetDevSupportVerboseLogging(arg1:boolean):Promise<Record<string, any>>;
@@ -602,6 +604,8 @@ export function SetNodeConfig(arg1:Record<string, any>):Promise<Record<string, a
 export function SetNodePorts(arg1:number,arg2:number):Promise<Record<string, any>>;
 
 export function SetOfflineCacheEnabled(arg1:boolean):Promise<Record<string, any>>;
+
+export function SetPrivacyMode(arg1:boolean):Promise<Record<string, any>>;
 
 export function SetSearchMinLikes(arg1:number):Promise<Record<string, any>>;
 
