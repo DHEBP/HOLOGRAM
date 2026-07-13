@@ -12,7 +12,7 @@
 # The derod and simulator binaries are built from the derohe dependency
 # and placed alongside the HOLOGRAM executable in build/bin/
 
-.PHONY: all hologram release derod simulator mtp-anchor clean dev test-mtp test-mtp-integration help
+.PHONY: all hologram release derod simulator mtp-anchor clean dev test test-mtp test-mtp-integration check-invariants help
 
 # Build metadata - injected into the binary via ldflags
 # Match the actual variable assignment, not the example comment above it.
@@ -75,13 +75,13 @@ else
 endif
 
 # Build HOLOGRAM using wails (dev/local build with metadata)
-hologram:
+hologram: check-invariants
 	@echo "🔨 Building HOLOGRAM ($(VERSION), $(COMMIT))..."
 	wails build $(WAILS_TAGS) -ldflags "$(LDFLAGS)"
 	@echo "✅ HOLOGRAM built"
 
 # Release build — clean, trimpath, metadata injected (use this for distribution)
-release: derod simulator
+release: derod simulator check-invariants
 	@echo "🚀 Building HOLOGRAM release ($(VERSION), $(COMMIT))..."
 	wails build $(WAILS_TAGS) -ldflags "$(LDFLAGS)" -clean -trimpath
 	@echo "✅ Release build complete: $(BUILD_DIR)/$(HOLOGRAM_BIN)"
@@ -138,8 +138,18 @@ test-mtp-integration: mtp-anchor
 		--wallet-rpc "$${WALLET_RPC:-http://127.0.0.1:30000/json_rpc}" \
 		--daemon-rpc "$${DAEMON_RPC:-http://127.0.0.1:20000/json_rpc}"
 
+# A14 data-dir consolidation invariant gates (see redteam-hologram-datadir-consolidation.md).
+# Prerequisite of every hologram/release build; also runnable standalone.
+check-invariants:
+	@bash scripts/check-datadir-invariants.sh
+
+# Run the Go unit-test suite plus the invariant gates
+test: check-invariants
+	@echo "🧪 Running Go unit tests..."
+	go test ./... -count=1
+
 # Development mode
-dev:
+dev: check-invariants
 	wails dev $(WAILS_TAGS)
 
 # Clean build artifacts

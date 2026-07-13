@@ -445,18 +445,47 @@ func (a *App) MoveFile(source, destination string) map[string]interface{} {
 	}
 }
 
+// removableUnderDatashards reports whether path may be removed by RemoveFile: it
+// must resolve to an entry strictly inside the canonical datashards dir (A6 — via
+// filepath.Rel, so a sibling like "datashardsX" is NOT matched), must not be the
+// datashards root itself, and must not fall in the wallets/ or settings/ subtrees
+// that now live co-located there (A11). why is "protected" for a wallet/settings
+// hit and "outside" otherwise.
+func removableUnderDatashards(path string) (ok bool, why string) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false, "outside"
+	}
+	shardsDir, _ := filepath.Abs(getDatashardsDir())
+	rel, relErr := filepath.Rel(shardsDir, absPath)
+	if relErr != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false, "outside"
+	}
+	firstSeg := rel
+	if i := strings.IndexRune(rel, filepath.Separator); i >= 0 {
+		firstSeg = rel[:i]
+	}
+	if firstSeg == "wallets" || firstSeg == "settings" {
+		return false, "protected"
+	}
+	return true, ""
+}
+
 // RemoveFile removes a file or directory (only from datashards/clone)
 func (a *App) RemoveFile(path string) map[string]interface{} {
 	a.logToConsole(fmt.Sprintf("[File] Removing: %s", path))
 
-	// Security check: only allow removal from datashards directory
-	absPath, _ := filepath.Abs(path)
-	shardsDir, _ := filepath.Abs(filepath.Join(".", "datashards"))
-	
-	if !strings.HasPrefix(absPath, shardsDir) {
+	// Security check (A6/A11): only allow removal from the CANONICAL datashards dir,
+	// and never the co-located wallets/ or settings/ subtrees. Containment rules live
+	// in removableUnderDatashards so they can be unit-tested without a running App.
+	if okRemove, why := removableUnderDatashards(path); !okRemove {
+		msg := "Can only remove files from the datashards directory"
+		if why == "protected" {
+			msg = "Refusing to remove protected wallet/settings data"
+		}
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Can only remove files from datashards directory",
+			"error":   msg,
 		}
 	}
 

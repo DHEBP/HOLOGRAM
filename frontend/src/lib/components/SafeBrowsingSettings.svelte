@@ -26,6 +26,7 @@
   let isSaving = false;
   let error = null;
   let saveMessage = '';
+  let persistence = 'OK'; // A8: 'DEGRADED' when the safety filter cannot persist rules to disk
 
   onMount(async () => {
     await loadConfig();
@@ -45,6 +46,7 @@
       if (configRes.success && configRes.config) {
         config = { ...config, ...configRes.config };
       }
+      persistence = configRes.persistence || 'OK';
 
       if (statsRes.success) {
         stats = statsRes.stats;
@@ -129,6 +131,12 @@
 
   {#if error}
     <div class="alert alert-danger">{error}</div>
+  {/if}
+
+  {#if persistence === 'DEGRADED'}
+    <div class="alert alert-danger">
+      <strong>⚠ Filter storage degraded.</strong> The content filter is running in memory only — your rules and block/allow lists will <strong>not survive a restart</strong>. Check that <code>~/.dero/hologram/datashards</code> is writable.
+    </div>
   {/if}
 
   {#if isLoading}

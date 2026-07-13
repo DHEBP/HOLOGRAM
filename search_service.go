@@ -697,15 +697,15 @@ func initSearchExclusions() *SearchExclusions {
 		return searchExclusions
 	}
 
-	dir, err := os.Getwd()
-	if err != nil {
-		dir = "."
-	}
+	// A18: anchor to the canonical datashards dir so load AND save use ONE path —
+	// this makes the stale-CWD clobber structurally impossible. Run the idempotent
+	// legacy migration first so any pre-existing exclusions file is carried forward.
+	migrateLegacyDatashards()
 
 	searchExclusions = &SearchExclusions{
 		Exclusions: make([]string, 0),
 		MinLikes:   0, // Default: don't filter by likes
-		filePath:   filepath.Join(dir, "datashards", "search_exclusions.json"),
+		filePath:   filepath.Join(getDatashardsDir(), "search_exclusions.json"),
 	}
 
 	// Load existing exclusions

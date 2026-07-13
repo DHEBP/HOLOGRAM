@@ -553,6 +553,23 @@ func findBinaryInDir(dir, binaryName string) string {
 	return found
 }
 
+// resolveNodeDataDir makes the node data directory canonical and absolute
+// regardless of what the frontend supplied (A10) — this normalization is
+// AUTHORITATIVE; the frontend value is advisory. Empty/whitespace or relative
+// values resolve under ~/.dero/hologram, and a leading ~ is expanded (Go does not
+// expand ~), so a stale or misconfigured frontend can never litter $HOME or create
+// a directory literally named "~".
+func resolveNodeDataDir(dataDir string) string {
+	dataDir = expandTilde(strings.TrimSpace(dataDir))
+	if dataDir == "" {
+		return getHologramDataDir()
+	}
+	if !filepath.IsAbs(dataDir) {
+		return filepath.Join(getHologramDataDir(), dataDir)
+	}
+	return dataDir
+}
+
 // StartNode starts the embedded derod node (defaults to current network mode)
 func (a *App) StartNode(dataDir string) map[string]interface{} {
 	return a.StartNodeWithNetwork(dataDir, string(nodeManager.networkMode))
@@ -639,6 +656,10 @@ func (a *App) StartNodeWithNetwork(dataDir string, network string) map[string]in
 	// No external node - start embedded
 	a.logToConsole("[INFO] No external node detected, starting embedded node...")
 
+	// A10: normalize the frontend-supplied dataDir server-side (authoritative) before
+	// deriving the network subdir, so embedded-node chain data always lands under the
+	// canonical tree instead of a CWD-relative or "~"-literal path.
+	dataDir = resolveNodeDataDir(dataDir)
 	fullDataDir := filepath.Join(dataDir, netConfig.DataDir)
 	a.logToConsole(fmt.Sprintf("[START] Starting %s node with data directory: %s", networkMode, fullDataDir))
 

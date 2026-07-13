@@ -154,6 +154,13 @@ func (a *App) startup(ctx context.Context) {
 
 	a.logToConsole("[START] TELA Browser starting up...")
 
+	// Route data-dir events (fallbacks, migration) to the in-app console (A5), then run
+	// the one-time best-effort migration of any legacy working-dir datashards into the
+	// canonical tree. MUST run before the content-filter / time-travel stores open below
+	// (copy-if-absent skips once a canonical store exists) — see A1/A12.
+	SetDataDirLogger(a.logToConsole)
+	migrateLegacyDatashards()
+
 	// Idle auto-lock: drop the decrypted wallet from memory after the configured idle
 	// window so an unattended machine doesn't keep the secret scalar live all session.
 	a.startIdleAutoLockWatcher()

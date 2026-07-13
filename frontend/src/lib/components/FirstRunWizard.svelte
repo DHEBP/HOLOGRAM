@@ -141,7 +141,9 @@
     step = 'starting';
     
     try {
-      const dataDir = customLocation || selectedLocation || '~/.dero/mainnet';
+      // A10: empty falls through to server-side normalization (canonical ~/.dero/hologram);
+      // never ship a literal "~/..." the backend would have to expand — the server is authoritative.
+      const dataDir = customLocation || selectedLocation || '';
       
       // Save settings (using correct backend keys via saveSetting)
       await saveSetting('useEmbeddedNode', true);
@@ -409,7 +411,7 @@
             <input
               type="text"
               bind:value={customLocation}
-              placeholder="~/.dero/mainnet"
+              placeholder="Default: ~/.dero/hologram"
             class="input"
             />
           </div>

@@ -74,20 +74,29 @@ type FilterStats struct {
 // ContentFilter provides intelligent content filtering
 type ContentFilter struct {
 	sync.RWMutex
-	store  *graviton.Store
-	config FilterConfig
-	rules  []FilterRule
-	logFn  func(string)
+	store       *graviton.Store
+	config      FilterConfig
+	rules       []FilterRule
+	logFn       func(string)
+	persistence string // "OK" or "DEGRADED" (A8): DEGRADED = volatile in-memory store, rules won't persist
 }
 
 // NewContentFilter creates a new content filter service
 func NewContentFilter(logFn func(string)) (*ContentFilter, error) {
-	wd, _ := os.Getwd()
-	filterPath := filepath.Join(wd, "datashards", "content_filter")
+	filterPath := filepath.Join(getDatashardsDir(), "content_filter")
 	_ = os.MkdirAll(filterPath, 0755)
 
+	// SAFETY TIER (A8): the content filter must NOT silently degrade to a volatile
+	// store. If the on-disk store is unavailable we keep filtering fail-safe in this
+	// session but mark persistence DEGRADED so the UI can tell the user their rules
+	// will not survive a restart — never a silent in-memory-then-discarded fallback.
+	persistence := "OK"
 	store, err := graviton.NewDiskStore(filterPath)
 	if err != nil {
+		persistence = "DEGRADED"
+		if logFn != nil {
+			logFn(fmt.Sprintf("[SHIELD][DEGRADED] content filter disk store unavailable at %s (%v) — running in-memory; rules will NOT persist across restart", filterPath, err))
+		}
 		store, err = graviton.NewMemStore()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create content filter store: %v", err)
@@ -95,8 +104,9 @@ func NewContentFilter(logFn func(string)) (*ContentFilter, error) {
 	}
 
 	filter := &ContentFilter{
-		store: store,
-		logFn: logFn,
+		store:       store,
+		logFn:       logFn,
+		persistence: persistence,
 		config: FilterConfig{
 			Enabled:              true,
 			MinimumRating:        0,
@@ -133,6 +143,15 @@ func (f *ContentFilter) log(msg string) {
 	if f.logFn != nil {
 		f.logFn(msg)
 	}
+}
+
+// PersistenceStatus reports "OK" or "DEGRADED". DEGRADED means the on-disk store
+// was unavailable at init and filter state is held in a volatile in-memory store
+// (rules will not survive a restart) — surfaced to the UI so it is never silent.
+func (f *ContentFilter) PersistenceStatus() string {
+	f.RLock()
+	defer f.RUnlock()
+	return f.persistence
 }
 
 // ==================== Configuration ====================
@@ -700,9 +719,19 @@ func (a *App) GetContentFilterConfig() map[string]interface{} {
 
 	config := a.contentFilter.GetConfig()
 	return map[string]interface{}{
-		"success": true,
-		"config":  config,
+		"success":     true,
+		"config":      config,
+		"persistence": a.contentFilter.PersistenceStatus(),
 	}
+}
+
+// GetContentFilterPersistence returns "OK", "DEGRADED", or "UNINITIALIZED" so the
+// UI can surface a banner when the safety filter cannot persist rules (A8).
+func (a *App) GetContentFilterPersistence() string {
+	if a.contentFilter == nil {
+		return "UNINITIALIZED"
+	}
+	return a.contentFilter.PersistenceStatus()
 }
 
 // SetContentFilterConfig updates the filter configuration
