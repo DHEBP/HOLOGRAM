@@ -1736,6 +1736,45 @@ func hasEmptyValueDestination(transfers []rpc.Transfer) bool {
 	return false
 }
 
+// firstWrongNetworkDestination reports the network label ("mainnet" or
+// "simulator/testnet") of the first transfer whose destination parses as an address
+// rendered for a different network than the wallet, and whether such a mismatch was
+// found. A mainnet (dero1) and a simulator/testnet (deto1) address wrap the SAME
+// public key, so a wrong-network paste builds and broadcasts silently -- the wallet
+// library never checks the network byte. Destinations that do not parse as an address
+// (names the library resolves, empty SC-deposit entries) are skipped. The plain
+// Transfer path already guards this inline; this makes the same rule reusable at the
+// XSWD and token chokepoints. Standalone so it is unit-testable without a wallet.
+func firstWrongNetworkDestination(transfers []rpc.Transfer, walletIsMainnet bool) (destNet string, mismatch bool) {
+	for _, t := range transfers {
+		addr, err := rpc.NewAddress(strings.TrimSpace(t.Destination))
+		if err != nil {
+			continue
+		}
+		if addr.IsMainnet() != walletIsMainnet {
+			if addr.IsMainnet() {
+				return "mainnet", true
+			}
+			return "simulator/testnet", true
+		}
+	}
+	return "", false
+}
+
+// networkMismatchError is the shared user-facing rejection for a wrong-network
+// destination, so every value-send chokepoint returns the identical message.
+func networkMismatchError(destNet string, walletIsMainnet bool) map[string]interface{} {
+	walletNet := "simulator/testnet"
+	if walletIsMainnet {
+		walletNet = "mainnet"
+	}
+	return map[string]interface{}{
+		"success":        false,
+		"error":          fmt.Sprintf("This is a %s address but your wallet is on %s. Sending to a wrong-network address cannot be undone — double-check you pasted the right address.", destNet, walletNet),
+		"technicalError": "rejected transfer: destination network does not match wallet network",
+	}
+}
+
 // buildTokenTransfer constructs the transfer for a plain wallet-to-wallet token (or native
 // DERO) send. The recipient is credited from Amount on the named SCID -- Burn must be 0.
 // Burn is value attached to a smart-contract call (the SC then credits it); with no SC on
@@ -1958,6 +1997,15 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			}
 		}
 
+		// Reject a destination rendered for a different network than the wallet (a dero1
+		// mainnet address dispatched by a simulator wallet, or the reverse). Mirrors the
+		// plain Transfer path guard; the XSWD path never had it.
+		walletIsMainnet := !a.IsInSimulatorMode()
+		if destNet, mismatch := firstWrongNetworkDestination(transfers, walletIsMainnet); mismatch {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED network mismatch: %s destination while wallet is on a different network", destNet))
+			return networkMismatchError(destNet, walletIsMainnet)
+		}
+
 		// Reject any burn that would permanently destroy native DERO. A native-DERO (zero-SCID)
 		// burn with no smart contract attached does not send funds anywhere -- it destroys them
 		// irrecoverably. HOLOGRAM never burns DERO; there is no override. Anyone who genuinely
@@ -2154,6 +2202,14 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 				"error":          "Destination address is required.",
 				"technicalError": "rejected scinvoke transfer: non-zero amount with an empty destination",
 			}
+		}
+
+		// Same wrong-network guard as the transfer path. SC deposits target ring members drawn
+		// from the wallet's own network, so only an explicit wrong-network transfer trips this.
+		walletIsMainnet := !a.IsInSimulatorMode()
+		if destNet, mismatch := firstWrongNetworkDestination(transfers, walletIsMainnet); mismatch {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED network mismatch in scinvoke: %s destination while wallet is on a different network", destNet))
+			return networkMismatchError(destNet, walletIsMainnet)
 		}
 
 		// Defense in depth: a native-DERO (zero-SCID) burn is only safe here when it routes to
@@ -3695,6 +3751,14 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 
 	// Credit the recipient from Amount on the named SCID; never Burn (see helper for why).
 	transfers := buildTokenTransfer(scid, destination, amount)
+
+	// Reject a wrong-network recipient. TransferToken builds transfers directly and bypasses
+	// the XSWD-path guard (see burn note below), so enforce the same network check here.
+	walletIsMainnet := !a.IsInSimulatorMode()
+	if destNet, mismatch := firstWrongNetworkDestination(transfers, walletIsMainnet); mismatch {
+		a.logToConsole(fmt.Sprintf("[Transfer] BLOCKED token send to %s address while wallet is on a different network", destNet))
+		return networkMismatchError(destNet, walletIsMainnet)
+	}
 
 	// Centralized burn prohibition. TransferToken builds transfers directly and does NOT go
 	// through InternalWalletCall, so the XSWD-path guard never runs here. Enforce the same
