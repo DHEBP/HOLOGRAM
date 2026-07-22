@@ -71,6 +71,11 @@ tela-cli/
 
 # Local agent/IDE artifacts
 /.cursor/
+/.claude/
+/.task/
+
+# Internal red-team / workflow ledgers (never committed)
+redteam-*.md
 
 # Local compiled app artifact
 /HOLOGRAM
