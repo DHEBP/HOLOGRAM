@@ -1283,7 +1283,14 @@
       sendError = 'Please enter your wallet password';
       return;
     }
-    
+    // Backstop: never dispatch a transfer with a missing/invalid destination, even if the
+    // confirm button's guard was bypassed. An empty destination reaches the wallet library
+    // as "Main Destination cannot be empty" and a misleading daemon "leaf not found".
+    if (!isValidSendAddress) {
+      sendError = 'Please enter a valid destination address';
+      return;
+    }
+
     sendLoading = true;
     sendError = null;
     
@@ -2505,7 +2512,7 @@
                   <button class="btn btn-ghost" on:click={() => { sendStep = 1; sendError = null; }}>
                     ← Back
                   </button>
-                  <button class="btn btn-primary" disabled={sendLoading || (!sendPassword && !$appState.isSimulator)} on:click={executeSend}>
+                  <button class="btn btn-primary" disabled={sendLoading || !isValidSendAddress || (!sendPassword && !$appState.isSimulator)} on:click={executeSend}>
                     {#if sendLoading}
                       <Loader2 size={14} class="spin" />
                       Sending...

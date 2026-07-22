@@ -1722,6 +1722,20 @@ func shouldBlockBurn(transfers []rpc.Transfer, hasSCCall bool) (uint64, bool) {
 	return detectDestructiveBurn(transfers, hasSCCall)
 }
 
+// hasEmptyValueDestination reports whether any transfer would move value (Amount > 0) to an
+// empty/whitespace destination. derohe rejects such a transfer as "Main Destination cannot be
+// empty" and the daemon then reports a misleading "-32098 leaf not found" from resolving the
+// empty string -- the incident where the Send screen showed a valid recipient but dispatched an
+// empty one. Rejecting it up front gives a clear message. Standalone so it is unit-testable.
+func hasEmptyValueDestination(transfers []rpc.Transfer) bool {
+	for _, t := range transfers {
+		if t.Amount > 0 && strings.TrimSpace(t.Destination) == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // buildTokenTransfer constructs the transfer for a plain wallet-to-wallet token (or native
 // DERO) send. The recipient is credited from Amount on the named SCID -- Burn must be 0.
 // Burn is value attached to a smart-contract call (the SC then credits it); with no SC on
@@ -1933,6 +1947,17 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			return map[string]interface{}{"success": false, "error": "Please specify a transfer amount and destination, or a smart contract call."}
 		}
 
+		// Reject a value transfer whose destination never made it through. The Send screen can
+		// show a valid recipient while dispatching an empty one; forwarding that produces an
+		// opaque "Main Destination cannot be empty" and a misleading -32098 "leaf not found".
+		if hasEmptyValueDestination(transfers) {
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Destination address is required.",
+				"technicalError": "rejected transfer: non-zero amount with an empty destination",
+			}
+		}
+
 		// Reject any burn that would permanently destroy native DERO. A native-DERO (zero-SCID)
 		// burn with no smart contract attached does not send funds anywhere -- it destroys them
 		// irrecoverably. HOLOGRAM never burns DERO; there is no override. Anyone who genuinely
@@ -2119,6 +2144,17 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		}
 		// Merge deposit entries in front of any explicit transfers
 		transfers = append(scDeposit, transfers...)
+
+		// Same empty-destination guard as the plain transfer path: an attached value transfer
+		// (Amount > 0) with no destination would reach derohe as the opaque empty-dest failure.
+		// Deposits (Amount:0 / Burn) and the len==0 ring-member fallback are unaffected.
+		if hasEmptyValueDestination(transfers) {
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Destination address is required.",
+				"technicalError": "rejected scinvoke transfer: non-zero amount with an empty destination",
+			}
+		}
 
 		// Defense in depth: a native-DERO (zero-SCID) burn is only safe here when it routes to
 		// a real contract call. Block it explicitly at this broadcast site too, so the burn
@@ -3637,7 +3673,25 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 
 	wallet := walletManager.wallet
 
-	a.logToConsole(fmt.Sprintf("[Transfer] Transferring %d units of token %s to %s", amount, scid[:16]+"...", destination[:16]+"..."))
+	// A token send with no recipient reaches derohe as an empty main destination (the opaque
+	// "Main Destination cannot be empty" failure). Reject it up front. This also avoids the
+	// slice-bounds panic in the log preview below when destination is empty or shorter than 16.
+	if strings.TrimSpace(destination) == "" {
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "Destination address is required.",
+			"technicalError": "TransferToken: empty destination",
+		}
+	}
+
+	scidPreview, destPreview := scid, destination
+	if len(scidPreview) > 16 {
+		scidPreview = scidPreview[:16] + "..."
+	}
+	if len(destPreview) > 16 {
+		destPreview = destPreview[:16] + "..."
+	}
+	a.logToConsole(fmt.Sprintf("[Transfer] Transferring %d units of token %s to %s", amount, scidPreview, destPreview))
 
 	// Credit the recipient from Amount on the named SCID; never Burn (see helper for why).
 	transfers := buildTokenTransfer(scid, destination, amount)
