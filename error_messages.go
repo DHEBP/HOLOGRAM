@@ -431,6 +431,17 @@ func FriendlyErrorString(errMsg string) string {
 	
 	lowerMsg := strings.ToLower(errMsg)
 	
+	// A "could not decode name or address" failure means the DESTINATION the caller gave could
+	// not be turned into a payable address -- a mistyped/truncated address or an unresolvable
+	// on-chain name. Its inner text carries "-32098"/"leaf not found", which the generic map
+	// below would otherwise match (in random order) as "recipient not registered, click Register
+	// Now" or "item not found" -- both wrong. Front it with one clear, deterministic message and
+	// leave the genuine unregistered-recipient path (a decodable address simply not registered)
+	// to the map.
+	if strings.Contains(lowerMsg, "could not decode name or address") {
+		return "Couldn't resolve that recipient. Double-check the destination address (or on-chain name) and try again."
+	}
+
 	// Check each pattern
 	for pattern, friendly := range UserFriendlyErrors {
 		if strings.Contains(lowerMsg, strings.ToLower(pattern)) {
