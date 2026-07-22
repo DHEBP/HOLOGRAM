@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 )
@@ -473,6 +474,27 @@ func ErrorResponseWithData(err error, data map[string]interface{}) map[string]in
 	resp := ErrorResponse(err)
 	for k, v := range data {
 		resp[k] = v
+	}
+	return resp
+}
+
+// SuccessResponse builds a standardized success response, merging any extra fields
+// (e.g. "filter", "results", "txid") onto {"success": true}. Pairs with ErrorResponse
+// so every binding returns the same {success, ...} shape the frontend expects, without
+// repeating the map[string]any{"success": true, ...} boilerplate at each call site.
+func SuccessResponse(fields map[string]any) map[string]any {
+	resp := map[string]any{"success": true}
+	maps.Copy(resp, fields)
+	return resp
+}
+
+// FailureResponse builds a standardized failure response from a plain message, with
+// optional extra fields (e.g. an empty "results" slice the frontend always iterates).
+// Use ErrorResponse(err) instead when you hold an error value rather than a message.
+func FailureResponse(message string, fields ...map[string]any) map[string]any {
+	resp := map[string]any{"success": false, "error": message}
+	for _, f := range fields {
+		maps.Copy(resp, f)
 	}
 	return resp
 }

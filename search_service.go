@@ -12,12 +12,12 @@ import (
 
 // SearchResult represents a unified search result
 type SearchResult struct {
-	Success bool                   `json:"success"`
-	Type    string                 `json:"type"` // block, tx, scid, durl, address
-	Query   string                 `json:"query"`
-	Data    map[string]interface{} `json:"data,omitempty"`
-	Error   string                 `json:"error,omitempty"`
-	Message string                 `json:"message,omitempty"` // Helpful context message (e.g., "This hash is a block hash")
+	Success bool           `json:"success"`
+	Type    string         `json:"type"` // block, tx, scid, durl, address
+	Query   string         `json:"query"`
+	Data    map[string]any `json:"data,omitempty"`
+	Error   string         `json:"error,omitempty"`
+	Message string         `json:"message,omitempty"` // Helpful context message (e.g., "This hash is a block hash")
 }
 
 // OmniSearch performs a smart search that auto-detects the query type
@@ -205,7 +205,7 @@ func (a *App) searchSmartContract(query string) SearchResult {
 			Error:   fmt.Sprintf("Smart contract lookup failed: %v", err),
 		}
 	}
-	if normalized, ok := normalizeDEROGetSCResult(result).(map[string]interface{}); ok {
+	if normalized, ok := normalizeDEROGetSCResult(result).(map[string]any); ok {
 		result = normalized
 	}
 
@@ -218,7 +218,7 @@ func (a *App) searchSmartContract(query string) SearchResult {
 	// - "stringkeys": map of string variable names to values
 	// - "uint64keys": map of uint64 variable names to values
 	// Map this to what the Explorer expects
-	scData := map[string]interface{}{
+	scData := map[string]any{
 		"code":       result["code"],
 		"balance":    result["balance"],
 		"stringkeys": result["stringkeys"],
@@ -229,11 +229,11 @@ func (a *App) searchSmartContract(query string) SearchResult {
 	code, _ := result["code"].(string)
 	if code == "" {
 		// Fallback: extract from deployment TX (simulator may not populate GetSC code)
-		txResult, err := a.daemonClient.Call("DERO.GetTransaction", map[string]interface{}{
+		txResult, err := a.daemonClient.Call("DERO.GetTransaction", map[string]any{
 			"txs_hashes": []string{normalizedSCID},
 		})
 		if err == nil {
-			if txMap, ok := txResult.(map[string]interface{}); ok {
+			if txMap, ok := txResult.(map[string]any); ok {
 				if txsHex, ok := txMap["txs_as_hex"].([]interface{}); ok && len(txsHex) > 0 {
 					if hexStr, ok := txsHex[0].(string); ok {
 						code = ExtractSCCodeFromDeploymentTx(hexStr)
@@ -268,7 +268,7 @@ func (a *App) searchSmartContract(query string) SearchResult {
 }
 
 // Helper to get map keys for logging
-func getMapKeys(m map[string]interface{}) []string {
+func getMapKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -389,7 +389,7 @@ func (a *App) searchDURL(query string) SearchResult {
 		Success: true,
 		Type:    "durl",
 		Query:   query,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"durl":      normalizedDURL,
 			"name":      name,
 			"success":   true,
@@ -412,7 +412,7 @@ func (a *App) searchAddress(query string) SearchResult {
 	}
 
 	// Build base response data
-	data := map[string]interface{}{
+	data := map[string]any{
 		"address":   query,
 		"valid":     true,
 		"network":   "mainnet",
@@ -435,7 +435,7 @@ func (a *App) searchAddress(query string) SearchResult {
 		}
 
 		// Get full app details for owned SCIDs
-		ownedApps := make([]map[string]interface{}, 0)
+		ownedApps := make([]map[string]any, 0)
 		if len(ownedSCIDs) > 0 {
 			allApps := a.gnomonClient.GetTELAApps()
 			for _, app := range allApps {
@@ -458,7 +458,7 @@ func (a *App) searchAddress(query string) SearchResult {
 		a.logToConsole(fmt.Sprintf("[Search] Found %d TELA apps owned by address", len(ownedApps)))
 	} else {
 		data["gnomonData"] = "unavailable"
-		data["owned_apps"] = []map[string]interface{}{}
+		data["owned_apps"] = []map[string]any{}
 		data["owned_count"] = 0
 		data["note"] = "Enable Gnomon in settings for address lookup"
 	}
@@ -503,7 +503,7 @@ func (a *App) searchByKeyWrapper(query string) SearchResult {
 		Success: true,
 		Type:    "key",
 		Query:   query,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"key":     key,
 			"results": results,
 			"count":   len(results),
@@ -543,7 +543,7 @@ func (a *App) searchByValueWrapper(query string) SearchResult {
 		Success: true,
 		Type:    "value",
 		Query:   query,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"value":   value,
 			"results": results,
 			"count":   len(results),
@@ -589,7 +589,7 @@ func (a *App) searchCodeLineWrapper(query string) SearchResult {
 	a.logToConsole(fmt.Sprintf("[...] Code search: checking %d SCIDs for '%s'", len(scids), line))
 
 	lineLower := strings.ToLower(line)
-	matchedResults := make([]map[string]interface{}, 0)
+	matchedResults := make([]map[string]any, 0)
 
 	// Limit to first 100 SCIDs to avoid overwhelming the daemon
 	maxToCheck := 100
@@ -622,11 +622,11 @@ func (a *App) searchCodeLineWrapper(query string) SearchResult {
 
 		// Found a match - extract matching lines
 		codeLines := strings.Split(code, "\n")
-		matchingLines := make([]map[string]interface{}, 0)
+		matchingLines := make([]map[string]any, 0)
 		
 		for lineNum, codeLine := range codeLines {
 			if strings.Contains(strings.ToLower(codeLine), lineLower) {
-				matchingLines = append(matchingLines, map[string]interface{}{
+				matchingLines = append(matchingLines, map[string]any{
 					"lineNum": lineNum + 1,
 					"content": strings.TrimSpace(codeLine),
 				})
@@ -637,7 +637,7 @@ func (a *App) searchCodeLineWrapper(query string) SearchResult {
 			}
 		}
 
-		result := map[string]interface{}{
+		result := map[string]any{
 			"scid":       scid,
 			"owner":      scidInfo["owner"],
 			"name":       scidInfo["name"],
@@ -661,7 +661,7 @@ func (a *App) searchCodeLineWrapper(query string) SearchResult {
 		Success: true,
 		Type:    "code",
 		Query:   query,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"line":    line,
 			"results": matchedResults,
 			"count":   len(matchedResults),
@@ -849,87 +849,73 @@ func (se *SearchExclusions) ShouldExclude(durl string) bool {
 // =============================================
 
 // GetSearchExclusions returns all current search exclusion filters
-func (a *App) GetSearchExclusions() map[string]interface{} {
+func (a *App) GetSearchExclusions() map[string]any {
 	se := initSearchExclusions()
-	return map[string]interface{}{
-		"success":    true,
+	return SuccessResponse(map[string]any{
 		"exclusions": se.List(),
 		"minLikes":   se.GetMinLikes(),
 		"count":      len(se.List()),
-	}
+	})
 }
 
 // AddSearchExclusion adds a new exclusion filter
-func (a *App) AddSearchExclusion(filter string) map[string]interface{} {
+func (a *App) AddSearchExclusion(filter string) map[string]any {
 	filter = strings.TrimSpace(filter)
 	if filter == "" {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Filter cannot be empty",
-		}
+		return FailureResponse("Filter cannot be empty")
 	}
 
 	se := initSearchExclusions()
 	if se.Add(filter) {
 		a.logToConsole(fmt.Sprintf("[OK] Added search exclusion: %s", filter))
-		return map[string]interface{}{
-			"success":    true,
+		return SuccessResponse(map[string]any{
 			"filter":     filter,
 			"exclusions": se.List(),
-		}
+		})
 	}
 
-	return map[string]interface{}{
-		"success": false,
-		"error":   "Filter already exists",
-	}
+	return FailureResponse("Filter already exists")
 }
 
 // RemoveSearchExclusion removes an exclusion filter
-func (a *App) RemoveSearchExclusion(filter string) map[string]interface{} {
+func (a *App) RemoveSearchExclusion(filter string) map[string]any {
 	se := initSearchExclusions()
 	if se.Remove(filter) {
 		a.logToConsole(fmt.Sprintf("[OK] Removed search exclusion: %s", filter))
-		return map[string]interface{}{
-			"success":    true,
+		return SuccessResponse(map[string]any{
 			"filter":     filter,
 			"exclusions": se.List(),
-		}
+		})
 	}
 
-	return map[string]interface{}{
-		"success": false,
-		"error":   "Filter not found",
-	}
+	return FailureResponse("Filter not found")
 }
 
 // ClearSearchExclusions removes all exclusion filters
-func (a *App) ClearSearchExclusions() map[string]interface{} {
+func (a *App) ClearSearchExclusions() map[string]any {
 	se := initSearchExclusions()
 	se.Clear()
 	a.logToConsole("[OK] Cleared all search exclusions")
-	return map[string]interface{}{
-		"success":    true,
+	return SuccessResponse(map[string]any{
 		"exclusions": []string{},
-	}
+	})
 }
 
 // SetSearchMinLikes sets the minimum likes percentage for search results
-func (a *App) SetSearchMinLikes(minLikes int) map[string]interface{} {
+func (a *App) SetSearchMinLikes(minLikes int) map[string]any {
 	se := initSearchExclusions()
 	se.SetMinLikes(minLikes)
 	a.logToConsole(fmt.Sprintf("[OK] Set minimum likes filter to %d%%", minLikes))
-	return map[string]interface{}{
-		"success":  true,
+	return SuccessResponse(map[string]any{
 		"minLikes": se.GetMinLikes(),
-	}
+	})
 }
 
 // FilterSearchResults applies exclusion filters to search results
-func (a *App) FilterSearchResults(results []map[string]interface{}) []map[string]interface{} {
+func (a *App) FilterSearchResults(results []map[string]any) []map[string]any {
 	se := initSearchExclusions()
 
-	filtered := make([]map[string]interface{}, 0)
+	filtered := make([]map[string]any, 0)
 	for _, result := range results {
 		// Check dURL exclusion
 		if durl, ok := result["durl"].(string); ok {
@@ -966,106 +952,80 @@ func (a *App) FilterSearchResults(results []map[string]interface{}) []map[string
 
 // SearchMyDOCs returns all DOCs owned by the connected wallet
 // docType can be empty to get all DOCs, or a specific type like "text/html"
-func (a *App) SearchMyDOCs(docType string) map[string]interface{} {
+func (a *App) SearchMyDOCs(docType string) map[string]any {
 	// Get wallet address
 	walletAddress := a.getConnectedWalletAddress()
 	if walletAddress == "" {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "No wallet connected. Open a wallet to search your content.",
-			"results": []map[string]interface{}{},
-		}
+		return FailureResponse("No wallet connected. Open a wallet to search your content.",
+			map[string]any{"results": []map[string]any{}})
 	}
 
 	// Check if Gnomon is running
 	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Gnomon indexer is not running. Enable it in Settings to search your content.",
-			"results": []map[string]interface{}{},
-		}
+		return FailureResponse("Gnomon indexer is not running. Enable it in Settings to search your content.",
+			map[string]any{"results": []map[string]any{}})
 	}
 
 	results := a.gnomonClient.GetMyDOCs(walletAddress, docType)
 	a.logToConsole(fmt.Sprintf("[OK] Found %d DOCs owned by wallet", len(results)))
 
-	return map[string]interface{}{
-		"success":       true,
+	return SuccessResponse(map[string]any{
 		"results":       results,
 		"count":         len(results),
 		"walletAddress": walletAddress,
 		"docType":       docType,
-	}
+	})
 }
 
 // SearchMyINDEXes returns all INDEXes owned by the connected wallet
-func (a *App) SearchMyINDEXes() map[string]interface{} {
+func (a *App) SearchMyINDEXes() map[string]any {
 	// Get wallet address
 	walletAddress := a.getConnectedWalletAddress()
 	if walletAddress == "" {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "No wallet connected. Open a wallet to search your content.",
-			"results": []map[string]interface{}{},
-		}
+		return FailureResponse("No wallet connected. Open a wallet to search your content.",
+			map[string]any{"results": []map[string]any{}})
 	}
 
 	// Check if Gnomon is running
 	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Gnomon indexer is not running. Enable it in Settings to search your content.",
-			"results": []map[string]interface{}{},
-		}
+		return FailureResponse("Gnomon indexer is not running. Enable it in Settings to search your content.",
+			map[string]any{"results": []map[string]any{}})
 	}
 
 	results := a.gnomonClient.GetMyINDEXes(walletAddress)
 	a.logToConsole(fmt.Sprintf("[OK] Found %d INDEXes owned by wallet", len(results)))
 
-	return map[string]interface{}{
-		"success":       true,
+	return SuccessResponse(map[string]any{
 		"results":       results,
 		"count":         len(results),
 		"walletAddress": walletAddress,
-	}
+	})
 }
 
 // SearchMyContent returns all content (DOCs and INDEXes) owned by the connected wallet
-func (a *App) SearchMyContent() map[string]interface{} {
+func (a *App) SearchMyContent() map[string]any {
 	a.logToConsole("[SEARCH] Loading My Content...")
 	
 	// Get wallet address
 	walletAddress := a.getConnectedWalletAddress()
 	if walletAddress == "" {
 		a.logToConsole("[WARN] My Content: No wallet connected")
-		return map[string]interface{}{
-			"success": false,
-			"error":   "No wallet connected. Open a wallet to search your content.",
-			"docs":    []map[string]interface{}{},
-			"indexes": []map[string]interface{}{},
-		}
+		return FailureResponse("No wallet connected. Open a wallet to search your content.",
+			map[string]any{"docs": []map[string]any{}, "indexes": []map[string]any{}})
 	}
 	a.logToConsole(fmt.Sprintf("[SEARCH] Wallet address: %s...", walletAddress[:20]))
 
 	// Check if Gnomon is running
 	if a.gnomonClient == nil {
 		a.logToConsole("[WARN] My Content: Gnomon client is nil")
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Gnomon indexer is not available. Start Gnomon in Settings to index your deployed content.",
-			"docs":    []map[string]interface{}{},
-			"indexes": []map[string]interface{}{},
-		}
+		return FailureResponse("Gnomon indexer is not available. Start Gnomon in Settings to index your deployed content.",
+			map[string]any{"docs": []map[string]any{}, "indexes": []map[string]any{}})
 	}
 	
 	if !a.gnomonClient.IsRunning() {
 		a.logToConsole("[WARN] My Content: Gnomon is not running")
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Gnomon indexer is not running. Start Gnomon in Settings to index your deployed content, or use the SCID directly in the Browser.",
-			"docs":    []map[string]interface{}{},
-			"indexes": []map[string]interface{}{},
-		}
+		return FailureResponse("Gnomon indexer is not running. Start Gnomon in Settings to index your deployed content, or use the SCID directly in the Browser.",
+			map[string]any{"docs": []map[string]any{}, "indexes": []map[string]any{}})
 	}
 
 	a.logToConsole("[SEARCH] Querying Gnomon for owned contracts...")
@@ -1075,34 +1035,29 @@ func (a *App) SearchMyContent() map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[OK] My Content: %d DOCs, %d INDEXes", len(docs), len(indexes)))
 
-	return map[string]interface{}{
-		"success":       true,
+	return SuccessResponse(map[string]any{
 		"docs":          docs,
 		"indexes":       indexes,
 		"docsCount":     len(docs),
 		"indexesCount":  len(indexes),
 		"totalCount":    len(docs) + len(indexes),
 		"walletAddress": walletAddress,
-	}
+	})
 }
 
 // GetAvailableDOCTypes returns all unique docType values from indexed DOCs
-func (a *App) GetAvailableDOCTypes() map[string]interface{} {
+func (a *App) GetAvailableDOCTypes() map[string]any {
 	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Gnomon indexer is not running",
-			"types":   []string{},
-		}
+		return FailureResponse("Gnomon indexer is not running",
+			map[string]any{"types": []string{}})
 	}
 
 	types := a.gnomonClient.GetAllDOCTypes()
 
-	return map[string]interface{}{
-		"success": true,
-		"types":   types,
-		"count":   len(types),
-	}
+	return SuccessResponse(map[string]any{
+		"types": types,
+		"count": len(types),
+	})
 }
 
 // getConnectedWalletAddress returns the address of the connected wallet
