@@ -7,6 +7,38 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.8] - 2026-07-27
+
+Sender-attribution privacy, cold-wallet genesis, XSWD/Browser trust-boundary hardening, fund-safety guards on the hot send path, Linux launch fixes for WebKitGTK, and an honest app version string (dev builds no longer misreport as 1.0.5).
+
+### Added
+- Wallet: cold-wallet offline genesis — mine registration air-gapped, then broadcast a saved DCSP blob from inside HOLOGRAM (paste → fingerprint check → send).
+- Wallet: sender-attribution controls on Send (anonymize / preferred decoys) with an approval modal that shows the effective ring and only promises a decoy when it holds.
+- Linux: desktop installer in the release tarball (`install.sh` / `uninstall.sh` / icon / `.desktop`) so double-click and the app menu work without a bare binary.
+- Builds against the consensus-identical `DHEBP/derohe` fork (walletapi privacy patches only).
+
+### Changed
+- App state consolidated under `~/.dero/hologram` (legacy CWD litter migrated best-effort).
+- Idle auto-lock: UI drops to the unlock screen on `wallet:autoLocked`; docs claim an app-layer lock (spend refused), not in-memory secret scrub.
+- XSWD connect grants replace the permission set (unchecked boxes stick); Browser session auth is parent-owned.
+- Linux release folder ships binary + installer assets instead of a bare executable.
+
+### Fixed
+- About / `version.go`: default `AppVersion` was stuck at `1.0.5` after 1.0.6/1.0.7 — now `1.0.8`.
+- XSWD: empty-origin sockets no longer skip permission checks; handshake requires a non-empty `url`.
+- Browser: connect permissions are enforced on integrated-wallet reads; client `authState` is ignored (no forgeable `'ok'`).
+- Browser: srcdoc loads lock sandbox **without** `allow-same-origin` before content is assigned (closes a same-origin/`window.go` pivot race).
+- Approval modal shows every destination, token lines, and `sc_dero_deposit` / `sc_token_deposit` — what you approve is what executes.
+- Native-DERO burn guard: junk `sc_rpc` without a real entrypoint/`SCACTION` no longer bypasses the block or labels destruction as a deposit.
+- Integrated-address invoice checks (amount + expiry) run on the hot `InternalWalletCall` path the Send UI actually uses.
+- XSWD anonymize clamps ring size to ≥16 so the decoy promise cannot ship at ring 2.
+- TELA ratings: Rate arg is `"r"` (was `"rating"` — ratings never recorded); non-functional Like/Dislike removed for Engram parity.
+- Browser: Discover Apps keeps polling until Gnomon’s first index finishes (~5 min), with a one-shot TOP RATED → ALL fallback on empty cold start.
+- Wallet: empty-destination sends rejected; wrong-network destinations blocked on XSWD/token paths; unresolved destinations no longer misdiagnosed as “not registered.”
+- Linux: WebKitGTK DMA-BUF hang on NVIDIA/Wayland — set `WEBKIT_DISABLE_DMABUF_RENDERER=1` before the WebView starts.
+
+---
+
 ## [1.0.7] - 2026-06-18
 
 Privacy Mode, automatic token discovery, clearer asset handling, hardened transfer validation, and Linux release binaries that run on current distros out of the box.

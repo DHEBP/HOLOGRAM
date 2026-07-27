@@ -414,7 +414,29 @@ let addressInput = '';
   let sessionGrantedPermissions = new Set();
   // srcdoc + allow-same-origin collapses to the parent origin (R2-B5). Track mode
   // so the sandbox attribute can drop same-origin for srcdoc loads.
+  // CRITICAL: set sandbox imperatively BEFORE assigning srcdoc — reactive
+  // iframeUsesSrcdoc alone races (srcdoc lands while same-origin is still on).
   let iframeUsesSrcdoc = false;
+  const IFRAME_SANDBOX_SRCDOC =
+    'allow-scripts allow-forms allow-modals allow-clipboard-read allow-clipboard-write';
+  const IFRAME_SANDBOX_HTTP =
+    'allow-scripts allow-same-origin allow-forms allow-modals allow-clipboard-read allow-clipboard-write';
+
+  /** Lock sandbox without same-origin, then callers may assign srcdoc safely. */
+  function prepareIframeForSrcdoc() {
+    if (!contentFrame) return;
+    contentFrame.setAttribute('sandbox', IFRAME_SANDBOX_SRCDOC);
+    contentFrame.removeAttribute('src');
+    iframeUsesSrcdoc = true;
+  }
+
+  /** Restore HTTP sandbox (same-origin OK — iframe origin is 127.0.0.1, not parent). */
+  function prepareIframeForHttp() {
+    if (!contentFrame) return;
+    contentFrame.setAttribute('sandbox', IFRAME_SANDBOX_HTTP);
+    contentFrame.removeAttribute('srcdoc');
+    iframeUsesSrcdoc = false;
+  }
 
   function clearBrowserWalletSession() {
     sessionWalletAuthorized = false;
@@ -1984,34 +2006,14 @@ ${logsText || '(no logs)'}
       // Use srcdoc with modified HTML (includes XSWD bridge + telaHost placeholder)
       // Assets use absolute URLs so they still load from server
       if (contentFrame) {
-        contentFrame.removeAttribute('src');
+        prepareIframeForSrcdoc();
         contentFrame.srcdoc = html;
-        iframeUsesSrcdoc = true;
         showWelcome = false;
-        
-        // Inject actual telaHost API immediately after iframe loads
-        // The placeholder prevents errors, but we need the real API
-        contentFrame.onload = () => {
-          setTimeout(() => {
-            try {
-              injectTelaHostAPI();
-              // Verify injection worked - but don't error if cross-origin prevents access
-              try {
-                const iframeWindow = contentFrame?.contentWindow;
-                if (iframeWindow?.telaHost) {
-                  addConsoleLog('[OK] telaHost API injected successfully (placeholder was set early)');
-                }
-                // Don't warn - cross-origin is expected for local dev server
-              } catch (e) {
-                // Cross-origin access denied - XSWD bridge will handle communication instead
-              }
-            } catch (e) {
-              // Silently ignore cross-origin errors - XSWD bridge handles communication
-            }
-          }, 10);
-        };
+        // postMessage bridge is in the HTML; same-origin Go injection is unavailable
+        // (and unsafe) on srcdoc without allow-same-origin.
+        contentFrame.onload = () => {};
       }
-      addConsoleLog(`[OK] Local file loaded via HTTP (telaHost available)`);
+      addConsoleLog(`[OK] Local file loaded via srcdoc (sandbox locked before load)`);
       
     } catch (fetchError) {
       addConsoleLog(`[Error] Failed to fetch from local server: ${fetchError}`, 'error');
@@ -2109,10 +2111,9 @@ ${logsText || '(no logs)'}
         // This gives proper HTTP context so external scripts can load
         // (srcdoc uses about: protocol which blocks script loading)
         if (contentFrame) {
-          contentFrame.removeAttribute('srcdoc');
+          prepareIframeForHttp();
           const cacheBustedUrl = `${status.url}?_t=${Date.now()}`;
           contentFrame.src = cacheBustedUrl;
-          iframeUsesSrcdoc = false;
           showWelcome = false;
           
           // Inject telaHost API after iframe loads
@@ -2225,15 +2226,12 @@ ${logsText || '(no logs)'}
         
         // Load iframe from real HTTP URL
         if (contentFrame) {
-          // Remove srcdoc attribute entirely (it takes precedence over src when present)
-          // Setting srcdoc='' still keeps the attribute and shows blank page
-          contentFrame.removeAttribute('srcdoc');
+          prepareIframeForHttp();
           // Add cache-busting to force reload even if URL is the same port
           // This is needed because proxy servers reuse ports (50000+) and
           // the browser won't reload if src URL appears unchanged
           const cacheBustedUrl = `${serverResult.url}?_t=${Date.now()}`;
           contentFrame.src = cacheBustedUrl;
-          iframeUsesSrcdoc = false;
           showWelcome = false;
         }
         return true;
@@ -2824,23 +2822,14 @@ ${logsText || '(no logs)'}
       
       // Remove src attribute - we're using srcdoc for inline content
       // This ensures clean state when switching between HTTP and inline modes
-      contentFrame.removeAttribute('src');
-      
-      // Use srcdoc for inline content (fallback when HTTP server fails).
-      // Do NOT pair srcdoc with allow-same-origin (R2-B5) — that inherits the
-      // parent origin and exposes window.parent.go. Sandbox drops same-origin
-      // while iframeUsesSrcdoc is true; postMessage bridge still works.
+      // Lock sandbox WITHOUT allow-same-origin BEFORE srcdoc (R2-B5 Round-3):
+      // reactive iframeUsesSrcdoc alone races — first nested document would be same-origin.
+      prepareIframeForSrcdoc();
       contentFrame.srcdoc = injectedHtml;
-      iframeUsesSrcdoc = true;
       showWelcome = false;
       
-      // Wait for iframe to load, then inject telaHost API (HTTP same-origin only;
-      // srcdoc without allow-same-origin cannot reach parent Go bindings).
-      contentFrame.onload = () => {
-        if (!iframeUsesSrcdoc) {
-          setTimeout(() => injectTelaHostAPI(), 50);
-        }
-      };
+      // Wait for iframe to load; do not inject Go closures into srcdoc (opaque origin).
+      contentFrame.onload = () => {};
     } catch (e) {
       console.error('Error rendering content:', e);
     }
@@ -3975,9 +3964,7 @@ ${logsText || '(no logs)'}
       bind:this={contentFrame}
       class="browser-content-frame"
       style:display={!showWelcome && !loading ? 'block' : 'none'}
-      sandbox={iframeUsesSrcdoc
-        ? "allow-scripts allow-forms allow-modals allow-clipboard-read allow-clipboard-write"
-        : "allow-scripts allow-same-origin allow-forms allow-modals allow-clipboard-read allow-clipboard-write"}
+      sandbox={iframeUsesSrcdoc ? IFRAME_SANDBOX_SRCDOC : IFRAME_SANDBOX_HTTP}
       allow="clipboard-read; clipboard-write"
       title="App Content"
     ></iframe>
