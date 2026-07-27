@@ -998,6 +998,10 @@ export function PreviewDOC(arg1) {
   return window['go']['main']['App']['PreviewDOC'](arg1);
 }
 
+export function PreviewRegistrationDCSP(arg1) {
+  return window['go']['main']['App']['PreviewRegistrationDCSP'](arg1);
+}
+
 export function PreviewTELAApp(arg1) {
   return window['go']['main']['App']['PreviewTELAApp'](arg1);
 }

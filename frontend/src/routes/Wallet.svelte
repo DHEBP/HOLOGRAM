@@ -538,6 +538,26 @@
         }
       });
 
+      // Idle auto-lock fired on the backend (CloseWallet already ran) -- mirror the close
+      // in the UI so a "locked" wallet stops showing the address/balance and drops to the
+      // unlock screen. The backend does not yet scrub the in-memory secret; this reflects
+      // the app-layer lock the user actually sees.
+      EventsOn('wallet:autoLocked', (data) => {
+        stopPolling();
+        walletState.update(state => ({
+          ...state,
+          isOpen: false,
+          address: '',
+          balance: 0,
+          lockedBalance: 0,
+          walletPath: '',
+        }));
+        transactionHistory = [];
+        activeSection = 'dashboard';
+        resetSendForm();
+        toast.info(`Wallet locked after ${data?.idleMinutes ?? ''} min idle`);
+      });
+
       // Listen for network mode changes
       EventsOn('network-mode-changed', async () => {
         await syncNetworkMode();
@@ -589,6 +609,7 @@
     EventsOff('wallet:registration_complete');
     EventsOff('wallet:registration_failed');
     EventsOff('wallet:registration_cancelled');
+    EventsOff('wallet:autoLocked');
     UnsubscribeFromEvents();
     // Clean up section navigation listener
     if (window._walletNavigateHandler) {

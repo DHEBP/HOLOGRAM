@@ -501,6 +501,8 @@ export function PrepareMODInstall(arg1:string,arg2:string):Promise<Record<string
 
 export function PreviewDOC(arg1:string):Promise<Record<string, any>>;
 
+export function PreviewRegistrationDCSP(arg1:string):Promise<Record<string, any>>;
+
 export function PreviewTELAApp(arg1:string):Promise<Record<string, any>>;
 
 export function QuickDeployFile(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;

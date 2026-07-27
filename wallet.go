@@ -33,11 +33,18 @@ type WalletManager struct {
 	lastActivity  time.Time // updated on any wallet use; drives idle auto-lock
 }
 
-// defaultAutoLockMinutes is the idle window after which an open wallet is locked
-// (its decrypted secret dropped from memory). The wallet's secret scalar otherwise
-// lives in process memory for the whole session; idle auto-lock bounds that exposure
-// for an unattended machine. 0 disables (set via the auto_lock_minutes setting).
+// defaultAutoLockMinutes is the idle window after which an open wallet is locked: the
+// wallet handle is closed and further operations are refused (isOpen=false), so an
+// unattended machine can't be used to move funds and the UI drops to the unlock screen.
+// This is an app-layer lock -- it does not yet zero the secret scalar already resident in
+// process memory. 0 disables (set via the auto_lock_minutes setting).
 const defaultAutoLockMinutes = 15
+
+// minAnonymizeRingSize is the ring size the dApp/XSWD transfer path is clamped up to
+// when a request sets anonymize. Attribution framing is a structural no-op at ring
+// size 2 (the sender stays pinned and the receiver decodes it), so honoring an
+// anonymize request means guaranteeing a real anonymity set. Matches the Send default.
+const minAnonymizeRingSize = 16
 
 // noteWalletActivity stamps the wallet as recently used. Call under no lock; it takes
 // the manager lock itself. Cheap enough to call on every wallet operation.
@@ -461,10 +468,12 @@ func (a *App) autoLockMinutes() int {
 	return defaultAutoLockMinutes
 }
 
-// startIdleAutoLockWatcher runs a background loop that locks the wallet (dropping the
-// decrypted secret from memory) once it has been idle longer than the configured window.
-// Started once from startup(). The secret scalar otherwise persists in process memory for
-// the entire app session; this bounds the exposure on an unattended machine.
+// startIdleAutoLockWatcher runs a background loop that locks the wallet once it has been
+// idle longer than the configured window. Started once from startup(). Locking closes the
+// wallet handle (isOpen=false), refuses further operations, and drops the UI to the unlock
+// screen via the wallet:autoLocked event. This is an app-layer lock: it does not yet zero
+// the secret scalar already resident in process memory, so the secret persists in RAM until
+// the process exits (unchanged from an always-open wallet).
 func (a *App) startIdleAutoLockWatcher() {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -2046,6 +2055,15 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
 				ringsize = uint64(rs)
 			}
+			// A dApp that requests anonymize but omits/undersizes the ring would otherwise
+			// get a ring-2 transfer, where attribution framing is a structural no-op: the
+			// receiver decodes the real sender while the approval modal promises a decoy.
+			// Clamp the ring up so the anonymity the user approved actually happens. Mirrors
+			// the interactive Send guard (Wallet.svelte). See TestXSWDAnonymizeClampsRingSize.
+			anonymize, _ := params["anonymize"].(bool)
+			if anonymize && ringsize < minAnonymizeRingSize {
+				ringsize = minAnonymizeRingSize
+			}
 			// dApp-requested fee (0 = let daemon pick)
 			fees := uint64(0)
 			if f, ok := params["fees"].(float64); ok && f > 0 {
@@ -2053,13 +2071,13 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			}
 			a.logToConsole(fmt.Sprintf("[XSWD] Building transfer TX with ringsize=%d fees=%d", ringsize, fees))
 
-			// Opt-in sender-privacy knobs (interactive send only). A zero-value
-			// TransferOptions reproduces TransferPayload0 exactly, so the default
-			// path is unchanged. anonymize → attribution witness points at a decoy
-			// instead of you; preferred_decoys → seed the front of the ring (random
-			// tops up). Strict:false → bad/unregistered decoys are skipped, not fatal.
+			// Opt-in sender-privacy knobs. A zero-value TransferOptions reproduces
+			// TransferPayload0 exactly, so the default path is unchanged. anonymize →
+			// attribution witness points at a decoy instead of you (requires ring >2,
+			// guaranteed by the clamp above); preferred_decoys → seed the front of the
+			// ring (random tops up). Strict:false → bad/unregistered decoys skipped, not fatal.
 			opts := walletapi.TransferOptions{}
-			if anon, _ := params["anonymize"].(bool); anon {
+			if anonymize {
 				opts.Attribution = walletapi.AttributionAnonymous
 			}
 			if decoys, ok := params["preferred_decoys"].([]interface{}); ok && len(decoys) > 0 {

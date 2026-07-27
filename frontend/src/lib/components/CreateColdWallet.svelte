@@ -21,6 +21,8 @@
     CancelColdRegistration,
     SaveColdBackup,
     ExportRegistrationDCSP,
+    PreviewRegistrationDCSP,
+    BroadcastRegistrationDCSP,
   } from '../../../wailsjs/go/main/App.js';
   import { addressFingerprint } from '../utils/addressFingerprint.js';
   import { toast } from '../stores/appState.js';
@@ -118,6 +120,42 @@
     } catch (e) { toast.error(String(e)); }
   }
 
+  // ── Broadcast mode: activate a registration saved/copied from an offline device.
+  // The DCSP blob is public (address + registration tx, no secret). Preview decodes and
+  // validates it against this device's network so the user can confirm the fingerprint
+  // before broadcasting; Broadcast sends it via the daemon.
+  let mode = 'create'; // 'create' | 'broadcast'
+  let broadcastBlob = '';
+  let broadcasting = false;
+  let broadcastError = '';
+  let broadcastPreview = null; // { address, checkwords }
+  let broadcastResult = null;  // { address, txid }
+
+  async function previewBroadcast() {
+    broadcastError = ''; broadcastResult = null;
+    try {
+      const res = await PreviewRegistrationDCSP(broadcastBlob.trim());
+      if (!res?.success) { broadcastPreview = null; broadcastError = res?.error || 'Could not read the registration'; return; }
+      broadcastPreview = { address: res.address, checkwords: addressFingerprint(res.address).checkwords };
+    } catch (e) { broadcastError = String(e); }
+  }
+
+  async function doBroadcast() {
+    broadcasting = true; broadcastError = '';
+    try {
+      const res = await BroadcastRegistrationDCSP(broadcastBlob.trim());
+      if (!res?.success) { broadcastError = res?.error || 'Broadcast failed'; return; }
+      broadcastResult = { address: res.address, txid: res.txid || '' };
+      toast.success('Registration broadcast — cold address is live');
+    } catch (e) { broadcastError = String(e); } finally { broadcasting = false; }
+  }
+
+  function enterBroadcast() { mode = 'broadcast'; }
+  function exitBroadcast() {
+    mode = 'create'; broadcastBlob = ''; broadcasting = false;
+    broadcastError = ''; broadcastPreview = null; broadcastResult = null;
+  }
+
   function close() { if (busy) return; seed = ''; dispatch('close'); }
   const fmt = (n) => (n ?? 0).toLocaleString();
 </script>
@@ -135,6 +173,53 @@
 
     {#if error}<div class="cg-error" transition:fade={{ duration: 100 }}>{error}</div>{/if}
 
+    {#if mode === 'broadcast'}
+      <!-- BROADCAST · activate a registration saved from an offline device -->
+      <div class="cg-module">
+        <div class="cg-mod-head">
+          <span class="cg-mod-title active">Broadcast registration</span>
+        </div>
+        <div class="cg-mod-body">
+          <p class="cg-lead">Paste the registration you copied on the offline device. Broadcasting activates the address on-chain so it can receive funds — the blob is public and carries no secret.</p>
+          <textarea
+            class="cg-blob"
+            bind:value={broadcastBlob}
+            on:input={() => { broadcastPreview = null; broadcastError = ''; }}
+            placeholder="DCSP:…"
+            rows="3"
+            spellcheck="false"
+            disabled={broadcasting || !!broadcastResult}
+          ></textarea>
+          {#if broadcastError}<div class="cg-error">{broadcastError}</div>{/if}
+          {#if broadcastPreview && !broadcastResult}
+            <div class="cg-field">
+              <span class="cg-label">Address</span>
+              <code class="cg-addr">{broadcastPreview.address}</code>
+            </div>
+            <div class="cg-verify-row">
+              <span class="cg-label">Verify</span>
+              <span class="cg-fp-pill">{broadcastPreview.checkwords}</span>
+              <span class="cg-fp-hint">must match the offline device</span>
+            </div>
+          {/if}
+          {#if broadcastResult}
+            <div class="cg-ok"><ShieldCheck size={14} /> Broadcast — address is live{#if broadcastResult.txid} · tx {broadcastResult.txid.slice(0, 12)}…{/if}</div>
+          {/if}
+          <div class="cg-actions">
+            {#if broadcastResult}
+              <button class="cg-btn cg-btn-primary" on:click={exitBroadcast}>Done</button>
+            {:else if broadcastPreview}
+              <button class="cg-btn cg-btn-primary" on:click={doBroadcast} disabled={broadcasting}>{broadcasting ? 'Broadcasting…' : 'Broadcast'}</button>
+              <button class="cg-btn cg-btn-ghost" on:click={exitBroadcast} disabled={broadcasting}>Back</button>
+            {:else}
+              <button class="cg-btn cg-btn-primary" on:click={previewBroadcast} disabled={!broadcastBlob.trim()}>Check</button>
+              <button class="cg-btn cg-btn-ghost" on:click={exitBroadcast}>Back</button>
+            {/if}
+          </div>
+        </div>
+      </div>
+    {:else}
+
     <!-- MODULE 1 · Generate -->
     <div class="cg-module" class:collapsed={step >= 1}>
       <div class="cg-mod-head">
@@ -149,6 +234,9 @@
           <p class="cg-lead">The seed is created in memory and shown once. Back it up on paper or metal before broadcasting the registration.</p>
           <button class="cg-btn cg-btn-primary" on:click={generate} disabled={busy}>
             {busy ? 'Generating…' : 'Generate cold wallet'}
+          </button>
+          <button class="cg-btn cg-btn-secondary" on:click={enterBroadcast} disabled={busy}>
+            Broadcast a saved registration
           </button>
         </div>
       {/if}
@@ -252,13 +340,14 @@
           {#if exportDone}
             <div class="cg-next" transition:fade={{ duration: 120 }}>
               <div class="cg-next-head"><ArrowRight size={13} /> One step left, on an online device</div>
-              <div class="cg-next-body">Open HOLOGRAM ▸ Wallet ▸ Broadcast registration, paste the copied blob, confirm the <span class="cg-fp-inline">{fingerprint.checkwords}</span> fingerprint matches, and send. Your cold address is then live.</div>
+              <div class="cg-next-body">On an online device, open HOLOGRAM ▸ Wallet ▸ Cold ▸ Broadcast a saved registration, paste the copied blob, confirm the <span class="cg-fp-inline">{fingerprint.checkwords}</span> fingerprint matches, and send. Your cold address is then live.</div>
             </div>
           {/if}
           <div class="cg-warn"><AlertTriangle size={14} /> Destroy the .txt after transcribing — keep only paper or metal.</div>
         </div>
       {/if}
     </div>
+    {/if}
 
   </div>
 </div>
@@ -346,4 +435,13 @@
   .cg-next-head { display: flex; align-items: center; gap: var(--s-2); font-size: 11px; color: var(--text-1); }
   .cg-next-body { font-size: 10px; line-height: 1.6; color: var(--text-3); padding-left: 21px; }
   .cg-fp-inline { color: var(--cyan-300); font-weight: 700; }
+  /* broadcast mode — design-system input (A6) + secondary-button (A5) recipes */
+  .cg-blob { width: 100%; box-sizing: border-box; resize: vertical; min-height: 64px; padding: var(--s-3) var(--s-4); background: var(--void-deep); border: 1px solid var(--border-default); border-radius: var(--r-md); color: var(--text-1); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; }
+  .cg-blob::placeholder { color: var(--text-4); }
+  .cg-blob:focus { outline: none; border-color: var(--cyan-500); box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15); }
+  .cg-blob:disabled { opacity: 0.6; }
+  .cg-actions { display: flex; gap: var(--s-2); margin-top: var(--s-3); }
+  .cg-btn-secondary { background: transparent; color: var(--cyan-400); border-color: var(--cyan-500); margin-top: var(--s-2); }
+  .cg-btn-secondary:hover:not(:disabled) { background: rgba(34, 211, 238, 0.1); }
+  .cg-btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

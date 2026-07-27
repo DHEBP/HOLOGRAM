@@ -293,3 +293,18 @@ func (a *App) BroadcastRegistrationDCSP(blob string) map[string]interface{} {
 	}
 	return out
 }
+
+// PreviewRegistrationDCSP (hot side) decodes a DCSP registration blob and validates it
+// against the wallet's CURRENT network WITHOUT broadcasting, so the UI can show the
+// address (and its fingerprint) for the user to confirm before sending. The blob is
+// public -- it carries no secret.
+func (a *App) PreviewRegistrationDCSP(blob string) map[string]interface{} {
+	msg, err := genesis.DecodeDCSP(blob)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	if _, err := genesis.ValidateForBroadcast(msg, a.hotNetwork()); err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"success": true, "address": msg.Address}
+}

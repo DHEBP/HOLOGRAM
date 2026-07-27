@@ -2,7 +2,8 @@
 // Regression tests for key/seed/credential exposure hardening:
 //   1. The TELA clipboard bridge must never let untrusted content READ the host
 //      clipboard (a just-copied recovery seed would be exfiltrable otherwise).
-//   2. Idle auto-lock must drop the decrypted wallet from memory after the window.
+//   2. Idle auto-lock must close the wallet (isOpen=false, spends refused) and notify the
+//      UI after the idle window. (Zeroing the in-memory secret is not yet implemented.)
 
 package main
 

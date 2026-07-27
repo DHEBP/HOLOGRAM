@@ -36,6 +36,12 @@
   $: isBurnBlocked = nativeBurnTotal > 0 && !hasSCCall;
   $: blockedBurnAmount = Math.round(nativeBurnTotal / 100000);
 
+  // Effective ring size the backend will actually use. A dApp that requests anonymize
+  // but omits/undersizes the ring is clamped up to 16 (minAnonymizeRingSize, wallet.go)
+  // so the decoy promise below is truthful -- ring 2 structurally pins the sender.
+  $: requestedRing = Number(request?.payload?.ringsize) || 0;
+  $: effectiveRing = request?.payload?.anonymize ? Math.max(requestedRing, 16) : requestedRing;
+
   let recentWallets = [];
   let recentWalletsInfo = [];
   let showWalletSwitcher = false;
@@ -552,10 +558,11 @@
                       <div class="modal-tx-attribution-note">
                         It does not change who actually sent it, the amount, or the recipient.
                       </div>
-                    {:else}
-                      <!-- anonymize only: appears from an unnamed decoy ring member -->
+                    {:else if effectiveRing > 2}
+                      <!-- anonymize: appears from an unnamed decoy ring member. The ring is
+                           clamped >2 server-side (wallet.go), so this promise holds. -->
                       <div class="modal-tx-attribution-copy">
-                        This payment will appear to come from a decoy ring member, not your address.
+                        This payment will appear to come from a decoy ring member, not your address (ring size {effectiveRing}).
                       </div>
                     {/if}
                   </div>
@@ -604,10 +611,10 @@
               {/if}
               
               <!-- Ring size if specified -->
-              {#if request.payload.ringsize}
+              {#if effectiveRing}
                 <div class="modal-tx-field modal-tx-field-secondary">
                   <div class="modal-tx-label">RING SIZE</div>
-                  <div class="modal-tx-ringsize">{request.payload.ringsize}</div>
+                  <div class="modal-tx-ringsize">{effectiveRing}</div>
                 </div>
               {/if}
             </div>

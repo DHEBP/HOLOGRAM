@@ -70,8 +70,8 @@ func RenderBackupText(network Network, created int64, address, seed, registratio
 		}
 		b.WriteString(strings.Repeat("-", 64) + "\n")
 		b.WriteString("REGISTRATION (not secret) — broadcast once from an online\n")
-		b.WriteString("device to activate this address. In HOLOGRAM: Wallet ▸\n")
-		b.WriteString("Broadcast registration ▸ paste the line below ▸ send.\n")
+		b.WriteString("device to activate this address. In HOLOGRAM: Wallet ▸ Cold ▸\n")
+		b.WriteString("Broadcast a saved registration ▸ paste the line below ▸ send.\n")
 		b.WriteString(strings.Repeat("-", 64) + "\n\n")
 		b.WriteString(blob + "\n\n")
 	}
