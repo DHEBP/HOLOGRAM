@@ -234,13 +234,34 @@ func (pm *PermissionManager) GrantPermissions(origin, name, description string, 
 		}
 	}
 
-	// Grant the specified permissions
+	// Replace the permission set — connect approval is authoritative.
+	// Additive grants made unchecked boxes in the connect modal theater.
+	app.Permissions = make(map[XSWDPermission]bool, len(permissions))
 	for _, p := range permissions {
 		app.Permissions[p] = true
 	}
 	app.LastAccessed = now
 
 	return pm.saveToStorage(app)
+}
+
+// DenyUnlessPermission returns a JSON-RPC error when the connection has not
+// completed handshake (empty origin) or lacks the required permission.
+// Empty origin must deny — the old "origin != \"\" &&" guard skipped checks
+// entirely for unauthenticated sockets (R2-B1).
+func DenyUnlessPermission(origin string, perm XSWDPermission) *JSONRPCError {
+	if origin == "" {
+		return &JSONRPCError{Code: -32003, Message: "Permission denied: XSWD handshake required"}
+	}
+	pm := GetPermissionManager()
+	if pm == nil {
+		return &JSONRPCError{Code: -32003, Message: "Permission denied: permission manager unavailable"}
+	}
+	if !pm.HasPermission(origin, perm) {
+		permInfo := GetPermissionInfo(perm)
+		return &JSONRPCError{Code: -32003, Message: fmt.Sprintf("Permission denied: %s permission not granted", permInfo.Name)}
+	}
+	return nil
 }
 
 // RevokePermission removes a specific permission from an app

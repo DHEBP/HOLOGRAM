@@ -405,10 +405,83 @@ let addressInput = '';
   let localDevUrl = '';
   let hotReloadInProgress = false; // Flag to auto-approve XSWD during hot reload
   
-  // Session approval tracking - prevents double-modal when stale content reloads via HTTP
+  // Session approval tracking - parent-owned wallet auth (R2-B2/B3).
+  // Never trust iframe-supplied authState; only set these after a real connect approval.
   let sessionApprovedScid = null;
   let sessionApprovedAppName = null;
   let sessionApprovalTime = 0;
+  let sessionWalletAuthorized = false;
+  let sessionGrantedPermissions = new Set();
+  // srcdoc + allow-same-origin collapses to the parent origin (R2-B5). Track mode
+  // so the sandbox attribute can drop same-origin for srcdoc loads.
+  let iframeUsesSrcdoc = false;
+
+  function clearBrowserWalletSession() {
+    sessionWalletAuthorized = false;
+    sessionGrantedPermissions = new Set();
+    sessionApprovedScid = null;
+    sessionApprovedAppName = null;
+    sessionApprovalTime = 0;
+  }
+
+  function browserOriginKey() {
+    return (currentMeta?.scid || addressInput || '').trim();
+  }
+
+  /** Map an XSWD wallet method to the permission id required for Browser-integrated calls. */
+  function permissionForWalletMethod(methodLower) {
+    const m = (methodLower || '').replace(/^dero\./, '');
+    switch (m) {
+      case 'getaddress':
+      case 'getpublickey':
+      case 'makeintegratedaddress':
+      case 'splitintegratedaddress':
+      case 'getdaemon':
+        return 'view_address';
+      case 'getbalance':
+      case 'getheight':
+      case 'gettransfers':
+      case 'gettransferbytxid':
+      case 'gettrackedassets':
+        return 'view_balance';
+      case 'transfer':
+      case 'transfer_split':
+      case 'signdata':
+      case 'decryptpayload':
+        return 'sign_transaction';
+      case 'scinvoke':
+      case 'sc_invoke':
+        return 'sc_invoke';
+      default:
+        return null;
+    }
+  }
+
+  function sessionAllowsWalletMethod(methodLower) {
+    if (!sessionWalletAuthorized) return false;
+    const perm = permissionForWalletMethod(methodLower);
+    if (!perm) return true;
+    return sessionGrantedPermissions.has(perm);
+  }
+
+  async function persistConnectApproval(appName, description, permissions) {
+    const origin = browserOriginKey();
+    const perms = Array.isArray(permissions) ? permissions : [];
+    const approveResult = await ApproveWalletConnection(
+      origin,
+      appName || 'App',
+      description || '',
+      perms
+    );
+    if (approveResult?.success) {
+      sessionWalletAuthorized = true;
+      sessionGrantedPermissions = new Set(perms);
+      sessionApprovedScid = currentMeta?.scid || null;
+      sessionApprovedAppName = appName || null;
+      sessionApprovalTime = Date.now();
+    }
+    return approveResult;
+  }
   
   // Favorites
   let showAllFavorites = false;
@@ -1083,74 +1156,60 @@ let addressInput = '';
             addConsoleLog(`[Browser] integratedWallet setting: ${settings.integratedWallet}`);
             addConsoleLog(`[Browser] wallet isOpen: ${currentWalletState.isOpen}`);
             if (settings.integratedWallet) {
-              // Check if wallet is open - most dApps need wallet methods after connect
               if (!currentWalletState.isOpen) {
                 addConsoleLog('[Browser] Integrated wallet mode but no wallet open - warning user');
               }
               try {
-                // Auto-approve during hot reload to avoid modal interruption
-                if (hotReloadInProgress) {
-                  addConsoleLog('[Browser] Hot reload in progress - auto-approving XSWD reconnection');
-                  const approveResult = await ApproveWalletConnection();
-                  addConsoleLog(`[Browser] Auto-approve result: ${JSON.stringify(approveResult)}`);
+                const connectingAppName = payload.appInfo?.name || currentMeta?.name || 'App';
+                const connectingDesc = payload.appInfo?.description || '';
+                // Hot reload / same-SCID reconnect: reuse this session's grants only.
+                // Never auto-approve by app name alone (R2-B2 / name-spoof).
+                const timeSinceApproval = Date.now() - sessionApprovalTime;
+                const sameScid = sessionApprovedScid != null && currentMeta?.scid && sessionApprovedScid === currentMeta.scid;
+                if (sessionWalletAuthorized && sameScid && timeSinceApproval < 30000) {
+                  addConsoleLog(`[Browser] Reusing session grants for SCID reconnect: ${connectingAppName}`);
+                  result = true;
+                } else if (hotReloadInProgress && sessionWalletAuthorized && sameScid) {
+                  addConsoleLog('[Browser] Hot reload — reusing existing session grants');
                   result = true;
                 } else {
-                  // Check if this app was already approved in this session (prevents double-modal
-                  // when stale cached content loads in srcdoc then switches to HTTP server)
-                  const connectingAppName = payload.appInfo?.name || '';
-                  const timeSinceApproval = Date.now() - sessionApprovalTime;
-                  const sameScid = sessionApprovedScid != null && currentMeta?.scid && sessionApprovedScid === currentMeta.scid;
-                  const sameName = sessionApprovedAppName != null && connectingAppName && sessionApprovedAppName === connectingAppName;
-                  
-                  if ((sameScid || sameName) && timeSinceApproval < 30000) {
-                    addConsoleLog(`[Browser] Auto-approving reconnect for: ${connectingAppName} (already approved in this session)`);
-                    const approveResult = await ApproveWalletConnection();
+                  addConsoleLog('[Browser] Requesting wallet approval via modal...');
+                  const requestedPerms = payload.appInfo?.permissions || [];
+                  const hasWalletPerms = requestedPerms.some(p =>
+                    ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
+                  );
+                  const isReadOnly = !hasWalletPerms;
+                  const walletNotOpen = !currentWalletState.isOpen;
+
+                  const approval = await requestWalletApproval({
+                    type: 'connect',
+                    appName: connectingAppName,
+                    origin: browserOriginKey() || addressInput,
+                    description: connectingDesc,
+                    isReadOnly: isReadOnly,
+                    walletNotOpen: walletNotOpen,
+                    requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
+                      id: p,
+                      name: getPermissionName(p),
+                      description: getPermissionDescription(p),
+                      alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(p)
+                    })) : [{
+                      id: 'read_public_data',
+                      name: 'Read Public Blockchain Data',
+                      description: 'Can read public blockchain info (blocks, transactions, network stats)',
+                      alwaysAsk: false
+                    }]
+                  });
+                  addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
+                  if (approval && approval.approved) {
+                    const granted = Array.isArray(approval.permissions) ? approval.permissions : [];
+                    addConsoleLog(`[Browser] Persisting grants: ${JSON.stringify(granted)}`);
+                    const approveResult = await persistConnectApproval(connectingAppName, connectingDesc, granted);
+                    addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
                     result = approveResult?.success === true;
                   } else {
-                    addConsoleLog('[Browser] Requesting wallet approval via modal...');
-                    // Check if app requests specific permissions in handshake
-                    const requestedPerms = payload.appInfo?.permissions || [];
-                    const hasWalletPerms = requestedPerms.some(p => 
-                      ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
-                    );
-                    // Default to read-only unless app explicitly requests wallet permissions
-                    const isReadOnly = !hasWalletPerms;
-                    // Flag if wallet is not open but app likely needs it
-                    const walletNotOpen = !currentWalletState.isOpen;
-                    
-                    const approval = await requestWalletApproval({
-                      type: 'connect',
-                      appName: payload.appInfo?.name || currentMeta.name || 'App',
-                      origin: addressInput,
-                      description: payload.appInfo?.description || '',
-                      isReadOnly: isReadOnly,
-                      walletNotOpen: walletNotOpen,
-                      requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
-                        id: p,
-                        name: getPermissionName(p),
-                        description: getPermissionDescription(p),
-                        alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(p)
-                      })) : [{ 
-                        id: 'read_public_data', 
-                        name: 'Read Public Blockchain Data',
-                        description: 'Can read public blockchain info (blocks, transactions, network stats)',
-                        alwaysAsk: false
-                      }]
-                    });
-                    addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
-                    if (approval && approval.approved) {
-                      addConsoleLog('[Browser] Calling ApproveWalletConnection...');
-                      const approveResult = await ApproveWalletConnection();
-                      addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
-                      // Record this approval for reconnect deduplication
-                      sessionApprovedScid = currentMeta?.scid || null;
-                      sessionApprovedAppName = connectingAppName;
-                      sessionApprovalTime = Date.now();
-                      result = true;
-                    } else {
-                      addConsoleLog('[Browser] User denied connection');
-                      result = false;
-                    }
+                    addConsoleLog('[Browser] User denied connection');
+                    result = false;
                   }
                 }
               } catch (e) {
@@ -1165,7 +1224,7 @@ let addressInput = '';
             
           case 'call':
             // Handle XSWD method call
-            const { method, params, authState } = payload;
+            const { method, params } = payload;
             const normalizedMethod = method.replace('DERO.', '');
           const methodLower = normalizedMethod.toLowerCase();
           const callSettings = get(settingsState);
@@ -1202,9 +1261,9 @@ let addressInput = '';
             
             const walletMethodsLower = walletMethods.map(m => m.toLowerCase());
 
-            // Check authorization for wallet methods
-            // Accept both 'accepted' and 'ok' for backward compatibility
-            if (walletMethodsLower.includes(methodLower) && authState !== 'accepted' && authState !== 'ok') {
+            // Parent-owned session auth (R2-B3): ignore any client-supplied authState.
+            // Wallet methods require a successful connect approval in this Browser session.
+            if (walletMethodsLower.includes(methodLower) && !sessionAllowsWalletMethod(methodLower)) {
               throw new Error('Wallet not authorized');
             }
             
@@ -1692,9 +1751,8 @@ ${logsText || '(no logs)'}
     hasNavigated = false;
     resetXSWDSubscriptions();
     // Reset session approval so new app navigations always show the approval modal
-    sessionApprovedScid = null;
-    sessionApprovedAppName = null;
-    sessionApprovalTime = 0;
+    clearBrowserWalletSession();
+    iframeUsesSrcdoc = false;
     
     // Strip any existing dero:// prefix from input (badge provides it visually)
     let cleanInput = addressInput.trim();
@@ -1786,9 +1844,8 @@ ${logsText || '(no logs)'}
   // This enables developers to test dApps locally with full telaHost API access
   async function navigateToLocalFile(filePath, fromHistory = false) {
     resetXSWDSubscriptions();
-    sessionApprovedScid = null;
-    sessionApprovedAppName = null;
-    sessionApprovalTime = 0;
+    clearBrowserWalletSession();
+    iframeUsesSrcdoc = false;
     
     // Clean up the file path
     let cleanPath = filePath.trim();
@@ -1929,6 +1986,7 @@ ${logsText || '(no logs)'}
       if (contentFrame) {
         contentFrame.removeAttribute('src');
         contentFrame.srcdoc = html;
+        iframeUsesSrcdoc = true;
         showWelcome = false;
         
         // Inject actual telaHost API immediately after iframe loads
@@ -1968,9 +2026,8 @@ ${logsText || '(no logs)'}
   async function navigateToLocalDev(url, fromHistory = false) {
     const directory = url.slice(8); // Remove 'local://'
     resetXSWDSubscriptions();
-    sessionApprovedScid = null;
-    sessionApprovedAppName = null;
-    sessionApprovalTime = 0;
+    clearBrowserWalletSession();
+    iframeUsesSrcdoc = false;
     
     try {
       // Check if Local Dev Server is running
@@ -2055,6 +2112,7 @@ ${logsText || '(no logs)'}
           contentFrame.removeAttribute('srcdoc');
           const cacheBustedUrl = `${status.url}?_t=${Date.now()}`;
           contentFrame.src = cacheBustedUrl;
+          iframeUsesSrcdoc = false;
           showWelcome = false;
           
           // Inject telaHost API after iframe loads
@@ -2175,6 +2233,7 @@ ${logsText || '(no logs)'}
           // the browser won't reload if src URL appears unchanged
           const cacheBustedUrl = `${serverResult.url}?_t=${Date.now()}`;
           contentFrame.src = cacheBustedUrl;
+          iframeUsesSrcdoc = false;
           showWelcome = false;
         }
         return true;
@@ -2463,8 +2522,8 @@ ${logsText || '(no logs)'}
         return;
       }
       
-      // RPC call
-      request('call', { method: msg.method, params: msg.params, authState: self._auth }).then(function(r) {
+      // RPC call — parent owns session auth; do not send a forgeable authState
+      request('call', { method: msg.method, params: msg.params }).then(function(r) {
         self._respond({ jsonrpc: '2.0', id: msg.id, result: r });
       }).catch(function(e) {
         self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
@@ -2521,22 +2580,22 @@ ${logsText || '(no logs)'}
   window.telaHost = {
     getDaemon: function() {
       log('[telaHost] getDaemon called');
-      return request('call', { method: 'GetDaemon', params: {}, authState: 'ok' }).then(function(r) {
+      return request('call', { method: 'GetDaemon', params: {} }).then(function(r) {
         log('[telaHost] getDaemon result: ' + JSON.stringify(r));
         return r && r.endpoint ? r.endpoint : r;
       });
     },
     call: function(method, params) {
       log('[telaHost] call: ' + method);
-      return request('call', { method: method, params: params || {}, authState: 'ok' });
+      return request('call', { method: method, params: params || {} });
     },
     getAddress: function() {
-      return request('call', { method: 'GetAddress', params: {}, authState: 'ok' }).then(function(r) {
+      return request('call', { method: 'GetAddress', params: {} }).then(function(r) {
         return r && r.address ? r.address : r;
       });
     },
     getBalance: function() {
-      return request('call', { method: 'GetBalance', params: {}, authState: 'ok' }).then(function(r) {
+      return request('call', { method: 'GetBalance', params: {} }).then(function(r) {
         return { balance: r && r.balance || 0, unlocked: r && r.unlocked_balance || 0 };
       });
     },
@@ -2767,14 +2826,20 @@ ${logsText || '(no logs)'}
       // This ensures clean state when switching between HTTP and inline modes
       contentFrame.removeAttribute('src');
       
-      // Use srcdoc for inline content (fallback when HTTP server fails)
-      // blob: URLs cause protocol issues (location.protocol = 'blob:')
+      // Use srcdoc for inline content (fallback when HTTP server fails).
+      // Do NOT pair srcdoc with allow-same-origin (R2-B5) — that inherits the
+      // parent origin and exposes window.parent.go. Sandbox drops same-origin
+      // while iframeUsesSrcdoc is true; postMessage bridge still works.
       contentFrame.srcdoc = injectedHtml;
+      iframeUsesSrcdoc = true;
       showWelcome = false;
       
-      // Wait for iframe to load, then inject telaHost API
+      // Wait for iframe to load, then inject telaHost API (HTTP same-origin only;
+      // srcdoc without allow-same-origin cannot reach parent Go bindings).
       contentFrame.onload = () => {
-        setTimeout(() => injectTelaHostAPI(), 50);
+        if (!iframeUsesSrcdoc) {
+          setTimeout(() => injectTelaHostAPI(), 50);
+        }
       };
     } catch (e) {
       console.error('Error rendering content:', e);
@@ -2865,8 +2930,9 @@ ${logsText || '(no logs)'}
                 }]
               });
               if (approval.approved) {
-                await ApproveWalletConnection();
-                return true;
+                const granted = Array.isArray(approval.permissions) ? approval.permissions : ['read_public_data'];
+                const res = await persistConnectApproval(currentMeta.name || 'App', '', granted);
+                return res?.success === true;
               }
               return false;
             } catch (e) {
@@ -3903,12 +3969,15 @@ ${logsText || '(no logs)'}
     <!-- Content Frame
          Clipboard: TELA apps (e.g. Villager "Paste" using navigator.clipboard.readText)
          need sandbox allow-clipboard-* + allow= delegation; otherwise readText fails
-         silently or with NotAllowedError inside the iframe (differs by OS/webview). -->
+         silently or with NotAllowedError inside the iframe (differs by OS/webview).
+         srcdoc must NOT include allow-same-origin (inherits parent → window.go pivot). -->
     <iframe
       bind:this={contentFrame}
       class="browser-content-frame"
       style:display={!showWelcome && !loading ? 'block' : 'none'}
-      sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-clipboard-read allow-clipboard-write"
+      sandbox={iframeUsesSrcdoc
+        ? "allow-scripts allow-forms allow-modals allow-clipboard-read allow-clipboard-write"
+        : "allow-scripts allow-same-origin allow-forms allow-modals allow-clipboard-read allow-clipboard-write"}
       allow="clipboard-read; clipboard-write"
       title="App Content"
     ></iframe>

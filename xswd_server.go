@@ -314,16 +314,13 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	origin := s.clientOrigins[conn]
 	s.lock.RUnlock()
 
-	// Check permissions for methods that require them
-	pm := GetPermissionManager()
 	requiredPerm := GetRequiredPermission(method)
 
 	// Handle permission-gated methods
 	switch method {
 	case "GetAddress", "DERO.GetAddress":
 		// Check if permission granted
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -341,8 +338,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	// Primary use case: server-side encryption of Dead Drop documents before storage,
 	// so only the wallet holder can decrypt them via DecryptPayload.
 	case "GetPublicKey":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -356,8 +352,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 
 	case "GetBalance", "DERO.GetBalance":
 		// Check if permission granted
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewBalance); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -419,8 +414,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	// (walletapi/xswd/xswd.go:651-693 treats DERO.* as always-permitted
 	// post-handshake).
 	case "GetHeight":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewBalance); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -432,8 +426,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "GetTransfers":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewBalance); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -463,8 +456,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "GetTransferbyTXID":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewBalance); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -489,8 +481,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "MakeIntegratedAddress":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -538,8 +529,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "SplitIntegratedAddress":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -562,13 +552,9 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 
 	case "SignData", "DecryptPayload":
 		// Check if base permission granted (still requires per-request approval)
-		if pm != nil && origin != "" {
-			if !pm.HasPermission(origin, requiredPerm) {
-				permInfo := GetPermissionInfo(requiredPerm)
-				errRes = &JSONRPCError{Code: -32003, Message: fmt.Sprintf("Permission denied: %s permission not granted", permInfo.Name)}
-				s.sendResponse(conn, req.ID, nil, errRes)
-				return
-			}
+		if errRes = DenyUnlessPermission(origin, requiredPerm); errRes != nil {
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
 		}
 		s.handleSigningRequest(conn, req)
 
@@ -614,13 +600,9 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 
 	case "transfer", "Transfer", "DERO.Transfer", "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
 		// Check if base permission granted (still requires per-TX approval)
-		if pm != nil && origin != "" {
-			if !pm.HasPermission(origin, requiredPerm) {
-				permInfo := GetPermissionInfo(requiredPerm)
-				errRes = &JSONRPCError{Code: -32003, Message: fmt.Sprintf("Permission denied: %s permission not granted", permInfo.Name)}
-				s.sendResponse(conn, req.ID, nil, errRes)
-				return
-			}
+		if errRes = DenyUnlessPermission(origin, requiredPerm); errRes != nil {
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
 		}
 		// Handle signing request (always requires user approval)
 		s.handleSigningRequest(conn, req)
@@ -743,9 +725,8 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 
 	case "GetDaemon", "DERO.GetDaemon":
 		// Check if permission granted (requires view_address like other read methods)
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			log.Printf("[XSWD] GetDaemon: DENIED - origin=%q does not have view_address permission", origin)
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
+			log.Printf("[XSWD] GetDaemon: DENIED - origin=%q", origin)
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -832,6 +813,15 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 	origin, _ := info["url"].(string)
 	description, _ := info["description"].(string)
 
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		s.sendRawJSON(conn, map[string]interface{}{
+			"accepted": false,
+			"error":    "Handshake requires a non-empty url (origin)",
+		})
+		return
+	}
+
 	// Parse requested permissions from handshake (if provided by dApp)
 	// Format: {"permissions": ["view_address", "view_balance", ...]}
 	requestedPerms := DefaultRequestedPermissions()
@@ -906,6 +896,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 
 	message := "Wallet connection approved"
 	var grantedPerms []XSWDPermission
+	permsProvided := false
 
 	if respMap, ok := resp.(map[string]interface{}); ok {
 		if msg, ok2 := respMap["message"].(string); ok2 {
@@ -913,6 +904,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		}
 		// Extract granted permissions from response
 		if perms, ok2 := respMap["permissions"].([]interface{}); ok2 {
+			permsProvided = true
 			for _, p := range perms {
 				if pStr, ok3 := p.(string); ok3 {
 					grantedPerms = append(grantedPerms, XSWDPermission(pStr))
@@ -921,13 +913,14 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		}
 	}
 
-	// If no permissions explicitly granted, use requested permissions (backward compat)
-	if len(grantedPerms) == 0 {
+	// Only fall back to requested perms when the UI omitted the field (legacy).
+	// An explicit empty list means the user granted nothing.
+	if !permsProvided {
 		grantedPerms = requestedPerms
 	}
 
-	// Store granted permissions
-	if pm != nil && origin != "" {
+	// Store granted permissions (origin already validated non-empty above)
+	if pm != nil {
 		pm.GrantPermissions(origin, appName, description, grantedPerms)
 		pm.SetActiveClient(origin, true)
 	}

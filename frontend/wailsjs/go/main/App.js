@@ -30,8 +30,8 @@ export function AddTrackedToken(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddTrackedToken'](arg1, arg2, arg3);
 }
 
-export function ApproveWalletConnection() {
-  return window['go']['main']['App']['ApproveWalletConnection']();
+export function ApproveWalletConnection(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ApproveWalletConnection'](arg1, arg2, arg3, arg4);
 }
 
 export function BatchDeployToSimulator(arg1) {

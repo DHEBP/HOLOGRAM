@@ -443,7 +443,7 @@ func getLocalDevXSWDBridgeScript() string {
       }
       
       // RPC call
-      request('call', { method: msg.method, params: msg.params, authState: self._auth }).then(function(r) {
+      request('call', { method: msg.method, params: msg.params }).then(function(r) {
         self._respond({ jsonrpc: '2.0', id: msg.id, result: r });
       }).catch(function(e) {
         self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });

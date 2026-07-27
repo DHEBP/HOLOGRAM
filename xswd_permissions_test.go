@@ -329,7 +329,7 @@ func TestGrantPermissions_ExistingApp(t *testing.T) {
 	firstApp := pm.GetApp(origin)
 	originalGrantedAt := firstApp.GrantedAt
 
-	// Second grant - adds more permissions (same second is fine)
+	// Second grant replaces the permission set (connect approval is authoritative)
 	err = pm.GrantPermissions(origin, "Updated Name", "Updated Desc", []XSWDPermission{PermissionViewBalance})
 	if err != nil {
 		t.Fatalf("Second grant failed: %v", err)
@@ -345,12 +345,12 @@ func TestGrantPermissions_ExistingApp(t *testing.T) {
 		t.Errorf("Description not updated: %s", updatedApp.Description)
 	}
 
-	// Both permissions should now be granted
-	if !updatedApp.Permissions[PermissionViewAddress] {
-		t.Error("PermissionViewAddress should still be granted")
+	// Replace semantics: only the latest grant set remains
+	if updatedApp.Permissions[PermissionViewAddress] {
+		t.Error("ViewAddress should have been replaced away by the second grant")
 	}
 	if !updatedApp.Permissions[PermissionViewBalance] {
-		t.Error("PermissionViewBalance should now be granted")
+		t.Error("ViewBalance should be granted after second grant")
 	}
 
 	// GrantedAt should remain original

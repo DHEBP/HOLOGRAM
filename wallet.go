@@ -1539,10 +1539,38 @@ func init() {
 	walletManager.recentWallets = loadRecentWallets()
 }
 
-// ApproveWalletConnection signals that the user has approved a dApp connection
-func (a *App) ApproveWalletConnection() map[string]interface{} {
-	a.logToConsole("[OK] Wallet connection approved by user")
-	return map[string]interface{}{"success": true}
+// ApproveWalletConnection records a Browser/TELA connect approval: persists the
+// granted permission set for origin and marks the client active. Empty origin is
+// rejected — a no-op success here was the "permission theater" bug (R2-B2).
+func (a *App) ApproveWalletConnection(origin, appName, description string, permissions []string) map[string]interface{} {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return map[string]interface{}{"success": false, "error": "origin is required"}
+	}
+
+	pm := GetPermissionManager()
+	if pm == nil {
+		return map[string]interface{}{"success": false, "error": "permission manager unavailable"}
+	}
+
+	perms := make([]XSWDPermission, 0, len(permissions))
+	for _, p := range permissions {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		perms = append(perms, XSWDPermission(p))
+	}
+
+	if appName == "" {
+		appName = origin
+	}
+	if err := pm.GrantPermissions(origin, appName, description, perms); err != nil {
+		return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+	}
+	pm.SetActiveClient(origin, true)
+	a.logToConsole(fmt.Sprintf("[OK] Wallet connection approved for %s (%d permissions)", origin, len(perms)))
+	return map[string]interface{}{"success": true, "origin": origin, "permissions": permissions}
 }
 
 // checkDaemonConnectivity verifies the wallet can reach the daemon before attempting a transaction.

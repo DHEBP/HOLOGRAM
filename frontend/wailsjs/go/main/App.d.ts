@@ -17,7 +17,7 @@ export function AddSearchExclusion(arg1:string):Promise<Record<string, any>>;
 
 export function AddTrackedToken(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
-export function ApproveWalletConnection():Promise<Record<string, any>>;
+export function ApproveWalletConnection(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<Record<string, any>>;
 
 export function BatchDeployToSimulator(arg1:string):Promise<Record<string, any>>;
 
