@@ -14,9 +14,9 @@
 
 .PHONY: all hologram release derod simulator mtp-anchor clean dev test test-mtp test-mtp-integration check-invariants help
 
-# Build metadata - injected into the binary via ldflags
-# Match the actual variable assignment, not the example comment above it.
-VERSION  := $(shell sed -n 's/^[[:space:]]*AppVersion[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' version.go | sed -n '1p')
+# Build metadata - injected into the binary via ldflags.
+# VERSION file is the single source of truth (must match latest CHANGELOG section).
+VERSION  := $(shell tr -d '[:space:]' < VERSION)
 COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE     := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  := -X main.AppVersion=$(VERSION) -X main.BuildDate=$(DATE) -X main.GitCommit=$(COMMIT)

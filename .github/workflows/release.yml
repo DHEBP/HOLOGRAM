@@ -43,6 +43,13 @@ jobs:
           fi
           echo "Found CHANGELOG entry for $VERSION."
 
+          FILE_VER=$(tr -d '[:space:]' < VERSION)
+          if [ "$FILE_VER" != "$VERSION" ]; then
+            echo "::error::VERSION file is '$FILE_VER' but tag is 'v$VERSION' — bump VERSION (and CHANGELOG) before tagging."
+            exit 1
+          fi
+          echo "VERSION file matches tag."
+
   build:
     name: Build ${{ matrix.platform }}
     needs: changelog-guard
