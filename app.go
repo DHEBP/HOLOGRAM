@@ -1381,6 +1381,16 @@ func (a *App) InvokeSCFromExplorer(scid string, entrypoint string, args []map[st
 
 // ================== TELA Rating Functions ==================
 
+// buildRateArgs builds the sc_rpc argument for the TELA Rate(r Uint64) entrypoint.
+// The parameter name MUST be "r": the DVM binds a function's arguments by the
+// contract's declared parameter name, so any other name makes the call fail with
+// `Argument "r" is missing while invoking "Rate"` and no rating is ever stored.
+func buildRateArgs(rating int) []map[string]interface{} {
+	return []map[string]interface{}{
+		{"name": "r", "datatype": "U", "value": uint64(rating)},
+	}
+}
+
 func (a *App) RateTELAApp(scid string, rating int) map[string]interface{} {
 	if !a.xswdClient.IsConnected() {
 		return map[string]interface{}{
@@ -1396,33 +1406,7 @@ func (a *App) RateTELAApp(scid string, rating int) map[string]interface{} {
 		}
 	}
 
-	args := []map[string]interface{}{
-		{"name": "rating", "datatype": "U", "value": uint64(rating)},
-	}
-
-	return a.InvokeSCFromExplorer(scid, "Rate", args, 0)
-}
-
-func (a *App) LikeTELAApp(scid string) map[string]interface{} {
-	if !a.xswdClient.IsConnected() {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet not connected via XSWD",
-		}
-	}
-
-	return a.InvokeSCFromExplorer(scid, "Like", []map[string]interface{}{}, 0)
-}
-
-func (a *App) DislikeTELAApp(scid string) map[string]interface{} {
-	if !a.xswdClient.IsConnected() {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet not connected via XSWD",
-		}
-	}
-
-	return a.InvokeSCFromExplorer(scid, "Dislike", []map[string]interface{}{}, 0)
+	return a.InvokeSCFromExplorer(scid, "Rate", buildRateArgs(rating), 0)
 }
 
 // ================== EPOCH App Support ==================

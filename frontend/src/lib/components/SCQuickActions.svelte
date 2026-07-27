@@ -1,17 +1,15 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import { 
-    InvokeSCFromExplorer, 
-    RateTELAApp, 
-    LikeTELAApp, 
-    DislikeTELAApp,
+    InvokeSCFromExplorer,
+    RateTELAApp,
     EstimateSCGas,
     GetXSWDStatus,
     CheckAppSupportsEpoch,
     SubmitRatingWithPicker
   } from '../../../wailsjs/go/main/App.js';
   import { toast } from '../stores/appState.js';
-  import { ThumbsUp, ThumbsDown, Star, Zap, Play, Loader2, ChevronDown, ChevronUp } from 'lucide-svelte';
+  import { Star, Zap, Play, Loader2, ChevronDown, ChevronUp } from 'lucide-svelte';
   import RatingPicker from './RatingPicker.svelte';
   
   export let scid = '';
@@ -91,50 +89,6 @@
       }
     } catch (e) {
       toast.error(e.message || 'Rating failed');
-    } finally {
-      loading = false;
-    }
-  }
-  
-  async function handleLike() {
-    if (!xswdConnected) {
-      toast.error('Connect wallet via XSWD to like');
-      return;
-    }
-    
-    loading = true;
-    try {
-      const result = await LikeTELAApp(scid);
-      if (result.success) {
-        toast.success(`Liked ${scName || 'app'}!`);
-        dispatch('action', { type: 'like', txid: result.txid });
-      } else {
-        toast.error(result.error || 'Like failed');
-      }
-    } catch (e) {
-      toast.error(e.message || 'Like failed');
-    } finally {
-      loading = false;
-    }
-  }
-  
-  async function handleDislike() {
-    if (!xswdConnected) {
-      toast.error('Connect wallet via XSWD to dislike');
-      return;
-    }
-    
-    loading = true;
-    try {
-      const result = await DislikeTELAApp(scid);
-      if (result.success) {
-        toast.success(`Disliked ${scName || 'app'}`);
-        dispatch('action', { type: 'dislike', txid: result.txid });
-      } else {
-        toast.error(result.error || 'Dislike failed');
-      }
-    } catch (e) {
-      toast.error(e.message || 'Dislike failed');
     } finally {
       loading = false;
     }
@@ -273,21 +227,6 @@
           </div>
         </div>
       {/if}
-    </div>
-    
-    <!-- Like/Dislike Section -->
-    <div class="action-section">
-      <label class="action-label">Quick feedback</label>
-      <div class="feedback-row">
-        <button class="action-btn like" on:click={handleLike} disabled={loading}>
-          <ThumbsUp size={14} />
-          Like
-        </button>
-        <button class="action-btn dislike" on:click={handleDislike} disabled={loading}>
-          <ThumbsDown size={14} />
-          Dislike
-        </button>
-      </div>
     </div>
     
     <!-- Advanced: Custom Function Call -->
@@ -479,11 +418,6 @@
     margin-top: 12px;
   }
   
-  .feedback-row {
-    display: flex;
-    gap: var(--s-3, 12px);
-  }
-  
   /* HOLOGRAM Button Styles */
   .action-btn {
     display: flex;
@@ -512,31 +446,7 @@
   .action-btn.rate:hover:not(:disabled) {
     background: var(--cyan-400, #00f5c4);
   }
-  
-  .action-btn.like {
-    flex: 1;
-    background: var(--void-up, #1a1a24);
-    border-color: rgba(16, 185, 129, 0.3);
-    color: var(--emerald, #10b981);
-  }
-  
-  .action-btn.like:hover:not(:disabled) {
-    background: rgba(16, 185, 129, 0.1);
-    border-color: rgba(16, 185, 129, 0.5);
-  }
-  
-  .action-btn.dislike {
-    flex: 1;
-    background: var(--void-up, #1a1a24);
-    border-color: rgba(239, 68, 68, 0.3);
-    color: var(--danger, #ef4444);
-  }
-  
-  .action-btn.dislike:hover:not(:disabled) {
-    background: rgba(239, 68, 68, 0.1);
-    border-color: rgba(239, 68, 68, 0.5);
-  }
-  
+
   /* Advanced Toggle */
   .advanced-toggle {
     width: 100%;

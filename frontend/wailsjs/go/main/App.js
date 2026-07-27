@@ -246,10 +246,6 @@ export function DisconnectXSWD() {
   return window['go']['main']['App']['DisconnectXSWD']();
 }
 
-export function DislikeTELAApp(arg1) {
-  return window['go']['main']['App']['DislikeTELAApp'](arg1);
-}
-
 export function EnsureGnomonRunning() {
   return window['go']['main']['App']['EnsureGnomonRunning']();
 }
@@ -444,6 +440,10 @@ export function GetContentFilterConfig() {
 
 export function GetContentFilterHistory(arg1) {
   return window['go']['main']['App']['GetContentFilterHistory'](arg1);
+}
+
+export function GetContentFilterPersistence() {
+  return window['go']['main']['App']['GetContentFilterPersistence']();
 }
 
 export function GetContentFilterRules() {
@@ -908,10 +908,6 @@ export function IsSimulatorWalletRegistered() {
 
 export function IsWalletOpen() {
   return window['go']['main']['App']['IsWalletOpen']();
-}
-
-export function LikeTELAApp(arg1) {
-  return window['go']['main']['App']['LikeTELAApp'](arg1);
 }
 
 export function ListActiveServers() {

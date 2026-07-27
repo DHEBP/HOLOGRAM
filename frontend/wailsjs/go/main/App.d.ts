@@ -125,8 +125,6 @@ export function DiffSCIDs(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function DisconnectXSWD():Promise<Record<string, any>>;
 
-export function DislikeTELAApp(arg1:string):Promise<Record<string, any>>;
-
 export function EnsureGnomonRunning():Promise<Record<string, any>>;
 
 export function EstimateBatchGas(arg1:string):Promise<Record<string, any>>;
@@ -224,6 +222,8 @@ export function GetConsoleLogs():Promise<Array<main.ConsoleLog>>;
 export function GetContentFilterConfig():Promise<Record<string, any>>;
 
 export function GetContentFilterHistory(arg1:number):Promise<Record<string, any>>;
+
+export function GetContentFilterPersistence():Promise<string>;
 
 export function GetContentFilterRules():Promise<Record<string, any>>;
 
@@ -456,8 +456,6 @@ export function IsSimulatorReady():Promise<Record<string, any>>;
 export function IsSimulatorWalletRegistered():Promise<Record<string, any>>;
 
 export function IsWalletOpen():Promise<boolean>;
-
-export function LikeTELAApp(arg1:string):Promise<Record<string, any>>;
 
 export function ListActiveServers():Promise<Record<string, any>>;
 
