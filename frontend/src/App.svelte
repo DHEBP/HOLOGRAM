@@ -406,6 +406,11 @@
           ringsize: req.params?.ringsize,
           anonymize: req.params?.anonymize,
           preferred_decoys: req.params?.preferred_decoys,
+          // Must surface deposits/fees — backend executes these even when transfers is empty (R2-B4)
+          sc_dero_deposit: req.params?.sc_dero_deposit,
+          sc_token_deposit: req.params?.sc_token_deposit,
+          sc_token_deposit_scid: req.params?.sc_token_deposit_scid,
+          fees: req.params?.fees,
         };
       }
 

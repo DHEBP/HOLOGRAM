@@ -14,21 +14,25 @@
 
   const ZERO_SCID = '0000000000000000000000000000000000000000000000000000000000000000';
 
-  // A request carries a real smart contract call only when there is actual SC invocation
-  // data -- an entrypoint, or a non-empty sc_data/sc_args array. This mirrors the backend:
-  // parseXSWDScArgs (wallet.go) yields args only when sc_rpc carries an entrypoint, so a bare
-  // scid string with no entrypoint is NOT an SC call. Without this mirror, a dApp could send a
-  // scid with no sc_rpc to make the UI show "Approve" while the backend blocks it as a burn.
-  // A burn routed to a real contract is a deposit, not destruction.
-  $: hasSCCall =
-    (typeof request?.payload?.entrypoint === 'string' && request.payload.entrypoint.length > 0) ||
-    (Array.isArray(request?.payload?.sc_data) && request.payload.sc_data.length > 0) ||
-    (Array.isArray(request?.payload?.sc_args) && request.payload.sc_args.length > 0);
+  // A request carries a real smart contract call only when there is an actual entrypoint
+  // (top-level or inside sc_rpc/sc_data). A non-empty sc_args/sc_data array of junk rows is
+  // NOT a call — treating it as one labeled burns as "Deposit" while the chain no-ops (R2-B6).
+  $: hasSCCall = (() => {
+    const ep = request?.payload?.entrypoint;
+    if (typeof ep === 'string' && ep.trim().length > 0) return true;
+    const rows = [
+      ...(Array.isArray(request?.payload?.sc_data) ? request.payload.sc_data : []),
+      ...(Array.isArray(request?.payload?.sc_args) ? request.payload.sc_args : []),
+    ];
+    return rows.some(arg => arg?.name === 'entrypoint' && String(arg?.value ?? arg?.Value ?? '').trim().length > 0);
+  })();
 
-  // Total native-DERO (zero-SCID) burn across the request's transfers.
+  // Total native-DERO (zero-SCID) burn across the request's transfers + top-level SC deposits.
+  $: scDeroDeposit = Number(request?.payload?.sc_dero_deposit) || 0;
+  $: scTokenDeposit = Number(request?.payload?.sc_token_deposit) || 0;
   $: nativeBurnTotal = (request?.payload?.transfers || [])
     .filter(t => !t.scid || t.scid === ZERO_SCID)
-    .reduce((sum, t) => sum + (typeof t.burn === 'number' ? t.burn : 0), 0);
+    .reduce((sum, t) => sum + (typeof t.burn === 'number' ? t.burn : 0), 0) + scDeroDeposit;
 
   // BLOCKED: a native-DERO burn with no contract attached destroys the coins permanently and
   // sends them to no one. HOLOGRAM never burns DERO -- this request is rejected outright, with
@@ -454,16 +458,18 @@
                 </div>
               {/if}
               
-              <!-- Transfers (DERO or token amounts) -->
-              {#if request.payload.transfers && request.payload.transfers.length > 0}
-                {@const deroTransfers = request.payload.transfers.filter(t => !t.scid || t.scid === ZERO_SCID)}
-                <!-- Sum all cost fields: amount, burn (if numeric), fees from transfers AND top-level fees -->
+              <!-- Transfers + deposits (DERO / token) — must match what executes (R2-B4) -->
+              {#if (request.payload.transfers && request.payload.transfers.length > 0) || scDeroDeposit > 0 || scTokenDeposit > 0}
+                {@const allTransfers = request.payload.transfers || []}
+                {@const deroTransfers = allTransfers.filter(t => !t.scid || t.scid === ZERO_SCID)}
+                {@const tokenTransfers = allTransfers.filter(t => t.scid && t.scid !== ZERO_SCID)}
                 {@const totalAmount = deroTransfers.reduce((sum, t) => sum + (t.amount || 0), 0)}
-                {@const totalBurn = deroTransfers.reduce((sum, t) => sum + (typeof t.burn === 'number' ? t.burn : 0), 0)}
+                {@const totalBurn = deroTransfers.reduce((sum, t) => sum + (typeof t.burn === 'number' ? t.burn : 0), 0) + scDeroDeposit}
                 {@const transferFees = deroTransfers.reduce((sum, t) => sum + (t.fees || 0), 0)}
                 {@const topLevelFees = request.payload.fees || 0}
                 {@const totalFees = transferFees + topLevelFees}
                 {@const totalDero = totalAmount + totalBurn + totalFees}
+                {@const destinations = allTransfers.map(t => t.destination).filter(d => typeof d === 'string' && d.trim().length > 0)}
 
                 <!-- BLOCKED BURN: native-DERO burn with no contract attached destroys the coins
                      permanently and sends them to no one. HOLOGRAM never burns DERO, so this
@@ -489,7 +495,7 @@
                 {/if}
 
                 <!-- Show total DERO cost -->
-                {#if deroTransfers.length > 0 && !isBurnBlocked}
+                {#if totalDero > 0 && !isBurnBlocked}
                   <div class="modal-tx-field">
                     <div class="modal-tx-label">TOTAL COST</div>
                     <div class="modal-tx-amount modal-tx-amount-total">
@@ -501,13 +507,19 @@
                 <!-- Show breakdown of costs if any non-zero values. Suppressed entirely for a
                      blocked burn (nothing here is approvable). A burn that reaches this point
                      therefore always routes to a contract -- a deposit, not destruction. -->
-                {#if !isBurnBlocked && (totalAmount > 0 || totalBurn > 0 || totalFees > 0)}
+                {#if !isBurnBlocked && (totalAmount > 0 || totalBurn > 0 || totalFees > 0 || scTokenDeposit > 0 || tokenTransfers.length > 0)}
                   <div class="modal-tx-breakdown">
                     <div class="modal-tx-label modal-tx-label-small">BREAKDOWN</div>
                     {#if totalBurn > 0}
                       <div class="modal-tx-breakdown-item">
                         <span class="modal-tx-breakdown-label">Deposit to contract:</span>
                         <span class="modal-tx-breakdown-value">{(totalBurn / 100000).toLocaleString()} DERO</span>
+                      </div>
+                    {/if}
+                    {#if scTokenDeposit > 0}
+                      <div class="modal-tx-breakdown-item">
+                        <span class="modal-tx-breakdown-label">Token deposit:</span>
+                        <span class="modal-tx-breakdown-value">{(scTokenDeposit).toLocaleString()} atomic{#if request.payload.sc_token_deposit_scid} · {String(request.payload.sc_token_deposit_scid).slice(0, 8)}…{/if}</span>
                       </div>
                     {/if}
                     {#if totalFees > 0}
@@ -522,18 +534,23 @@
                         <span class="modal-tx-breakdown-value">{(totalAmount / 100000).toLocaleString()} DERO</span>
                       </div>
                     {/if}
+                    {#each tokenTransfers as tt, ti}
+                      <div class="modal-tx-breakdown-item">
+                        <span class="modal-tx-breakdown-label">Token transfer{tokenTransfers.length > 1 ? ` ${ti + 1}` : ''}:</span>
+                        <span class="modal-tx-breakdown-value modal-tx-token-scid">{(tt.amount || 0).toLocaleString()}{#if tt.burn} + burn {(tt.burn || 0).toLocaleString()}{/if} · {String(tt.scid).slice(0, 8)}…</span>
+                      </div>
+                    {/each}
                   </div>
                 {/if}
 
-                <!-- Show destination only when funds actually go somewhere. For a blocked burn
-                     there is no recipient and nothing is approvable, so it is suppressed. -->
-                {#if request.payload.transfers[0]?.destination && !isBurnBlocked}
-                  <div class="modal-tx-field">
-                    <div class="modal-tx-label">DESTINATION</div>
-                    <div class="modal-tx-destination">
-                      {request.payload.transfers[0].destination}
+                <!-- Every destination that will execute — not just transfers[0] (R2-B4) -->
+                {#if destinations.length > 0 && !isBurnBlocked}
+                  {#each destinations as dest, di}
+                    <div class="modal-tx-field">
+                      <div class="modal-tx-label">{destinations.length > 1 ? `DESTINATION ${di + 1}` : 'DESTINATION'}</div>
+                      <div class="modal-tx-destination">{dest}</div>
                     </div>
-                  </div>
+                  {/each}
                 {/if}
 
                 <!-- APPARENT SENDER (attribution disclosure)

@@ -1016,6 +1016,26 @@ func checkIntegratedInvoice(addr *rpc.Address, amount uint64, now time.Time) str
 	return ""
 }
 
+// checkTransfersIntegratedInvoices runs checkIntegratedInvoice on every transfer
+// destination. Used by InternalWalletCall (the hot Send / XSWD path) — App.Transfer()
+// alone is not what the UI calls (R2-B7).
+func checkTransfersIntegratedInvoices(transfers []rpc.Transfer, now time.Time) string {
+	for _, t := range transfers {
+		dest := strings.TrimSpace(t.Destination)
+		if dest == "" {
+			continue
+		}
+		addr, err := rpc.NewAddress(dest)
+		if err != nil {
+			continue
+		}
+		if msg := checkIntegratedInvoice(addr, t.Amount, now); msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
 // Transfer sends DERO to another address
 func (a *App) Transfer(destination string, amount uint64, paymentID string, ringsize uint64) map[string]interface{} {
 	walletManager.Lock()
@@ -1707,7 +1727,10 @@ func parseXSWDScArgs(params map[string]interface{}, scid string) rpc.Arguments {
 	}
 
 	if entrypoint == "" && !hasEntrypointInScRpc {
-		return scArgs
+		// No real SC call — do not return junk sc_rpc rows. Callers used to treat
+		// len(scArgs)>0 as "has SC call", which let a decoy sc_rpc bypass the burn guard
+		// (R2-B6) while the chain no-ops without SCACTION.
+		return rpc.Arguments{}
 	}
 
 	hasSCACTION := false
@@ -1732,6 +1755,26 @@ func parseXSWDScArgs(params map[string]interface{}, scid string) rpc.Arguments {
 		prefix = append(prefix, rpc.Argument{Name: "entrypoint", DataType: "S", Value: entrypoint})
 	}
 	return append(prefix, scArgs...)
+}
+
+// scArgsAreRealCall reports whether scArgs is a genuine SC invocation the chain will
+// execute: SCACTION present and a non-empty entrypoint. Junk sc_rpc without those is
+// not a call — treating it as one disabled the native-DERO burn guard (R2-B6).
+func scArgsAreRealCall(scArgs rpc.Arguments) bool {
+	hasAction := false
+	hasEntrypoint := false
+	for _, arg := range scArgs {
+		if arg.Name == rpc.SCACTION {
+			hasAction = true
+		}
+		if arg.Name == "entrypoint" {
+			switch v := arg.Value.(type) {
+			case string:
+				hasEntrypoint = strings.TrimSpace(v) != ""
+			}
+		}
+	}
+	return hasAction && hasEntrypoint
 }
 
 // detectDestructiveBurn scans transfers for a burn that would permanently destroy native
@@ -2047,13 +2090,18 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		// burn with no smart contract attached does not send funds anywhere -- it destroys them
 		// irrecoverably. HOLOGRAM never burns DERO; there is no override. Anyone who genuinely
 		// intends to burn DERO must use the DERO CLI wallet. This is a hard, unconditional block.
-		if burnAmt, block := shouldBlockBurn(transfers, len(scArgs) > 0); block {
+		if burnAmt, block := shouldBlockBurn(transfers, scArgsAreRealCall(scArgs)); block {
 			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED native-DERO burn: %s DERO with no contract attached", formatDEROAmount(burnAmt)))
 			return map[string]interface{}{
 				"success":        false,
 				"error":          fmt.Sprintf("HOLOGRAM does not allow burning DERO. This request would permanently destroy %s DERO -- a burn with no smart contract attached sends the coins to no one and cannot be undone. If you intend to deliberately burn DERO, use the DERO CLI wallet.", formatDEROAmount(burnAmt)),
 				"technicalError": fmt.Sprintf("rejected native-DERO burn of %d atomic units (zero SCID, no SC call); HOLOGRAM prohibits burns", burnAmt),
 			}
+		}
+
+		if invoiceErr := checkTransfersIntegratedInvoices(transfers, time.Now()); invoiceErr != "" {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED integrated-address invoice: %s", invoiceErr))
+			return map[string]interface{}{"success": false, "error": invoiceErr}
 		}
 
 		runTransfer := func() map[string]interface{} {
@@ -2262,13 +2310,18 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		// a real contract call. Block it explicitly at this broadcast site too, so the burn
 		// prohibition does not silently depend on chain-side refund behavior if this path is
 		// ever refactored. HOLOGRAM never burns DERO; deliberate burns belong in the CLI.
-		if burnAmt, block := shouldBlockBurn(transfers, len(scArgs) > 0); block {
+		if burnAmt, block := shouldBlockBurn(transfers, scArgsAreRealCall(scArgs)); block {
 			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED native-DERO burn in scinvoke: %s DERO with no contract attached", formatDEROAmount(burnAmt)))
 			return map[string]interface{}{
 				"success":        false,
 				"error":          fmt.Sprintf("HOLOGRAM does not allow burning DERO. This request would permanently destroy %s DERO with no contract attached. If you intend to deliberately burn DERO, use the DERO CLI wallet.", formatDEROAmount(burnAmt)),
 				"technicalError": fmt.Sprintf("rejected native-DERO burn of %d atomic units in scinvoke (zero SCID, no SC call); HOLOGRAM prohibits burns", burnAmt),
 			}
+		}
+
+		if invoiceErr := checkTransfersIntegratedInvoices(transfers, time.Now()); invoiceErr != "" {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED integrated-address invoice on scinvoke: %s", invoiceErr))
+			return map[string]interface{}{"success": false, "error": invoiceErr}
 		}
 
 		runSCInvoke := func() map[string]interface{} {

@@ -235,4 +235,13 @@ func TestTransferReconcilesIntegratedInvoiceSentinel(t *testing.T) {
 			"reconciliation removed. An expired or wrong-amount invoice would be paid silently; " +
 			"restore the call in Transfer().")
 	}
+	// Hot Send / XSWD use InternalWalletCall("transfer"), not App.Transfer() (R2-B7).
+	if !strings.Contains(src, "checkTransfersIntegratedInvoices(") {
+		t.Fatal("InternalWalletCall path no longer calls checkTransfersIntegratedInvoices — " +
+			"the Send UI and XSWD would skip invoice expiry/amount checks. Restore the call.")
+	}
+	if !strings.Contains(src, "scArgsAreRealCall(") {
+		t.Fatal("burn guard must use scArgsAreRealCall (not len(scArgs)>0) so junk sc_rpc " +
+			"cannot bypass a native-DERO burn block (R2-B6).")
+	}
 }
