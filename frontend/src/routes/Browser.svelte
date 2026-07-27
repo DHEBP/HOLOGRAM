@@ -362,8 +362,14 @@ let addressInput = '';
   let waitingForInitialApps = false;
   let appDiscoveryRetryCount = 0;
   let appDiscoveryRetryTimer = null;
+  let coldStartFilterChecked = false; // Option 2: one-shot cold-start filter fallback (TOP RATED -> ALL if empty)
   const APP_DISCOVERY_RETRY_DELAY_MS = 5000;
-  const APP_DISCOVERY_MAX_RETRIES = 12;
+  // Gnomon's first TELA-app discovery can take several minutes on a cold index
+  // (fast-sync + block/SC indexing), during which GetDiscoveredApps returns 0 apps.
+  // Keep polling every 5s across that whole window so the grid auto-populates the
+  // moment apps land, instead of giving up after ~60s and showing "No Apps Found".
+  // 120 * 5s = ~10min backstop before an honest empty state on a genuinely appless chain.
+  const APP_DISCOVERY_MAX_RETRIES = 120;
   let selectedCategory = 'top';
   let sortBy = 'rating';
   
@@ -535,6 +541,7 @@ let addressInput = '';
         }
         apps = result.apps;
         applyFilters();
+        maybeFallbackToAllOnColdStart();
       }
       
       // Load available tags for filtering (Simple-Gnomon feature)
@@ -631,6 +638,7 @@ let addressInput = '';
     clearAppDiscoveryRetryTimer();
     waitingForInitialApps = false;
     appDiscoveryRetryCount = 0;
+    coldStartFilterChecked = false;
     appsLoaded = false;
     appsLoading = false;
     apps = [];
@@ -774,7 +782,22 @@ let addressInput = '';
     
     filteredApps = result;
   }
-  
+
+  // Option 2 — cold-start filter fallback: the Browser defaults to the TOP RATED (7+)
+  // filter. On a freshly/sparsely-rated chain that view can be empty even though apps
+  // exist, which reads as a broken screen. On the first load that actually returns apps,
+  // if TOP RATED has nothing to show, fall back to ALL APPS so the user never lands on
+  // an empty grid. Fires once per discovery cycle; a later deliberate switch back to
+  // TOP RATED is respected and not overridden.
+  function maybeFallbackToAllOnColdStart() {
+    if (coldStartFilterChecked || apps.length === 0) return;
+    coldStartFilterChecked = true;
+    if (selectedCategory === 'top' && filteredApps.length === 0) {
+      selectedCategory = 'all';
+      applyFilters();
+    }
+  }
+
   function handleCategoryChange(categoryId) {
     selectedCategory = categoryId;
     applyFilters();
