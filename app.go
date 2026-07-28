@@ -1331,31 +1331,74 @@ func (a *App) EstimateSCGas(scid string, entrypoint string, args []map[string]in
 }
 
 func (a *App) InvokeSCFromExplorer(scid string, entrypoint string, args []map[string]interface{}, deposit uint64) map[string]interface{} {
-	if !a.xswdClient.IsConnected() {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet not connected via XSWD",
-		}
-	}
-
 	scRPC := []map[string]interface{}{
 		{"name": "entrypoint", "datatype": "S", "value": entrypoint},
 	}
-
 	for _, arg := range args {
 		scRPC = append(scRPC, arg)
+	}
+
+	walletParams := map[string]interface{}{
+		"scid":     scid,
+		"sc_rpc":   scRPC,
+		"ringsize": float64(2),
+	}
+	if deposit > 0 {
+		walletParams["sc_dero_deposit"] = float64(deposit)
+	}
+
+	// Prefer the integrated wallet (Discover Apps / Rate / Explorer while
+	// "Wallet Ready"). The sidebar XSWD light means HOLOGRAM's *server* is up
+	// for dApps — it does NOT mean xswdClient is connected to Engram. The old
+	// path required Engram and failed ratings with no console trail.
+	if GetWallet() != nil {
+		a.logToConsole(fmt.Sprintf("[NOTE] Invoking SC %s.%s() via local wallet...", truncateSCID(scid, 12), entrypoint))
+		invokeResult := a.InternalWalletCall("scinvoke", walletParams, "")
+		if success, _ := invokeResult["success"].(bool); !success {
+			errMsg := "Transaction failed"
+			if msg, ok := invokeResult["error"].(string); ok && msg != "" {
+				errMsg = msg
+			}
+			a.logToConsole(fmt.Sprintf("[ERR] SC invoke failed: %s", errMsg))
+			resp := map[string]interface{}{
+				"success": false,
+				"error":   errMsg,
+			}
+			if tech, ok := invokeResult["technicalError"].(string); ok && tech != "" {
+				resp["technicalError"] = tech
+			}
+			return resp
+		}
+		txid := ""
+		if resultMap, ok := invokeResult["result"].(map[string]interface{}); ok {
+			if tx, ok := resultMap["txid"].(string); ok {
+				txid = tx
+			}
+		}
+		a.logToConsole(fmt.Sprintf("[OK] SC invoked! TXID: %s", txid))
+		return map[string]interface{}{
+			"success": true,
+			"txid":    txid,
+			"result":  invokeResult["result"],
+		}
+	}
+
+	if a.xswdClient == nil || !a.xswdClient.IsConnected() {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "No wallet available. Open a wallet or connect via XSWD.",
+		}
 	}
 
 	params := map[string]interface{}{
 		"scid":   scid,
 		"sc_rpc": scRPC,
 	}
-
 	if deposit > 0 {
 		params["sc_dero_deposit"] = deposit
 	}
 
-	a.logToConsole(fmt.Sprintf("[NOTE] Invoking SC %s.%s() via XSWD...", scid[:12], entrypoint))
+	a.logToConsole(fmt.Sprintf("[NOTE] Invoking SC %s.%s() via XSWD...", truncateSCID(scid, 12), entrypoint))
 
 	result, err := a.xswdClient.Call("scinvoke", params)
 	if err != nil {
@@ -1392,13 +1435,6 @@ func buildRateArgs(rating int) []map[string]interface{} {
 }
 
 func (a *App) RateTELAApp(scid string, rating int) map[string]interface{} {
-	if !a.xswdClient.IsConnected() {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Wallet not connected via XSWD",
-		}
-	}
-
 	if rating < 0 || rating > 99 {
 		return map[string]interface{}{
 			"success": false,
@@ -1406,6 +1442,7 @@ func (a *App) RateTELAApp(scid string, rating int) map[string]interface{} {
 		}
 	}
 
+	a.logToConsole(fmt.Sprintf("[STAR] Rating SCID %s with %d", truncateSCID(scid, 16), rating))
 	return a.InvokeSCFromExplorer(scid, "Rate", buildRateArgs(rating), 0)
 }
 

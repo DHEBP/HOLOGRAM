@@ -940,42 +940,17 @@ func (a *App) GetClonePath() string {
 	return tela.GetClonePath()
 }
 
-// RateTELA submits a rating for TELA content
+// RateTELA submits a rating for TELA content (0–99 Engram/TELA scale).
+// Routes through RateTELAApp so Discover Apps and Studio share one path:
+// integrated wallet first, Engram XSWD client as fallback.
 func (a *App) RateTELA(scid string, rating uint64) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("[STAR] Rating SCID %s with %d", scid[:16]+"...", rating))
-
-	// Check wallet
-	wallet := GetWallet()
-	if wallet == nil {
+	if rating > 99 {
 		return map[string]interface{}{
 			"success": false,
-			"error":   "No wallet is currently open",
+			"error":   "Rating must be between 0 and 99",
 		}
 	}
-
-	// Validate rating (0-10)
-	if rating > 10 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Rating must be between 0 and 10",
-		}
-	}
-
-	// Submit rating using tela library
-	txid, err := tela.Rate(wallet, scid, rating)
-	if err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] Rating failed: %v", err))
-		return ErrorResponse(err)
-	}
-
-	a.logToConsole(fmt.Sprintf("[OK] Rating submitted: %s", txid))
-
-	return map[string]interface{}{
-		"success": true,
-		"txid":    txid,
-		"rating":  rating,
-		"message": "Rating submitted successfully",
-	}
+	return a.RateTELAApp(scid, int(rating))
 }
 
 // ParseFolderForTELA analyzes a folder and returns staged file information

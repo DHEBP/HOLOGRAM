@@ -24,6 +24,7 @@ Sender-attribution privacy, cold-wallet genesis, XSWD/Browser trust-boundary har
 - Linux release folder ships binary + installer assets instead of a bare executable.
 
 ### Fixed
+- TELA Rate from Discover Apps: submit no longer requires an Engram XSWD *client* connection — with the integrated wallet open (“Wallet Ready”) it invokes `Rate` locally. The sidebar XSWD light only meant HOLOGRAM’s server was up, so ratings failed with “Wallet not connected via XSWD” and no console trail.
 - About / version: `AppVersion` is embedded from the `VERSION` file (kept in sync with CHANGELOG by CI) so About can no longer stick on a stale hardcoded release like 1.0.5.
 - XSWD: empty-origin sockets no longer skip permission checks; handshake requires a non-empty `url`.
 - Browser: connect permissions are enforced on integrated-wallet reads; client `authState` is ignored (no forgeable `'ok'`).
