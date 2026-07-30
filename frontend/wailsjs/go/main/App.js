@@ -1078,6 +1078,10 @@ export function RemoveTrackedToken(arg1) {
   return window['go']['main']['App']['RemoveTrackedToken'](arg1);
 }
 
+export function RenameRingMemberSet(arg1, arg2) {
+  return window['go']['main']['App']['RenameRingMemberSet'](arg1, arg2);
+}
+
 export function RequestInterceptor(arg1) {
   return window['go']['main']['App']['RequestInterceptor'](arg1);
 }

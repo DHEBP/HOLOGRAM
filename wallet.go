@@ -4128,6 +4128,35 @@ func (a *App) AddRingMemberSet(name string) map[string]interface{} {
 	return map[string]interface{}{"success": true, "set": newSet, "message": "Ring member set created"}
 }
 
+// RenameRingMemberSet changes a set's display name. Mirrors AddRingMemberSet's
+// validation: non-empty and no case-insensitive collision with a *different* set.
+func (a *App) RenameRingMemberSet(setID, name string) map[string]interface{} {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return map[string]interface{}{"success": false, "error": "Name is required"}
+	}
+
+	sets := loadRingMemberSets()
+	idx := -1
+	for i := range sets {
+		if sets[i].ID == setID {
+			idx = i
+		} else if strings.EqualFold(sets[i].Name, name) {
+			return map[string]interface{}{"success": false, "error": "A set with that name already exists"}
+		}
+	}
+	if idx == -1 {
+		return map[string]interface{}{"success": false, "error": "Ring member set not found"}
+	}
+
+	sets[idx].Name = name
+	sets[idx].UpdatedAt = time.Now().Unix()
+	saveRingMemberSets(sets)
+	a.logToConsole(fmt.Sprintf("[RingMembers] Renamed set to: %s", name))
+
+	return map[string]interface{}{"success": true, "set": sets[idx], "message": "Ring member set renamed"}
+}
+
 // AddRingMember adds one address to a set after local validation. The footgun guard
 // (your own address collapses your anonymity set) mirrors curatedRingCandidates.
 func (a *App) AddRingMember(setID, address string) map[string]interface{} {

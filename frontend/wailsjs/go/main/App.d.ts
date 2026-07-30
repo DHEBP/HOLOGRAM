@@ -541,6 +541,8 @@ export function RemoveSearchExclusion(arg1:string):Promise<Record<string, any>>;
 
 export function RemoveTrackedToken(arg1:string):Promise<Record<string, any>>;
 
+export function RenameRingMemberSet(arg1:string,arg2:string):Promise<Record<string, any>>;
+
 export function RequestInterceptor(arg1:string):Promise<Record<string, any>>;
 
 export function ResetHologram(arg1:string):Promise<Record<string, any>>;

@@ -23,7 +23,7 @@
     // Time Machine Watch List
     GetWatchedSmartContracts, UnwatchSmartContract, RefreshWatchedSCs,
     // Ring Members (sender-visibility decoy curation)
-    GetRingMemberSets, AddRingMemberSet, AddRingMember, RemoveRingMember, DeleteRingMemberSet, IsAddressRegistered
+    GetRingMemberSets, AddRingMemberSet, RenameRingMemberSet, AddRingMember, RemoveRingMember, DeleteRingMemberSet, IsAddressRegistered
   } from '../../wailsjs/go/main/App.js';
   import OfflineCacheManager from '../lib/components/OfflineCacheManager.svelte';
   import SyncManager from '../lib/components/SyncManager.svelte';
@@ -96,6 +96,8 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   let newRingMemberAddr = '';
   let ringMemberError = '';
   let ringSetDeleteArmed = '';     // confirm-tap: id armed for delete
+  let ringSetRenamingId = '';      // which set is in inline-rename mode
+  let ringSetRenameName = '';      // draft name while renaming
   // address -> 'checking' | 'ok' | 'unregistered' ; advisory registration probe
   let ringMemberStatus = {};
   $: selectedRingSet = ringMemberSets.find(s => s.id === selectedRingSetId) || null;
@@ -789,6 +791,35 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     ringMemberError = '';
     const set = ringMemberSets.find(s => s.id === id);
     if (set) probeRingMembers(set.members || []);
+  }
+
+  function startRenameRingSet(set) {
+    ringSetRenamingId = set.id;
+    ringSetRenameName = set.name;
+    ringMemberError = '';
+  }
+
+  function cancelRenameRingSet() {
+    ringSetRenamingId = '';
+    ringSetRenameName = '';
+  }
+
+  async function commitRenameRingSet(id) {
+    const name = ringSetRenameName.trim();
+    const set = ringMemberSets.find(s => s.id === id);
+    if (!name || (set && name === set.name)) { cancelRenameRingSet(); return; }
+    ringMemberError = '';
+    try {
+      const result = await RenameRingMemberSet(id, name);
+      if (result.success) {
+        cancelRenameRingSet();
+        await loadRingMemberSets();
+      } else {
+        ringMemberError = result.error || 'Could not rename set';
+      }
+    } catch (e) {
+      console.error('Failed to rename ring set:', e);
+    }
   }
 
   async function deleteRingSet(id) {
@@ -3014,81 +3045,119 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 on:keydown={(e) => e.key === 'Enter' && addRingSet()}
               />
               <button on:click={addRingSet} disabled={!newRingSetName.trim()} class="btn btn-primary">
-                Add Set
+                Create
               </button>
             </div>
 
-            <!-- list of sets -->
-            <div class="host-list">
-              {#each ringMemberSets as set}
-                <div class="host-item" class:host-item-active={selectedRingSetId === set.id}>
-                  <span class="host-dot"></span>
-                  <span class="host-name">{set.name}</span>
-                  <span class="connection-protocol">{(set.members || []).length} {(set.members || []).length === 1 ? 'member' : 'members'}</span>
-                  <button class="btn btn-ghost btn-sm settings-ml-auto" on:click={() => openRingSet(set.id)}>
-                    {selectedRingSetId === set.id ? 'Close' : 'Edit'}
-                  </button>
-                  <button
-                    class="btn btn-ghost btn-sm"
-                    class:ring-delete-armed={ringSetDeleteArmed === set.id}
-                    on:click={() => deleteRingSet(set.id)}
-                    on:blur={() => { if (ringSetDeleteArmed === set.id) ringSetDeleteArmed = ''; }}
-                    title={ringSetDeleteArmed === set.id ? 'Tap again to delete' : 'Delete set'}
+            <!-- sets — accordion: each set contains its own member editor (drawer opens in place) -->
+            <div class="ring-acc-list">
+              {#each ringMemberSets as set (set.id)}
+                {@const memberCount = (set.members || []).length}
+                {@const isOpen = selectedRingSetId === set.id}
+                <div class="ring-acc" class:open={isOpen}>
+                  <div
+                    class="ring-acc-head"
+                    role="button"
+                    tabindex="0"
+                    on:click={() => { if (ringSetRenamingId !== set.id) openRingSet(set.id); }}
+                    on:keydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && ringSetRenamingId !== set.id) { e.preventDefault(); openRingSet(set.id); } }}
                   >
-                    {ringSetDeleteArmed === set.id ? 'Confirm' : '✕'}
-                  </button>
+                    <span class="ring-caret">▶</span>
+                    <span class="host-dot" class:empty={memberCount === 0}></span>
+                    {#if ringSetRenamingId === set.id}
+                      <!-- svelte-ignore a11y-autofocus -->
+                      <input
+                        type="text"
+                        class="input ring-rename-input"
+                        bind:value={ringSetRenameName}
+                        autofocus
+                        on:click|stopPropagation
+                        on:keydown|stopPropagation={(e) => { if (e.key === 'Enter') commitRenameRingSet(set.id); else if (e.key === 'Escape') cancelRenameRingSet(); }}
+                        on:blur={() => commitRenameRingSet(set.id)}
+                      />
+                    {:else}
+                      <span class="host-name">{set.name}</span>
+                    {/if}
+                    <span class="connection-protocol">{memberCount === 0 ? 'empty' : `${memberCount} ${memberCount === 1 ? 'member' : 'members'}`}</span>
+                    <span class="settings-ml-auto"></span>
+                    {#if ringSetRenamingId !== set.id}
+                      <button
+                        class="ring-icon-btn"
+                        on:click|stopPropagation={() => startRenameRingSet(set)}
+                        title="Rename set"
+                        aria-label="Rename set"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                      </button>
+                    {/if}
+                    {#if ringSetDeleteArmed === set.id}
+                      <button
+                        class="btn btn-ghost btn-sm ring-delete-armed"
+                        on:click|stopPropagation={() => deleteRingSet(set.id)}
+                        on:blur={() => { if (ringSetDeleteArmed === set.id) ringSetDeleteArmed = ''; }}
+                        title="Tap again to delete"
+                      >Confirm</button>
+                    {:else}
+                      <button
+                        class="ring-icon-btn del"
+                        on:click|stopPropagation={() => deleteRingSet(set.id)}
+                        title="Delete set"
+                        aria-label="Delete set"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>
+                      </button>
+                    {/if}
+                  </div>
+
+                  {#if isOpen}
+                    <div class="ring-acc-body">
+                      {#if memberCount === 0}
+                        <div class="ring-empty-add"><span class="ring-empty-dot"></span> Add your first member to start this set</div>
+                      {/if}
+                      <div class="decoy-add-row">
+                        <input
+                          type="text"
+                          bind:value={newRingMemberAddr}
+                          placeholder="dero1… — add a registered address"
+                          class="input"
+                          on:keydown={(e) => e.key === 'Enter' && addRingMember()}
+                        />
+                        <button class="btn btn-primary btn-sm" on:click={addRingMember} disabled={!newRingMemberAddr.trim()}>Add</button>
+                      </div>
+                      {#if ringMemberError}
+                        <span class="form-error" style="display:block;margin-top:var(--s-2);">{ringMemberError}</span>
+                      {/if}
+                      {#if memberCount > 0}
+                        <div class="decoy-chips">
+                          {#each (set.members || []) as addr}
+                            <span class="decoy-chip">
+                              {#if ringMemberStatus[addr] === 'ok'}
+                                <span class="ok" title="Registered on-chain"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                              {:else if ringMemberStatus[addr] === 'checking'}
+                                <span class="checking" title="Checking registration…"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" opacity="0.4"/></svg></span>
+                              {:else}
+                                <span class="unreg" title="Not registered on-chain (or daemon unreachable) — it will be skipped at send"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
+                              {/if}
+                              {formatAddress(addr)}
+                              <span class="x" on:click={() => removeRingMember(addr)} on:keydown={(e) => e.key === 'Enter' && removeRingMember(addr)} role="button" tabindex="0" title="Remove"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
+                            </span>
+                          {/each}
+                        </div>
+                      {/if}
+                      <div class="decoy-warn">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                        <span>Quality, not count. Members you control collapse your anonymity set — anyone who knows these addresses are yours can rule them out. Never add your own addresses. A good set is other people's real, active addresses.</span>
+                      </div>
+                    </div>
+                  {/if}
                 </div>
               {/each}
               {#if ringMemberSets.length === 0}
                 <div class="host-item host-item-empty">
-                  No ring member sets yet
+                  No ring member sets yet — name one above to get started
                 </div>
               {/if}
             </div>
-
-            <!-- member editor for the selected set -->
-            {#if selectedRingSet}
-              <div class="settings-divider">
-                <span class="form-hint" style="display:block;margin-bottom:var(--s-3);">
-                  Members of <strong style="color:var(--text-2);">{selectedRingSet.name}</strong>. Each must be a registered DERO base address — not your own.
-                </span>
-                <div class="decoy-add-row">
-                  <input
-                    type="text"
-                    bind:value={newRingMemberAddr}
-                    placeholder="dero1…"
-                    class="input"
-                    on:keydown={(e) => e.key === 'Enter' && addRingMember()}
-                  />
-                  <button class="btn btn-primary btn-sm" on:click={addRingMember} disabled={!newRingMemberAddr.trim()}>Add</button>
-                </div>
-                {#if ringMemberError}
-                  <span class="form-error" style="display:block;margin-top:var(--s-2);">{ringMemberError}</span>
-                {/if}
-                <div class="decoy-chips">
-                  {#each (selectedRingSet.members || []) as addr}
-                    <span class="decoy-chip">
-                      {#if ringMemberStatus[addr] === 'ok'}
-                        <span class="ok" title="Registered on-chain"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
-                      {:else if ringMemberStatus[addr] === 'checking'}
-                        <span class="checking" title="Checking registration…"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" opacity="0.4"/></svg></span>
-                      {:else}
-                        <span class="unreg" title="Not registered on-chain (or daemon unreachable) — it will be skipped at send"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
-                      {/if}
-                      {formatAddress(addr)}
-                      <span class="x" on:click={() => removeRingMember(addr)} on:keydown={(e) => e.key === 'Enter' && removeRingMember(addr)} role="button" tabindex="0" title="Remove"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-                    </span>
-                  {/each}
-                  {#if (selectedRingSet.members || []).length === 0}
-                    <span class="form-hint">No members yet — add registered addresses above.</span>
-                  {/if}
-                </div>
-                <div class="decoy-warn">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-                  <span>Quality, not count. Members you control collapse your anonymity set — anyone who knows these addresses are yours can rule them out. Never add your own addresses. A good set is other people's real, active addresses.</span>
-                </div>
-              </div>
-            {/if}
           </div>
         </div>
 
@@ -3340,14 +3409,70 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   }
   .ring-info svg { flex: none; }
 
-  .host-item-active { background: var(--void-up); }
-  .host-item-active .host-name { color: var(--cyan-400); }
   .ring-delete-armed { color: var(--status-err) !important; }
 
-  .settings-divider {
-    margin-top: var(--s-4); padding-top: var(--s-4);
-    border-top: 1px solid var(--border-subtle);
+  /* Ring Members — A2 accordion: each set opens its member editor as a recessed
+     drawer in place, so members read as belonging to the set (no divider). */
+  .ring-acc-list { display: flex; flex-direction: column; gap: var(--s-3); }
+  .ring-acc {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    background: var(--void-deep);
+    overflow: hidden;
   }
+  .ring-acc.open { border-color: rgba(34, 211, 238, 0.35); }
+  .ring-acc-head {
+    display: flex; align-items: center; gap: var(--s-3);
+    padding: var(--s-3);
+    cursor: pointer; user-select: none;
+  }
+  .ring-acc-head:hover { background: var(--void-mid); }
+  .ring-acc.open .ring-acc-head { background: var(--void-up); }
+  .ring-acc.open .host-name { color: var(--cyan-400); }
+
+  .ring-caret {
+    color: var(--text-4); font-size: 9px; flex: none;
+    transition: transform 0.15s ease;
+  }
+  .ring-acc.open .ring-caret { transform: rotate(90deg); color: var(--cyan-400); }
+
+  .host-dot.empty { background: var(--text-4); box-shadow: none; }
+
+  .ring-rename-input {
+    flex: 1; min-width: 0;
+    font-size: 13px; padding: var(--s-1) var(--s-2);
+    color: var(--cyan-300);
+  }
+
+  .ring-icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: none; cursor: pointer;
+    color: var(--text-4); padding: 4px; border-radius: var(--r-sm);
+    flex: none;
+  }
+  .ring-icon-btn:hover { color: var(--cyan-400); background: var(--void-hover); }
+  .ring-icon-btn.del:hover { color: var(--status-err); }
+
+  /* recessed drawer body — containment by depth (A2) */
+  .ring-acc-body {
+    margin: 0 var(--s-2) var(--s-2);
+    padding: var(--s-3);
+    background: var(--void-abyss);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+  }
+
+  .ring-empty-add {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--text-3);
+    margin-bottom: var(--s-2);
+  }
+  .ring-empty-dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--cyan-400); box-shadow: 0 0 8px var(--cyan-400);
+    flex: none;
+  }
+
   .decoy-add-row { display: flex; gap: var(--s-2); }
   .decoy-add-row .input { flex: 1; min-width: 0; font-size: 11px; padding: var(--s-2) var(--s-3); }
 
