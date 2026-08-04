@@ -1269,6 +1269,12 @@ let addressInput = '';
             const { method, params } = payload;
             const normalizedMethod = method.replace('DERO.', '');
           const methodLower = normalizedMethod.toLowerCase();
+          // Stripping the DERO. prefix makes DERO.GetHeight (chain tip, public data) collide
+          // with GetHeight (the wallet's own sync height), so a public chain query was routed
+          // to the wallet and demanded balance access. GetHeight is the ONLY such collision —
+          // DERO.Transfer and DERO.SC_Invoke really are wallet methods and must stay routed.
+          // Matches GetRequiredPermission in xswd_permissions.go.
+          const isDaemonScoped = method === 'DERO.GetHeight';
           const callSettings = get(settingsState);
           
           // Handle Subscribe/Unsubscribe for integrated wallet by polling
@@ -1286,9 +1292,6 @@ let addressInput = '';
               if (!sessionWalletAuthorized || !sessionGrantedPermissions.has(subPerm)) {
                 throw new Error(`Wallet not authorized: ${getPermissionName(subPerm)} required for ${eventType}`);
               }
-            }
-
-            if (methodLower === 'subscribe') {
               xswdSubscriptions[eventType] = true;
               addConsoleLog(`[Browser] Subscribed (internal): ${eventType}`);
               startXSWDSubscriptionPolling();
@@ -1315,7 +1318,7 @@ let addressInput = '';
 
             // Parent-owned session auth (R2-B3): ignore any client-supplied authState.
             // Wallet methods require a successful connect approval in this Browser session.
-            if (walletMethodsLower.includes(methodLower) && !sessionAllowsWalletMethod(methodLower)) {
+            if (!isDaemonScoped && walletMethodsLower.includes(methodLower) && !sessionAllowsWalletMethod(methodLower)) {
               throw new Error('Wallet not authorized');
             }
             
@@ -1351,7 +1354,7 @@ let addressInput = '';
                                    'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
                                    'SplitIntegratedAddress', 'CheckSignature'];
               
-              const isWalletMethod = walletMethodsLower.includes(methodLower);
+              const isWalletMethod = !isDaemonScoped && walletMethodsLower.includes(methodLower);
               const isSigningMethod = signingMethods.map(m => m.toLowerCase()).includes(methodLower);
               
               if (callSettings.integratedWallet && isWalletMethod) {
@@ -2894,6 +2897,13 @@ ${logsText || '(no logs)'}
             const methodLower = method.toLowerCase().replace('dero.', '');
             
             if (settings.integratedWallet && signingMethods.includes(methodLower)) {
+              // telaHost.connect() establishes the session, so telaHost.call() must honour
+              // it. Without this an app that never connected — or was denied — could still
+              // raise a signing prompt, which is the permission theater R2-B2 removed from
+              // the postMessage path.
+              if (!sessionAllowsWalletMethod(methodLower)) {
+                throw new Error('Wallet not authorized');
+              }
               // Parse SC payload for proper display in wallet modal
               const parsedPayload = parseScPayload(params);
               const approval = await requestWalletApproval({
