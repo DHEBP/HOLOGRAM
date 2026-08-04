@@ -34,6 +34,8 @@ var persistedSettingKeys = []string{
 	"privacy_mode",
 	"signal_dark",
 	"active_ring_member_set",
+	"default_wallet_path",
+	"wallet_picker_on_launch",
 }
 
 // Settings Functions

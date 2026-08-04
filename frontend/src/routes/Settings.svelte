@@ -1600,6 +1600,19 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                 class="toggle"
                 />
             </div>
+
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Wallet Picker on Launch</div>
+                <div class="settings-row-desc">Show the wallet login picker when Hologram starts</div>
+              </div>
+                <input
+                  type="checkbox"
+                  checked={$settingsState.walletPickerOnLaunch}
+                  on:change={(e) => updateSetting('walletPickerOnLaunch', e.target.checked)}
+                class="toggle"
+                />
+            </div>
           </div>
         </div>
       

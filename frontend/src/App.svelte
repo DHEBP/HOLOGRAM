@@ -4,6 +4,8 @@
   import FirstRunWizard from './lib/components/FirstRunWizard.svelte';
   import SplashScreen from './lib/components/SplashScreen.svelte';
   import WalletModal from './lib/components/WalletModal.svelte';
+  import WalletPickerModal from './lib/components/WalletPickerModal.svelte';
+  import { walletPicker } from './lib/stores/walletPickerStore.js';
   import Toast from './lib/components/Toast.svelte';
   import Browser from './routes/Browser.svelte';
   import Studio from './routes/Studio.svelte';
@@ -186,6 +188,10 @@
     // Wait for minimum splash time before proceeding
     await splashMinTime;
     wizardChecked = true;
+
+    // Wallet picker: show on launch until the user opts out ("Show on launch"
+    // switch, persisted as wallet_picker_on_launch).
+    walletPicker.init();
     
     // Initial status fetch and network sync (reconciles persisted "simulator" with actual mainnet connection on restart)
     updateStatus();
@@ -489,6 +495,7 @@
 
 <!-- Integrated Wallet Modal -->
 <WalletModal />
+<WalletPickerModal />
 
 <!-- Toast Notifications -->
 <Toast />

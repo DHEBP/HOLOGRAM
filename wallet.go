@@ -2673,7 +2673,8 @@ func (a *App) SelectWalletFile() string {
 type WalletInfo struct {
 	Path          string `json:"path"`
 	Filename      string `json:"filename"`
-	AddressPrefix string `json:"addressPrefix"`
+	Address       string `json:"address"`       // full address (for villager avatars / identity)
+	AddressPrefix string `json:"addressPrefix"` // short display form (first 16 chars + "...")
 	LastUsed      int64  `json:"lastUsed"`
 	IsCurrent     bool   `json:"isCurrent"`
 	Network       string `json:"network"` // "mainnet" or "simulator"
@@ -2805,7 +2806,8 @@ func (a *App) GetRecentWalletsWithInfo() []WalletInfo {
 // Extended wallet info storage
 type recentWalletData struct {
 	Path          string `json:"path"`
-	AddressPrefix string `json:"addressPrefix"`
+	Address       string `json:"address"`       // full address — kept for villager avatar + identity
+	AddressPrefix string `json:"addressPrefix"` // short display form
 	LastUsed      int64  `json:"lastUsed"`
 	Network       string `json:"network"` // "mainnet" or "simulator"
 }
@@ -2825,6 +2827,7 @@ func addToRecentWalletsWithInfo(path, address string) {
 	// Create new entry
 	newEntry := recentWalletData{
 		Path:          path,
+		Address:       address,
 		AddressPrefix: "",
 		LastUsed:      nowUnix(),
 		Network:       network,
@@ -2924,6 +2927,7 @@ func loadRecentWalletsWithInfo() []WalletInfo {
 		result[i] = WalletInfo{
 			Path:          d.Path,
 			Filename:      filepath.Base(d.Path),
+			Address:       d.Address,
 			AddressPrefix: d.AddressPrefix,
 			LastUsed:      d.LastUsed,
 			IsCurrent:     false,

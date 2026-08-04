@@ -231,6 +231,7 @@ export namespace main {
 	export class WalletInfo {
 	    path: string;
 	    filename: string;
+	    address: string;
 	    addressPrefix: string;
 	    lastUsed: number;
 	    isCurrent: boolean;
@@ -244,6 +245,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
 	        this.filename = source["filename"];
+	        this.address = source["address"];
 	        this.addressPrefix = source["addressPrefix"];
 	        this.lastUsed = source["lastUsed"];
 	        this.isCurrent = source["isCurrent"];
