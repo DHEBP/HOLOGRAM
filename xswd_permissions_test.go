@@ -4,7 +4,10 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -77,9 +80,9 @@ func TestAllPermissions(t *testing.T) {
 
 func TestGetPermissionInfo_KnownPermissions(t *testing.T) {
 	tests := []struct {
-		permission  XSWDPermission
-		expectName  string
-		expectAsk   bool
+		permission XSWDPermission
+		expectName string
+		expectAsk  bool
 	}{
 		{PermissionViewAddress, "View Wallet Address", false},
 		{PermissionViewBalance, "View Balance & History", false},
@@ -920,5 +923,79 @@ func TestXSWDOriginKeyIsNamespaced(t *testing.T) {
 	}
 	if XSWDOriginKey(" "+scid) != XSWDOriginKey(scid) {
 		t.Fatal("whitespace produced a second key for the same origin")
+	}
+}
+
+// The signing oracle: handleAuthPage took callback and domain as independent params, so the
+// site named in the approval prompt need not be where the signature is delivered. Revert
+// either gate and the reject cases here still pass (they test the matcher, not its adoption)
+// -- but revert the MATCHER and every reject case fails.
+func TestAuthURLMatchesDomain(t *testing.T) {
+	reject := []struct{ name, raw, domain string }{
+		{"plain cross-host", "https://evil.tld/cb", "good.com"},
+		{"backslash userinfo", "https://good.com\\@evil.tld/cb", "good.com"},
+		{"userinfo", "https://good.com@evil.tld/cb", "good.com"},
+		{"encoded slash userinfo", "https://good.com%2f@evil.tld/cb", "good.com"},
+		{"scheme-relative", "//evil.tld/cb", "good.com"},
+		{"javascript scheme", "javascript:alert(1)", "good.com"},
+		{"embedded tab", "https://good\t.com/cb", "good.com"},
+		{"suffix not on dot boundary", "https://notgood.com/cb", "good.com"},
+		{"domain is prose", "https://good.com/cb", "the good site"},
+		{"empty domain", "https://good.com/cb", ""},
+		{"not a url", "good.com/cb", "good.com"},
+	}
+	for _, tc := range reject {
+		t.Run("reject/"+tc.name, func(t *testing.T) {
+			if err := authURLMatchesDomain(tc.raw, tc.domain); err == nil {
+				t.Fatalf("accepted %q for domain %q", tc.raw, tc.domain)
+			}
+		})
+	}
+
+	accept := []struct{ name, raw, domain string }{
+		{"exact host", "https://good.com/cb", "good.com"},
+		{"subdomain", "https://login.good.com/cb", "good.com"},
+		{"case insensitive", "https://GOOD.com/cb", "Good.COM"},
+		{"http allowed", "http://good.com/cb", "good.com"},
+		{"trailing dot both sides", "https://good.com./cb", "good.com."},
+		{"domain carries a port", "https://good.com/cb", "good.com:8443"},
+		// "#" opens a fragment, so the host really is good.com. The ledger listed this as a
+		// vector that must fail closed; it must not -- rejecting it would break real callbacks.
+		{"fragment only looks like userinfo", "https://good.com#@evil.tld/cb", "good.com"},
+	}
+	for _, tc := range accept {
+		t.Run("accept/"+tc.name, func(t *testing.T) {
+			if err := authURLMatchesDomain(tc.raw, tc.domain); err != nil {
+				t.Fatalf("rejected %q for domain %q: %v", tc.raw, tc.domain, err)
+			}
+		})
+	}
+}
+
+// Adoption test. The matcher test above passes even if nobody CALLS the matcher -- that is
+// how the original false claim survived review. This drives the real handler, so deleting
+// the gate in handleAuthPage fails here.
+func TestHandleAuthPageRejectsCrossHostCallback(t *testing.T) {
+	s := &XSWDServer{}
+
+	bad := httptest.NewRequest(http.MethodGet,
+		"/auth?domain=good.com&callback=https://evil.tld/steal&nonce=abc123", nil)
+	rec := httptest.NewRecorder()
+	s.handleAuthPage(rec, bad)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("cross-host callback: status %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if strings.Contains(rec.Body.String(), "evil.tld") {
+		t.Fatal("rejection echoed the attacker callback into the served page")
+	}
+
+	good := httptest.NewRequest(http.MethodGet,
+		"/auth?domain=good.com&callback=https://good.com/cb&nonce=abc123", nil)
+	recGood := httptest.NewRecorder()
+	s.handleAuthPage(recGood, good)
+
+	if recGood.Code != http.StatusOK {
+		t.Fatalf("legitimate sign-in was rejected: status %d", recGood.Code)
 	}
 }

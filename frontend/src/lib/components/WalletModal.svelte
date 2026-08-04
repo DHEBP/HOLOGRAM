@@ -426,6 +426,15 @@
                   {/each}
                 </div>
                 
+              {:else if request.description}
+                <!-- No permission sheet, but the caller said what it wants (Sign In with
+                     DERO signs a challenge). Print that rather than a generic public-data
+                     bullet, which would describe the wrong operation entirely.
+                     Escaped as text by Svelte - the string is caller-supplied. -->
+                <p class="wallet-info-note">
+                  <span class="wallet-info-icon">i</span>
+                  {request.description}
+                </p>
               {:else}
                 <!-- Fallback for old-style requests without permission info -->
                 <ul class="wallet-fallback-permissions">

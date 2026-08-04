@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -1344,6 +1346,32 @@ func (s *XSWDServer) GetActiveConnections() []map[string]interface{} {
 
 // handleAuthPage serves the redirect auth waiting page.
 // The page calls /auth/complete, then redirects back to the callback URL.
+// authURLMatchesDomain checks that a URL the caller supplied actually belongs to the
+// domain the user is shown. handleAuthPage takes callback, nonce and domain as independent
+// query params, so without this the name in the approval prompt need not have anything to
+// do with where the signature is delivered — a signing oracle for any site that asks.
+// Host equality is the whole check: a parsed URL host cannot contain a space, slash, "@"
+// or userinfo, so shape checks on the raw string buy nothing once the hosts must match.
+func authURLMatchesDomain(raw, domain string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("not an http(s) URL")
+	}
+	d := strings.ToLower(strings.TrimSpace(domain))
+	if h, _, splitErr := net.SplitHostPort(d); splitErr == nil {
+		d = h
+	}
+	d = strings.TrimSuffix(d, ".")
+	if d == "" {
+		return fmt.Errorf("domain is required")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host != d && !strings.HasSuffix(host, "."+d) {
+		return fmt.Errorf("host %q does not match domain %q", host, d)
+	}
+	return nil
+}
+
 func (s *XSWDServer) handleAuthPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1356,6 +1384,14 @@ func (s *XSWDServer) handleAuthPage(w http.ResponseWriter, r *http.Request) {
 
 	if callback == "" || nonce == "" || domain == "" {
 		http.Error(w, "Missing required parameters: callback, nonce, domain", http.StatusBadRequest)
+		return
+	}
+
+	// Enforce BEFORE serving the page — `callback` is only ever consumed by the JS in the
+	// page we are about to write, so this is the load-bearing gate.
+	if err := authURLMatchesDomain(callback, domain); err != nil {
+		log.Printf("[AUTH] Rejected sign-in: callback %q vs domain %q: %v", callback, domain, err)
+		http.Error(w, "callback must be on the domain shown to the user", http.StatusBadRequest)
 		return
 	}
 
@@ -1402,6 +1438,19 @@ func (s *XSWDServer) handleAuthComplete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// body.URI is interpolated into the text the wallet SIGNS, so it must belong to the
+	// domain the user is shown. This does not re-check the callback: this endpoint never
+	// sees one. The callback gate lives in handleAuthPage and that is the only place it
+	// can be enforced.
+	if body.URI != "" {
+		if err := authURLMatchesDomain(body.URI, body.Domain); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "uri must be on the domain shown to the user"})
+			return
+		}
+	}
+
 	resChan := make(chan interface{})
 	reqID := s.nextRequestID("auth")
 
@@ -1425,9 +1474,8 @@ func (s *XSWDServer) handleAuthComplete(w http.ResponseWriter, r *http.Request) 
 		"type":                 "connect",
 		"appName":              "Sign In with DERO",
 		"origin":               body.Domain,
-		"description":          body.Domain + " wants to verify your identity",
+		"description":          "Approving unlocks your wallet and signs a sign-in message for " + body.Domain + ". It proves you control your address. It does not move funds.",
 		"requestedPermissions": []map[string]interface{}{},
-		"existingPermissions":  map[string]bool{},
 		"isReadOnly":           false,
 	})
 
