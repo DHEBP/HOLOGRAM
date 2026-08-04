@@ -412,6 +412,12 @@ let addressInput = '';
   let sessionApprovalTime = 0;
   let sessionWalletAuthorized = false;
   let sessionGrantedPermissions = new Set();
+
+  // onMount is async, so Svelte discards the cleanup it returns. These are hoisted so
+  // onDestroy can unregister them, and `destroyed` stops a listener being registered
+  // at all if the component is torn down mid-await (tab switch during Gnomon start).
+  let destroyed = false;
+  let handleSearchResult, handleXSWDMessage, handleConsoleShortcut;
   // srcdoc + allow-same-origin collapses to the parent origin (R2-B5). Track mode
   // so the sandbox attribute can drop same-origin for srcdoc loads.
   // CRITICAL: set sandbox imperatively BEFORE assigning srcdoc — reactive
@@ -1061,7 +1067,7 @@ let addressInput = '';
       previousWalletRequestCount = currentCount;
     });
     
-    const handleSearchResult = (e) => {
+    handleSearchResult = (e) => {
       const { type, query, result } = e.detail;
       if (result && result.success && (type === 'sc' || type === 'durl')) {
         if (type === 'sc') {
@@ -1073,11 +1079,11 @@ let addressInput = '';
         }
       }
     };
-    window.addEventListener('search-result', handleSearchResult);
+    if (!destroyed) window.addEventListener('search-result', handleSearchResult);
     
     // Handle direct browser navigation from Explorer (when user searches for a .tela domain)
     // PostMessage handler for XSWD bridge communication from iframe
-    const handleXSWDMessage = async (event) => {
+    handleXSWDMessage = async (event) => {
       try {
         if (contentFrame && event.source === contentFrame.contentWindow && event.data?.type === 'xswd-request') {
           addConsoleLog(`[Browser] Received: action=${event.data.action}, id=${event.data.id}`);
@@ -1456,10 +1462,10 @@ let addressInput = '';
         }, '*');
       }
     };
-    window.addEventListener('message', handleXSWDMessage);
+    if (!destroyed) window.addEventListener('message', handleXSWDMessage);
     
     // Hot reload listener for local dev mode
-    EventsOn('localdev:reload', handleLocalDevReload);
+    if (!destroyed) EventsOn('localdev:reload', handleLocalDevReload);
 
     // Try to restore last loaded TELA session for fast back-navigation
     await restoreTelaSession();
@@ -1469,22 +1475,20 @@ let addressInput = '';
     }
     
     // Keyboard shortcut: Cmd/Ctrl+Shift+J to toggle JS Console
-    const handleKeydown = (e) => {
+    handleConsoleShortcut = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         toggleConsole();
       }
     };
-    window.addEventListener('keydown', handleKeydown);
-    
-    return () => {
-      window.removeEventListener('search-result', handleSearchResult);
-      window.removeEventListener('message', handleXSWDMessage);
-      window.removeEventListener('keydown', handleKeydown);
-    };
+    if (!destroyed) window.addEventListener('keydown', handleConsoleShortcut);
   });
-  
+
   onDestroy(async () => {
+    destroyed = true;
+    if (handleSearchResult) window.removeEventListener('search-result', handleSearchResult);
+    if (handleXSWDMessage) window.removeEventListener('message', handleXSWDMessage);
+    if (handleConsoleShortcut) window.removeEventListener('keydown', handleConsoleShortcut);
     if (unsubscribePending) unsubscribePending();
     if (unsubscribeConsole) unsubscribeConsole();
     if (unsubscribeWalletRequests) unsubscribeWalletRequests();
