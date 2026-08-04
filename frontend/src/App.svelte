@@ -1,9 +1,12 @@
 <script>
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import Sidebar from './lib/components/Sidebar.svelte';
   import FirstRunWizard from './lib/components/FirstRunWizard.svelte';
   import SplashScreen from './lib/components/SplashScreen.svelte';
   import WalletModal from './lib/components/WalletModal.svelte';
+  import WalletPickerModal from './lib/components/WalletPickerModal.svelte';
+  import { walletPicker } from './lib/stores/walletPickerStore.js';
   import Toast from './lib/components/Toast.svelte';
   import Browser from './routes/Browser.svelte';
   import Studio from './routes/Studio.svelte';
@@ -153,6 +156,13 @@
     // Load settings from backend on app startup
     await loadSettings();
 
+    // Skip the intro splash when the user disabled it (Appearance > Intro Animation on Startup).
+    // Doing this right after settings load hides the splash immediately instead of waiting out
+    // splashMinTime below.
+    if (get(settingsState).showIntroOnLaunch === false) {
+      wizardChecked = true;
+    }
+
     // Handle launch deep links (e.g. dero://example.tela or dero://deroi1...) captured by backend.
     // Payment URIs route to Wallet via the pendingPayment store; app URIs route to Browser as before.
     try {
@@ -183,9 +193,16 @@
       showWizard = true;
     }
     
-    // Wait for minimum splash time before proceeding
-    await splashMinTime;
-    wizardChecked = true;
+    // Wait for minimum splash time before proceeding. Skipped entirely when the intro
+    // was disabled in Appearance (wizardChecked is already true in that case).
+    if (!wizardChecked) {
+      await splashMinTime;
+      wizardChecked = true;
+    }
+
+    // Wallet picker: show on launch until the user opts out ("Show on launch"
+    // switch, persisted as wallet_picker_on_launch).
+    walletPicker.init();
     
     // Initial status fetch and network sync (reconciles persisted "simulator" with actual mainnet connection on restart)
     updateStatus();
@@ -489,6 +506,7 @@
 
 <!-- Integrated Wallet Modal -->
 <WalletModal />
+<WalletPickerModal />
 
 <!-- Toast Notifications -->
 <Toast />

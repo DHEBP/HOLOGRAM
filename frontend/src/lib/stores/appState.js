@@ -28,6 +28,13 @@ const settingsKeyMap = {
   'avatar_hidden': 'avatarHidden',
   'privacy_mode': 'privacyMode',
   'signal_dark': 'signalDark',
+  // Wallet picker on launch
+  'wallet_picker_on_launch': 'walletPickerOnLaunch',
+  // Default wallet chosen in the launch picker (persisted so it can auto-expand)
+  'default_wallet_path': 'defaultWalletPath',
+  // Appearance
+  'show_intro_on_launch': 'showIntroOnLaunch',
+  'toast_position': 'toastPosition',
 };
 
 // Reverse map for saving (frontend → backend)
@@ -255,6 +262,10 @@ export const settingsState = writable({
   avatarHidden: false,
   privacyMode: false, // network seal (Privacy Mode) — mirrors the backend filter state
   signalDark: false,  // display masking (Signal Dark) — independent of the network seal
+  walletPickerOnLaunch: true, // show the wallet-connect picker each launch until the user opts out
+  defaultWalletPath: '',       // the wallet pre-selected (auto-expanded) in the launch picker
+  showIntroOnLaunch: true,     // play the intro splash animation at startup (Appearance)
+  toastPosition: 'top-right',  // where toast notifications appear: 'top-right' | 'bottom-right'
 });
 
 // Effective privacy masks — single source of truth for "is this masked right now".
@@ -296,16 +307,20 @@ export async function loadSettings() {
   }
 }
 
-// Save a setting to backend using the correct backend key
+// Save a setting to backend using the correct backend key.
+// NOTE: the backend write is deliberately NOT guarded on "value already equal"
+// — Svelte's bind:checked/bind:value update the store *before* an on:change
+// handler runs, so a write-guard like `if (currentValue === value) return;`
+// would silently skip persistence for every toggle that binds a store field.
+// Backend writes are idempotent, so redundant writes are harmless.
 export async function saveSetting(frontendKey, value) {
   const backendKey = settingsKeyMapReverse[frontendKey] || frontendKey;
-  const currentValue = get(settingsState)?.[frontendKey];
-  if (currentValue === value) {
-    return;
+
+  // Update frontend state immediately (skip only when unchanged — e.g. a
+  // bind:checked already applied it before this handler ran).
+  if (get(settingsState)?.[frontendKey] !== value) {
+    settingsState.update(state => ({ ...state, [frontendKey]: value }));
   }
-  
-  // Update frontend state immediately
-  settingsState.update(state => ({ ...state, [frontendKey]: value }));
   
   // Save to backend with the correct key
   try {

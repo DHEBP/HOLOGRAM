@@ -38,6 +38,7 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   
   const sections = [
     { id: 'general', label: 'General', iconName: 'settings' },
+    { id: 'appearance', label: 'Appearance', iconName: 'sparkles' },
     { id: 'privacy', label: 'Advanced Privacy', iconName: 'shield' },
     { id: 'data-storage', label: 'Data & Storage', iconName: 'hard-drive' },
     { id: 'node', label: 'Node', iconName: 'server' },
@@ -1599,6 +1600,60 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                   on:change={(e) => updateSetting('integratedWallet', e.target.checked)}
                 class="toggle"
                 />
+            </div>
+
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Wallet Picker on Launch</div>
+                <div class="settings-row-desc">Show the wallet login picker when Hologram starts</div>
+              </div>
+                <input
+                  type="checkbox"
+                  checked={$settingsState.walletPickerOnLaunch}
+                  on:change={(e) => updateSetting('walletPickerOnLaunch', e.target.checked)}
+                class="toggle"
+                />
+            </div>
+          </div>
+        </div>
+      
+      {:else if activeSection === 'appearance'}
+        <!-- Startup & Notifications -->
+        <div class="card-wrapper">
+          <div class="explorer-header">
+            <div class="explorer-header-left">
+              <span class="explorer-header-icon">◈</span>
+              <span class="explorer-header-title">APPEARANCE</span>
+            </div>
+          </div>
+          <div class="card-content">
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Intro Animation on Startup</div>
+                <div class="settings-row-desc">Play the Hologram splash intro when the app starts</div>
+              </div>
+                <input
+                  type="checkbox"
+                  checked={$settingsState.showIntroOnLaunch}
+                  on:change={(e) => updateSetting('showIntroOnLaunch', e.target.checked)}
+                class="toggle"
+                />
+            </div>
+
+            <div class="settings-row">
+              <div class="settings-row-info">
+                <div class="settings-row-label">Notification Position</div>
+                <div class="settings-row-desc">Where toast notifications appear on screen</div>
+              </div>
+              <select
+                value={$settingsState.toastPosition}
+                on:change={(e) => updateSetting('toastPosition', e.target.value)}
+                class="select"
+                style="width: 180px;"
+              >
+                <option value="top-right">Top right</option>
+                <option value="bottom-right">Bottom right</option>
+              </select>
             </div>
           </div>
         </div>

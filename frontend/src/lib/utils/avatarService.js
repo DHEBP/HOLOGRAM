@@ -75,15 +75,19 @@ async function fetchAvatarPixels(address) {
  * Fetches custom pixels from blockchain and renders with identicon frame
  * @param {string} address - Wallet address
  * @param {number} size - Requested size in pixels (default: 40)
+ * @param {object} [options] - Rendering options
+ * @param {boolean} [options.lowDetail] - Render into a small internal canvas (thumbnails)
  * @returns {Promise<string>} - Object URL for the avatar image
  */
-export async function getAvatarUrl(address, size = 40) {
+export async function getAvatarUrl(address, size = 40, options = {}) {
     if (!address) {
         throw new Error('Address is required');
     }
+
+    const lowDetail = !!(options && options.lowDetail);
     
     // Check if we have a cached URL for this address and size
-    const cacheKey = `${address}_${size}`;
+    const cacheKey = `${address}_${size}${lowDetail ? '_t' : ''}`;
     if (avatarUrlCache.has(cacheKey)) {
         return avatarUrlCache.get(cacheKey);
     }
@@ -102,7 +106,7 @@ export async function getAvatarUrl(address, size = 40) {
     
     // Render avatar with identicon frame
     try {
-        const url = await VillagerIdenticon.render(address, avatarStr, size);
+        const url = await VillagerIdenticon.render(address, avatarStr, size, { lowDetail });
         avatarUrlCache.set(cacheKey, url);
         return url;
     } catch (error) {

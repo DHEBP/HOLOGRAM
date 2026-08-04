@@ -176,7 +176,7 @@ const VillagerIdenticon = (function () {
 	// ──────────────────────────────────────────────────────────────
     // 4. Render Controller
     // ──────────────────────────────────────────────────────────────
-    async function renderSmart(address, rawHexOrString, requestedSize = 180) {
+    async function renderSmart(address, rawHexOrString, requestedSize = 180, options = {}) {
         let avatarStr = rawHexOrString;
         if (typeof avatarStr === 'string' && avatarStr.length === 1152 && /^[0-9a-fA-F]{1152}$/.test(avatarStr)) {
             avatarStr = hexToString(avatarStr);
@@ -186,18 +186,24 @@ const VillagerIdenticon = (function () {
             throw new Error("Avatar must be 576 characters after decoding");
         }
 
-        const cacheKey = address;
+        // Low-detail thumbnails are drawn into a much smaller internal canvas, so a
+        // tiny 40px list thumb never pays for a full 800px render. Kept in a separate
+        // cache key so a low-detail render never shadows the full-size version used
+        // by the Sidebar / profile views.
+        const lowDetail = !!(options && options.lowDetail);
+        const internalSize = lowDetail ? 96 : 800;
+        const cacheKey = lowDetail ? `${address}__thumb` : address;
 
-        // Cache the full 800px version once
+        // Cache the base render once
         if (!avatarCache.has(cacheKey)) {
-            const fullUrl = await generateAvatarWithFrame(address, avatarStr, 800);
+            const fullUrl = await generateAvatarWithFrame(address, avatarStr, internalSize, lowDetail);
             avatarCache.set(cacheKey, fullUrl);
         }
 
         const fullUrl = avatarCache.get(cacheKey);
 
-        // Return full size if requested
-        if (requestedSize >= 800) {
+        // Return the base render if already at/above the requested size
+        if (requestedSize >= internalSize) {
             return fullUrl;
         }
 
@@ -221,17 +227,19 @@ const VillagerIdenticon = (function () {
     // ──────────────────────────────────────────────────────────────
     // 4. Core renderer
     // ──────────────────────────────────────────────────────────────
-	async function generateAvatarWithFrame(address, avatarStr, size = 180) {
+	async function generateAvatarWithFrame(address, avatarStr, size = 180, lowDetail = false) {
 		if (avatarStr.length !== 576) return Promise.reject("Invalid avatar string");
 		if (!isValidAvatarString(avatarStr)) return Promise.reject("Invalid avatar characters");
-
-		console.log(`generating Villager Identicon for address: ${address}`);
 
 		const uniquePart = address.startsWith('dero1') ? address.slice(5) : address;
 		const frameSeed = simpleHash(uniquePart + "FRAME");
 		const bgSeed   = simpleHash(uniquePart + "BACKGROUND");
 
-		const renderSize = 800;
+		// Low-detail thumbnails render on a small backing canvas. Every loop in this
+		// function scales with renderSize (starfield/texture iterate renderSize/2 and
+		// renderSize/4), so dropping 800 -> 96 cuts the draw cost ~70x while keeping
+		// the identicon visually identical (the avatar grid is a fixed 24x24 cells).
+		const renderSize = lowDetail === true ? 96 : 800;
 		const canvas = document.createElement('canvas');
 		const ctx = canvas.getContext('2d');
 		canvas.width = renderSize;
