@@ -32,6 +32,9 @@ const settingsKeyMap = {
   'wallet_picker_on_launch': 'walletPickerOnLaunch',
   // Default wallet chosen in the launch picker (persisted so it can auto-expand)
   'default_wallet_path': 'defaultWalletPath',
+  // Appearance
+  'show_intro_on_launch': 'showIntroOnLaunch',
+  'toast_position': 'toastPosition',
 };
 
 // Reverse map for saving (frontend → backend)
@@ -261,6 +264,8 @@ export const settingsState = writable({
   signalDark: false,  // display masking (Signal Dark) — independent of the network seal
   walletPickerOnLaunch: true, // show the wallet-connect picker each launch until the user opts out
   defaultWalletPath: '',       // the wallet pre-selected (auto-expanded) in the launch picker
+  showIntroOnLaunch: true,     // play the intro splash animation at startup (Appearance)
+  toastPosition: 'top-right',  // where toast notifications appear: 'top-right' | 'bottom-right'
 });
 
 // Effective privacy masks — single source of truth for "is this masked right now".

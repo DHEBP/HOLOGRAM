@@ -1,6 +1,7 @@
 <script>
   import { fly, fade } from 'svelte/transition';
   import { toastNotifications, dismissToast } from '../stores/appState.js';
+  import { settingsState } from '../stores/appState.js';
 
   // Toast type configurations with v6.1 compliant classes
   const typeConfig = {
@@ -27,8 +28,11 @@
   }
 </script>
 
-<!-- Toast Container - fixed position at top right -->
-<div class="toast-container">
+<!-- Toast Container - fixed position, position driven by Appearance > Notification Position -->
+<div
+  class="toast-container"
+  class:toast-bottom-right={$settingsState.toastPosition === 'bottom-right'}
+>
   {#each $toastNotifications as toast (toast.id)}
     {@const config = getConfig(toast.type)}
     <div
@@ -71,6 +75,12 @@
     gap: var(--s-2, 8px);
     pointer-events: none;
     max-width: 320px;
+  }
+
+  /* Notification Position (Appearance setting) — stack from the lower-right instead */
+  .toast-container.toast-bottom-right {
+    top: auto;
+    bottom: var(--s-4, 16px);
   }
   
   .toast {

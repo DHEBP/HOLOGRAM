@@ -36,6 +36,8 @@ var persistedSettingKeys = []string{
 	"active_ring_member_set",
 	"default_wallet_path",
 	"wallet_picker_on_launch",
+	"show_intro_on_launch",
+	"toast_position",
 }
 
 // Settings Functions
