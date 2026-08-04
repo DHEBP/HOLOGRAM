@@ -665,6 +665,18 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 			return
 		}
 
+		// GetRequiredPermission returns "" for Subscribe, so the generic handshake and
+		// permission checks never run on this path. Gate it explicitly: a balance or
+		// entry feed is the same data GetBalance/GetTransfers already require a grant for.
+		subPerm := PermissionViewBalance
+		if SubscriptionType(eventType) == SubNewTopoheight {
+			subPerm = PermissionReadPublicData
+		}
+		if errRes = DenyUnlessPermission(origin, subPerm); errRes != nil {
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+
 		// Initialize subscriptions for this client if not exists
 		s.lock.Lock()
 		if s.clientSubscriptions[conn] == nil {

@@ -60,9 +60,11 @@
     // Initialize all requested permissions as granted by default
     grantedPermissions = {};
     for (const perm of request.requestedPermissions) {
-      // Use existing permission state if available, otherwise default to true
+      // Use existing permission state if available. Otherwise default to granted,
+      // EXCEPT for alwaysAsk permissions (sign_transaction / sc_invoke) which must
+      // never arrive pre-ticked — the user has to opt into fund-touching access.
       const existingValue = request.existingPermissions?.[perm.id];
-      grantedPermissions[perm.id] = existingValue !== undefined ? existingValue : true;
+      grantedPermissions[perm.id] = existingValue !== undefined ? existingValue : !perm.alwaysAsk;
     }
   }
   

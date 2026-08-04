@@ -450,6 +450,19 @@ let addressInput = '';
     return (currentMeta?.scid || addressInput || '').trim();
   }
 
+  // The bridge handshake sends no appInfo.permissions, so this is the vocabulary a
+  // connecting TELA app is offered. Must stay in sync with permissionForWalletMethod.
+  const CONNECT_PERMISSIONS = ['read_public_data', 'view_address', 'view_balance', 'sign_transaction', 'sc_invoke'];
+
+  function permissionDescriptor(id) {
+    return {
+      id,
+      name: getPermissionName(id),
+      description: getPermissionDescription(id),
+      alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(id)
+    };
+  }
+
   /** Map an XSWD wallet method to the permission id required for Browser-integrated calls. */
   function permissionForWalletMethod(methodLower) {
     const m = (methodLower || '').replace(/^dero\./, '');
@@ -1197,7 +1210,14 @@ let addressInput = '';
                 } else {
                   addConsoleLog('[Browser] Requesting wallet approval via modal...');
                   const requestedPerms = payload.appInfo?.permissions || [];
-                  const hasWalletPerms = requestedPerms.some(p =>
+                  // The bridge sends no appInfo.permissions, so an unfiltered request
+                  // leaves nothing to offer. Fall back to the full vocabulary, and only
+                  // ever offer ids we know — a page cannot inject its own wording here.
+                  const filteredPerms = requestedPerms.filter(p => CONNECT_PERMISSIONS.includes(p));
+                  const offeredPerms = filteredPerms.length > 0 ? filteredPerms : CONNECT_PERMISSIONS;
+                  // Derive read-only from what is actually OFFERED, not what was asked for,
+                  // or the modal claims read-only while showing a Sign Transactions checkbox.
+                  const hasWalletPerms = offeredPerms.some(p =>
                     ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
                   );
                   const isReadOnly = !hasWalletPerms;
@@ -1210,17 +1230,7 @@ let addressInput = '';
                     description: connectingDesc,
                     isReadOnly: isReadOnly,
                     walletNotOpen: walletNotOpen,
-                    requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
-                      id: p,
-                      name: getPermissionName(p),
-                      description: getPermissionDescription(p),
-                      alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(p)
-                    })) : [{
-                      id: 'read_public_data',
-                      name: 'Read Public Blockchain Data',
-                      description: 'Can read public blockchain info (blocks, transactions, network stats)',
-                      alwaysAsk: false
-                    }]
+                    requestedPermissions: offeredPerms.map(permissionDescriptor)
                   });
                   addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
                   if (approval && approval.approved) {
@@ -1258,6 +1268,16 @@ let addressInput = '';
               throw new Error(`Unknown event type: ${eventType || 'undefined'}`);
             }
             
+            // This branch runs BEFORE the wallet-method gate below, and Subscribe is not
+            // in walletMethods — so without this check any app gets the balance and the
+            // last 10 transfers (with proofs and comments) on the first poll, unapproved.
+            if (methodLower === 'subscribe') {
+              const subPerm = eventType === 'new_topoheight' ? 'read_public_data' : 'view_balance';
+              if (!sessionWalletAuthorized || !sessionGrantedPermissions.has(subPerm)) {
+                throw new Error(`Wallet not authorized: ${getPermissionName(subPerm)} required for ${eventType}`);
+              }
+            }
+
             if (methodLower === 'subscribe') {
               xswdSubscriptions[eventType] = true;
               addConsoleLog(`[Browser] Subscribed (internal): ${eventType}`);
@@ -2905,21 +2925,17 @@ ${logsText || '(no logs)'}
           const settings = get(settingsState);
           if (settings.integratedWallet) {
             try {
-              // Default to read-only for initial connect
+              // Offer the same vocabulary as the bridge connect path, or a granted
+              // read_public_data unlocks no wallet method and every call fails.
               const approval = await requestWalletApproval({
                 type: 'connect',
                 appName: currentMeta.name || 'App',
                 origin: addressInput,
-                isReadOnly: true,
-                requestedPermissions: [{ 
-                  id: 'read_public_data', 
-                  name: 'Read Public Blockchain Data',
-                  description: 'Can read public blockchain info (blocks, transactions, network stats)',
-                  alwaysAsk: false
-                }]
+                isReadOnly: false,
+                requestedPermissions: CONNECT_PERMISSIONS.map(permissionDescriptor)
               });
               if (approval.approved) {
-                const granted = Array.isArray(approval.permissions) ? approval.permissions : ['read_public_data'];
+                const granted = Array.isArray(approval.permissions) ? approval.permissions : [];
                 const res = await persistConnectApproval(currentMeta.name || 'App', '', granted);
                 return res?.success === true;
               }
