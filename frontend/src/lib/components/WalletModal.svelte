@@ -55,18 +55,32 @@
   // Permission management for XSWD connections
   let grantedPermissions = {};
   
-  // Initialize permissions when request changes
-  $: if (request && request.type === 'connect' && request.requestedPermissions) {
-    // Initialize all requested permissions as granted by default
-    grantedPermissions = {};
+  // A tick invalidates `request` (Svelte propagates up the reactive-assignment chain),
+  // so this must key on the request OBJECT — request.id is dApp-chosen and reusable.
+  let permissionsSeededFor = null;
+
+  $: if (request && request.type === 'connect' && request.requestedPermissions && request !== permissionsSeededFor) {
+    permissionsSeededFor = request;
+    const seeded = {};
     for (const perm of request.requestedPermissions) {
-      // Use existing permission state if available. Otherwise default to granted,
-      // EXCEPT for alwaysAsk permissions (sign_transaction / sc_invoke) which must
-      // never arrive pre-ticked — the user has to opt into fund-touching access.
-      const existingValue = request.existingPermissions?.[perm.id];
-      grantedPermissions[perm.id] = existingValue !== undefined ? existingValue : !perm.alwaysAsk;
+      // Pre-tick public chain data only. Nothing wallet-touching arrives ticked.
+      seeded[perm.id] = perm.id === 'read_public_data';
     }
+    grantedPermissions = seeded;
   }
+
+  const WALLET_PERMISSIONS = ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'];
+
+  // One predicate for BOTH the password demand and the unlock UI, so they cannot diverge.
+  // Empty sheet = Sign In with DERO (handleAuthComplete), which signs and needs the wallet.
+  function requestNeedsOpenWallet(req, granted) {
+    if (!req || req.type !== 'connect') return true;
+    const sheet = Array.isArray(req.requestedPermissions) ? req.requestedPermissions : [];
+    if (sheet.length === 0) return true;
+    return WALLET_PERMISSIONS.some(p => granted[p]);
+  }
+
+  $: connectNeedsWallet = requestNeedsOpenWallet(request, grantedPermissions);
   
   function togglePermission(permId) {
     grantedPermissions[permId] = !grantedPermissions[permId];
@@ -185,11 +199,11 @@
   async function handleApprove() {
     if (!request) return;
     
-    // Read-only requests don't need wallet access
-    const isReadOnlyRequest = request.type === 'connect' && request.isReadOnly;
-    
-    // If wallet is not open AND this is not a read-only request, require password AND wallet path
-    if (!$walletState.isOpen && !isReadOnlyRequest) {
+    // Same predicate the template uses to decide whether to DRAW the unlock form,
+    // so the modal can never demand a password it never rendered a field for.
+    const needsOpenWallet = requestNeedsOpenWallet(request, grantedPermissions);
+
+    if (!$walletState.isOpen && needsOpenWallet) {
       if (!walletPath) {
         error = 'Please select a wallet file';
         return;
@@ -397,7 +411,6 @@
                         type="checkbox"
                         checked={grantedPermissions[perm.id]}
                         on:change={() => togglePermission(perm.id)}
-                        disabled={perm.alwaysAsk}
                         class="modal-permission-checkbox"
                       />
                       <div class="modal-permission-content">
@@ -413,12 +426,6 @@
                   {/each}
                 </div>
                 
-                {#if request.existingPermissions}
-                  <p class="wallet-info-note">
-                    <span class="wallet-info-icon">i</span>
-                    This app has connected before. Your previous permissions are shown.
-                  </p>
-                {/if}
               {:else}
                 <!-- Fallback for old-style requests without permission info -->
                 <ul class="wallet-fallback-permissions">
@@ -651,22 +658,11 @@
       </div>
 
       <!-- Wallet State Section - only show for non-read-only requests -->
-      {#if request.type === 'connect' && request.isReadOnly && !request.walletNotOpen}
-        <!-- Read-only apps don't need wallet access -->
+      {#if request.type === 'connect' && !connectNeedsWallet}
+        <!-- Nothing wallet-touching is ticked, so approving needs no unlock -->
         <div class="wallet-readonly-info">
           <span class="wallet-readonly-info-icon">◎</span>
-          <span>No wallet needed for this connection</span>
-        </div>
-      {:else if request.type === 'connect' && request.walletNotOpen}
-        <!-- Warning: integrated wallet mode but no wallet open -->
-        <div class="modal-alert modal-alert-warning" style="margin-bottom: 1rem;">
-          <span class="modal-alert-icon">!</span>
-          <div style="flex: 1;">
-            <strong>No wallet open</strong><br/>
-            <span style="font-size: 0.85rem; opacity: 0.9;">
-              This app may require wallet features. Open a wallet first or the app may not work correctly.
-            </span>
-          </div>
+          <span>No wallet access needed for the permissions selected</span>
         </div>
       {:else if $walletState.isOpen}
         <!-- Current wallet is open - show wallet switcher option -->

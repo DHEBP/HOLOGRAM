@@ -28,7 +28,7 @@ function getPermissionName(permId) {
   const names = {
     'read_public_data': 'Read Public Blockchain Data',
     'view_address': 'View Wallet Address',
-    'view_balance': 'View Balance',
+    'view_balance': 'View Balance & History',
     'sign_transaction': 'Sign Transactions',
     'sc_invoke': 'Smart Contract Calls'
   };
@@ -39,7 +39,7 @@ function getPermissionDescription(permId) {
   const descriptions = {
     'read_public_data': 'Can read public blockchain info (blocks, transactions, network stats)',
     'view_address': 'Can see your public wallet address',
-    'view_balance': 'Can see your wallet balance',
+    'view_balance': 'Can see your balance and full transfer history — senders, recipients, amounts, payment proofs, comments and your private labels',
     'sign_transaction': 'Can request to send DERO (requires approval each time)',
     'sc_invoke': 'Can request smart contract interactions (requires approval each time)'
   };
@@ -137,13 +137,19 @@ function sendXSWDEvent(method, params) {
   }
 }
 
+// Permission required to keep a subscription FEEDING, not just to open it. Gating only
+// at Subscribe leaves an established feed streaming after the grant is narrowed or revoked.
+function subscriptionAllowed(permId) {
+  return sessionWalletAuthorized && sessionGrantedPermissions.has(permId);
+}
+
 async function pollXSWDSubscriptions() {
   // Guard against overlapping polls - if a previous poll is still running (e.g., slow API),
   // skip this cycle. This is intentional to prevent request pile-up.
   if (xswdPollingActive) return;
   xswdPollingActive = true;
   try {
-    if (xswdSubscriptions.new_topoheight) {
+    if (xswdSubscriptions.new_topoheight && subscriptionAllowed('read_public_data')) {
       const stats = await GetLiveStats();
       const topo = stats?.topoheight;
       if (typeof topo === 'number' && topo !== lastTopoheight) {
@@ -152,7 +158,7 @@ async function pollXSWDSubscriptions() {
       }
     }
 
-    if (xswdSubscriptions.new_balance) {
+    if (xswdSubscriptions.new_balance && subscriptionAllowed('view_balance')) {
       const balanceResult = await GetBalance();
       if (balanceResult?.success) {
         const currentBalance = balanceResult?.balance ?? balanceResult?.result?.balance;
@@ -163,7 +169,7 @@ async function pollXSWDSubscriptions() {
       }
     }
 
-    if (xswdSubscriptions.new_entry) {
+    if (xswdSubscriptions.new_entry && subscriptionAllowed('view_balance')) {
       const history = await GetTransactionHistory(10);
       if (history?.success && Array.isArray(history.transactions) && history.transactions.length > 0) {
         // Iterate through all transactions (oldest to newest) and emit events for new ones
@@ -1227,7 +1233,6 @@ let addressInput = '';
                     ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
                   );
                   const isReadOnly = !hasWalletPerms;
-                  const walletNotOpen = !currentWalletState.isOpen;
 
                   const approval = await requestWalletApproval({
                     type: 'connect',
@@ -1235,7 +1240,6 @@ let addressInput = '';
                     origin: browserOriginKey() || addressInput,
                     description: connectingDesc,
                     isReadOnly: isReadOnly,
-                    walletNotOpen: walletNotOpen,
                     requestedPermissions: offeredPerms.map(permissionDescriptor)
                   });
                   addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);

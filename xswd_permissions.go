@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,8 +60,8 @@ func GetPermissionInfo(p XSWDPermission) PermissionInfo {
 	case PermissionViewBalance:
 		return PermissionInfo{
 			ID:          p,
-			Name:        "View Balance",
-			Description: "Can see your wallet balance",
+			Name:        "View Balance & History",
+			Description: "Can see your balance and full transfer history — senders, recipients, amounts, payment proofs, comments and your private labels",
 			AlwaysAsk:   false,
 		}
 	case PermissionSignTransaction:
@@ -440,6 +441,51 @@ func DefaultRequestedPermissions() []XSWDPermission {
 	return []XSWDPermission{
 		PermissionReadPublicData,
 	}
+}
+
+// ParseRequestedPermissions reads the permission list a dApp sends in its handshake.
+// Canonical XSWD sends a MAP (permission -> bool); older clients send an array. Handling
+// only the array form left every spec-compliant dApp holding the one-entry default, which
+// unlocks no wallet method at all. Unknown ids are dropped so a page cannot smuggle its own
+// wording onto the consent sheet, and an absent or unusable list falls back to public data
+// only — never to the full vocabulary, which would turn a request into an upgrade.
+func ParseRequestedPermissions(raw interface{}) []XSWDPermission {
+	if raw == nil {
+		return DefaultRequestedPermissions()
+	}
+	known := make(map[XSWDPermission]bool, len(AllPermissions()))
+	for _, p := range AllPermissions() {
+		known[p] = true
+	}
+	parsed := []XSWDPermission{}
+	switch v := raw.(type) {
+	case []interface{}:
+		for _, p := range v {
+			if s, ok := p.(string); ok && known[XSWDPermission(s)] {
+				parsed = append(parsed, XSWDPermission(s))
+			}
+		}
+	case map[string]interface{}:
+		for _, p := range AllPermissions() {
+			if wanted, ok := v[string(p)].(bool); ok && wanted {
+				parsed = append(parsed, p)
+			}
+		}
+	}
+	if len(parsed) == 0 {
+		return DefaultRequestedPermissions()
+	}
+	return parsed
+}
+
+// OriginNamespaceXSWD prefixes grant keys for dApp-supplied WebSocket origins.
+const OriginNamespaceXSWD = "xswd:"
+
+// XSWDOriginKey namespaces a dApp-supplied origin. Without this a page can hand us
+// url:"<a trusted SCID>" and REPLACE (GrantPermissions overwrites) the stored grant
+// record of a browser/TELA app it does not control.
+func XSWDOriginKey(raw string) string {
+	return OriginNamespaceXSWD + strings.TrimSpace(raw)
 }
 
 // HasAnyWalletPermission returns true if the permission list includes any wallet-related permissions

@@ -82,7 +82,7 @@ func TestGetPermissionInfo_KnownPermissions(t *testing.T) {
 		expectAsk   bool
 	}{
 		{PermissionViewAddress, "View Wallet Address", false},
-		{PermissionViewBalance, "View Balance", false},
+		{PermissionViewBalance, "View Balance & History", false},
 		{PermissionSignTransaction, "Sign Transactions", true},
 		{PermissionSCInvoke, "Smart Contract Calls", true},
 	}
@@ -846,5 +846,79 @@ func BenchmarkGetRequiredPermission(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		GetRequiredPermission(methods[i%len(methods)])
+	}
+}
+
+// The bug this pins: the handshake parsed only the array form, so a canonical XSWD dApp
+// sending the map form was handed the one-entry default and every wallet call it made was
+// then denied forever. Revert ParseRequestedPermissions to array-only and the map case here
+// fails — this test is coupled to the fix, not merely to the helper's existence.
+func TestParseRequestedPermissions(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  interface{}
+		want []XSWDPermission
+	}{
+		{"canonical map form", map[string]interface{}{
+			"view_address": true, "view_balance": true, "sign_transaction": false,
+		}, []XSWDPermission{PermissionViewAddress, PermissionViewBalance}},
+		{"legacy array form", []interface{}{"view_address", "sc_invoke"},
+			[]XSWDPermission{PermissionViewAddress, PermissionSCInvoke}},
+		{"absent falls back to public data", nil, DefaultRequestedPermissions()},
+		{"empty array does not widen", []interface{}{}, DefaultRequestedPermissions()},
+		{"all-false map does not widen", map[string]interface{}{"view_balance": false}, DefaultRequestedPermissions()},
+		{"unknown ids dropped", []interface{}{"view_address", "be_admin", 42},
+			[]XSWDPermission{PermissionViewAddress}},
+		{"garbage type falls back", "view_balance", DefaultRequestedPermissions()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseRequestedPermissions(tc.raw)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestSubscriptionPermissionMapping(t *testing.T) {
+	if got := SubscriptionPermission(SubNewTopoheight); got != PermissionReadPublicData {
+		t.Errorf("new_topoheight: got %v, want read_public_data", got)
+	}
+	for _, ev := range []SubscriptionType{SubNewBalance, SubNewEntry} {
+		if got := SubscriptionPermission(ev); got != PermissionViewBalance {
+			t.Errorf("%v: got %v, want view_balance", ev, got)
+		}
+	}
+}
+
+// A colliding JSON-RPC id used to route an approval — and the password typed into it — to a
+// different pending request. Keys must not be derived from anything the caller controls.
+func TestNextRequestIDIsUniqueAndNotCallerDerived(t *testing.T) {
+	s := &XSWDServer{}
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		id := s.nextRequestID("handshake")
+		if seen[id] {
+			t.Fatalf("duplicate request id: %s", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestXSWDOriginKeyIsNamespaced(t *testing.T) {
+	// A dApp naming a browser TELA app's SCID must not land on that app's grant record.
+	scid := "deadbeef"
+	if XSWDOriginKey(scid) == scid {
+		t.Fatal("dApp-supplied origin was not namespaced")
+	}
+	if XSWDOriginKey(" "+scid) != XSWDOriginKey(scid) {
+		t.Fatal("whitespace produced a second key for the same origin")
 	}
 }
