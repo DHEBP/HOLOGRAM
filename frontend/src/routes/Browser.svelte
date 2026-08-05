@@ -505,8 +505,11 @@ let addressInput = '';
       case 'getpublickey':
       case 'makeintegratedaddress':
       case 'splitintegratedaddress':
-      case 'getdaemon':
         return 'view_address';
+      // Mirrors GetRequiredPermission in xswd_permissions.go — the daemon endpoint is
+      // public-chain access, not wallet access.
+      case 'getdaemon':
+        return 'read_public_data';
       case 'getbalance':
       case 'getheight':
       case 'gettransfers':
@@ -1388,7 +1391,13 @@ let addressInput = '';
                                     'AttemptEPOCH', 'AttemptEPOCHWithAddr', 'GetMaxHashesEPOCH', 'GetSessionEPOCH', 'GetAddressEPOCH'];
               result = knownMethods.map(m => m.toLowerCase()).includes((params?.name || '').toLowerCase());
             } else if (methodLower === 'getdaemon') {
-              // GetDaemon - returns daemon endpoint for direct node communication
+              // GetDaemon - returns daemon endpoint for direct node communication.
+              // Gated here because app.go handles it before any permission check, and it
+              // is absent from walletMethods, so this branch was previously reachable with
+              // no approval at all. Handing over the endpoint lets an app leave HOLOGRAM.
+              if (callSettings.integratedWallet && !sessionAllowsWalletMethod('getdaemon')) {
+                throw new Error('Wallet not authorized');
+              }
               // Always route through CallXSWD since it's handled specially in app.go
               addConsoleLog(`[Browser] GetDaemon requested - routing to backend`);
               const xswdResult = await CallXSWD(JSON.stringify({ method: 'GetDaemon', params: params || {} }));

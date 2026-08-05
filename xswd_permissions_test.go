@@ -999,3 +999,22 @@ func TestHandleAuthPageRejectsCrossHostCallback(t *testing.T) {
 		t.Fatalf("legitimate sign-in was rejected: status %d", recGood.Code)
 	}
 }
+
+// GetDaemon was gated three inconsistent ways: view_address on the WebSocket path,
+// nothing at all on the Browser path, and a Svelte mapping that was never enforced.
+// The endpoint is public-chain access, so read_public_data is the honest requirement.
+func TestGetDaemonRequiresPublicDataNotAddress(t *testing.T) {
+	for _, m := range []string{"GetDaemon", "DERO.GetDaemon"} {
+		got := GetRequiredPermission(m)
+		if got == PermissionViewAddress {
+			t.Errorf("%s requires view_address — the daemon endpoint says nothing about the wallet", m)
+		}
+		if got != PermissionReadPublicData {
+			t.Errorf("%s: got %q, want %q", m, got, PermissionReadPublicData)
+		}
+	}
+	// Address methods must NOT have been swept along with it.
+	if GetRequiredPermission("GetAddress") != PermissionViewAddress {
+		t.Error("GetAddress no longer requires view_address")
+	}
+}

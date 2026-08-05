@@ -388,9 +388,14 @@ func GetRequiredPermission(method string) XSWDPermission {
 	switch method {
 	case "GetAddress", "DERO.GetAddress",
 		"GetPublicKey",
-		"MakeIntegratedAddress", "SplitIntegratedAddress",
-		"GetDaemon", "DERO.GetDaemon":
+		"MakeIntegratedAddress", "SplitIntegratedAddress":
 		return PermissionViewAddress
+	// The daemon endpoint is a gateway to PUBLIC chain data and reveals nothing about the
+	// wallet, so demanding "View Wallet Address" for it mislabels what is being granted.
+	// It still needs a gate: handing an app the endpoint lets it query the node directly,
+	// outside HOLOGRAM, and discloses a custom remote daemon if one is configured.
+	case "GetDaemon", "DERO.GetDaemon":
+		return PermissionReadPublicData
 	case "GetBalance", "DERO.GetBalance",
 		"GetHeight",
 		"GetTransfers", "GetTransferbyTXID":

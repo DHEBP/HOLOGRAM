@@ -735,8 +735,9 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, nil)
 
 	case "GetDaemon", "DERO.GetDaemon":
-		// Check if permission granted (requires view_address like other read methods)
-		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
+		// Read the requirement from the shared table rather than restating it here; the
+		// two had already drifted apart once.
+		if errRes = DenyUnlessPermission(origin, GetRequiredPermission("GetDaemon")); errRes != nil {
 			log.Printf("[XSWD] GetDaemon: DENIED - origin=%q", origin)
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
