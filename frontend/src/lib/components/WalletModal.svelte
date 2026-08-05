@@ -52,46 +52,51 @@
   let switchPassword = '';
   let selectedSwitchWallet = null;
   
-  // Permission management for XSWD connections
-  let grantedPermissions = {};
-  
-  // A tick invalidates `request` (Svelte propagates up the reactive-assignment chain),
-  // so this must key on the request OBJECT — request.id is dApp-chosen and reusable.
-  let permissionsSeededFor = null;
-
-  $: if (request && request.type === 'connect' && request.requestedPermissions && request !== permissionsSeededFor) {
-    permissionsSeededFor = request;
-    const seeded = {};
-    for (const perm of request.requestedPermissions) {
-      // Pre-tick public chain data only. Nothing wallet-touching arrives ticked.
-      seeded[perm.id] = perm.id === 'read_public_data';
-    }
-    grantedPermissions = seeded;
+  // Set by "Always allow" so handleApprove can tell the two answers apart. Reset on every
+  // new request object, or one "always" would silently persist the next app's grant too.
+  let rememberChoice = false;
+  let rememberResetFor = null;
+  $: if (request && request !== rememberResetFor) {
+    rememberResetFor = request;
+    rememberChoice = false;
   }
-
-  const WALLET_PERMISSIONS = ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'];
 
   // One predicate for BOTH the password demand and the unlock UI, so they cannot diverge.
-  // Empty sheet = Sign In with DERO (handleAuthComplete), which signs and needs the wallet.
-  function requestNeedsOpenWallet(req, granted) {
-    if (!req || req.type !== 'connect') return true;
-    const sheet = Array.isArray(req.requestedPermissions) ? req.requestedPermissions : [];
-    if (sheet.length === 0) return true;
-    return WALLET_PERMISSIONS.some(p => granted[p]);
+  //
+  // A connect grants public chain data only, so it needs no wallet — EXCEPT the empty-sheet
+  // case, which is Sign In with DERO (handleAuthComplete): that signs a challenge and does.
+  // A use-time permission prompt needs the wallet for the two doors that read wallet state.
+  function requestNeedsOpenWallet(req) {
+    if (!req) return true;
+    if (req.type === 'permission') {
+      return req.permission?.id === 'view_address' || req.permission?.id === 'view_balance';
+    }
+    if (req.type !== 'connect') return true;
+    if (req.isSignIn) return true; // signs a challenge, so the wallet must open
+    // A WebSocket dApp still names its doors at connect (that plane has no use-time
+    // prompt), so it needs the wallet if any of them read wallet state.
+    return connectGrantIds(req).some(id => id === 'view_address' || id === 'view_balance');
   }
 
-  $: connectNeedsWallet = requestNeedsOpenWallet(request, grantedPermissions);
-  
-  function togglePermission(permId) {
-    grantedPermissions[permId] = !grantedPermissions[permId];
-    grantedPermissions = grantedPermissions; // Trigger reactivity
+  // Doors a connect will actually grant. Empty for the in-browser path, which grants public
+  // chain data only and asks for everything else at the moment of use.
+  // alwaysAsk entries are excluded because they are never stored (CanStorePermission) —
+  // listing them would promise a standing grant the wallet refuses to keep.
+  function connectGrantList(req) {
+    const sheet = Array.isArray(req?.requestedPermissions) ? req.requestedPermissions : [];
+    return sheet.filter(p => p?.id && p.id !== 'read_public_data' && !p.alwaysAsk);
   }
-  
-  function getGrantedPermissionsList() {
-    return Object.entries(grantedPermissions)
-      .filter(([_, granted]) => granted)
-      .map(([id, _]) => id);
+  function connectGrantIds(req) {
+    return connectGrantList(req).map(p => p.id);
   }
+  // Did the app ask for spending? It gets no standing grant, but say so rather than
+  // silently dropping the request from the sheet.
+  function connectAsksToSpend(req) {
+    const sheet = Array.isArray(req?.requestedPermissions) ? req.requestedPermissions : [];
+    return sheet.some(p => p?.alwaysAsk);
+  }
+
+  $: connectNeedsWallet = requestNeedsOpenWallet(request);
 
   function getWalletFilename(path) {
     if (!path) return '';
@@ -201,7 +206,7 @@
     
     // Same predicate the template uses to decide whether to DRAW the unlock form,
     // so the modal can never demand a password it never rendered a field for.
-    const needsOpenWallet = requestNeedsOpenWallet(request, grantedPermissions);
+    const needsOpenWallet = requestNeedsOpenWallet(request);
 
     if (!$walletState.isOpen && needsOpenWallet) {
       if (!walletPath) {
@@ -270,12 +275,15 @@
     }
 
     try {
-      // For connect requests, pass the granted permissions
-      const permissions = request.type === 'connect' ? getGrantedPermissionsList() : null;
-      await approveWalletRequest(request.id, password, null, permissions);
+      // A connect grants exactly the doors the sheet showed — nothing hidden is added, and
+      // the in-browser path shows none, so this is null and Go falls back to public data.
+      const permissions = request.type === 'connect' && connectGrantIds(request).length > 0
+        ? connectGrantIds(request)
+        : null;
+      await approveWalletRequest(request.id, password, null, permissions, rememberChoice);
       password = ''; // Clear password after use
       walletPath = ''; // Reset for next time
-      grantedPermissions = {}; // Reset permissions
+      rememberChoice = false;
 
       // Restore focus to main document to prevent iframe from capturing scroll
       restoreFocus();
@@ -381,16 +389,60 @@
 
       <!-- Request Details -->
       <div class="wallet-request-details">
-        {#if request.type === 'connect'}
+        {#if request.type === 'permission'}
+          <!-- Asked at the moment of use, so it can name the thing being reached for. -->
           <div>
-            {#if request.isReadOnly}
-              <!-- Read-only app - simplified UI -->
+            <h3 class="modal-section-title">{request.permission?.name || 'Wallet Access'}</h3>
+            <p class="wallet-readonly-desc">{request.permission?.description || ''}</p>
+            {#if request.methodName}
+              <p class="wallet-info-note">
+                <span class="wallet-info-icon">i</span>
+                Requested by <code>{request.methodName}</code>
+              </p>
+            {/if}
+            <p class="wallet-info-note">
+              <span class="wallet-info-icon">i</span>
+              "Always allow" is remembered for this app and can be taken back in
+              Settings → Connected Apps.
+            </p>
+          </div>
+        {:else if request.type === 'connect'}
+          <div>
+            {#if request.isSignIn}
+              <!-- Signs a challenge. Say what approving does; do not draw a permission
+                   sheet it does not have. -->
+              <p class="wallet-info-note">
+                <span class="wallet-info-icon">i</span>
+                {request.description}
+              </p>
+            {:else if connectGrantList(request).length > 0}
+              <!-- WebSocket dApps name their doors at connect: that plane has no use-time
+                   prompt, so this is where they are granted. One decision, no checkboxes. -->
+              <h3 class="modal-section-title">This app will be granted</h3>
+              <div class="wallet-readonly-permissions">
+                {#each connectGrantList(request) as perm}
+                  <div class="wallet-readonly-item">
+                    <span class="wallet-check-icon">✓</span>
+                    <span>{perm.name} — {perm.description}</span>
+                  </div>
+                {/each}
+                {#if connectAsksToSpend(request)}
+                  <div class="wallet-readonly-item wallet-readonly-item-denied">
+                    <span class="wallet-denied-icon">✗</span>
+                    <span>Spending is not granted here — every transaction is approved separately</span>
+                  </div>
+                {/if}
+              </div>
+            {:else}
+              <!-- The in-browser path. Connecting buys public chain data and nothing else. -->
               <div class="wallet-readonly-badge">
                 <span class="wallet-readonly-icon">◎</span>
-                <span>Read-Only Access</span>
+                <span>Public Data Only</span>
               </div>
               <p class="wallet-readonly-desc">
-                This app only reads public blockchain data. No wallet access is required.
+                Connecting lets this app read public blockchain data. It gets no access to
+                your wallet — if it needs your address, your balance, or to spend, it has to
+                ask you then.
               </p>
               <div class="wallet-readonly-permissions">
                 <div class="wallet-readonly-item">
@@ -399,62 +451,13 @@
                 </div>
                 <div class="wallet-readonly-item wallet-readonly-item-denied">
                   <span class="wallet-denied-icon">✗</span>
-                  <span>Cannot access wallet address or balance</span>
+                  <span>Cannot see your address, balance or history without asking</span>
                 </div>
                 <div class="wallet-readonly-item wallet-readonly-item-denied">
                   <span class="wallet-denied-icon">✗</span>
-                  <span>Cannot request transactions</span>
+                  <span>Cannot spend — every transaction is approved separately</span>
                 </div>
               </div>
-            {:else}
-              <h3 class="modal-section-title">Permissions Requested</h3>
-              {#if request.requestedPermissions && request.requestedPermissions.length > 0}
-                <div class="modal-permissions-list">
-                  {#each request.requestedPermissions as perm}
-                    <label 
-                      class="modal-permission-item {grantedPermissions[perm.id] ? 'modal-permission-item-active' : ''}"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={grantedPermissions[perm.id]}
-                        on:change={() => togglePermission(perm.id)}
-                        class="modal-permission-checkbox"
-                      />
-                      <div class="modal-permission-content">
-                        <div class="modal-permission-header">
-                          <span class="modal-permission-name">{perm.name}</span>
-                          {#if perm.alwaysAsk}
-                            <span class="modal-permission-badge">Always asks</span>
-                          {/if}
-                        </div>
-                        <p class="modal-permission-desc">{perm.description}</p>
-                      </div>
-                    </label>
-                  {/each}
-                </div>
-                
-              {:else if request.description}
-                <!-- No permission sheet, but the caller said what it wants (Sign In with
-                     DERO signs a challenge). Print that rather than a generic public-data
-                     bullet, which would describe the wrong operation entirely.
-                     Escaped as text by Svelte - the string is caller-supplied. -->
-                <p class="wallet-info-note">
-                  <span class="wallet-info-icon">i</span>
-                  {request.description}
-                </p>
-              {:else}
-                <!-- Fallback for old-style requests without permission info -->
-                <ul class="wallet-fallback-permissions">
-                  <li class="wallet-fallback-item">
-                    <span class="wallet-check-icon">✓</span>
-                    <span>Read public blockchain data</span>
-                  </li>
-                </ul>
-                <p class="wallet-info-note">
-                  <span class="wallet-info-icon">i</span>
-                  This app will request additional permissions as needed.
-                </p>
-              {/if}
             {/if}
           </div>
         {:else if request.type === 'sign'}
@@ -864,6 +867,30 @@
           disabled={isLoading}
         >
           Dismiss
+        </button>
+      {:else if request.type === 'permission'}
+        <!-- Deny · Allow once · Always allow. Only reachable for the storable doors —
+             spending never routes here, so "Always allow" cannot appear for a transaction. -->
+        <button
+          on:click={handleDeny}
+          class="modal-panel-btn modal-panel-btn-deny"
+          disabled={isLoading}
+        >
+          Deny
+        </button>
+        <button
+          on:click={() => { rememberChoice = false; handleApprove(); }}
+          class="modal-panel-btn modal-panel-btn-approve"
+          disabled={isLoading}
+        >
+          {isLoading ? 'Processing...' : 'Allow once'}
+        </button>
+        <button
+          on:click={() => { rememberChoice = true; handleApprove(); }}
+          class="modal-panel-btn modal-panel-btn-approve"
+          disabled={isLoading}
+        >
+          {isLoading ? 'Processing...' : 'Always allow'}
         </button>
       {:else}
         <button

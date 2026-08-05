@@ -154,7 +154,7 @@ export function addExternalRequest(request, onApprove, onDeny) {
   walletRequests.update(reqs => [...reqs, fullRequest]);
 }
 
-export async function approveWalletRequest(id, password, txid = null, permissions = null) {
+export async function approveWalletRequest(id, password, txid = null, permissions = null, remember = false) {
   // Find the request
   const requests = get(walletRequests);
   const request = requests.find(r => r.id === id);
@@ -163,8 +163,9 @@ export async function approveWalletRequest(id, password, txid = null, permission
     // Log to history
     logWalletRequest(request, 'approved', txid);
 
-    // We resolve with the password and permissions so the caller can use them
-    request.resolve({ approved: true, password, permissions });
+    // `remember` distinguishes "Allow once" from "Always allow" — the caller decides
+    // whether to persist, and only the storable doors can be persisted at all.
+    request.resolve({ approved: true, password, permissions, remember });
 
     // Remove from queue
     walletRequests.update(reqs => reqs.filter(r => r.id !== id));

@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState, requestPayment } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline } from '../../wailsjs/go/main/App.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline, GetConnectedApps, GrantAppPermission } from '../../wailsjs/go/main/App.js';
   import ReloadSplitButton from '../lib/components/browser/ReloadSplitButton.svelte';
   import { EventsOn, EventsOff, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
@@ -145,7 +145,7 @@ function sendXSWDEvent(method, params) {
 // Permission required to keep a subscription FEEDING, not just to open it. Gating only
 // at Subscribe leaves an established feed streaming after the grant is narrowed or revoked.
 function subscriptionAllowed(permId) {
-  return sessionWalletAuthorized && sessionGrantedPermissions.has(permId);
+  return hasGrant(permId);
 }
 
 async function pollXSWDSubscriptions() {
@@ -470,33 +470,87 @@ let addressInput = '';
     }
   }
 
+  // Standing grants read back from the durable store (app.go:1570 GetConnectedApps).
+  // The Browser plane used to WRITE grants and never read them, so "remember this" could not
+  // survive a tab switch no matter what was on disk. This is that missing read path.
+  let storedGrants = new Set();
+  // In-flight consent prompts, keyed by permission. An app that fires GetBalance and
+  // GetTransfers together must raise ONE prompt, not one per call.
+  let consentInFlight = new Map();
+
   function clearBrowserWalletSession() {
     expectedFrameOrigin = null; // no grant, no expected origin — both re-established together
     sessionWalletAuthorized = false;
     sessionGrantedPermissions = new Set();
     sessionApprovedScid = null;
     sessionApprovedAppName = null;
+    storedGrants = new Set();
+    consentInFlight = new Map();
+  }
+
+  /**
+   * Has this exact origin been connected before? Only a chain-resolved SCID counts: an
+   * address the page typed for itself is self-reported, and auto-resuming on that would let
+   * a new page claim a trusted app's identity and skip the prompt entirely.
+   */
+  async function isReturningApp() {
+    const origin = browserOriginKey();
+    if (!origin || !currentMeta?.scid) return false;
+    try {
+      const apps = await GetConnectedApps();
+      return (apps || []).some(a => a.origin === origin);
+    } catch (e) {
+      return false; // fail closed — ask again rather than assume
+    }
+  }
+
+  async function loadStoredGrants(origin) {
+    storedGrants = new Set();
+    if (!origin) return;
+    try {
+      const apps = await GetConnectedApps();
+      const app = (apps || []).find(a => a.origin === origin);
+      if (app && Array.isArray(app.permissions)) {
+        // sign_transaction / sc_invoke can never appear here — CanStorePermission drops them
+        // at the Go write path — so nothing filters them out on the way back in.
+        storedGrants = new Set(app.permissions);
+      }
+    } catch (e) {
+      // Fail closed: no stored grants means the user is asked again, never auto-allowed.
+      addConsoleLog(`[Warn] Could not read stored grants: ${e.message}`);
+    }
   }
 
   function browserOriginKey() {
     return (currentMeta?.scid || addressInput || '').trim();
   }
 
-  // The bridge handshake sends no appInfo.permissions, so this is the vocabulary a
-  // connecting TELA app is offered. Must stay in sync with permissionForWalletMethod.
-  const CONNECT_PERMISSIONS = ['read_public_data', 'view_address', 'view_balance', 'sign_transaction', 'sc_invoke'];
+  // Three doors. Connecting grants public chain data and NOTHING else; the wallet doors are
+  // asked for at the moment of use and the answer is remembered; spending is asked every
+  // time, forever. Five checkboxes on connect asked the user to decide things they had no
+  // context for, and two of those boxes did not gate spending anyway — the per-action modal
+  // did, and still does.
+  const CONNECT_GRANTS = ['read_public_data'];
+
+  // Approved per action, never stored. Mirrors CanStorePermission in xswd_permissions.go,
+  // which enforces it at the Go write path so this cannot be bypassed from here.
+  const ALWAYS_ASK_PERMISSIONS = ['sign_transaction', 'sc_invoke'];
 
   function permissionDescriptor(id) {
     return {
       id,
       name: getPermissionName(id),
       description: getPermissionDescription(id),
-      alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(id)
+      alwaysAsk: ALWAYS_ASK_PERMISSIONS.includes(id)
     };
   }
 
-  /** Map an XSWD wallet method to the permission id required for Browser-integrated calls. */
-  function permissionForWalletMethod(methodLower) {
+  /**
+   * Map an XSWD wallet method to the permission it needs.
+   * Mirrors GetRequiredPermission in xswd_permissions.go — pinned by
+   * TestBrowserPlaneKnowsEveryGatedMethod, because these two tables have drifted before.
+   */
+  function walletMethodPermission(methodLower) {
     const m = (methodLower || '').replace(/^dero\./, '');
     switch (m) {
       case 'getaddress':
@@ -504,8 +558,8 @@ let addressInput = '';
       case 'makeintegratedaddress':
       case 'splitintegratedaddress':
         return 'view_address';
-      // Mirrors GetRequiredPermission in xswd_permissions.go — the daemon endpoint is
-      // public-chain access, not wallet access.
+      // The daemon endpoint is public-chain access, not wallet access, so it rides the
+      // connect grant and never prompts.
       case 'getdaemon':
         return 'read_public_data';
       case 'getbalance':
@@ -527,27 +581,85 @@ let addressInput = '';
     }
   }
 
-  function sessionAllowsWalletMethod(methodLower) {
-    if (!sessionWalletAuthorized) return false;
-    const perm = permissionForWalletMethod(methodLower);
-    if (!perm) return true;
-    return sessionGrantedPermissions.has(perm);
+  /** A denial the dApp can branch on. -32043 is the canonical XSWD PermissionDenied code. */
+  function permissionDeniedError(message) {
+    const err = new Error(message);
+    err.code = -32043;
+    return err;
   }
 
-  async function persistConnectApproval(appName, description, permissions) {
+  /** Does a standing grant already cover this door — from this session or from disk? */
+  function hasGrant(permId) {
+    if (!sessionWalletAuthorized) return false;
+    if (!permId || permId === 'read_public_data') return true; // covered by connect
+    return sessionGrantedPermissions.has(permId) || storedGrants.has(permId);
+  }
+
+  /**
+   * Ask for a door at the moment it is used, and remember the answer if the user says so.
+   * Returns false when denied; callers turn that into a -32043.
+   */
+  async function ensureWalletPermission(permId, methodName) {
+    if (!sessionWalletAuthorized) return false;
+    if (hasGrant(permId)) return true;
+    // Spending is never a standing grant, so it must never reach this prompt — the
+    // per-action modal (amount, destination, entrypoint) is its only gate.
+    if (ALWAYS_ASK_PERMISSIONS.includes(permId)) return true;
+
+    // Coalesce: a second caller for the same door joins the prompt already on screen
+    // instead of stacking another one behind it.
+    if (consentInFlight.has(permId)) return await consentInFlight.get(permId);
+
+    const pending = (async () => {
+      const origin = browserOriginKey();
+      const appName = sessionApprovedAppName || currentMeta?.name || 'App';
+      const approval = await requestWalletApproval({
+        type: 'permission',
+        appName,
+        origin: origin || addressInput,
+        originVerified: !!currentMeta?.scid,
+        permission: permissionDescriptor(permId),
+        methodName: methodName || ''
+      });
+      if (!approval?.approved) return false;
+
+      sessionGrantedPermissions = new Set([...sessionGrantedPermissions, permId]);
+      if (approval.remember && origin) {
+        try {
+          await GrantAppPermission(origin, appName, permId);
+          storedGrants = new Set([...storedGrants, permId]);
+        } catch (e) {
+          // The grant still holds for this session; it just will not survive a reload.
+          addConsoleLog(`[Warn] Could not persist grant ${permId}: ${e.message}`);
+        }
+      }
+      return true;
+    })();
+
+    consentInFlight.set(permId, pending);
+    try {
+      return await pending;
+    } finally {
+      consentInFlight.delete(permId);
+    }
+  }
+
+  async function persistConnectApproval(appName, description) {
     const origin = browserOriginKey();
-    const perms = Array.isArray(permissions) ? permissions : [];
     const approveResult = await ApproveWalletConnection(
       origin,
       appName || 'App',
       description || '',
-      perms
+      CONNECT_GRANTS
     );
     if (approveResult?.success) {
       sessionWalletAuthorized = true;
-      sessionGrantedPermissions = new Set(perms);
+      sessionGrantedPermissions = new Set(CONNECT_GRANTS);
       sessionApprovedScid = currentMeta?.scid || null;
       sessionApprovedAppName = appName || null;
+      // Pick up doors this app was already given on an earlier visit, so a returning user
+      // is not asked again for something they chose to remember.
+      await loadStoredGrants(origin);
     }
     return approveResult;
   }
@@ -1258,21 +1370,19 @@ let addressInput = '';
                 if (sessionWalletAuthorized && sameScid) {
                   addConsoleLog(`[Browser] Reusing session grants for SCID reconnect: ${connectingAppName}`);
                   result = true;
+                } else if (await isReturningApp()) {
+                  // Approved on an earlier visit. Connecting buys public chain data only, so
+                  // re-asking the same question teaches the user to click through prompts.
+                  // The wallet doors are still gated — anything not remembered is asked for
+                  // at the moment of use, exactly as on a first visit.
+                  addConsoleLog(`[Browser] Resuming stored connection: ${connectingAppName}`);
+                  const approveResult = await persistConnectApproval(connectingAppName, connectingDesc);
+                  result = approveResult?.success === true;
                 } else {
                   addConsoleLog('[Browser] Requesting wallet approval via modal...');
-                  const requestedPerms = payload.appInfo?.permissions || [];
-                  // The bridge sends no appInfo.permissions, so an unfiltered request
-                  // leaves nothing to offer. Fall back to the full vocabulary, and only
-                  // ever offer ids we know — a page cannot inject its own wording here.
-                  const filteredPerms = requestedPerms.filter(p => CONNECT_PERMISSIONS.includes(p));
-                  const offeredPerms = filteredPerms.length > 0 ? filteredPerms : CONNECT_PERMISSIONS;
-                  // Derive read-only from what is actually OFFERED, not what was asked for,
-                  // or the modal claims read-only while showing a Sign Transactions checkbox.
-                  const hasWalletPerms = offeredPerms.some(p =>
-                    ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
-                  );
-                  const isReadOnly = !hasWalletPerms;
-
+                  // Connecting is one decision, not five. It grants public chain data and
+                  // nothing else; anything touching the wallet is asked for when the app
+                  // actually reaches for it, where the request has context.
                   const approval = await requestWalletApproval({
                     type: 'connect',
                     appName: connectingAppName,
@@ -1280,15 +1390,11 @@ let addressInput = '';
                     // A SCID we resolved from the chain ourselves is NOT self-reported.
                     // Anything else here (a typed local dev URL) genuinely is.
                     originVerified: !!currentMeta?.scid,
-                    description: connectingDesc,
-                    isReadOnly: isReadOnly,
-                    requestedPermissions: offeredPerms.map(permissionDescriptor)
+                    description: connectingDesc
                   });
                   addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
                   if (approval && approval.approved) {
-                    const granted = Array.isArray(approval.permissions) ? approval.permissions : [];
-                    addConsoleLog(`[Browser] Persisting grants: ${JSON.stringify(granted)}`);
-                    const approveResult = await persistConnectApproval(connectingAppName, connectingDesc, granted);
+                    const approveResult = await persistConnectApproval(connectingAppName, connectingDesc);
                     addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
                     result = approveResult?.success === true;
                   } else {
@@ -1341,8 +1447,8 @@ let addressInput = '';
             // last 10 transfers (with proofs and comments) on the first poll, unapproved.
             if (methodLower === 'subscribe') {
               const subPerm = eventType === 'new_topoheight' ? 'read_public_data' : 'view_balance';
-              if (!sessionWalletAuthorized || !sessionGrantedPermissions.has(subPerm)) {
-                throw new Error(`Wallet not authorized: ${getPermissionName(subPerm)} required for ${eventType}`);
+              if (!await ensureWalletPermission(subPerm, `Subscribe:${eventType}`)) {
+                throw permissionDeniedError(`${getPermissionName(subPerm)} required for ${eventType}`);
               }
               xswdSubscriptions[eventType] = true;
               addConsoleLog(`[Browser] Subscribed (internal): ${eventType}`);
@@ -1377,9 +1483,16 @@ let addressInput = '';
             // session. Note the external wallet sees one client named "HOLOGRAM"
             // (xswd_client.go), not the individual TELA app, so its approval covers every app
             // in this browser; that is disclosed to the user on connect rather than papered over.
-            if (callSettings.integratedWallet && !isDaemonScoped &&
-                walletMethodsLower.includes(methodLower) && !sessionAllowsWalletMethod(methodLower)) {
-              throw new Error('Wallet not authorized');
+            if (callSettings.integratedWallet && !isDaemonScoped && walletMethodsLower.includes(methodLower)) {
+              if (!sessionWalletAuthorized) {
+                throw permissionDeniedError('Wallet not authorized: connect first');
+              }
+              // Ask for the door this method needs, at the moment it is used. Spending
+              // returns true here and is gated by the per-action modal further down.
+              const needed = walletMethodPermission(methodLower);
+              if (!await ensureWalletPermission(needed, method)) {
+                throw permissionDeniedError(`${getPermissionName(needed)} was declined`);
+              }
             }
             
             // Handle special methods
@@ -1398,8 +1511,8 @@ let addressInput = '';
               // Gated here because app.go handles it before any permission check, and it
               // is absent from walletMethods, so this branch was previously reachable with
               // no approval at all. Handing over the endpoint lets an app leave HOLOGRAM.
-              if (callSettings.integratedWallet && !sessionAllowsWalletMethod('getdaemon')) {
-                throw new Error('Wallet not authorized');
+              if (callSettings.integratedWallet && !hasGrant('read_public_data')) {
+                throw permissionDeniedError('Wallet not authorized: connect first');
               }
               // Always route through CallXSWD since it's handled specially in app.go
               addConsoleLog(`[Browser] GetDaemon requested - routing to backend`);
@@ -1533,7 +1646,10 @@ let addressInput = '';
         event.source.postMessage({
           type: 'xswd-response',
           id: id,
-          error: error.message || String(error)
+          error: error.message || String(error),
+          // Carry the JSON-RPC code so a denial arrives as the canonical -32043 rather
+          // than a generic failure the dApp cannot tell apart from a network error.
+          errorCode: typeof error.code === 'number' ? error.code : undefined
         }, iframeUsesSrcdoc ? '*' : (expectedFrameOrigin || '*'));
       }
     };
@@ -2970,8 +3086,8 @@ ${logsText || '(no logs)'}
               // it. Without this an app that never connected — or was denied — could still
               // raise a signing prompt, which is the permission theater R2-B2 removed from
               // the postMessage path.
-              if (!sessionAllowsWalletMethod(methodLower)) {
-                throw new Error('Wallet not authorized');
+              if (!sessionWalletAuthorized) {
+                throw permissionDeniedError('Wallet not authorized: connect first');
               }
               // Parse SC payload for proper display in wallet modal
               const parsedPayload = parseScPayload(params);
@@ -3012,19 +3128,16 @@ ${logsText || '(no logs)'}
           const settings = get(settingsState);
           if (settings.integratedWallet) {
             try {
-              // Offer the same vocabulary as the bridge connect path, or a granted
-              // read_public_data unlocks no wallet method and every call fails.
+              // Same one-click connect as the bridge path. Wallet doors are asked for at
+              // the moment of use, so there is nothing to offer here.
               const approval = await requestWalletApproval({
                 type: 'connect',
                 appName: currentMeta.name || 'App',
                 origin: addressInput,
-                originVerified: !!currentMeta?.scid,
-                isReadOnly: false,
-                requestedPermissions: CONNECT_PERMISSIONS.map(permissionDescriptor)
+                originVerified: !!currentMeta?.scid
               });
               if (approval.approved) {
-                const granted = Array.isArray(approval.permissions) ? approval.permissions : [];
-                const res = await persistConnectApproval(currentMeta.name || 'App', '', granted);
+                const res = await persistConnectApproval(currentMeta.name || 'App', '');
                 return res?.success === true;
               }
               return false;

@@ -1670,7 +1670,9 @@ func (a *App) GrantAppPermission(origin string, name string, permission string) 
 		}
 	}
 
-	if err := pm.GrantPermissions(origin, name, "", []XSWDPermission{XSWDPermission(permission)}); err != nil {
+	// Additive: GrantPermissions REPLACES the set, so answering "Always allow" to a balance
+	// prompt would silently revoke an address grant the user had already given.
+	if err := pm.AddPermission(origin, name, "", XSWDPermission(permission)); err != nil {
 		return map[string]interface{}{
 			"success": false,
 			"error":   err.Error(),

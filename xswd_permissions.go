@@ -88,6 +88,24 @@ func GetPermissionInfo(p XSWDPermission) PermissionInfo {
 	}
 }
 
+// CanStorePermission reports whether a permission may be persisted as a standing grant.
+//
+// Spending is an action, not a door you can leave open: transfer, scinvoke and SignData are
+// approved per action, showing the amount, destination and entrypoint every time. Storing
+// them would let one click buy permanent spend rights, which is the whole failure the
+// consent sheet was replaced to remove. Engram permits it; HOLOGRAM deliberately does not.
+//
+// This is the floor rather than a UI convention: it is enforced where grants are written, so
+// a compromised renderer cannot persist what the modal declines to offer.
+func CanStorePermission(p XSWDPermission) bool {
+	switch p {
+	case PermissionSignTransaction, PermissionSCInvoke:
+		return false
+	default:
+		return true
+	}
+}
+
 // ConnectedApp represents a dApp that has connected via XSWD
 type ConnectedApp struct {
 	Origin       string                  `json:"origin"`
@@ -237,8 +255,13 @@ func (pm *PermissionManager) GrantPermissions(origin, name, description string, 
 
 	// Replace the permission set — connect approval is authoritative.
 	// Additive grants made unchecked boxes in the connect modal theater.
+	// Non-storable permissions are dropped here rather than at the caller, so every
+	// write path (browser connect, WebSocket connect) inherits the rule.
 	app.Permissions = make(map[XSWDPermission]bool, len(permissions))
 	for _, p := range permissions {
+		if !CanStorePermission(p) {
+			continue
+		}
 		app.Permissions[p] = true
 	}
 	app.LastAccessed = now
@@ -246,21 +269,84 @@ func (pm *PermissionManager) GrantPermissions(origin, name, description string, 
 	return pm.saveToStorage(app)
 }
 
+// AddPermission grants a single permission WITHOUT disturbing the ones already held.
+//
+// This is what "Always allow" calls. GrantPermissions cannot be reused for it: that replaces
+// the whole set, so answering "always" to a balance prompt would silently revoke an address
+// grant the user had already given.
+func (pm *PermissionManager) AddPermission(origin, name, description string, permission XSWDPermission) error {
+	if origin == "" {
+		return fmt.Errorf("origin required")
+	}
+	if !CanStorePermission(permission) {
+		return fmt.Errorf("permission %q is approved per action and cannot be stored", permission)
+	}
+
+	pm.Lock()
+	defer pm.Unlock()
+
+	now := time.Now().Unix()
+
+	app, exists := pm.apps[origin]
+	if !exists {
+		app = &ConnectedApp{
+			Origin:      origin,
+			Name:        name,
+			Description: description,
+			Permissions: make(map[XSWDPermission]bool),
+			GrantedAt:   now,
+		}
+		pm.apps[origin] = app
+	} else {
+		if name != "" {
+			app.Name = name
+		}
+		if description != "" {
+			app.Description = description
+		}
+		if app.Permissions == nil {
+			app.Permissions = make(map[XSWDPermission]bool)
+		}
+	}
+
+	app.Permissions[permission] = true
+	app.LastAccessed = now
+
+	return pm.saveToStorage(app)
+}
+
+// XSWDPermissionDenied is the canonical XSWD code for a refused permission
+// (walletapi/xswd/xswd.go). Denials previously went out as -32003, which dApps that branch
+// on the spec code — Villager does — could not tell apart from any other failure.
+const XSWDPermissionDenied = -32043
+
+// DenyUnlessHandshake returns a JSON-RPC error when the connection has not completed the
+// handshake. Used by the signing methods, which are gated by per-action approval rather than
+// by a standing grant, but must still refuse an unauthenticated socket (R2-B1).
+func DenyUnlessHandshake(origin string) *JSONRPCError {
+	if origin == "" {
+		return &JSONRPCError{Code: -32003, Message: "Permission denied: XSWD handshake required"}
+	}
+	return nil
+}
+
 // DenyUnlessPermission returns a JSON-RPC error when the connection has not
 // completed handshake (empty origin) or lacks the required permission.
 // Empty origin must deny — the old "origin != \"\" &&" guard skipped checks
 // entirely for unauthenticated sockets (R2-B1).
 func DenyUnlessPermission(origin string, perm XSWDPermission) *JSONRPCError {
-	if origin == "" {
-		return &JSONRPCError{Code: -32003, Message: "Permission denied: XSWD handshake required"}
+	// Handshake-required keeps -32003: it is a different condition from a permission the
+	// user declined, and the caller has nothing to prompt for yet.
+	if err := DenyUnlessHandshake(origin); err != nil {
+		return err
 	}
 	pm := GetPermissionManager()
 	if pm == nil {
-		return &JSONRPCError{Code: -32003, Message: "Permission denied: permission manager unavailable"}
+		return &JSONRPCError{Code: XSWDPermissionDenied, Message: "Permission denied: permission manager unavailable"}
 	}
 	if !pm.HasPermission(origin, perm) {
 		permInfo := GetPermissionInfo(perm)
-		return &JSONRPCError{Code: -32003, Message: fmt.Sprintf("Permission denied: %s permission not granted", permInfo.Name)}
+		return &JSONRPCError{Code: XSWDPermissionDenied, Message: fmt.Sprintf("Permission denied: %s permission not granted", permInfo.Name)}
 	}
 	return nil
 }

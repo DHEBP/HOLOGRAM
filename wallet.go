@@ -1585,8 +1585,25 @@ func (a *App) ApproveWalletConnection(origin, appName, description string, permi
 	if appName == "" {
 		appName = origin
 	}
-	if err := pm.GrantPermissions(origin, appName, description, perms); err != nil {
-		return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+	// Additive, NOT a replace. Connecting grants public chain data; a door the user chose to
+	// remember on an earlier visit must survive the app reconnecting, and a replace here
+	// would silently revoke it — the app would then re-prompt for something already answered.
+	// Non-storable permissions are refused by AddPermission, so a caller cannot smuggle
+	// spending in through this path either.
+	for _, p := range perms {
+		if !CanStorePermission(p) {
+			continue
+		}
+		if err := pm.AddPermission(origin, appName, description, p); err != nil {
+			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+		}
+	}
+	// A connect with no storable permissions still has to register the app, or a returning
+	// visit has no record to recognise.
+	if pm.GetApp(origin) == nil {
+		if err := pm.GrantPermissions(origin, appName, description, nil); err != nil {
+			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+		}
 	}
 	pm.SetActiveClient(origin, true)
 	a.logToConsole(fmt.Sprintf("[OK] Wallet connection approved for %s (%d permissions)", origin, len(perms)))

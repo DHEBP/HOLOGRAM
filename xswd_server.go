@@ -334,7 +334,9 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	origin := s.clientOrigins[conn]
 	s.lock.RUnlock()
 
-	requiredPerm := GetRequiredPermission(method)
+	// Each case names the permission it needs explicitly. The signing cases used to read a
+	// generic GetRequiredPermission(method) here, but signing is gated per action now, so
+	// nothing is left that wants the lookup.
 
 	// Handle permission-gated methods
 	switch method {
@@ -571,8 +573,10 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "SignData", "DecryptPayload":
-		// Check if base permission granted (still requires per-request approval)
-		if errRes = DenyUnlessPermission(origin, requiredPerm); errRes != nil {
+		// Signing is approved per request, never by a standing grant — sign_transaction is
+		// not storable (CanStorePermission), so there is no permission here to check. The
+		// handshake bar stays: an unauthenticated socket must not raise a signing prompt.
+		if errRes = DenyUnlessHandshake(origin); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -619,8 +623,9 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "transfer", "Transfer", "DERO.Transfer", "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
-		// Check if base permission granted (still requires per-TX approval)
-		if errRes = DenyUnlessPermission(origin, requiredPerm); errRes != nil {
+		// Same as SignData: the per-TX modal is the gate. sign_transaction / sc_invoke are
+		// not storable, so a standing-grant check here would deny every spend.
+		if errRes = DenyUnlessHandshake(origin); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -1524,6 +1529,9 @@ func (s *XSWDServer) handleAuthComplete(w http.ResponseWriter, r *http.Request) 
 		"description":          "Approving unlocks your wallet and signs a sign-in message for " + body.Domain + ". It proves you control your address. It does not move funds.",
 		"requestedPermissions": []map[string]interface{}{},
 		"isReadOnly":           false,
+		// Stated, not inferred. The modal used to detect sign-in by an EMPTY permission
+		// sheet, which stops working the moment a connect legitimately sends no sheet.
+		"isSignIn": true,
 	})
 
 	log.Printf("[AUTH] Emitted xswd:request for auth, reqID=%s domain=%s", reqID, body.Domain)

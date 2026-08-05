@@ -374,11 +374,13 @@ func TestRevokePermission_Single(t *testing.T) {
 
 	origin := "https://testapp.dero"
 
-	// Grant multiple permissions
+	// Grant multiple permissions. All three must be STORABLE ones — sign_transaction was
+	// used here originally, but it is now approved per action and never persisted
+	// (CanStorePermission), which would make the survivor assertion untestable.
 	err := pm.GrantPermissions(origin, "Test", "", []XSWDPermission{
 		PermissionViewAddress,
 		PermissionViewBalance,
-		PermissionSignTransaction,
+		PermissionReadPublicData,
 	})
 	if err != nil {
 		t.Fatalf("GrantPermissions failed: %v", err)
@@ -399,8 +401,71 @@ func TestRevokePermission_Single(t *testing.T) {
 	if app.Permissions[PermissionViewBalance] {
 		t.Error("PermissionViewBalance should be revoked")
 	}
-	if !app.Permissions[PermissionSignTransaction] {
-		t.Error("PermissionSignTransaction should still be granted")
+	if !app.Permissions[PermissionReadPublicData] {
+		t.Error("PermissionReadPublicData should still be granted")
+	}
+}
+
+// Spending must never become a standing grant. This is the rule the three-door consent model
+// rests on: one click can buy address or balance access, but never the right to spend.
+func TestGrantPermissions_DropsNonStorable(t *testing.T) {
+	pm, cleanup := setupTestPermissionManager(t)
+	defer cleanup()
+
+	origin := "https://testapp.dero"
+
+	// Ask for everything, including the two per-action permissions.
+	if err := pm.GrantPermissions(origin, "Test", "", AllPermissions()); err != nil {
+		t.Fatalf("GrantPermissions failed: %v", err)
+	}
+
+	if pm.HasPermission(origin, PermissionSignTransaction) {
+		t.Error("sign_transaction must never persist as a standing grant")
+	}
+	if pm.HasPermission(origin, PermissionSCInvoke) {
+		t.Error("sc_invoke must never persist as a standing grant")
+	}
+	// The storable doors must be unaffected by the filtering.
+	for _, p := range []XSWDPermission{PermissionReadPublicData, PermissionViewAddress, PermissionViewBalance} {
+		if !pm.HasPermission(origin, p) {
+			t.Errorf("%s should have been granted", p)
+		}
+	}
+}
+
+// "Always allow" must not disturb a door the user already opened.
+func TestAddPermission_IsAdditive(t *testing.T) {
+	pm, cleanup := setupTestPermissionManager(t)
+	defer cleanup()
+
+	origin := "https://testapp.dero"
+
+	if err := pm.GrantPermissions(origin, "Test", "", []XSWDPermission{PermissionViewAddress}); err != nil {
+		t.Fatalf("GrantPermissions failed: %v", err)
+	}
+	if err := pm.AddPermission(origin, "Test", "", PermissionViewBalance); err != nil {
+		t.Fatalf("AddPermission failed: %v", err)
+	}
+
+	if !pm.HasPermission(origin, PermissionViewAddress) {
+		t.Error("view_address must survive a later view_balance grant")
+	}
+	if !pm.HasPermission(origin, PermissionViewBalance) {
+		t.Error("view_balance should have been added")
+	}
+}
+
+func TestAddPermission_RefusesNonStorable(t *testing.T) {
+	pm, cleanup := setupTestPermissionManager(t)
+	defer cleanup()
+
+	origin := "https://testapp.dero"
+
+	if err := pm.AddPermission(origin, "Test", "", PermissionSignTransaction); err == nil {
+		t.Error("AddPermission must refuse sign_transaction")
+	}
+	if pm.HasPermission(origin, PermissionSignTransaction) {
+		t.Error("sign_transaction must not be stored even on a refused call")
 	}
 }
 

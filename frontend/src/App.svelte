@@ -429,6 +429,11 @@
         // Include permission info for connect requests
         requestedPermissions: req.requestedPermissions,
         isReadOnly: req.isReadOnly || false,
+        // Both are read by the modal at the TOP level. They were only ever put in `payload`,
+        // so the Sign In with DERO prompt fell through to generic "read public data" text
+        // while approving actually decrypted the wallet and signed a challenge.
+        description: req.description,
+        isSignIn: req.isSignIn === true,
         // true = the browser vouched for the origin; false = the app named itself
         originVerified: req.originVerified === true
       }, 

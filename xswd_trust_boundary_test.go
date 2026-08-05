@@ -84,3 +84,36 @@ func TestApproveWalletConnection_PersistsGrants(t *testing.T) {
 		t.Fatal("sign_transaction should not be granted")
 	}
 }
+
+// A door the user chose to remember must survive the app reconnecting. Connect grants public
+// chain data only, so if it REPLACED the set it would quietly revoke that memory and the app
+// would prompt again for something already answered.
+func TestApproveWalletConnection_DoesNotClobberRememberedGrants(t *testing.T) {
+	pm, cleanup := setupTestPermissionManager(t)
+	defer cleanup()
+	prev := permissionManager
+	permissionManager = pm
+	defer func() { permissionManager = prev }()
+
+	app := &App{}
+	origin := "scid:deadbeef"
+
+	// First visit: connect, then "Always allow" on the balance door.
+	app.ApproveWalletConnection(origin, "TELA App", "desc", []string{"read_public_data"})
+	if err := pm.AddPermission(origin, "TELA App", "", PermissionViewBalance); err != nil {
+		t.Fatalf("AddPermission: %v", err)
+	}
+
+	// Second visit: the app reconnects.
+	res := app.ApproveWalletConnection(origin, "TELA App", "desc", []string{"read_public_data"})
+	if success, _ := res["success"].(bool); !success {
+		t.Fatalf("expected success, got %#v", res)
+	}
+
+	if !pm.HasPermission(origin, PermissionViewBalance) {
+		t.Fatal("remembered view_balance must survive a reconnect")
+	}
+	if !pm.HasPermission(origin, PermissionReadPublicData) {
+		t.Fatal("read_public_data should still be granted")
+	}
+}
