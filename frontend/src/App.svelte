@@ -428,7 +428,9 @@
         origin: req.origin || 'XSWD',
         // Include permission info for connect requests
         requestedPermissions: req.requestedPermissions,
-        isReadOnly: req.isReadOnly || false
+        isReadOnly: req.isReadOnly || false,
+        // true = the browser vouched for the origin; false = the app named itself
+        originVerified: req.originVerified === true
       }, 
       // On Approve
       (result) => {

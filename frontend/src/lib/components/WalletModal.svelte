@@ -367,7 +367,14 @@
           <div class="modal-app-icon">◎</div>
           <div>
             <div class="modal-app-name">{request.appName || 'Unknown App'}</div>
-            <div class="modal-app-origin">{request.origin || 'Local App'}</div>
+            <div class="modal-app-origin">
+              {request.origin || 'Local App'}
+              <!-- The name and the address are both chosen by the asker unless the
+                   browser vouched for the origin. Say which one you are looking at. -->
+              {#if request.type === 'connect' && !request.originVerified}
+                <span class="modal-app-origin-unverified" title="This app told us its own name and address. Nothing has confirmed them.">· self-reported</span>
+              {/if}
+            </div>
           </div>
         </div>
       </div>

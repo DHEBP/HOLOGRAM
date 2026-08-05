@@ -7538,6 +7538,13 @@
       font-size: 12px;
       color: var(--text-4);
     }
+
+    /* Caution, not alarm: the name and address are unconfirmed, nothing is wrong yet. */
+    .modal-app-origin-unverified {
+      color: var(--status-warn);
+      opacity: 0.85;
+      cursor: help;
+    }
     
     /* Modal Permission Items */
     .modal-permissions-list {

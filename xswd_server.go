@@ -29,6 +29,10 @@ type XSWDPendingRequest struct {
 type SubscriptionType string
 
 const (
+	// Ceiling on approval prompts queued at once. A person answers prompts one at a time;
+	// past a handful the queue is spam, not use.
+	maxPendingApprovals = 5
+
 	SubNewTopoheight SubscriptionType = "new_topoheight"
 	SubNewBalance    SubscriptionType = "new_balance"
 	SubNewEntry      SubscriptionType = "new_entry"
@@ -54,6 +58,10 @@ type XSWDServer struct {
 
 	// Track client origins for permission checking
 	clientOrigins map[*websocket.Conn]string
+
+	// The Origin header the BROWSER set on the upgrade, when there is one. A page cannot
+	// forge this; the app-supplied "url" in the handshake is just a string it chose.
+	clientWebOrigins map[*websocket.Conn]string
 
 	// Track client app names for display in wallet modal
 	clientAppNames map[*websocket.Conn]string
@@ -81,6 +89,7 @@ func NewXSWDServer(app *App) *XSWDServer {
 		},
 		pendingRequests:     make(map[string]*XSWDPendingRequest),
 		clientOrigins:       make(map[*websocket.Conn]string),
+		clientWebOrigins:    make(map[*websocket.Conn]string),
 		clientAppNames:      make(map[*websocket.Conn]string),
 		clientSubscriptions: make(map[*websocket.Conn]*ClientSubscriptions),
 		stopPusher:          make(chan struct{}),
@@ -160,8 +169,15 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	// Capture the browser-set Origin before the request goes out of scope. Absent for
+	// native clients (Go/CLI dApps set no Origin), present and unforgeable for web pages.
+	webOrigin := strings.TrimSpace(r.Header.Get("Origin"))
+
 	s.lock.Lock()
 	s.clients[conn] = true
+	if webOrigin != "" {
+		s.clientWebOrigins[conn] = webOrigin
+	}
 	s.lock.Unlock()
 
 	defer func() {
@@ -170,6 +186,7 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		origin := s.clientOrigins[conn]
 		delete(s.clients, conn)
 		delete(s.clientOrigins, conn)
+		delete(s.clientWebOrigins, conn)
 		delete(s.clientAppNames, conn)
 		delete(s.clientSubscriptions, conn)
 		s.lock.Unlock()
@@ -824,6 +841,22 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 	rawOrigin, _ := info["url"].(string)
 	description, _ := info["description"].(string)
 
+	// If the browser told us who this is, that outranks whatever the page claims. Without
+	// this a page at evil.com can send url:"https://trusted.example" and the approval
+	// prompt shows the trusted name — the asker choosing its own label, which is the
+	// permission theater R2-B2 exists to prevent.
+	s.lock.RLock()
+	webOrigin := s.clientWebOrigins[conn]
+	s.lock.RUnlock()
+
+	originVerified := webOrigin != ""
+	if originVerified {
+		if rawOrigin != "" && !strings.EqualFold(strings.TrimSpace(rawOrigin), webOrigin) {
+			log.Printf("[XSWD] Handshake declared url=%q but the browser says %q; using the browser's", rawOrigin, webOrigin)
+		}
+		rawOrigin = webOrigin
+	}
+
 	rawOrigin = strings.TrimSpace(rawOrigin)
 	if rawOrigin == "" {
 		s.sendRawJSON(conn, map[string]interface{}{
@@ -838,6 +871,18 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 	// handshake leaves nothing behind to route an approval to.
 	resChan := make(chan interface{})
 	s.pendingLock.Lock()
+	// Nothing stopped a page opening sockets in a loop and queueing one approval modal
+	// per socket, each holding a blocked goroutine. A person can only answer a few
+	// prompts anyway, so refuse past a small ceiling rather than stack them up.
+	if len(s.pendingRequests) >= maxPendingApprovals {
+		s.pendingLock.Unlock()
+		log.Printf("[XSWD] Handshake refused: %d approvals already awaiting an answer", maxPendingApprovals)
+		s.sendRawJSON(conn, map[string]interface{}{
+			"accepted": false,
+			"error":    "too many pending approval requests; answer or dismiss the open prompts first",
+		})
+		return
+	}
 	s.pendingRequests[reqID] = &XSWDPendingRequest{
 		Method:   "handshake",
 		Params:   info,
@@ -877,6 +922,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		"description":          description,
 		"requestedPermissions": permInfos,
 		"isReadOnly":           isReadOnly,
+		"originVerified":       originVerified,
 	})
 
 	resp := <-resChan

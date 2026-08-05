@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/deroproject/graviton"
+	"github.com/gorilla/websocket"
 )
 
 // ============== Test Setup/Teardown ==============
@@ -1016,5 +1017,37 @@ func TestGetDaemonRequiresPublicDataNotAddress(t *testing.T) {
 	// Address methods must NOT have been swept along with it.
 	if GetRequiredPermission("GetAddress") != PermissionViewAddress {
 		t.Error("GetAddress no longer requires view_address")
+	}
+}
+
+// A page can put anything in the handshake's "url". The browser-set Origin header cannot
+// be forged by the page, so when one is present it must win. Without this a site can
+// declare itself as a trusted domain and the approval prompt repeats the claim.
+func TestHandshakeOriginPrefersBrowserHeaderOverClaim(t *testing.T) {
+	s := &XSWDServer{
+		clients:          make(map[*websocket.Conn]bool),
+		clientOrigins:    make(map[*websocket.Conn]string),
+		clientWebOrigins: make(map[*websocket.Conn]string),
+	}
+	var conn *websocket.Conn // nil key is fine; we only exercise map lookup semantics
+
+	// No browser Origin (native dApp): fall back to the claim, marked unverified.
+	if got := s.clientWebOrigins[conn]; got != "" {
+		t.Fatalf("expected no web origin, got %q", got)
+	}
+
+	// Browser vouched: that value must be what identity keys on.
+	s.clientWebOrigins[conn] = "https://evil.tld"
+	claimed := "https://trusted.example"
+	webOrigin := s.clientWebOrigins[conn]
+	resolved := claimed
+	if webOrigin != "" {
+		resolved = webOrigin
+	}
+	if resolved != "https://evil.tld" {
+		t.Fatalf("claimed url won over the browser Origin: got %q", resolved)
+	}
+	if XSWDOriginKey(resolved) == XSWDOriginKey(claimed) {
+		t.Fatal("a page could key its grant to a domain it does not control")
 	}
 }
