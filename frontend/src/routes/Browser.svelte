@@ -127,11 +127,16 @@ function stopXSWDSubscriptionPolling() {
 function sendXSWDEvent(method, params) {
   try {
     if (!contentFrame || !contentFrame.contentWindow) return;
+    // Address the feed to the origin we granted, not to whoever is in the frame now.
+    // With '*' a document that navigated itself off-box keeps receiving balance and
+    // transfer events. srcdoc has an opaque origin and can only be addressed as '*'.
+    const target = iframeUsesSrcdoc ? '*' : expectedFrameOrigin;
+    if (!target) return; // HTTP mode with no known origin -> send nothing
     contentFrame.contentWindow.postMessage({
       type: 'xswd-event',
       method,
       params
-    }, '*');
+    }, target);
   } catch (e) {
     // Silently ignore cross-origin errors - expected when iframe has different origin
   }
@@ -433,6 +438,9 @@ let addressInput = '';
   // CRITICAL: set sandbox imperatively BEFORE assigning srcdoc — reactive
   // iframeUsesSrcdoc alone races (srcdoc lands while same-origin is still on).
   let iframeUsesSrcdoc = false;
+  // Origin we navigated the frame to, in HTTP mode. Compared per message so a document
+  // that navigates itself elsewhere cannot keep using a grant issued to the original app.
+  let expectedFrameOrigin = null;
   const IFRAME_SANDBOX_SRCDOC =
     'allow-scripts allow-forms allow-modals allow-clipboard-read allow-clipboard-write';
   const IFRAME_SANDBOX_HTTP =
@@ -444,17 +452,27 @@ let addressInput = '';
     contentFrame.setAttribute('sandbox', IFRAME_SANDBOX_SRCDOC);
     contentFrame.removeAttribute('src');
     iframeUsesSrcdoc = true;
+    expectedFrameOrigin = null; // srcdoc is an opaque origin; nothing to compare against
   }
 
   /** Restore HTTP sandbox (same-origin OK — iframe origin is 127.0.0.1, not parent). */
-  function prepareIframeForHttp() {
+  function prepareIframeForHttp(url) {
     if (!contentFrame) return;
     contentFrame.setAttribute('sandbox', IFRAME_SANDBOX_HTTP);
     contentFrame.removeAttribute('srcdoc');
     iframeUsesSrcdoc = false;
+    // Record where we are SENDING the frame. contentWindow survives a same-frame
+    // navigation, so source identity alone cannot tell an app that navigated itself
+    // off-box from the app we loaded. event.origin can, and the browser sets it.
+    try {
+      expectedFrameOrigin = url ? new URL(url, window.location.href).origin : null;
+    } catch (e) {
+      expectedFrameOrigin = null; // unparseable -> fail closed
+    }
   }
 
   function clearBrowserWalletSession() {
+    expectedFrameOrigin = null; // no grant, no expected origin — both re-established together
     sessionWalletAuthorized = false;
     sessionGrantedPermissions = new Set();
     sessionApprovedScid = null;
@@ -1130,6 +1148,20 @@ let addressInput = '';
         return;
       }
 
+      // Prove document identity PER MESSAGE, not per load. contentWindow is unchanged by a
+      // same-frame navigation, so the source check above passes for a document that sent
+      // itself somewhere else — and it would keep using the grant issued to the app we
+      // loaded. event.origin is set by the browser and cannot be forged by the page.
+      // srcdoc is exempt: its origin is opaque, so there is nothing to compare. 'log' is
+      // exempt because it is the one thing that works in srcdoc and it carries no authority.
+      if (event.data && event.data.type === 'xswd-request' && event.data.action !== 'log'
+          && !iframeUsesSrcdoc) {
+        if (!expectedFrameOrigin || event.origin !== expectedFrameOrigin) {
+          addConsoleLog(`[Warn] Blocked xswd-request from unexpected origin: ${event.origin || 'null'} (expected ${expectedFrameOrigin || 'none'})`);
+          return;
+        }
+      }
+
       if (event.data && event.data.type === 'hologram-external-link') {
         const url = typeof event.data.url === 'string' ? event.data.url.trim() : '';
         if (url && isAllowedExternalWebUrl(url)) {
@@ -1475,12 +1507,14 @@ let addressInput = '';
         
         // Send response back to iframe
         addConsoleLog(`[OK] Sending response for ${action}: ${typeof result === 'object' ? JSON.stringify(result).substring(0, 100) : result}`);
+        // Reply to the origin that asked. A request can be in flight across a navigation,
+        // and '*' would hand the answer to whatever document arrived in the meantime.
         event.source.postMessage({
           type: 'xswd-response',
           id: id,
           result: result
-        }, '*');
-        
+        }, iframeUsesSrcdoc ? '*' : (expectedFrameOrigin || '*'));
+
       } catch (error) {
         // Send error response back to iframe
         addConsoleLog(`[Error] Error in ${action}: ${error.message || String(error)}`);
@@ -1488,7 +1522,7 @@ let addressInput = '';
           type: 'xswd-response',
           id: id,
           error: error.message || String(error)
-        }, '*');
+        }, iframeUsesSrcdoc ? '*' : (expectedFrameOrigin || '*'));
       }
     };
     if (!destroyed) window.addEventListener('message', handleXSWDMessage);
@@ -2164,8 +2198,8 @@ ${logsText || '(no logs)'}
         // This gives proper HTTP context so external scripts can load
         // (srcdoc uses about: protocol which blocks script loading)
         if (contentFrame) {
-          prepareIframeForHttp();
           const cacheBustedUrl = `${status.url}?_t=${Date.now()}`;
+          prepareIframeForHttp(cacheBustedUrl);
           contentFrame.src = cacheBustedUrl;
           showWelcome = false;
           
@@ -2217,8 +2251,9 @@ ${logsText || '(no logs)'}
       addConsoleLog(`[Server] Reusing active TELA server: ${session.serverUrl}`);
 
       if (contentFrame) {
-        contentFrame.removeAttribute('srcdoc');
-        contentFrame.src = `${session.serverUrl}?_t=${Date.now()}`;
+        const restoreUrl = `${session.serverUrl}?_t=${Date.now()}`;
+        prepareIframeForHttp(restoreUrl);
+        contentFrame.src = restoreUrl;
         showWelcome = false;
         loading = false;
       }
@@ -2279,11 +2314,11 @@ ${logsText || '(no logs)'}
         
         // Load iframe from real HTTP URL
         if (contentFrame) {
-          prepareIframeForHttp();
           // Add cache-busting to force reload even if URL is the same port
           // This is needed because proxy servers reuse ports (50000+) and
           // the browser won't reload if src URL appears unchanged
           const cacheBustedUrl = `${serverResult.url}?_t=${Date.now()}`;
+          prepareIframeForHttp(cacheBustedUrl);
           contentFrame.src = cacheBustedUrl;
           showWelcome = false;
         }
