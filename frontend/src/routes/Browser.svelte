@@ -420,7 +420,6 @@ let addressInput = '';
   // Never trust iframe-supplied authState; only set these after a real connect approval.
   let sessionApprovedScid = null;
   let sessionApprovedAppName = null;
-  let sessionApprovalTime = 0;
   let sessionWalletAuthorized = false;
   let sessionGrantedPermissions = new Set();
 
@@ -477,7 +476,6 @@ let addressInput = '';
     sessionGrantedPermissions = new Set();
     sessionApprovedScid = null;
     sessionApprovedAppName = null;
-    sessionApprovalTime = 0;
   }
 
   function browserOriginKey() {
@@ -550,7 +548,6 @@ let addressInput = '';
       sessionGrantedPermissions = new Set(perms);
       sessionApprovedScid = currentMeta?.scid || null;
       sessionApprovedAppName = appName || null;
-      sessionApprovalTime = Date.now();
     }
     return approveResult;
   }
@@ -1248,15 +1245,18 @@ let addressInput = '';
               try {
                 const connectingAppName = payload.appInfo?.name || currentMeta?.name || 'App';
                 const connectingDesc = payload.appInfo?.description || '';
-                // Hot reload / same-SCID reconnect: reuse this session's grants only.
-                // Never auto-approve by app name alone (R2-B2 / name-spoof).
-                const timeSinceApproval = Date.now() - sessionApprovalTime;
+                // Reconnect / hot reload: reuse this session's grants for as long as the
+                // SAME app stays loaded. Keyed on the chain-resolved SCID, never on the
+                // app name (R2-B2 / name-spoof), and the session is wiped by
+                // clearBrowserWalletSession() the moment we navigate anywhere else.
+                //
+                // There is deliberately no time limit. A 30s window stopped nothing — a
+                // hostile app just waits it out — while an honest one that re-handshakes
+                // (Cipher Snake does, roughly every 30s) faced the consent prompt again
+                // and again for a decision the user had already made.
                 const sameScid = sessionApprovedScid != null && currentMeta?.scid && sessionApprovedScid === currentMeta.scid;
-                if (sessionWalletAuthorized && sameScid && timeSinceApproval < 30000) {
+                if (sessionWalletAuthorized && sameScid) {
                   addConsoleLog(`[Browser] Reusing session grants for SCID reconnect: ${connectingAppName}`);
-                  result = true;
-                } else if (hotReloadInProgress && sessionWalletAuthorized && sameScid) {
-                  addConsoleLog('[Browser] Hot reload — reusing existing session grants');
                   result = true;
                 } else {
                   addConsoleLog('[Browser] Requesting wallet approval via modal...');
@@ -1277,6 +1277,9 @@ let addressInput = '';
                     type: 'connect',
                     appName: connectingAppName,
                     origin: browserOriginKey() || addressInput,
+                    // A SCID we resolved from the chain ourselves is NOT self-reported.
+                    // Anything else here (a typed local dev URL) genuinely is.
+                    originVerified: !!currentMeta?.scid,
                     description: connectingDesc,
                     isReadOnly: isReadOnly,
                     requestedPermissions: offeredPerms.map(permissionDescriptor)
@@ -3015,6 +3018,7 @@ ${logsText || '(no logs)'}
                 type: 'connect',
                 appName: currentMeta.name || 'App',
                 origin: addressInput,
+                originVerified: !!currentMeta?.scid,
                 isReadOnly: false,
                 requestedPermissions: CONNECT_PERMISSIONS.map(permissionDescriptor)
               });
