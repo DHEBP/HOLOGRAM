@@ -424,6 +424,10 @@ let addressInput = '';
   // at all if the component is torn down mid-await (tab switch during Gnomon start).
   let destroyed = false;
   let handleSearchResult, handleXSWDMessage, handleConsoleShortcut;
+
+  // External-wallet mode: disclose ONCE per session that the wallet sees "HOLOGRAM" as a
+  // single app, so its approval spans every TELA app opened here.
+  let externalScopeDisclosed = false;
   // srcdoc + allow-same-origin collapses to the parent origin (R2-B5). Track mode
   // so the sandbox attribute can drop same-origin for srcdoc loads.
   // CRITICAL: set sandbox imperatively BEFORE assigning srcdoc — reactive
@@ -1260,7 +1264,17 @@ let addressInput = '';
               }
             } else {
               addConsoleLog('[Browser] Using external XSWD (integratedWallet=false)');
-              result = await ConnectXSWD();
+              const connectResult = await ConnectXSWD();
+              result = connectResult?.success === true || connectResult === true;
+              if (result && !externalScopeDisclosed) {
+                // Your wallet approves this, not HOLOGRAM — but it sees ONE client named
+                // "HOLOGRAM", so say plainly what that approval covers. Once per session.
+                externalScopeDisclosed = true;
+                toast.info(
+                  'Your external wallet approves this connection. It sees HOLOGRAM as a single app, so that approval covers every TELA app opened in this browser.',
+                  9000
+                );
+              }
             }
             break;
             
@@ -1318,7 +1332,15 @@ let addressInput = '';
 
             // Parent-owned session auth (R2-B3): ignore any client-supplied authState.
             // Wallet methods require a successful connect approval in this Browser session.
-            if (!isDaemonScoped && walletMethodsLower.includes(methodLower) && !sessionAllowsWalletMethod(methodLower)) {
+            //
+            // Integrated mode ONLY. With an external wallet HOLOGRAM holds no keys and is not
+            // the authority — that wallet runs its own approval and can refuse. Enforcing here
+            // too would deny everything, because nothing in the external connect path grants a
+            // session. Note the external wallet sees one client named "HOLOGRAM"
+            // (xswd_client.go), not the individual TELA app, so its approval covers every app
+            // in this browser; that is disclosed to the user on connect rather than papered over.
+            if (callSettings.integratedWallet && !isDaemonScoped &&
+                walletMethodsLower.includes(methodLower) && !sessionAllowsWalletMethod(methodLower)) {
               throw new Error('Wallet not authorized');
             }
             
