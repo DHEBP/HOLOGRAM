@@ -1658,8 +1658,17 @@ let addressInput = '';
     // Hot reload listener for local dev mode
     if (!destroyed) EventsOn('localdev:reload', handleLocalDevReload);
 
-    // Try to restore last loaded TELA session for fast back-navigation
-    await restoreTelaSession();
+    // Try to restore last loaded TELA session for fast back-navigation.
+    //
+    // Skipped when a navigation is already queued. The pendingNavigation subscriber above
+    // sets addressInput and schedules navigate() on a 50ms timer, and restoreTelaSession
+    // assigns addressInput from the STORED session — so restoring here overwrote the
+    // requested address before the timer read it, and the queued navigate() reloaded the
+    // previous app instead. Clicking the wallet avatar asked for villager.tela and got
+    // whatever was open before. An explicit request beats a restored session.
+    if (!hasNavigated) {
+      await restoreTelaSession();
+    }
 
     if ($appState.gnomonRunning && !appsLoaded && !appsLoading && !waitingForInitialApps) {
       loadApps();
