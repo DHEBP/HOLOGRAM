@@ -2384,6 +2384,19 @@ ${logsText || '(no logs)'}
       activeTelaUrl = session.serverUrl;
       addressInput = session.durl || session.scid;
 
+      // currentMeta drives browserOriginKey(), the origin-verified badge and returning-app
+      // detection. Leaving it empty after a restore made browserOriginKey() fall back to the
+      // address bar, so the SAME app stored its grants under the SCID on one visit and the
+      // dURL on the next — a remembered answer was written to one key and looked for under
+      // another. It also printed "self-reported" for an app we resolved from chain ourselves.
+      // The session record already carries everything needed.
+      currentMeta = {
+        ...currentMeta,
+        scid: session.scid,
+        name: session.title || currentMeta?.name || '',
+        durl: session.durl || ''
+      };
+
       updateActiveTab(session.title || 'App', addressInput, 'box');
       addConsoleLog(`[Server] Reusing active TELA server: ${session.serverUrl}`);
 

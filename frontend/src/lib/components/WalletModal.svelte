@@ -678,10 +678,11 @@
 
       <!-- Wallet State Section - only show for non-read-only requests -->
       {#if request.type === 'connect' && !connectNeedsWallet}
-        <!-- Nothing wallet-touching is ticked, so approving needs no unlock -->
+        <!-- Nothing here touches the wallet, so approving needs no unlock. There is no
+             sheet to select from any more, so the copy must not refer to one. -->
         <div class="wallet-readonly-info">
           <span class="wallet-readonly-info-icon">◎</span>
-          <span>No wallet access needed for the permissions selected</span>
+          <span>No wallet access needed to connect</span>
         </div>
       {:else if $walletState.isOpen}
         <!-- Current wallet is open - show wallet switcher option -->
