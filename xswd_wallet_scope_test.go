@@ -311,3 +311,33 @@ func TestApproveWalletConnection_SurvivesUnattributableDoor(t *testing.T) {
 		t.Fatal("an unattributable door must not land on the next wallet to open")
 	}
 }
+
+// pushEvent re-checks the permission on every push rather than only at Subscribe. This tests
+// the condition it evaluates, not the websocket write: with grants scoped per wallet, an
+// established balance feed stops the moment a different wallet is opened, and resumes only if
+// that wallet granted the door itself.
+func TestSubscriptionGate_BalanceFeedStopsOnWalletSwitch(t *testing.T) {
+	pm, cleanup := setupTestPermissionManager(t)
+	defer cleanup()
+
+	const origin = "xswd:https://dapp.example"
+	required := SubscriptionPermission(SubNewBalance)
+
+	pinWallet(t, walletA)
+	if err := pm.AddPermission(origin, "Feed", "", PermissionViewBalance); err != nil {
+		t.Fatalf("grant under wallet A: %v", err)
+	}
+	if !pm.HasPermission(origin, required) {
+		t.Fatal("wallet A granted the balance door; its feed should push")
+	}
+
+	pinWallet(t, walletB)
+	if pm.HasPermission(origin, required) {
+		t.Fatal("the feed kept pushing after a wallet switch — wallet B never approved it")
+	}
+
+	pinWallet(t, "")
+	if pm.HasPermission(origin, required) {
+		t.Fatal("a closed wallet must not keep feeding balance events")
+	}
+}

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<!--
+  Consent probe — a local dApp that reaches for every gated door, one button at a time.
+
+  It exists because the doors could not be checked without an app that calls them: villager.tela
+  never calls GetBalance and never subscribes, so view_balance and the Subscribe branch shipped
+  unexercised. Reading the code is not the same as watching the prompt appear.
+
+  Load it:  Browser → local dev server → point it at testdata/consent-probe
+            (the server requires an index.html, which is why this is a directory)
+
+  It speaks XSWD over a WebSocket, which is what a real dApp does — HOLOGRAM's injected bridge
+  intercepts the socket and routes it through the same consent gate villager.tela hits. It
+  deliberately does NOT use telaHost.call(): in integrated-wallet mode that path refuses wallet
+  methods outright (app.go CallXSWD), so it would exercise nothing.
+
+  What to expect, if consent is behaving:
+    Connect            ONE prompt, "Public Data Only", no checkboxes
+    Chain tip          never prompts — public data, rides the connect grant
+    Address            prompts; "Always allow" and it stays quiet afterwards
+    Balance            prompts SEPARATELY from address — different doors
+    Transfers          no new prompt once balance is allowed — same door
+    Subscribe balance  prompts for the balance door if not already allowed
+    Deny anything      arrives as -32043, not a generic failure
+    Switch wallets     every wallet door asks AGAIN, and a running feed goes quiet
+
+  That last line is the one worth the trouble: a door remembered under one wallet must not
+  open for the next one.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Consent Probe</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#0b0f14; color:#c6d4e1; font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; margin:0; padding:22px; }
+  h1 { font-size:14px; letter-spacing:.2em; text-transform:uppercase; color:#5ec8f0; margin:0 0 3px; }
+  p.sub { margin:0 0 18px; color:#6b7d8f; }
+  .row { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:12px; }
+  button { background:#101822; color:#5ec8f0; border:1px solid #1e3242; padding:7px 11px; cursor:pointer; font:inherit; border-radius:3px; }
+  button:hover:not(:disabled) { border-color:#5ec8f0; }
+  button:disabled { color:#3d4c5a; border-color:#16222c; cursor:not-allowed; }
+  button .d { color:#4a5b6b; }
+  #log { background:#070a0e; border:1px solid #1e3242; border-radius:3px; padding:11px; height:50vh; overflow:auto; white-space:pre-wrap; }
+  .ok{color:#4ad38a} .no{color:#f0704a} .dim{color:#6b7d8f} .ev{color:#e0b341} .hi{color:#5ec8f0}
+</style>
+</head>
+<body>
+<h1>Consent Probe</h1>
+<p class="sub">One door per button. Watch which raise a prompt and which stay silent.</p>
+
+<div class="row">
+  <button id="connect">1 · Connect</button>
+  <button class="gated" disabled id="tip">Chain tip <span class="d">public</span></button>
+  <button class="gated" disabled id="addr">Address <span class="d">view_address</span></button>
+  <button class="gated" disabled id="bal">Balance <span class="d">view_balance</span></button>
+  <button class="gated" disabled id="xfers">Transfers <span class="d">view_balance</span></button>
+</div>
+<div class="row">
+  <button class="gated" disabled id="subbal">Subscribe balance</button>
+  <button class="gated" disabled id="subtip">Subscribe chain tip</button>
+  <button class="gated" disabled id="unsub">Unsubscribe all</button>
+  <button id="clear">Clear log</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var logEl = document.getElementById('log');
+  function say(msg, cls) {
+    var line = document.createElement('div');
+    if (cls) { line.className = cls; }
+    line.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  var ws = null;
+  var nextId = 0;
+  var pending = {};   // id -> label
+
+  function gated(enabled) {
+    var all = document.querySelectorAll('.gated');
+    for (var i = 0; i < all.length; i++) { all[i].disabled = !enabled; }
+  }
+
+  // A refusal must arrive as -32043 so an app can tell "the user said no" from "the call
+  // broke". Anything else here is a finding, not a nuisance.
+  function report(label, msg) {
+    if (msg.error) {
+      if (msg.error.code === -32043) {
+        say(label + '  DENIED  -32043  ' + (msg.error.message || ''), 'no');
+      } else {
+        say(label + '  FAILED  ' + msg.error.code + '  ' + (msg.error.message || ''), 'no');
+      }
+      return;
+    }
+    say(label + '  OK  ' + JSON.stringify(msg.result), 'ok');
+  }
+
+  function send(label, method, params) {
+    if (!ws || ws.readyState !== 1) { say('not connected', 'no'); return; }
+    var id = ++nextId;
+    pending[id] = label;
+    say(label + '  → ' + method, 'dim');
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id: id, method: method, params: params || {} }));
+  }
+
+  document.getElementById('connect').onclick = function () {
+    if (ws) { try { ws.close(); } catch (e) {} }
+    say('opening XSWD socket…', 'dim');
+    ws = new WebSocket('ws://127.0.0.1:44326/xswd');
+
+    ws.onopen = function () {
+      say('socket open — sending handshake', 'dim');
+      // Canonical XSWD handshake: a plain object, no method field.
+      ws.send(JSON.stringify({
+        name: 'Consent Probe',
+        description: 'Exercises every gated XSWD door',
+        url: window.location.href
+      }));
+    };
+
+    ws.onmessage = function (e) {
+      var msg;
+      try { msg = JSON.parse(e.data); } catch (err) { say('unparseable: ' + e.data, 'no'); return; }
+
+      // Handshake reply carries accepted/message rather than a JSON-RPC id.
+      if (msg.accepted !== undefined) {
+        if (msg.accepted) {
+          say('CONNECTED — expected exactly one prompt, public data only', 'hi');
+          gated(true);
+        } else {
+          say('connect refused: ' + (msg.message || ''), 'no');
+          gated(false);
+        }
+        return;
+      }
+
+      // A notification (no id) is a subscription event.
+      if (msg.id === undefined || msg.id === null) {
+        say('EVENT  ' + msg.method + '  ' + JSON.stringify(msg.params), 'ev');
+        return;
+      }
+
+      var label = pending[msg.id] || ('id ' + msg.id);
+      delete pending[msg.id];
+      report(label, msg);
+    };
+
+    ws.onerror = function () { say('socket error', 'no'); };
+    ws.onclose = function () { say('socket closed', 'dim'); gated(false); };
+  };
+
+  document.getElementById('tip').onclick   = function () { send('chain tip', 'DERO.GetHeight'); };
+  document.getElementById('addr').onclick  = function () { send('address', 'GetAddress'); };
+  document.getElementById('bal').onclick   = function () { send('balance', 'GetBalance'); };
+  document.getElementById('xfers').onclick = function () { send('transfers', 'GetTransfers', { in: true, out: true }); };
+
+  document.getElementById('subbal').onclick = function () { send('subscribe balance', 'Subscribe', { event: 'new_balance' }); };
+  document.getElementById('subtip').onclick = function () { send('subscribe tip', 'Subscribe', { event: 'new_topoheight' }); };
+  document.getElementById('unsub').onclick  = function () {
+    send('unsub balance', 'Unsubscribe', { event: 'new_balance' });
+    send('unsub tip', 'Unsubscribe', { event: 'new_topoheight' });
+    send('unsub entry', 'Unsubscribe', { event: 'new_entry' });
+  };
+
+  document.getElementById('clear').onclick = function () { logEl.innerHTML = ''; };
+
+  say('ready — click Connect', 'dim');
+})();
+</script>
+</body>
+</html>
