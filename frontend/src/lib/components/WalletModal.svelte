@@ -414,8 +414,8 @@
             {/if}
             <p class="wallet-info-note">
               <span class="wallet-info-icon">i</span>
-              "Always allow" is remembered for this app and can be taken back in
-              Settings → Connected Apps.
+              "Always allow" is remembered for this app <strong>and this wallet only</strong> —
+              another wallet is asked again. Take it back in Settings → Connected Apps.
             </p>
           </div>
         {:else if request.type === 'connect'}

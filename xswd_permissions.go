@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -106,14 +108,81 @@ func CanStorePermission(p XSWDPermission) bool {
 	}
 }
 
-// ConnectedApp represents a dApp that has connected via XSWD
+// walletFingerprint identifies the wallet a standing grant belongs to. Indirected through a
+// variable so tests can pin an identity without opening a wallet on disk.
+var walletFingerprint = currentWalletFingerprint
+
+// currentWalletFingerprint returns a stable opaque id for the open wallet, or "" when none is.
+//
+// The address is HASHED rather than recorded. The permission store lives in the app data
+// directory beside the caches, and recent-wallets already limits itself to a 16-character
+// address PREFIX (addToRecentWalletsWithInfo), so writing a full address here would make this
+// the one place HOLOGRAM keeps one in the clear. Hashing costs nothing and keeps the store
+// unreadable to anyone who does not already know the address.
+//
+// Same wallet on a different network yields a different address (dero1… vs deto1…) and so a
+// different fingerprint — a grant made against the simulator does not carry to mainnet.
+//
+// LOCK ORDER: this takes walletManager's read lock, so it must be called BEFORE the
+// PermissionManager lock, never under it. A caller already holding walletManager.Lock() —
+// InternalWalletCall holds it for its whole body — must resolve permissions before locking,
+// or Go's non-reentrant RWMutex will deadlock the goroutine against itself.
+func currentWalletFingerprint() string {
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return ""
+	}
+	return fingerprintForAddress(walletManager.wallet.GetAddress().String())
+}
+
+// fingerprintForAddress hashes a wallet address into the id used as a grant key.
+func fingerprintForAddress(address string) string {
+	if address == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(address))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// ConnectedApp represents a dApp that has connected via XSWD.
+//
+// Permissions holds only the doors that are not about the wallet — connecting grants public
+// chain data, and that answer is the same whichever wallet happens to be open (or none).
+// WalletPermissions holds the rest, filed under the fingerprint of the wallet that granted
+// them: "remember this" has to mean "for THIS wallet", or approving an app under one identity
+// silently hands it the next one you open.
 type ConnectedApp struct {
-	Origin       string                  `json:"origin"`
-	Name         string                  `json:"name"`
-	Description  string                  `json:"description,omitempty"`
-	Permissions  map[XSWDPermission]bool `json:"permissions"`
-	GrantedAt    int64                   `json:"grantedAt"`
-	LastAccessed int64                   `json:"lastAccessed"`
+	Origin      string                  `json:"origin"`
+	Name        string                  `json:"name"`
+	Description string                  `json:"description,omitempty"`
+	Permissions map[XSWDPermission]bool `json:"permissions"`
+	// fingerprint -> permissions granted while that wallet was open
+	WalletPermissions map[string]map[XSWDPermission]bool `json:"walletPermissions,omitempty"`
+	GrantedAt         int64                              `json:"grantedAt"`
+	LastAccessed      int64                              `json:"lastAccessed"`
+}
+
+// permissionsForWallet flattens the doors this app holds for one wallet: the
+// wallet-independent set plus whatever that fingerprint granted. An empty fingerprint (no
+// wallet open) yields the wallet-independent set alone.
+func (app *ConnectedApp) permissionsForWallet(fingerprint string) map[XSWDPermission]bool {
+	out := make(map[XSWDPermission]bool, len(app.Permissions)+2)
+	for p, granted := range app.Permissions {
+		if granted {
+			out[p] = true
+		}
+	}
+	if fingerprint == "" {
+		return out
+	}
+	for p, granted := range app.WalletPermissions[fingerprint] {
+		if granted {
+			out[p] = true
+		}
+	}
+	return out
 }
 
 // PermissionManager handles XSWD permission storage and checking
@@ -174,6 +243,17 @@ func (pm *PermissionManager) loadFromStorage() {
 
 		var app ConnectedApp
 		if err := json.Unmarshal(v, &app); err == nil {
+			// Records written before grants were scoped hold wallet doors in the
+			// wallet-independent set, where there is nothing to say WHICH wallet approved
+			// them. Drop them: a grant that cannot be attributed must not be honoured, and
+			// leaving it visible in Settings would advertise a door that opens nothing —
+			// the permission theatre the consent rebuild exists to remove. Cost is one
+			// re-prompt per app per wallet, asked at the moment of use.
+			for p := range app.Permissions {
+				if RequiresWallet(p) {
+					delete(app.Permissions, p)
+				}
+			}
 			pm.apps[string(k)] = &app
 		}
 	}
@@ -228,6 +308,9 @@ func (pm *PermissionManager) deleteFromStorage(origin string) error {
 
 // GrantPermissions stores permissions for an app
 func (pm *PermissionManager) GrantPermissions(origin, name, description string, permissions []XSWDPermission) error {
+	// Resolved before the lock — see the LOCK ORDER note on currentWalletFingerprint.
+	fingerprint := walletFingerprint()
+
 	pm.Lock()
 	defer pm.Unlock()
 
@@ -257,12 +340,31 @@ func (pm *PermissionManager) GrantPermissions(origin, name, description string, 
 	// Additive grants made unchecked boxes in the connect modal theater.
 	// Non-storable permissions are dropped here rather than at the caller, so every
 	// write path (browser connect, WebSocket connect) inherits the rule.
+	//
+	// The replace is scoped to the granting wallet: it clears this wallet's doors and the
+	// wallet-independent ones, and leaves every OTHER wallet's grants alone. Wiping those
+	// would let connecting under one identity silently revoke another's.
 	app.Permissions = make(map[XSWDPermission]bool, len(permissions))
+	if fingerprint != "" {
+		if app.WalletPermissions == nil {
+			app.WalletPermissions = make(map[string]map[XSWDPermission]bool, 1)
+		}
+		app.WalletPermissions[fingerprint] = make(map[XSWDPermission]bool, len(permissions))
+	}
 	for _, p := range permissions {
 		if !CanStorePermission(p) {
 			continue
 		}
-		app.Permissions[p] = true
+		if !RequiresWallet(p) {
+			app.Permissions[p] = true
+			continue
+		}
+		// A wallet door with no wallet open has nothing to attach to; silently storing it
+		// globally is exactly the leak this scoping closes.
+		if fingerprint == "" {
+			continue
+		}
+		app.WalletPermissions[fingerprint][p] = true
 	}
 	app.LastAccessed = now
 
@@ -280,6 +382,14 @@ func (pm *PermissionManager) AddPermission(origin, name, description string, per
 	}
 	if !CanStorePermission(permission) {
 		return fmt.Errorf("permission %q is approved per action and cannot be stored", permission)
+	}
+
+	// Resolved before the lock — see the LOCK ORDER note on currentWalletFingerprint.
+	fingerprint := walletFingerprint()
+	// "Always allow" on a wallet door has to record WHICH wallet allowed it. With none open
+	// there is no answer, so refuse rather than file it somewhere every wallet can read.
+	if RequiresWallet(permission) && fingerprint == "" {
+		return fmt.Errorf("permission %q needs an open wallet to be remembered", permission)
 	}
 
 	pm.Lock()
@@ -309,7 +419,17 @@ func (pm *PermissionManager) AddPermission(origin, name, description string, per
 		}
 	}
 
-	app.Permissions[permission] = true
+	if RequiresWallet(permission) {
+		if app.WalletPermissions == nil {
+			app.WalletPermissions = make(map[string]map[XSWDPermission]bool, 1)
+		}
+		if app.WalletPermissions[fingerprint] == nil {
+			app.WalletPermissions[fingerprint] = make(map[XSWDPermission]bool, 1)
+		}
+		app.WalletPermissions[fingerprint][permission] = true
+	} else {
+		app.Permissions[permission] = true
+	}
 	app.LastAccessed = now
 
 	return pm.saveToStorage(app)
@@ -351,8 +471,18 @@ func DenyUnlessPermission(origin string, perm XSWDPermission) *JSONRPCError {
 	return nil
 }
 
-// RevokePermission removes a specific permission from an app
+// RevokePermission removes a specific permission from an app.
+//
+// A wallet door is revoked for the wallet that is open, matching what Settings displays.
+// Other wallets keep their own answer; "Revoke All & Disconnect" is the control that forgets
+// the app everywhere.
 func (pm *PermissionManager) RevokePermission(origin string, permission XSWDPermission) error {
+	// Resolved before the lock — see the LOCK ORDER note on currentWalletFingerprint.
+	fingerprint := ""
+	if RequiresWallet(permission) {
+		fingerprint = walletFingerprint()
+	}
+
 	pm.Lock()
 	defer pm.Unlock()
 
@@ -361,11 +491,18 @@ func (pm *PermissionManager) RevokePermission(origin string, permission XSWDPerm
 		return nil
 	}
 
+	if fingerprint != "" {
+		delete(app.WalletPermissions[fingerprint], permission)
+	}
+	// Also clear the wallet-independent slot: pre-scoping records could hold a wallet door
+	// there, and a revoke the user asked for must not leave a copy behind.
 	delete(app.Permissions, permission)
 	return pm.saveToStorage(app)
 }
 
-// RevokeAllPermissions removes all permissions for an app
+// RevokeAllPermissions removes an app's record entirely — every wallet, not just the open
+// one. This is what "Revoke All & Disconnect" calls, and the button says so: a control that
+// forgets less than the user expects is worse than one that forgets more.
 func (pm *PermissionManager) RevokeAllPermissions(origin string) error {
 	pm.Lock()
 	defer pm.Unlock()
@@ -387,6 +524,17 @@ func (pm *PermissionManager) RevokeAllPermissions(origin string) error {
 // plus a timestamp assignment, and this is a per-request call (not a hot loop),
 // so serializing it is effectively free.
 func (pm *PermissionManager) HasPermission(origin string, permission XSWDPermission) bool {
+	// Resolved before the lock — see the LOCK ORDER note on currentWalletFingerprint.
+	fingerprint := ""
+	if RequiresWallet(permission) {
+		fingerprint = walletFingerprint()
+		// No wallet open, no wallet door. The idle auto-lock closes the handle, so a
+		// standing grant stops being honoured until the user unlocks again.
+		if fingerprint == "" {
+			return false
+		}
+	}
+
 	pm.Lock()
 	defer pm.Unlock()
 
@@ -397,44 +545,102 @@ func (pm *PermissionManager) HasPermission(origin string, permission XSWDPermiss
 
 	app.LastAccessed = time.Now().Unix()
 
+	if fingerprint != "" {
+		return app.WalletPermissions[fingerprint][permission]
+	}
 	return app.Permissions[permission]
 }
 
-// GetApp returns a connected app by origin
+// cloneApp deep-copies a record so callers cannot race the live maps. Every nested map has
+// to be copied, not just the top-level struct — a shallow copy hands out the same inner map
+// the write paths mutate under lock.
+func cloneApp(app *ConnectedApp) *ConnectedApp {
+	appCopy := *app
+
+	permCopy := make(map[XSWDPermission]bool, len(app.Permissions))
+	for k, v := range app.Permissions {
+		permCopy[k] = v
+	}
+	appCopy.Permissions = permCopy
+
+	if app.WalletPermissions != nil {
+		walletCopy := make(map[string]map[XSWDPermission]bool, len(app.WalletPermissions))
+		for fp, perms := range app.WalletPermissions {
+			inner := make(map[XSWDPermission]bool, len(perms))
+			for k, v := range perms {
+				inner[k] = v
+			}
+			walletCopy[fp] = inner
+		}
+		appCopy.WalletPermissions = walletCopy
+	}
+	return &appCopy
+}
+
+// GetApp returns a connected app by origin, with every wallet's grants intact.
 func (pm *PermissionManager) GetApp(origin string) *ConnectedApp {
 	pm.RLock()
 	defer pm.RUnlock()
 
 	if app, exists := pm.apps[origin]; exists {
-		// Return a copy to avoid race conditions
-		appCopy := *app
-		permCopy := make(map[XSWDPermission]bool)
-		for k, v := range app.Permissions {
-			permCopy[k] = v
-		}
-		appCopy.Permissions = permCopy
-		return &appCopy
+		return cloneApp(app)
 	}
 	return nil
 }
 
-// GetAllApps returns all connected apps
+// GetAllApps returns all connected apps, UNFILTERED — every wallet's grants included.
+//
+// Deliberately not scoped to the open wallet: this feeds the storage reset (app_storage.go),
+// which promises to clear XSWD permissions, and the storage usage count. Filtering here would
+// leave other wallets' grants on disk while reporting them gone. Display paths want
+// GetAppsForCurrentWallet instead.
 func (pm *PermissionManager) GetAllApps() []*ConnectedApp {
 	pm.RLock()
 	defer pm.RUnlock()
 
 	apps := make([]*ConnectedApp, 0, len(pm.apps))
 	for _, app := range pm.apps {
-		// Return copies
-		appCopy := *app
-		permCopy := make(map[XSWDPermission]bool)
-		for k, v := range app.Permissions {
-			permCopy[k] = v
-		}
-		appCopy.Permissions = permCopy
-		apps = append(apps, &appCopy)
+		apps = append(apps, cloneApp(app))
 	}
 	return apps
+}
+
+// AppView is a connected app as it applies to one wallet: the doors actually in force,
+// flattened, with the other wallets' answers left out of the picture.
+type AppView struct {
+	Origin       string
+	Name         string
+	Description  string
+	Permissions  map[XSWDPermission]bool
+	GrantedAt    int64
+	LastAccessed int64
+}
+
+// GetAppsForCurrentWallet returns every connected app with its permissions collapsed to what
+// the currently open wallet holds. This is the view Settings and the browser consent gate
+// read: a door granted under another identity must not read as granted here.
+//
+// Apps are still listed even when they hold nothing for this wallet — the connection is real,
+// it just has no wallet doors open yet, and hiding it would make a returning app look new.
+func (pm *PermissionManager) GetAppsForCurrentWallet() []*AppView {
+	// Resolved before the lock — see the LOCK ORDER note on currentWalletFingerprint.
+	fingerprint := walletFingerprint()
+
+	pm.RLock()
+	defer pm.RUnlock()
+
+	views := make([]*AppView, 0, len(pm.apps))
+	for _, app := range pm.apps {
+		views = append(views, &AppView{
+			Origin:       app.Origin,
+			Name:         app.Name,
+			Description:  app.Description,
+			Permissions:  app.permissionsForWallet(fingerprint),
+			GrantedAt:    app.GrantedAt,
+			LastAccessed: app.LastAccessed,
+		})
+	}
+	return views
 }
 
 // SetActiveClient marks a client as actively connected

@@ -269,6 +269,9 @@ func TestPermissionManager_NilStore(t *testing.T) {
 // ============== Grant/Revoke Permission Tests ==============
 
 func TestGrantPermissions_NewApp(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
@@ -299,13 +302,13 @@ func TestGrantPermissions_NewApp(t *testing.T) {
 	}
 
 	// Verify permissions
-	if !app.Permissions[PermissionViewAddress] {
+	if !app.permissionsForWallet(walletA)[PermissionViewAddress] {
 		t.Error("PermissionViewAddress should be granted")
 	}
-	if !app.Permissions[PermissionViewBalance] {
+	if !app.permissionsForWallet(walletA)[PermissionViewBalance] {
 		t.Error("PermissionViewBalance should be granted")
 	}
-	if app.Permissions[PermissionSignTransaction] {
+	if app.permissionsForWallet(walletA)[PermissionSignTransaction] {
 		t.Error("PermissionSignTransaction should NOT be granted")
 	}
 
@@ -319,6 +322,9 @@ func TestGrantPermissions_NewApp(t *testing.T) {
 }
 
 func TestGrantPermissions_ExistingApp(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
@@ -349,11 +355,11 @@ func TestGrantPermissions_ExistingApp(t *testing.T) {
 		t.Errorf("Description not updated: %s", updatedApp.Description)
 	}
 
-	// Replace semantics: only the latest grant set remains
-	if updatedApp.Permissions[PermissionViewAddress] {
+	// Replace semantics: only the latest grant set remains — for the wallet that granted it.
+	if updatedApp.permissionsForWallet(walletA)[PermissionViewAddress] {
 		t.Error("ViewAddress should have been replaced away by the second grant")
 	}
-	if !updatedApp.Permissions[PermissionViewBalance] {
+	if !updatedApp.permissionsForWallet(walletA)[PermissionViewBalance] {
 		t.Error("ViewBalance should be granted after second grant")
 	}
 
@@ -369,6 +375,9 @@ func TestGrantPermissions_ExistingApp(t *testing.T) {
 }
 
 func TestRevokePermission_Single(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
@@ -395,13 +404,13 @@ func TestRevokePermission_Single(t *testing.T) {
 	app := pm.GetApp(origin)
 
 	// Verify only the revoked permission is gone
-	if !app.Permissions[PermissionViewAddress] {
+	if !app.permissionsForWallet(walletA)[PermissionViewAddress] {
 		t.Error("PermissionViewAddress should still be granted")
 	}
-	if app.Permissions[PermissionViewBalance] {
+	if app.permissionsForWallet(walletA)[PermissionViewBalance] {
 		t.Error("PermissionViewBalance should be revoked")
 	}
-	if !app.Permissions[PermissionReadPublicData] {
+	if !app.permissionsForWallet(walletA)[PermissionReadPublicData] {
 		t.Error("PermissionReadPublicData should still be granted")
 	}
 }
@@ -409,6 +418,9 @@ func TestRevokePermission_Single(t *testing.T) {
 // Spending must never become a standing grant. This is the rule the three-door consent model
 // rests on: one click can buy address or balance access, but never the right to spend.
 func TestGrantPermissions_DropsNonStorable(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
@@ -435,6 +447,9 @@ func TestGrantPermissions_DropsNonStorable(t *testing.T) {
 
 // "Always allow" must not disturb a door the user already opened.
 func TestAddPermission_IsAdditive(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
@@ -529,6 +544,9 @@ func TestRevokeAllPermissions_Nonexistent(t *testing.T) {
 // ============== Permission Checking Tests ==============
 
 func TestHasPermission_Granted(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
@@ -708,6 +726,9 @@ func TestGetActiveClients(t *testing.T) {
 // ============== Persistence Tests ==============
 
 func TestPermissions_PersistAcrossReload(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	// Create temp directory
 	tempDir, err := os.MkdirTemp("", "hologram_permissions_persist_*")
 	if err != nil {
@@ -751,10 +772,10 @@ func TestPermissions_PersistAcrossReload(t *testing.T) {
 	if app.Name != "Test App" {
 		t.Errorf("Name = %s, expected 'Test App'", app.Name)
 	}
-	if !app.Permissions[PermissionViewAddress] {
+	if !app.permissionsForWallet(walletA)[PermissionViewAddress] {
 		t.Error("PermissionViewAddress should persist")
 	}
-	if !app.Permissions[PermissionViewBalance] {
+	if !app.permissionsForWallet(walletA)[PermissionViewBalance] {
 		t.Error("PermissionViewBalance should persist")
 	}
 }

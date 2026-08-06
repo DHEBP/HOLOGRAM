@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { settingsState, appState, consoleLogs, clearConsoleLogs, syncNetworkMode, saveSetting, loadSettings, updateStatus, toast } from '../lib/stores/appState.js';
+  import { settingsState, appState, walletState, consoleLogs, clearConsoleLogs, syncNetworkMode, saveSetting, loadSettings, updateStatus, toast } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
   import { 
     SetSetting, StartGnomon, StopGnomon, ResyncGnomon, ResyncGnomonFromHeight,
@@ -677,8 +677,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     return addr.slice(0, 12) + '...' + addr.slice(-8);
   }
   
-  // Load apps when section becomes active
-  $: if (activeSection === 'connected-apps') {
+  // Load apps when section becomes active, and again whenever the wallet changes: the list
+  // is scoped to the open wallet, so leaving it stale would show one wallet's doors under
+  // another's name — and the pane now says out loud that it belongs to the open wallet.
+  $: if (activeSection === 'connected-apps' && $walletState.address !== undefined) {
     loadConnectedApps();
   }
   
@@ -2880,6 +2882,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                     <!-- Permissions -->
                         <div class="app-permissions">
                           <span class="permissions-label">Granted Permissions</span>
+                          <!-- Wallet doors are remembered per wallet, so this lists what the
+                               OPEN wallet granted. Another wallet's answers are its own and
+                               are not shown here. -->
+                          <p class="permissions-scope-note">For the wallet currently open</p>
                       {#if app.permissions && app.permissions.length > 0}
                             <div class="permissions-list">
                           {#each app.permissions as perm}
@@ -2902,11 +2908,14 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                     
                     <!-- Actions -->
                         <div class="app-actions">
+                      <!-- Deliberately wider than the list above: this forgets the app for
+                           EVERY wallet, including grants this pane never displayed. The
+                           label says so rather than quietly doing more than it shows. -->
                       <button
                         on:click|stopPropagation={() => revokeAllPermissions(app.origin)}
                             class="btn btn-danger"
                       >
-                        Revoke All & Disconnect
+                        Disconnect &amp; Forget (All Wallets)
                       </button>
                     </div>
                   </div>
@@ -4068,6 +4077,12 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     letter-spacing: 0.1em;
     color: var(--text-4);
     margin-bottom: 8px;
+  }
+
+  .permissions-scope-note {
+    font-size: 11px;
+    color: var(--text-4);
+    margin: -4px 0 8px;
   }
 
   .permissions-list {

@@ -1373,11 +1373,13 @@ func (s *XSWDServer) GetActiveConnections() []map[string]interface{} {
 			}
 		}
 
-		// Add permission info from permission manager
+		// Add permission info from permission manager. Reported against the open wallet, so
+		// this matches what the connection can actually do right now rather than the union
+		// of every wallet that ever approved it.
 		if pm != nil && origin != "" {
 			if app := pm.GetApp(origin); app != nil {
 				connInfo["appName"] = app.Name
-				connInfo["permissions"] = app.Permissions
+				connInfo["permissions"] = app.permissionsForWallet(walletFingerprint())
 			}
 		}
 

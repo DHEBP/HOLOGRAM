@@ -1595,6 +1595,14 @@ func (a *App) ApproveWalletConnection(origin, appName, description string, permi
 			continue
 		}
 		if err := pm.AddPermission(origin, appName, description, p); err != nil {
+			// A wallet door offered at connect with no wallet open cannot be filed against
+			// an identity. Skip it rather than failing the whole connection: the connection
+			// itself only buys public chain data, and the door will be asked for at the
+			// moment the app reaches for it, which is where it belongs anyway.
+			if RequiresWallet(p) && walletFingerprint() == "" {
+				a.logToConsole(fmt.Sprintf("[WALLET] %s not stored for %s — no wallet open; it will be asked for at first use", p, origin))
+				continue
+			}
 			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
 		}
 	}

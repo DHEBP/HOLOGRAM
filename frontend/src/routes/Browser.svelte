@@ -477,6 +477,12 @@ let addressInput = '';
   // In-flight consent prompts, keyed by permission. An app that fires GetBalance and
   // GetTransfers together must raise ONE prompt, not one per call.
   let consentInFlight = new Map();
+  // Which wallet the cached grants above were answered for. A door is remembered per app AND
+  // per wallet (xswd_permissions.go WalletPermissions); this is the renderer's half of that.
+  // InternalWalletCall performs no permission check of its own, so for the browser plane
+  // these caches ARE the gate — stale ones hand the next wallet's address to an app that was
+  // only ever approved against the last one.
+  let grantsWallet = null;
 
   function clearBrowserWalletSession() {
     expectedFrameOrigin = null; // no grant, no expected origin — both re-established together
@@ -486,6 +492,30 @@ let addressInput = '';
     sessionApprovedAppName = null;
     storedGrants = new Set();
     consentInFlight = new Map();
+    grantsWallet = null;
+  }
+
+  /**
+   * Drop every cached answer that belongs to a different wallet. Synchronous on purpose:
+   * hasGrant is synchronous, so this cannot be left to an effect that might not have run yet.
+   * Connect grants survive — reading public chain data is not a question about the wallet.
+   */
+  function forgetGrantsIfWalletChanged() {
+    const addr = get(walletState).address || '';
+    if (grantsWallet === addr) return false;
+    grantsWallet = addr;
+    sessionGrantedPermissions = new Set(CONNECT_GRANTS.filter(p => sessionGrantedPermissions.has(p)));
+    storedGrants = new Set();
+    consentInFlight = new Map();
+    return true;
+  }
+
+  // Reload the new wallet's remembered doors so switching back to a wallet that already
+  // answered does not ask again. Safety comes from forgetGrantsIfWalletChanged above; this
+  // only buys back the convenience, so a missed run costs an extra prompt, never a leak.
+  $: if (sessionWalletAuthorized && ($walletState.address || '') !== grantsWallet) {
+    forgetGrantsIfWalletChanged();
+    loadStoredGrants(browserOriginKey());
   }
 
   /**
@@ -505,10 +535,16 @@ let addressInput = '';
   }
 
   async function loadStoredGrants(origin) {
+    // GetConnectedApps reports permissions for the wallet open at the moment it is called.
+    // Stamp which wallet that was, and re-check after the await: a switch mid-flight would
+    // otherwise apply one wallet's remembered doors to another.
+    const forWallet = get(walletState).address || '';
     storedGrants = new Set();
+    grantsWallet = forWallet;
     if (!origin) return;
     try {
       const apps = await GetConnectedApps();
+      if ((get(walletState).address || '') !== forWallet) return;
       const app = (apps || []).find(a => a.origin === origin);
       if (app && Array.isArray(app.permissions)) {
         // sign_transaction / sc_invoke can never appear here — CanStorePermission drops them
@@ -591,6 +627,7 @@ let addressInput = '';
   /** Does a standing grant already cover this door — from this session or from disk? */
   function hasGrant(permId) {
     if (!sessionWalletAuthorized) return false;
+    forgetGrantsIfWalletChanged();
     if (!permId || permId === 'read_public_data') return true; // covered by connect
     return sessionGrantedPermissions.has(permId) || storedGrants.has(permId);
   }
@@ -613,6 +650,10 @@ let addressInput = '';
     const pending = (async () => {
       const origin = browserOriginKey();
       const appName = sessionApprovedAppName || currentMeta?.name || 'App';
+      // The answer belongs to the wallet that was open when the question was asked. If the
+      // user switches wallets while the prompt is up, the approval no longer describes what
+      // would happen, so it is dropped rather than applied to whoever is open now.
+      const askedForWallet = get(walletState).address || '';
       // denyWalletRequest REJECTS the promise (appState.js) rather than resolving with
       // {approved:false}. Without this catch the rejection escapes the whole gate and is
       // reported as a generic failure, so the -32043 below never gets attached and a dApp
@@ -631,6 +672,7 @@ let addressInput = '';
         return false;
       }
       if (!approval?.approved) return false;
+      if ((get(walletState).address || '') !== askedForWallet) return false;
 
       sessionGrantedPermissions = new Set([...sessionGrantedPermissions, permId]);
       if (approval.remember && origin) {

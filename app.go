@@ -1573,7 +1573,10 @@ func (a *App) GetConnectedApps() []map[string]interface{} {
 		return []map[string]interface{}{}
 	}
 
-	apps := pm.GetAllApps()
+	// Scoped to the open wallet, not GetAllApps: this feeds both the Settings pane and the
+	// browser's standing-grant read, and a door approved under another identity must not
+	// read as granted here.
+	apps := pm.GetAppsForCurrentWallet()
 	result := make([]map[string]interface{}, 0, len(apps))
 
 	for _, app := range apps {

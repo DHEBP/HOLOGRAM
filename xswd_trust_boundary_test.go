@@ -36,6 +36,9 @@ func TestDenyUnlessPermission_MissingGrant(t *testing.T) {
 }
 
 func TestDenyUnlessPermission_Granted(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 	prev := permissionManager
@@ -61,6 +64,9 @@ func TestApproveWalletConnection_RequiresOrigin(t *testing.T) {
 }
 
 func TestApproveWalletConnection_PersistsGrants(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 	prev := permissionManager
@@ -89,6 +95,9 @@ func TestApproveWalletConnection_PersistsGrants(t *testing.T) {
 // chain data only, so if it REPLACED the set it would quietly revoke that memory and the app
 // would prompt again for something already answered.
 func TestApproveWalletConnection_DoesNotClobberRememberedGrants(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 	prev := permissionManager
