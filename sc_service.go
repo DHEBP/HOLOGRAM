@@ -46,7 +46,7 @@ func (a *App) SetVar(scid, key, value string) map[string]interface{} {
 		a.logToConsole(fmt.Sprintf("[ERR] SetVar rejected: %v", err))
 		return ErrorResponse(err)
 	}
-	if err := guardStorageGas(wallet, args, "setting this variable"); err != nil {
+	if err := a.guardStorageGas(args, wallet.GetAddress().String(), "setting this variable"); err != nil {
 		a.logToConsole(fmt.Sprintf("[ERR] SetVar refused: %v", err))
 		return ErrorResponse(err)
 	}

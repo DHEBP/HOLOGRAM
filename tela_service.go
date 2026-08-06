@@ -740,7 +740,7 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		a.logToConsole(fmt.Sprintf("[ERR] INDEX update rejected: %v", err))
 		return ErrorResponse(err)
 	}
-	if err := guardStorageGas(wallet, args, "this INDEX update"); err != nil {
+	if err := a.guardStorageGas(args, wallet.GetAddress().String(), "this INDEX update"); err != nil {
 		a.logToConsole(fmt.Sprintf("[ERR] INDEX update refused: %v", err))
 		return ErrorResponse(err)
 	}

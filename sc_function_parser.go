@@ -242,6 +242,25 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 		}
 	}
 
+	// Refuse a call the chain could not apply, before it is broadcast. Same ceiling as the
+	// SetVar and INDEX-update paths, and this is the widest of the three: it reaches ANY
+	// entrypoint with any string argument. It was also the path that demonstrated the bug —
+	// a 10 KB SetVar sent from here was mined, charged, and stored nothing while the UI
+	// reported success. estimateSCInvokeGas answers 0 when it cannot measure, which reads as
+	// "proceed", so the guard only ever blocks a size it actually saw.
+	guardRingsize := uint64(2)
+	if params.Anonymous {
+		guardRingsize = 16
+	}
+	if gas := a.estimateSCInvokeGas(params, wallet, guardRingsize); storageGasExceeded(gas) {
+		err := storageGasError(fmt.Sprintf("calling %s", params.Function), gas)
+		a.logToConsole(fmt.Sprintf("[ERR] SC invoke refused: %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		}
+	}
+
 	// Route through the wallet's built-in scinvoke path (same path used by dApps),
 	// which keeps SC arg handling consistent across Studio and XSWD calls.
 	scRPC := []interface{}{
