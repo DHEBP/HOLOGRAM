@@ -864,7 +864,11 @@ let addressInput = '';
         appsLoaded = true;
         waitingForInitialApps = false;
         appDiscoveryRetryCount = 0;
-      } else if (get(appState).gnomonRunning) {
+      } else if (get(appState).gnomonRunning && get(appState).gnomonIndexerStatus !== 'indexed') {
+        // Only spin while the index is genuinely still building. Heights/progress cannot
+        // gate this: mainnet fastsync sets indexed = chain BEFORE the multi-minute SCID
+        // import that discovers TELA apps, so a height check would show "No Apps Found"
+        // within seconds of a cold start (the 2026-07-27 regression, 1262c11).
         appsLoaded = false;
         if (appDiscoveryRetryCount < APP_DISCOVERY_MAX_RETRIES) {
           appDiscoveryRetryCount += 1;
@@ -958,8 +962,10 @@ let addressInput = '';
   }
   
   // Reactive: reload apps when Gnomon syncs more blocks (finds new apps)
-  // Reload when indexed height increases by at least 1000 blocks
-  $: if ($appState.gnomonRunning && $appState.gnomonIndexedHeight > lastIndexedHeight + 1000 && !appsLoading) {
+  // Reload when indexed height increases by at least 1000 blocks, or on ANY new block
+  // while settled-but-empty — that is the only recovery path once the empty state shows,
+  // and on a small chain (simulator) +1000 blocks never arrives.
+  $: if ($appState.gnomonRunning && !appsLoading && ($appState.gnomonIndexedHeight > lastIndexedHeight + 1000 || (appsLoaded && apps.length === 0 && $appState.gnomonIndexedHeight > lastIndexedHeight))) {
     lastIndexedHeight = $appState.gnomonIndexedHeight;
     loadApps();
   }

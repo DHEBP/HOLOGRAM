@@ -223,6 +223,7 @@
           gnomonIndexedHeight: status.gnomon.indexed_height,
           gnomonChainHeight: status.gnomon.chain_height,
           gnomonProgress: status.gnomon.progress,
+          gnomonIndexerStatus: status.gnomon.indexer_status || '',
           // Clear the one-time re-index flag once the index has caught up.
           gnomonReindexing: state.gnomonReindexing && status.gnomon.running && (status.gnomon.progress || 0) < 100,
         }));

@@ -315,6 +315,8 @@ func (g *GnomonClient) GetStatus() map[string]any {
 		"db_type":        g.dbType,
 		"db_path":        g.dbPath,
 		"apps_loaded":    g.appsLoaded,
+		// Indexer lifecycle: initializing|fastsyncing|indexing|indexed.
+		"indexer_status": g.Indexer.Status,
 	}
 }
 
