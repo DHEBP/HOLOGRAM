@@ -39,9 +39,26 @@ func xswdError(msg string, technicalErr ...string) XSWDResponse {
 	return resp
 }
 
+// daemonParams turns an empty argument map into an absent one.
+//
+// derod's no-argument methods refuse a params object outright — DERO.GetHeight answers
+// -32602 "no parameters accepted" to {"params":{}} and succeeds when the key is missing. A
+// dApp that always sends a params object, which is ordinary JSON-RPC client behaviour, could
+// therefore not read the chain tip through HOLOGRAM at all.
+//
+// It cannot be fixed by nilling the map: DaemonClient.Call takes interface{} and `omitempty`
+// only fires for a nil INTERFACE, while an interface holding a nil map is itself non-nil. So
+// the emptiness has to be resolved here, before the value is widened.
+func daemonParams(params map[string]interface{}) interface{} {
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
 // routeDaemonCall handles DERO.* daemon RPC methods
 func (a *App) routeDaemonCall(method string, params map[string]interface{}) XSWDResponse {
-	result, err := a.daemonClient.Call(method, params)
+	result, err := a.daemonClient.Call(method, daemonParams(params))
 	if err != nil {
 		log.Printf("[ERR] Daemon call failed: %v", err)
 		return xswdError(FriendlyError(err), err.Error())
