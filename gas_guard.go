@@ -26,6 +26,18 @@ import (
 // however oversized the payload; it "passes" at 250 KB. Its NUMBER is still right, because
 // ConsumeStorageGas accumulates unconditionally and the flag only decides whether to panic.
 // So never read a successful estimate as "this will work". Read the number.
+//
+// Measured against a simulator chain (TELA vsoo INDEX, five-character key): storage gas runs
+// 2 per byte plus 101 of overhead, so 9,949 bytes is the last value that fits (19,999) and
+// 9,950 is the first refused (20,001). The edge moves with the key — vsoo stores "var_"+k —
+// which is why this asks the chain every time instead of checking a byte count locally.
+//
+// ⚠️ A wrong SIGNER looks exactly like a working write. vsoo's SetVar returns 1 unless the
+// signer owns the contract, and the daemon reports any non-zero return as "Discarded
+// knowingly" — an error, so nothing is measured and the guard fails open at every size. That
+// is the right call (such a write was already doomed, for an unrelated reason) but on screen
+// it is indistinguishable from having no guard: check the console for "Could not measure"
+// before concluding the guard is broken.
 
 // storageGasExceeded reports whether a call needs more storage gas than one call may ever use.
 // Exactly the ceiling is fine — the chain refuses only what is strictly above it.
