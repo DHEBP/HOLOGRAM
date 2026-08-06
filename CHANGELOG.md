@@ -7,23 +7,33 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.0.8] - 2026-07-27
+## [1.0.8] - 2026-08-06
 
-Sender-attribution privacy, cold-wallet genesis, XSWD/Browser trust-boundary hardening, fund-safety guards on the hot send path, Linux launch fixes for WebKitGTK, and an honest app version string (dev builds no longer misreport as 1.0.5).
+A rebuilt consent model for dApps — connecting no longer asks for wallet access, and access that is remembered is remembered per wallet. Plus sender-attribution privacy, cold-wallet genesis, XSWD/Browser trust-boundary hardening, fund-safety guards on the hot send path, and Linux launch fixes for WebKitGTK.
 
 ### Added
 - Wallet: cold-wallet offline genesis — mine registration air-gapped, then broadcast a saved DCSP blob from inside HOLOGRAM (paste → fingerprint check → send).
 - Wallet: sender-attribution controls on Send (anonymize / preferred decoys) with an approval modal that shows the effective ring and only promises a decoy when it holds.
+- Send: Ring Members inline editor — build and name a decoy set without leaving the form.
 - Linux: desktop installer in the release tarball (`install.sh` / `uninstall.sh` / icon / `.desktop`) so double-click and the app menu work without a bare binary.
 - Builds against the consensus-identical `DHEBP/derohe` fork (walletapi privacy patches only).
 
 ### Changed
+- **dApp consent is now three doors.** Connecting grants public blockchain data and nothing else — no checkboxes. Anything touching the wallet is asked for at the moment the app reaches for it, and that answer can be remembered. Spending is asked every time and can never be stored, enforced where grants are written rather than in the interface.
+- **Remembered access is scoped to the wallet that granted it.** Approving an app under one wallet no longer covers the next wallet you open — that one is asked again. Grants made before this update cannot be attributed to a wallet and are dropped, so each app asks once more per wallet.
+- Permission prompts list their three answers in a column, least commitment first, so a long label cannot squeeze them into unreadable chips.
+- Smart contract writes report **submitted**, not saved. The call returns when the transaction is broadcast; the contract applies it when the transaction is mined and can still refuse.
 - App state consolidated under `~/.dero/hologram` (legacy CWD litter migrated best-effort).
 - Idle auto-lock: UI drops to the unlock screen on `wallet:autoLocked`; docs claim an app-layer lock (spend refused), not in-memory secret scrub.
-- XSWD connect grants replace the permission set (unchecked boxes stick); Browser session auth is parent-owned.
+- Browser session auth is parent-owned.
 - Linux release folder ships binary + installer assets instead of a bare executable.
 
 ### Fixed
+- Smart contract writes that the chain cannot apply are refused before broadcast. Over the storage-gas ceiling a write is still mined and still charged while the contract stores nothing — HOLOGRAM now checks the cost first and says how much to cut.
+- dApps can read the chain tip again: `DERO.GetHeight` and the other no-argument daemon calls were rejected outright when a dApp sent an empty parameter object, which is ordinary JSON-RPC client behaviour.
+- A refused prompt reaches the dApp as the spec's own “permission denied” code instead of a generic failure, on every bridge — so an app can tell a refusal from a broken call.
+- Permission prompts name the method that triggered them, show a full-length contract origin without clipping it mid-string, and no longer fragment their own explanatory text into columns.
+- Browser: standing grants are read back from storage, so “remember this” survives a tab switch; grants key on the chain-resolved contract id after a session is restored, and a requested navigation wins over a restored one.
 - TELA Rate from Discover Apps: submit no longer requires an Engram XSWD *client* connection — with the integrated wallet open (“Wallet Ready”) it invokes `Rate` locally. The sidebar XSWD light only meant HOLOGRAM’s server was up, so ratings failed with “Wallet not connected via XSWD” and no console trail.
 - About / version: `AppVersion` is embedded from the `VERSION` file (kept in sync with CHANGELOG by CI) so About can no longer stick on a stale hardcoded release like 1.0.5.
 - XSWD: empty-origin sockets no longer skip permission checks; handshake requires a non-empty `url`.
