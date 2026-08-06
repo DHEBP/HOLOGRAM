@@ -406,16 +406,21 @@
           <div>
             <h3 class="modal-section-title">{request.permission?.name || 'Wallet Access'}</h3>
             <p class="wallet-readonly-desc">{request.permission?.description || ''}</p>
+            <!-- The note is a flex row, so everything after the icon has to sit inside ONE
+                 child. An inline element left as a bare sibling becomes its own flex item and
+                 the sentence lays out as columns. -->
             {#if request.methodName}
               <p class="wallet-info-note">
                 <span class="wallet-info-icon">i</span>
-                Requested by <code>{request.methodName}</code>
+                <span class="wallet-info-text">Requested by <code>{request.methodName}</code></span>
               </p>
             {/if}
             <p class="wallet-info-note">
               <span class="wallet-info-icon">i</span>
-              "Always allow" is remembered for this app <strong>and this wallet only</strong> —
-              another wallet is asked again. Take it back in Settings → Connected Apps.
+              <span class="wallet-info-text">
+                "Always allow" is remembered for this app <strong>and this wallet only</strong> —
+                another wallet is asked again. Take it back in Settings → Connected Apps.
+              </span>
             </p>
           </div>
         {:else if request.type === 'connect'}
@@ -871,7 +876,8 @@
     </div>
 
     <!-- Actions -->
-    <div class="modal-panel-actions">
+    <!-- Only the permission sheet offers three answers; two fit the 384px foot, three do not. -->
+    <div class="modal-panel-actions" class:modal-panel-actions-stack={request.type === 'permission'}>
       {#if isBurnBlocked}
         <!-- A blocked burn has no approve path at all -- only a way to dismiss it. -->
         <button
@@ -882,28 +888,30 @@
           Dismiss
         </button>
       {:else if request.type === 'permission'}
-        <!-- Deny · Allow once · Always allow. Only reachable for the storable doors —
-             spending never routes here, so "Always allow" cannot appear for a transaction. -->
-        <button
-          on:click={handleDeny}
-          class="modal-panel-btn modal-panel-btn-deny"
-          disabled={isLoading}
-        >
-          Deny
-        </button>
+        <!-- Allow once · Always allow · Deny, stacked. Only reachable for the storable doors —
+             spending never routes here, so "Always allow" cannot appear for a transaction.
+             Least commitment first: see the .modal-panel-actions-stack note in hologram.css. -->
         <button
           on:click={() => { rememberChoice = false; handleApprove(); }}
-          class="modal-panel-btn modal-panel-btn-approve"
+          class="modal-panel-btn modal-panel-btn-once"
           disabled={isLoading}
         >
           {isLoading ? 'Processing...' : 'Allow once'}
         </button>
         <button
           on:click={() => { rememberChoice = true; handleApprove(); }}
-          class="modal-panel-btn modal-panel-btn-approve"
+          class="modal-panel-btn modal-panel-btn-always"
           disabled={isLoading}
         >
           {isLoading ? 'Processing...' : 'Always allow'}
+        </button>
+        <div class="modal-panel-actions-sep"></div>
+        <button
+          on:click={handleDeny}
+          class="modal-panel-btn modal-panel-btn-deny"
+          disabled={isLoading}
+        >
+          Deny
         </button>
       {:else}
         <button
@@ -951,6 +959,12 @@
     line-height: 1.5;
   }
   
+  /* Holds the whole sentence as a single flex item so it wraps as prose, not columns. */
+  .wallet-info-text {
+    flex: 1;
+    min-width: 0;
+  }
+
   .wallet-info-icon {
     display: inline-flex;
     align-items: center;
