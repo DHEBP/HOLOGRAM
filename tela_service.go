@@ -732,6 +732,19 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		}
 	}
 
+	// Refuse an update the chain cannot apply, BEFORE it is broadcast. An update is metered
+	// on the whole contract, headers and DOC list together, so a long description or a large
+	// DOC set can cross the ceiling even though each field looks small on its own.
+	args, err := tela.NewUpdateArgs(&index)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] INDEX update rejected: %v", err))
+		return ErrorResponse(err)
+	}
+	if err := guardStorageGas(wallet, args, "this INDEX update"); err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] INDEX update refused: %v", err))
+		return ErrorResponse(err)
+	}
+
 	// Update INDEX using tela library
 	txid, err := tela.Updater(wallet, &index)
 	if err != nil {
@@ -739,13 +752,15 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		return ErrorResponse(err)
 	}
 
-	a.logToConsole(fmt.Sprintf("[OK] INDEX updated successfully! TXID: %s", txid))
+	// Submitted, not updated — this returns at broadcast, and the contract applies the change
+	// only when the transaction is mined.
+	a.logToConsole(fmt.Sprintf("[OK] INDEX update submitted. TXID: %s", txid))
 
 	return map[string]interface{}{
 		"success": true,
 		"scid":    scid,
 		"txid":    txid,
-		"message": "INDEX updated successfully",
+		"message": "Transaction submitted — the INDEX updates once it is mined",
 	}
 }
 

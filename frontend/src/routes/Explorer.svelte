@@ -1075,7 +1075,9 @@
       const result = await SetVar(searchQuery, varKey.trim(), varValue);
       
       if (result.success) {
-        toast.success(`Variable "${varKey}" set successfully`);
+        // The call returns when the transaction is broadcast, not when the contract has run,
+        // so the list below still shows the old value — say submitted rather than set.
+        toast.success(`Variable "${varKey}" submitted — updates once mined`);
         varKey = '';
         varValue = '';
         // Refresh variables
@@ -1103,7 +1105,7 @@
       const result = await DeleteVar(searchQuery, key);
       
       if (result.success) {
-        toast.success(`Variable "${key}" deleted`);
+        toast.success(`Delete of "${key}" submitted — applies once mined`);
         // Refresh variables
         await loadSCVariables(searchQuery);
       } else {

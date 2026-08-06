@@ -1319,9 +1319,10 @@
       
       const result = await UpdateINDEX(updateIndexScid, indexData);
       if (result.success) {
-        updateResult = { 
-          type: 'success', 
-          message: 'INDEX updated successfully!',
+        updateResult = {
+          type: 'success',
+          // Broadcast, not applied — the contract runs when the transaction is mined.
+          message: 'Update submitted — the INDEX changes once this transaction is mined',
           txid: result.txid
         };
       } else {
