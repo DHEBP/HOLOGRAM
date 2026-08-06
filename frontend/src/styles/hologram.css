@@ -7537,6 +7537,10 @@
       font-family: var(--font-mono);
       font-size: 12px;
       color: var(--text-4);
+      /* Backstop for any origin the shortener does not shrink (long local dev URLs):
+         wrap rather than push the card open and clip. */
+      overflow-wrap: anywhere;
+      min-width: 0;
     }
 
     /* Caution, not alarm: the name and address are unconfirmed, nothing is wrong yet. */

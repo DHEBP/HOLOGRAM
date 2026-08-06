@@ -78,6 +78,16 @@
     return connectGrantIds(req).some(id => id === 'view_address' || id === 'view_balance');
   }
 
+  // A TELA origin is a 64-char SCID, which overran the card and was clipped mid-string —
+  // an origin you cannot read is not a disclosure. Ellipsise the MIDDLE so both ends stay
+  // checkable against the address bar; the full value is on the title attribute.
+  function shortOrigin(origin) {
+    const s = (origin || '').trim();
+    if (!s) return 'Local App';
+    if (/^[0-9a-fA-F]{64}$/.test(s)) return `${s.slice(0, 10)}…${s.slice(-8)}`;
+    return s;
+  }
+
   // Doors a connect will actually grant. Empty for the in-browser path, which grants public
   // chain data only and asks for everything else at the moment of use.
   // alwaysAsk entries are excluded because they are never stored (CanStorePermission) —
@@ -375,11 +385,13 @@
           <div class="modal-app-icon">◎</div>
           <div>
             <div class="modal-app-name">{request.appName || 'Unknown App'}</div>
-            <div class="modal-app-origin">
-              {request.origin || 'Local App'}
+            <div class="modal-app-origin" title={request.origin || ''}>
+              {shortOrigin(request.origin)}
               <!-- The name and the address are both chosen by the asker unless the
-                   browser vouched for the origin. Say which one you are looking at. -->
-              {#if request.type === 'connect' && !request.originVerified}
+                   browser vouched for the origin. Say which one you are looking at.
+                   Shown on permission prompts too: those grant MORE than a connect,
+                   so warning only on connect would drop the caveat where it matters most. -->
+              {#if (request.type === 'connect' || request.type === 'permission') && !request.originVerified}
                 <span class="modal-app-origin-unverified" title="This app told us its own name and address. Nothing has confirmed them.">· self-reported</span>
               {/if}
             </div>
