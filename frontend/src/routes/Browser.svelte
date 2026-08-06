@@ -613,14 +613,23 @@ let addressInput = '';
     const pending = (async () => {
       const origin = browserOriginKey();
       const appName = sessionApprovedAppName || currentMeta?.name || 'App';
-      const approval = await requestWalletApproval({
-        type: 'permission',
-        appName,
-        origin: origin || addressInput,
-        originVerified: !!currentMeta?.scid,
-        permission: permissionDescriptor(permId),
-        methodName: methodName || ''
-      });
+      // denyWalletRequest REJECTS the promise (appState.js) rather than resolving with
+      // {approved:false}. Without this catch the rejection escapes the whole gate and is
+      // reported as a generic failure, so the -32043 below never gets attached and a dApp
+      // cannot tell "the user said no" from "the call broke".
+      let approval;
+      try {
+        approval = await requestWalletApproval({
+          type: 'permission',
+          appName,
+          origin: origin || addressInput,
+          originVerified: !!currentMeta?.scid,
+          permission: permissionDescriptor(permId),
+          methodName: methodName || ''
+        });
+      } catch (e) {
+        return false;
+      }
       if (!approval?.approved) return false;
 
       sessionGrantedPermissions = new Set([...sessionGrantedPermissions, permId]);
@@ -1544,13 +1553,20 @@ let addressInput = '';
                   // Signing methods need user approval each time
                   // Parse SC payload for proper display in wallet modal
                   const parsedPayload = parseScPayload(params);
-                  const approval = await requestWalletApproval({
-                    type: 'sign',
-                    appName: currentMeta.name || 'App',
-                    origin: addressInput,
-                    payload: parsedPayload
-                  });
-                  
+                  // Deny REJECTS rather than resolving, so the else below is unreachable
+                  // without this catch and the refusal loses its code (see -32043 note).
+                  let approval;
+                  try {
+                    approval = await requestWalletApproval({
+                      type: 'sign',
+                      appName: currentMeta.name || 'App',
+                      origin: addressInput,
+                      payload: parsedPayload
+                    });
+                  } catch (e) {
+                    throw permissionDeniedError('User denied transaction');
+                  }
+
                   if (approval.approved) {
                     const walletResult = await InternalWalletCall(method, params, approval.password);
                     if (walletResult && walletResult.success) {
@@ -1560,7 +1576,7 @@ let addressInput = '';
                       throw new Error(walletResult?.error || 'Internal wallet call failed');
                     }
                   } else {
-                    throw new Error('User denied transaction');
+                    throw permissionDeniedError('User denied transaction');
                   }
                 } else {
                   // Read methods (GetAddress, GetBalance, etc.) don't need password
@@ -3120,19 +3136,25 @@ ${logsText || '(no logs)'}
               }
               // Parse SC payload for proper display in wallet modal
               const parsedPayload = parseScPayload(params);
-              const approval = await requestWalletApproval({
-                type: 'sign',
-                appName: currentMeta.name || 'App',
-                origin: addressInput,
-                payload: parsedPayload
-              });
-              
+              // Deny REJECTS rather than resolving; catch it so the refusal keeps its code.
+              let approval;
+              try {
+                approval = await requestWalletApproval({
+                  type: 'sign',
+                  appName: currentMeta.name || 'App',
+                  origin: addressInput,
+                  payload: parsedPayload
+                });
+              } catch (e) {
+                throw permissionDeniedError('User denied transaction');
+              }
+
               if (approval.approved) {
                 const result = await InternalWalletCall(method, params, approval.password);
                 if (result && result.success) return result.result;
                 throw new Error(result?.error || 'Internal wallet call failed');
               } else {
-                throw new Error('User denied transaction');
+                throw permissionDeniedError('User denied transaction');
               }
             }
           
