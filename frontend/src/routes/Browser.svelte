@@ -2678,7 +2678,14 @@ ${logsText || '(no logs)'}
     if (e.data && e.data.type === 'xswd-response' && pending[e.data.id]) {
       var p = pending[e.data.id];
       delete pending[e.data.id];
-      e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.result);
+      if (e.data.error) {
+        var err = new Error(e.data.error);
+        // Preserve the JSON-RPC code (-32043 permission denied); see server_manager.go.
+        if (typeof e.data.errorCode === 'number') err.code = e.data.errorCode;
+        p.reject(err);
+      } else {
+        p.resolve(e.data.result);
+      }
     }
   });
   
@@ -2762,7 +2769,7 @@ ${logsText || '(no logs)'}
       request('call', { method: msg.method, params: msg.params }).then(function(r) {
         self._respond({ jsonrpc: '2.0', id: msg.id, result: r });
       }).catch(function(e) {
-        self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
+        self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: (e && typeof e.code === 'number') ? e.code : -32000, message: e.message } });
       });
     } catch(e) {
       log('[Error] XSWD error: ' + e.message);
