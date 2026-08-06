@@ -56,15 +56,20 @@ func daemonParams(params map[string]interface{}) interface{} {
 	return params
 }
 
-// routeDaemonCall handles DERO.* daemon RPC methods
+// routeDaemonCall handles DERO.* daemon RPC methods as a raw passthrough.
+//
+// Deliberately NOT run through normalizeDEROGetSCResult, unlike Explorer's own DaemonGetSC in
+// app.go, which decodes for display. derod hex-encodes every SC string variable before it leaves
+// the daemon (cmd/derod/rpc/rpc_dero_getsc.go, fmt.Sprintf("%x", ...)), so hex IS the wire
+// format a dApp is written against — Engram passes it through, and an app that decodes it (the
+// correct thing to do) gets garbage if HOLOGRAM decoded first. It cannot compensate either: a
+// decoded value that is itself hex-charset text ("CAFE") is indistinguishable from one that was
+// never encoded, so there is no reliable downstream test for which happened.
 func (a *App) routeDaemonCall(method string, params map[string]interface{}) XSWDResponse {
 	result, err := a.daemonClient.Call(method, daemonParams(params))
 	if err != nil {
 		log.Printf("[ERR] Daemon call failed: %v", err)
 		return xswdError(FriendlyError(err), err.Error())
-	}
-	if method == "DERO.GetSC" {
-		result = normalizeDEROGetSCResult(result)
 	}
 	return xswdSuccess(result)
 }
