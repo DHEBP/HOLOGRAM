@@ -39,15 +39,25 @@ func xswdError(msg string, technicalErr ...string) XSWDResponse {
 	return resp
 }
 
-// routeDaemonCall handles DERO.* daemon RPC methods
+// routeDaemonCall handles DERO.* daemon RPC methods as a raw passthrough to
+// the connected daemon. Deliberately not run through normalizeDEROGetSCResult
+// (unlike DaemonGetSC in app.go, Explorer's own call path, which wants
+// pre-decoded strings for its generic contract browser): derod's own GetSC
+// handler (cmd/derod/rpc/rpc_dero_getsc.go) hex-encodes every SC string
+// variable itself (fmt.Sprintf("%x", ...)) before it ever leaves the
+// daemon -- that's the actual reference implementation's wire format, not
+// an assumption this codebase is making. Normalizing here silently
+// double-decodes any value that happens to already look like printable
+// ASCII once hex-decoded, corrupting it, and that heuristic can't be
+// corrected downstream either: a value that's itself valid hex-charset
+// text (e.g. a name like "CAFE") is indistinguishable from an
+// already-decoded string, so callers have no reliable way to detect the
+// double-decode after the fact. The passthrough has to stay raw.
 func (a *App) routeDaemonCall(method string, params map[string]interface{}) XSWDResponse {
 	result, err := a.daemonClient.Call(method, params)
 	if err != nil {
 		log.Printf("[ERR] Daemon call failed: %v", err)
 		return xswdError(FriendlyError(err), err.Error())
-	}
-	if method == "DERO.GetSC" {
-		result = normalizeDEROGetSCResult(result)
 	}
 	return xswdSuccess(result)
 }
