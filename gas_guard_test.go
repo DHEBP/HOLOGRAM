@@ -31,11 +31,13 @@ func TestStorageGasGuard_RefusesOnlyAboveTheChainCeiling(t *testing.T) {
 	}
 }
 
-// "Too large" leaves the user guessing. Storage gas is charged per byte stored, so the overage
-// is close enough to a byte count to act on, and the message has to carry it.
+// "Too large" leaves the user guessing. The overage in gas is exact and must be carried; the
+// byte figure is HALF it, because a byte the contract stores is charged on both spans — once
+// in the marshalled arguments (dvm/sc.go) and once in the marshalled stored value
+// (dvm/dvm_store.go). Reporting the gas overage as a byte count was a live 2x error.
 func TestStorageGasError_SaysHowMuchToCut(t *testing.T) {
 	ceiling := uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS)
-	err := storageGasError("setting this variable", ceiling+77)
+	err := storageGasError("setting this variable", ceiling+78)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -44,8 +46,13 @@ func TestStorageGasError_SaysHowMuchToCut(t *testing.T) {
 	if !strings.Contains(msg, "setting this variable") {
 		t.Fatalf("must name what was refused: %q", msg)
 	}
-	if !strings.Contains(msg, "77") {
-		t.Fatalf("must say how far over the limit it is, got %q", msg)
+	if !strings.Contains(msg, "78") {
+		t.Fatalf("must say how far over the limit it is in gas, got %q", msg)
+	}
+	// NEGATIVE CONTROL: 39 bytes, not 78. The old message said 78 bytes and was twice the
+	// real cut; reverting the /2 makes this line fail.
+	if !strings.Contains(msg, "39") {
+		t.Fatalf("byte figure must be half the gas overage, got %q", msg)
 	}
 }
 

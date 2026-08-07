@@ -27,10 +27,16 @@ import (
 // ConsumeStorageGas accumulates unconditionally and the flag only decides whether to panic.
 // So never read a successful estimate as "this will work". Read the number.
 //
-// Measured against a simulator chain (TELA vsoo INDEX, five-character key): storage gas runs
-// 2 per byte plus 101 of overhead, so 9,949 bytes is the last value that fits (19,999) and
-// 9,950 is the first refused (20,001). The edge moves with the key — vsoo stores "var_"+k —
-// which is why this asks the chain every time instead of checking a byte count locally.
+// Storage gas is charged TWICE, over two different spans: dvm/sc.go consumes the marshalled
+// call arguments, dvm/dvm_store.go consumes the marshalled stored value, and the key is
+// marshalled but never charged. A byte that arrives as an argument and is then stored is
+// therefore charged 2; a byte that only arrives — a longer key, or an argument the contract
+// does not store — is charged 1.
+//
+// Measured on a setter that stores its argument verbatim: 2 per byte plus fixed overhead,
+// putting the edge at 9,949 bytes for the TELA vsoo INDEX with a five-character key (19,999
+// fits, 9,950 gives 20,001). A longer key leaves LESS room against the ceiling, since it rides
+// in the charged argument blob — which is why this asks the chain rather than counting locally.
 //
 // ⚠️ A wrong SIGNER looks exactly like a working write. vsoo's SetVar returns 1 unless the
 // signer owns the contract, and the daemon reports any non-zero return as "Discarded
@@ -46,11 +52,14 @@ func storageGasExceeded(gas uint64) bool {
 }
 
 // storageGasError says how much too big the write is, because "too large" leaves the user
-// guessing at what to cut. Storage gas is charged per byte stored, so the overage doubles as a
-// byte count close enough to act on.
+// guessing at what to cut. The overage is reported in gas, which is exact; the byte figure is
+// half that, because it assumes the contract stores what it is passed and such a byte is
+// charged on both spans. A contract that does not store its argument is charged once and needs
+// twice the reported cut, so the message names the assumption rather than hiding it.
 func storageGasError(what string, gas uint64) error {
-	return fmt.Errorf("%s needs %d storage gas but a single contract call may use at most %d — shorten it by roughly %d bytes",
-		what, gas, uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS), gas-uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS))
+	over := gas - uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS)
+	return fmt.Errorf("%s needs %d storage gas but a single contract call may use at most %d — %d over, roughly %d bytes if the contract stores what you pass it",
+		what, gas, uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS), over, over/2)
 }
 
 // storageGasFor asks the daemon what a contract call would store, returning ok=false when no
@@ -107,11 +116,15 @@ func (a *App) storageGasFor(args rpc.Arguments, ringsize uint64, signer string) 
 
 // guardStorageGas refuses a write the chain could not apply, and only that.
 //
-// FAILS OPEN. When the size cannot be measured — no daemon, an unreachable node, a contract
-// that does not carry the entrypoint — the write proceeds exactly as it did before this guard
-// existed. Blocking on a failed measurement would invent a way to lose writes that the bug
-// being guarded never had, and a genuinely doomed call is still refused by tela's own estimate
-// inside Transfer, before anything is broadcast.
+// FAILS OPEN. When the size cannot be measured — no daemon, an unreachable node, a wrong
+// signer, a contract without the entrypoint — the write proceeds exactly as it did before this
+// guard existed. Blocking instead would refuse writes that would have succeeded, and every one
+// of those failure modes is unrelated to size.
+//
+// Nothing downstream catches what this misses. tela's estimate never compares against the
+// ceiling — grep MAX_STORAGE_GAS over the module for zero hits — so an unmeasured oversize is
+// broadcast and silently discarded exactly as it was before. That is the accepted cost of not
+// inventing a new way to lose a write.
 func (a *App) guardStorageGas(args rpc.Arguments, signer, what string) error {
 	gas, ok := a.storageGasFor(args, 2, signer)
 	if !ok {
