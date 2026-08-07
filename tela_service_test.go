@@ -1024,3 +1024,60 @@ func TestDocFileName(t *testing.T) {
 		})
 	}
 }
+
+// TestDocContentFromSC covers the viewer's decompression path. A compressed DOC
+// stores base64-encoded gzip, so without this the version and diff viewers
+// printed an unreadable blob for every .gz file - which is most of them.
+func TestDocContentFromSC(t *testing.T) {
+	const plain = "body { color: cyan; }\n.panel { display: grid; }\n"
+
+	compressed, err := tela.Compress([]byte(plain), ".gz")
+	if err != nil {
+		t.Fatalf("could not build the compressed fixture: %v", err)
+	}
+	if compressed == plain {
+		t.Fatal("fixture was not actually compressed")
+	}
+
+	wrap := func(body string) string {
+		return "Function InitializePrivate() Uint64\n10 RETURN 0\nEnd Function\n\n/*\n" + body + "\n*/"
+	}
+
+	// A compressed DOC round-trips byte-exactly, trailing newline included,
+	// because the bytes travel through base64. An uncompressed one does not:
+	// extractDocCodeFromSC ends in TrimSpace, matching what TELA itself serves.
+	// The asymmetry is recorded rather than papered over.
+	t.Run("compressed DOC is decoded byte-exactly", func(t *testing.T) {
+		doc := tela.DOC{DocType: "TELA-CSS-1", Compression: ".gz"}
+		if got := docContentFromSC(doc, wrap(compressed)); got != plain {
+			t.Errorf("got %q, want %q", got, plain)
+		}
+	})
+
+	t.Run("uncompressed DOC passes through trimmed", func(t *testing.T) {
+		doc := tela.DOC{DocType: "TELA-CSS-1"}
+		want := strings.TrimSpace(plain)
+		if got := docContentFromSC(doc, wrap(plain)); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("undecodable body falls back to what is stored", func(t *testing.T) {
+		// Claims gzip but is not. Returning "" here would read on screen as an
+		// empty file rather than as content we could not decode.
+		doc := tela.DOC{DocType: "TELA-CSS-1", Compression: ".gz"}
+		if got := docContentFromSC(doc, wrap("not actually gzip")); got != "not actually gzip" {
+			t.Errorf("got %q, want the stored body back", got)
+		}
+	})
+
+	t.Run("unknown compression format falls back", func(t *testing.T) {
+		// The pinned tela handles gzip only, so a brotli DOC must render its
+		// stored body rather than an empty file.
+		doc := tela.DOC{DocType: "TELA-CSS-1", Compression: ".br"}
+		want := strings.TrimSpace(plain)
+		if got := docContentFromSC(doc, wrap(plain)); got != want {
+			t.Errorf("got %q, want the stored body back", got)
+		}
+	})
+}

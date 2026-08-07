@@ -1888,9 +1888,7 @@ func (a *App) getCommitContentFallback(scid string, commit Commit, commitNum int
 			// It's a DOC - get the code directly
 			scData, _ := a.daemonClient.GetSC(scid, true, false)
 			if code, ok := scData["code"].(string); ok {
-				// Extract doc content from SC code
-				docContent := extractDocCodeFromSC(code)
-				files[docFileName(docInfo)] = docContent
+				files[docFileName(docInfo)] = docContentFromSC(docInfo, code)
 			}
 			durl = docInfo.DURL
 		}
@@ -1907,8 +1905,7 @@ func (a *App) getCommitContentFallback(scid string, commit Commit, commitNum int
 
 			scData, _ := a.daemonClient.GetSC(docScid, true, false)
 			if code, ok := scData["code"].(string); ok {
-				docContent := extractDocCodeFromSC(code)
-				files[docFileName(docInfo)] = docContent
+				files[docFileName(docInfo)] = docContentFromSC(docInfo, code)
 			}
 		}
 	}
@@ -1990,6 +1987,30 @@ func extractDocCodeFromSC(code string) string {
 	}
 
 	return strings.TrimSpace(body[:end])
+}
+
+// docContentFromSC returns the document a DOC contract carries, decompressed
+// when it was stored compressed.
+//
+// A compressed DOC holds base64-encoded gzip, so the raw comment body is an
+// unreadable blob - which is exactly what the version and diff viewers used to
+// print for every .gz file. tela.Decompress does the base64 decode and the
+// gunzip together, keyed off the extension GetDOCInfo already parsed.
+//
+// On failure it returns the stored body rather than nothing: the pinned tela
+// handles gzip only, so a brotli DOC would otherwise render as an empty file
+// and read as "this file is empty" instead of "we cannot decode this".
+func docContentFromSC(doc tela.DOC, code string) string {
+	body := extractDocCodeFromSC(code)
+	if doc.Compression == "" {
+		return body
+	}
+
+	decompressed, err := tela.Decompress([]byte(body), doc.Compression)
+	if err != nil {
+		return body
+	}
+	return string(decompressed)
 }
 
 // docFileName returns the name the publisher actually gave a DOC, joined with
