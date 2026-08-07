@@ -812,7 +812,7 @@ func (a *App) BatchPrefetchFavorites(favorites []map[string]interface{}, minRati
 		targetSCID := scid
 		if targetSCID == "" && durl != "" {
 			if a.gnomonClient != nil {
-				if resolvedSCID, found := a.gnomonClient.ResolveDURL(durl); found {
+				if resolvedSCID, found := a.resolveServableDURL(durl); found {
 					targetSCID = resolvedSCID
 				}
 			}

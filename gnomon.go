@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -729,12 +730,26 @@ func (g *GnomonClient) ResolveName(name string) (string, bool) {
 // ResolveDURL resolves an exact dURL (case-insensitive) to a SCID, or returns false
 // Handles both with and without "dero://" prefix
 func (g *GnomonClient) ResolveDURL(durl string) (string, bool) {
-	if !g.IsRunning() {
+	candidates := g.ResolveDURLAll(durl)
+	if len(candidates) == 0 {
 		return "", false
+	}
+	return candidates[0], true
+}
+
+// ResolveDURLAll returns every SCID published under a dURL, best-first by the
+// same ranking ResolveDURL uses.
+//
+// A name is not unique on chain: telatomicswaps.tela alone has 13 deployments.
+// Callers that can tell a servable contract from an unservable one should walk
+// this list rather than take only the top entry - see pickServableSCID.
+func (g *GnomonClient) ResolveDURLAll(durl string) []string {
+	if !g.IsRunning() {
+		return nil
 	}
 	target := strings.ToLower(strings.TrimSpace(durl))
 	if target == "" {
-		return "", false
+		return nil
 	}
 
 	// Normalize: remove dero:// prefix if present
@@ -756,10 +771,18 @@ func (g *GnomonClient) ResolveDURL(durl string) (string, bool) {
 			}
 		}
 	}
-	if scid, ok := g.pickNewestSCID(candidates); ok {
-		return scid, true
-	}
-	return "", false
+
+	// Same ordering pickNewestSCID applied: highest interaction height first,
+	// larger SCID breaking ties so the result stays deterministic.
+	sort.Slice(candidates, func(i, j int) bool {
+		hi, hj := g.LatestInteractionHeight(candidates[i]), g.LatestInteractionHeight(candidates[j])
+		if hi != hj {
+			return hi > hj
+		}
+		return candidates[i] > candidates[j]
+	})
+
+	return candidates
 }
 
 // pickNewestSCID returns the candidate with the highest interaction height.

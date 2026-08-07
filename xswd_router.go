@@ -322,7 +322,7 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 		})
 
 	case "ResolveDURL":
-		scid, found := a.gnomonClient.ResolveDURL(getStr("durl"))
+		scid, found := a.resolveServableDURL(getStr("durl"))
 		return xswdSuccess(map[string]interface{}{
 			"scid":  scid,
 			"found": found,

@@ -752,7 +752,7 @@ func (a *App) FetchByDURL(durl string) map[string]interface{} {
 	// Prefer live Gnomon resolution first so stale cache mappings don't override
 	// the latest on-chain contract for the same dURL.
 	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
-		if sc, ok := a.gnomonClient.ResolveDURL(name); ok {
+		if sc, ok := a.resolveServableDURL(name); ok {
 			scid = sc
 		} else if sc, ok2 := a.gnomonClient.ResolveName(name); ok2 {
 			scid = sc

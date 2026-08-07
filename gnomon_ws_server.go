@@ -351,7 +351,7 @@ func (s *GnomonWSServer) handleRequest(req GnomonWSRequest) GnomonWSResponse {
 
 	case "resolvedurl", "resolve_durl":
 		durl := getStringParam(req.Params, "durl")
-		if scid, ok := s.app.gnomonClient.ResolveDURL(durl); ok {
+		if scid, ok := s.app.resolveServableDURL(durl); ok {
 			result = map[string]any{"scid": scid, "found": true}
 		} else {
 			result = map[string]any{"found": false}
