@@ -458,6 +458,10 @@ export function GetCurrentWalletPath() {
   return window['go']['main']['App']['GetCurrentWalletPath']();
 }
 
+export function GetDOCSignatures(arg1) {
+  return window['go']['main']['App']['GetDOCSignatures'](arg1);
+}
+
 export function GetDevSupportStats() {
   return window['go']['main']['App']['GetDevSupportStats']();
 }
@@ -1460,6 +1464,10 @@ export function ValidateSenderProof(arg1, arg2, arg3, arg4, arg5) {
 
 export function VerifyColdWallet(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['VerifyColdWallet'](arg1, arg2, arg3, arg4);
+}
+
+export function VerifyDOCSignature(arg1) {
+  return window['go']['main']['App']['VerifyDOCSignature'](arg1);
 }
 
 export function VerifySignature(arg1) {

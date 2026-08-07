@@ -231,6 +231,8 @@ export function GetContentFilterStats():Promise<Record<string, any>>;
 
 export function GetCurrentWalletPath():Promise<string>;
 
+export function GetDOCSignatures(arg1:string):Promise<Record<string, any>>;
+
 export function GetDevSupportStats():Promise<Record<string, any>>;
 
 export function GetDevSupportStatus():Promise<Record<string, any>>;
@@ -732,6 +734,8 @@ export function ValidateSCCode(arg1:string):Promise<Record<string, any>>;
 export function ValidateSenderProof(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<Record<string, any>>;
 
 export function VerifyColdWallet(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
+
+export function VerifyDOCSignature(arg1:string):Promise<Record<string, any>>;
 
 export function VerifySignature(arg1:string):Promise<Record<string, any>>;
 

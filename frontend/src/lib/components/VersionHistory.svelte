@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import { GetCommitHistoryWithLabels, GetCommitContent, DiffCommits } from '../../../wailsjs/go/main/App.js';
+  import { GetCommitHistoryWithLabels, GetCommitContent, DiffCommits, GetDOCSignatures } from '../../../wailsjs/go/main/App.js';
   import { Icons } from './holo';
   
   export let scid = '';
@@ -17,9 +17,43 @@
   let compareCommitB = null;
   let diffResult = null;
   let selectedFile = null; // For viewing individual files
-  
+
+  // Author signatures, keyed by DOC SCID.
+  //
+  // Loaded once per INDEX rather than per commit, on purpose: a DOC's signature
+  // is written at install and never changes, while its code can be replaced.
+  // So this always describes each file AS IT STANDS NOW. Re-fetching it when a
+  // historical commit is selected would imply it describes that commit, which
+  // it does not.
+  let signatures = {};
+  let signaturesLoading = false;
+
   $: if (scid && show) {
     loadHistory();
+    loadSignatures();
+  }
+
+  const SIG_LABEL = {
+    verified: 'signed',
+    anonymous: 'author private',
+    unsigned: 'unsigned',
+    unverified: 'did not verify',
+    index: 'nested index',
+    unreadable: 'unreadable'
+  };
+
+  const SIG_TITLE = {
+    verified: 'The recorded author signed exactly the file this contract carries.',
+    anonymous: 'Signed, but published with a ring size above 2, so the chain recorded no author address to check against. A privacy choice, not a fault.',
+    unsigned: 'No signature was stored for this file.',
+    unverified: 'A signature is stored and does not match the file. This can mean the file changed after signing, or that its original bytes cannot be recovered.',
+    index: 'A nested INDEX rather than a single document — this is how TELA shards a large file. Signatures live on its own entries.',
+    unreadable: 'This contract parses as neither a TELA INDEX nor a DOC, so nothing can be said about it.'
+  };
+
+  function shortSigner(addr) {
+    if (!addr) return '';
+    return addr.length > 20 ? `${addr.slice(0, 10)}…${addr.slice(-6)}` : addr;
   }
   
   // Get file count from commit files
@@ -44,6 +78,27 @@
     }
   }
   
+  async function loadSignatures() {
+    if (!scid) return;
+
+    signaturesLoading = true;
+    signatures = {};
+    try {
+      const result = await GetDOCSignatures(scid);
+      if (result.success) {
+        for (const sig of result.signatures || []) {
+          signatures[sig.scid] = sig;
+        }
+        signatures = signatures;
+      }
+    } catch (error) {
+      // A failed signature read must not break the history view.
+      console.error('Failed to load DOC signatures:', error);
+    } finally {
+      signaturesLoading = false;
+    }
+  }
+
   async function viewCommit(commit) {
     if (compareMode) {
       if (!compareCommitA) {
@@ -408,11 +463,31 @@
               {#if selectedCommit.docs && selectedCommit.docs.length > 0}
                 <div class="docs-section">
                   <h4 class="docs-title">DOC Smart Contracts</h4>
+                  <p class="docs-note">
+                    Author signatures describe each file as it stands now, not at this commit.
+                  </p>
                   <div class="docs-list">
                     {#each selectedCommit.docs as docScid}
+                      {@const sig = signatures[docScid]}
                       <div class="doc-item">
                         <span class="doc-icon"><Icons name="file" size={14} /></span>
-                        <span class="doc-scid">{docScid}</span>
+                        <div class="doc-body">
+                          <span class="doc-path">{sig?.path || docScid}</span>
+                          <span class="doc-scid">{docScid}</span>
+                        </div>
+                        {#if signaturesLoading}
+                          <span class="sig-chip sig-pending">checking…</span>
+                        {:else if sig}
+                          <span
+                            class="sig-chip sig-{sig.state}"
+                            title={SIG_TITLE[sig.state] || ''}
+                          >
+                            {SIG_LABEL[sig.state] || sig.state}
+                          </span>
+                          {#if sig.signer}
+                            <span class="sig-signer" title={sig.signer}>{shortSigner(sig.signer)}</span>
+                          {/if}
+                        {/if}
                       </div>
                     {/each}
                   </div>
@@ -1043,6 +1118,22 @@
     color: var(--text-4);
   }
   
+  .doc-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .doc-path {
+    font-size: 13px;
+    color: var(--text-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .doc-scid {
     font-family: var(--font-mono);
     font-size: 12px;
@@ -1051,7 +1142,63 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  
+
+  .docs-note {
+    font-size: 12px;
+    color: var(--text-4);
+    margin: calc(var(--s-2) * -1) 0 var(--s-3) 0;
+  }
+
+  .sig-chip {
+    flex-shrink: 0;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 2px var(--s-2);
+    border-radius: var(--r-sm);
+    border: 1px solid transparent;
+    white-space: nowrap;
+    cursor: help;
+  }
+
+  .sig-verified {
+    color: var(--status-ok);
+    border-color: var(--status-ok);
+  }
+
+  /* Anonymous is a privacy choice, not a fault - it reads neutral, never as a
+     warning. Rendering it like a failure would punish the stronger option.
+     A nested index and an unreadable contract are not signature outcomes at
+     all, so they stay neutral for the same reason. */
+  .sig-anonymous,
+  .sig-unsigned,
+  .sig-index,
+  .sig-unreadable {
+    color: var(--text-4);
+    border-color: var(--border-dim);
+  }
+
+  /* Warn, not error. A stored signature that does not match can also mean the
+     original bytes are unrecoverable, so this must not read as proven forgery.
+     Red stays reserved for true alarms. */
+  .sig-unverified {
+    color: var(--status-warn);
+    border-color: var(--status-warn);
+  }
+
+  .sig-pending {
+    color: var(--text-4);
+    border-color: var(--border-dim);
+    opacity: 0.6;
+  }
+
+  .sig-signer {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-4);
+  }
+
   /* File-based diff styles */
   .diff-header-row {
     display: flex;
