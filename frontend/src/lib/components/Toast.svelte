@@ -65,14 +65,17 @@
     position: fixed;
     top: var(--s-4, 16px);
     right: var(--s-4, 16px);
-    z-index: 100;
+    /* Matches the other top-layer floating panels (OmniSearch dropdown, sidebar rail
+       tooltips, the reload split button). At 100 this sat UNDER them, so a toast could
+       appear half-buried by whatever else was floating. */
+    z-index: 1000;
     display: flex;
     flex-direction: column;
     gap: var(--s-2, 8px);
     pointer-events: none;
     max-width: 320px;
   }
-  
+
   .toast {
     pointer-events: auto;
     display: flex;
@@ -81,43 +84,51 @@
     padding: var(--s-3, 12px) var(--s-4, 16px);
     border-radius: var(--r-lg, 12px);
     border: 1px solid;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(8px);
+    /* OPAQUE BASE. This is fixed-position over arbitrary content, and the type tints
+       below are ~15% alpha — over a panel that reads as a wash, but over TEXT the text
+       came straight through and the two strings rendered on top of each other. The
+       Explorer's SCID field sits exactly under this corner, so an error about a contract
+       call landed illegibly across the contract id it was about.
+       The tints stay as they were; they are layered ON this rather than replacing it. */
+    background-color: rgba(20, 20, 30, 0.98);
   }
-  
-  /* Toast Types */
+
+  /* Toast Types — background-image, not background: the shorthand would wipe the opaque
+     base above and put the bleed straight back. */
   .toast-info {
-    background: rgba(34, 211, 238, 0.15);
+    background-image: linear-gradient(rgba(34, 211, 238, 0.15), rgba(34, 211, 238, 0.15));
     border-color: rgba(34, 211, 238, 0.4);
   }
-  
+
   .toast-info .toast-icon {
     color: var(--cyan-400, #22d3ee);
   }
-  
+
   .toast-success {
-    background: rgba(52, 211, 153, 0.15);
+    background-image: linear-gradient(rgba(52, 211, 153, 0.15), rgba(52, 211, 153, 0.15));
     border-color: rgba(52, 211, 153, 0.4);
   }
-  
+
   .toast-success .toast-icon {
     color: var(--status-ok, #34d399);
   }
-  
+
   .toast-warning {
-    background: rgba(251, 191, 36, 0.15);
+    background-image: linear-gradient(rgba(251, 191, 36, 0.15), rgba(251, 191, 36, 0.15));
     border-color: rgba(251, 191, 36, 0.4);
   }
-  
+
   .toast-warning .toast-icon {
     color: var(--status-warn, #fbbf24);
   }
-  
+
   .toast-error {
-    background: rgba(248, 113, 113, 0.15);
+    background-image: linear-gradient(rgba(248, 113, 113, 0.15), rgba(248, 113, 113, 0.15));
     border-color: rgba(248, 113, 113, 0.4);
   }
-  
+
   .toast-error .toast-icon {
     color: var(--status-err, #f87171);
   }
