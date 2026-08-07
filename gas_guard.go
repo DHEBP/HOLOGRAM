@@ -114,6 +114,35 @@ func (a *App) storageGasFor(args rpc.Arguments, ringsize uint64, signer string) 
 	return uint64(gasStorage), true
 }
 
+// storageTopUp decides whether a built transaction carries enough fee to pay for the storage
+// it is about to perform, and what to rebuild it with if not.
+//
+// carried is tx.Fees(), not the number handed to the wallet: Fees() sums the zero-SCID
+// statements, and that sum is exactly what the block connector passes the DVM as the storage
+// budget. Comparing anything else would be comparing against a number the chain never reads.
+//
+// Only ever raises. A transaction that already pays enough is left alone, so the common small
+// call never pays for a second proof. Above the chain ceiling it asks for the ceiling and no
+// more — the DVM clamps to it regardless (dvm/sc.go), so a larger fee buys nothing and is
+// simply spent. Refusing such a write is a separate job, done before broadcast by
+// guardStorageGas.
+//
+// Measured on a simulator chain against a contract that stores its argument verbatim: a
+// 500-byte write carried 960 gas and needed 1,088, and was mined, charged and discarded. At
+// exactly the measured cost it stored. NO HEADROOM IS ADDED, and the measurement is what makes
+// that safe — an estimate taken over different arguments than the ones sent underpays by the
+// difference, because the key rides in the charged argument blob (a six-character longer key
+// measured six gas higher). The caller must therefore measure the arguments it actually sends.
+func storageTopUp(carried, need uint64) (uint64, bool) {
+	if need > uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS) {
+		need = uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS)
+	}
+	if carried >= need {
+		return 0, false
+	}
+	return need, true
+}
+
 // guardStorageGas refuses a write the chain could not apply, and only that.
 //
 // FAILS OPEN. When the size cannot be measured — no daemon, an unreachable node, a wrong

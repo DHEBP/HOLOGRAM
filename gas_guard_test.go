@@ -154,3 +154,73 @@ func TestStorageGasFor_SendsAHashAsHex(t *testing.T) {
 		t.Fatalf("hash must be sent as hex, got %#v", got)
 	}
 }
+
+// ===== funding the write, not just refusing the oversized one =====
+
+// The guard above only ever refused writes ABOVE the chain ceiling. The far more common loss
+// is a write BELOW it that is simply not paid for: the fee IS the storage budget, the wallet's
+// own formula covers 1.5 atomic units per SCDATA byte, and the chain charges 2 for a byte that
+// is both passed and stored. Measured on a simulator chain against a contract storing its
+// argument verbatim — 100 bytes stored, and 500, 2,000 and 5,000 bytes were each mined,
+// charged and silently discarded.
+func TestStorageTopUp_PaysForWritesTheDefaultFeeWouldLose(t *testing.T) {
+	// The measured curve. carried is what the wallet's own fee formula supplies.
+	cases := []struct {
+		bytes, carried, need uint64
+		wantRebuild          bool
+	}{
+		{100, 360, 287, false},    // already covered — must NOT pay for a second proof
+		{500, 960, 1088, true},    // LOST today
+		{2000, 3060, 4089, true},  // LOST today
+		{5000, 7560, 10089, true}, // LOST today
+	}
+	for _, c := range cases {
+		fee, rebuild := storageTopUp(c.carried, c.need)
+		if rebuild != c.wantRebuild {
+			t.Fatalf("%d bytes: carried %d against need %d — rebuild=%v, want %v",
+				c.bytes, c.carried, c.need, rebuild, c.wantRebuild)
+		}
+		if rebuild && fee < c.need {
+			t.Fatalf("%d bytes: rebuilding with %d still underpays a need of %d",
+				c.bytes, fee, c.need)
+		}
+	}
+}
+
+// NEGATIVE CONTROL, and the whole point of the change: reverting it means never topping up,
+// which is exactly the shipped behaviour that loses the write.
+func TestStorageTopUp_ShortMeansShort(t *testing.T) {
+	if _, rebuild := storageTopUp(960, 1088); !rebuild {
+		t.Fatal("a transaction carrying less than the write costs MUST be rebuilt — " +
+			"this failing means writes are being mined, charged and discarded")
+	}
+	// Exactly enough is enough: the DVM panics on used > limit, not >=.
+	if _, rebuild := storageTopUp(1088, 1088); rebuild {
+		t.Fatal("exactly the measured cost is sufficient and must not force a second proof")
+	}
+}
+
+// Never lowers a fee. An explicit, generous fee must survive contact with a small estimate,
+// or this would quietly under-fund a caller who got it right.
+func TestStorageTopUp_OnlyEverRaises(t *testing.T) {
+	if _, rebuild := storageTopUp(20000, 300); rebuild {
+		t.Fatal("a fee already above the need must be left alone")
+	}
+}
+
+// Above the ceiling the DVM clamps to it whatever is attached, so asking for more than the
+// ceiling spends the user's money on gas the chain will not use. Such a write cannot succeed
+// at any price; refusing it is guardStorageGas's job, before broadcast.
+func TestStorageTopUp_NeverAsksAboveTheChainCeiling(t *testing.T) {
+	ceiling := uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS)
+	fee, rebuild := storageTopUp(100, ceiling*3)
+	if !rebuild {
+		t.Fatal("an underfunded oversize write should still be topped to the ceiling")
+	}
+	if fee != ceiling {
+		t.Fatalf("must ask for the ceiling and no more, got %d", fee)
+	}
+	if _, rebuild := storageTopUp(ceiling, ceiling*3); rebuild {
+		t.Fatal("already at the ceiling — a rebuild would buy nothing")
+	}
+}

@@ -2414,6 +2414,46 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 				}
 			}
 
+			// Fund the storage the call is about to perform. The fee IS the storage budget:
+			// the block connector hands tx.Fees() to the DVM as gasstorage_incoming
+			// (blockchain/transaction_execute.go), and the interpreter panics with
+			// "Insufficient Storage Gas" the moment consumption passes it — after which every
+			// change is discarded while the transaction still mines and still costs the fee.
+			//
+			// The wallet's own fee formula covers 1.5 atomic units per SCDATA byte
+			// (walletapi/transaction_build.go) against a chain cost of 2 for a byte that is
+			// both passed and stored, so anything past a few hundred bytes is under-funded by
+			// construction and is lost silently. Measured on a simulator chain: a 500-byte
+			// write mined and stored nothing.
+			//
+			// Compared against tx.Fees() rather than the fees variable on purpose — Fees()
+			// sums the zero-SCID statements, which is the exact number the chain will read.
+			// Only ever raises: an already-sufficient fee is left alone and no second proof is
+			// generated, so the common small call is unchanged. An explicit caller-supplied
+			// fee is honoured rather than second-guessed.
+			//
+			// FAILS OPEN, like guardStorageGas — when the cost cannot be measured the call
+			// proceeds exactly as it did before, because every reason measurement fails (no
+			// daemon, wrong signer, missing entrypoint) is unrelated to size.
+			if fees == 0 {
+				// Measured over scArgs — the very arguments being sent, not a reconstruction
+				// of them. An estimate taken over a different arg list underpays by the drift.
+				if need, ok := a.storageGasFor(scArgs, ringsize, wallet.GetAddress().String()); ok {
+					if payFee, short := storageTopUp(tx.Fees(), need); short {
+						a.logToConsole(fmt.Sprintf("[SC] Storage needs %d gas but the built TX carries %d — rebuilding with the measured fee", need, tx.Fees()))
+						topped, topErr := wallet.TransferPayload0(transfers, ringsize, false, scArgs, payFee, false)
+						if topErr != nil {
+							a.logToConsole(fmt.Sprintf("[WARN] Could not rebuild with the storage fee, sending as built: %v", topErr))
+						} else {
+							tx = topped
+							a.logToConsole(fmt.Sprintf("[SC] Rebuilt carrying %d gas", tx.Fees()))
+						}
+					}
+				} else {
+					a.logToConsole("[WARN] Could not measure this call's storage cost — sending with the wallet's default fee")
+				}
+			}
+
 			if err := wallet.SendTransaction(tx); err != nil {
 				a.logToConsole(fmt.Sprintf("[ERR] scinvoke broadcast failed: %s", err.Error()))
 				return map[string]interface{}{"success": false, "error": fmt.Sprintf("SC call built but failed to broadcast: %s", FriendlyError(err)), "technicalError": err.Error()}
