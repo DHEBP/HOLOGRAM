@@ -1890,8 +1890,7 @@ func (a *App) getCommitContentFallback(scid string, commit Commit, commitNum int
 			if code, ok := scData["code"].(string); ok {
 				// Extract doc content from SC code
 				docContent := extractDocCodeFromSC(code)
-				fileName := inferFileNameFromDocType(docInfo.DocType, docInfo.DURL)
-				files[fileName] = docContent
+				files[docFileName(docInfo)] = docContent
 			}
 			durl = docInfo.DURL
 		}
@@ -1909,11 +1908,7 @@ func (a *App) getCommitContentFallback(scid string, commit Commit, commitNum int
 			scData, _ := a.daemonClient.GetSC(docScid, true, false)
 			if code, ok := scData["code"].(string); ok {
 				docContent := extractDocCodeFromSC(code)
-				fileName := inferFileNameFromDocType(docInfo.DocType, docInfo.DURL)
-				if docInfo.SubDir != "" {
-					fileName = docInfo.SubDir + "/" + fileName
-				}
-				files[fileName] = docContent
+				files[docFileName(docInfo)] = docContent
 			}
 		}
 	}
@@ -1966,20 +1961,64 @@ func (a *App) readClonedFiles(basePath string) (map[string]string, error) {
 	return files, err
 }
 
-// extractDocCodeFromSC extracts the document content from SC code
+// extractDocCodeFromSC extracts the document content from SC code.
+//
+// TELA appends the document to the END of the contract, wrapped in a multiline
+// comment (parse.go: code + "\n\n/*\n" + docCode + "\n*/"). This previously
+// required the contract to START with "/*", which no DOC on chain does, so it
+// always fell through and returned the whole DVM contract to the version and
+// diff viewers instead of the user's file.
+//
+// LastIndex, not Index, for the closing marker: document bodies legitimately
+// contain "*/", and an older-template DOC whose body starts with "//" produces
+// "/*//", putting the first "*/" before the wrapper even opens.
+//
+// This mirrors TELA's own parseDocCode, including its TrimSpace, so what
+// HOLOGRAM displays matches what TELA serves. Signature verification
+// deliberately does NOT reuse this - see candidateSignedMessages, which must
+// recover the exact signed bytes rather than the served ones.
 func extractDocCodeFromSC(code string) string {
-	// TELA DOC code is stored in a comment block at the start of the SC
-	// Format: /* DOC_CONTENT */ followed by the actual BASIC code
-	if strings.HasPrefix(code, "/*") {
-		endIdx := strings.Index(code, "*/")
-		if endIdx > 2 {
-			return strings.TrimSpace(code[2:endIdx])
-		}
+	start := strings.Index(code, "/*")
+	if start < 0 {
+		return code
 	}
-	return code
+
+	body := code[start+2:]
+	end := strings.LastIndex(body, "*/")
+	if end < 0 {
+		return code
+	}
+
+	return strings.TrimSpace(body[:end])
 }
 
-// inferFileNameFromDocType generates a filename from doc type and dURL
+// docFileName returns the name the publisher actually gave a DOC, joined with
+// its subdirectory.
+//
+// Always prefer NameHdr. inferFileNameFromDocType derives a name from the doc
+// TYPE, so it returns the same string for every file of that type - and callers
+// key a map on it. deaddrop-library.tela's 8 DOCs collapsed to 3 keys that way
+// (5 .js files all became "content.js" and overwrote each other), silently
+// dropping 5 files from the version and diff viewers while the real names sat
+// unread in NameHdr.
+//
+// inferFileNameFromDocType is kept only as a fallback for DOCs that store no
+// name at all.
+func docFileName(doc tela.DOC) string {
+	name := doc.NameHdr
+	if name == "" {
+		name = inferFileNameFromDocType(doc.DocType, doc.DURL)
+	}
+
+	// Trim both ends: a SubDir of "/" previously produced a leading "//".
+	if sub := strings.Trim(doc.SubDir, "/"); sub != "" {
+		return sub + "/" + name
+	}
+	return name
+}
+
+// inferFileNameFromDocType generates a filename from doc type and dURL.
+// Only a fallback - see docFileName.
 func inferFileNameFromDocType(docType, durl string) string {
 	// Extract extension from docType (e.g., "TELA-HTML-1" -> "html")
 	ext := ".txt"

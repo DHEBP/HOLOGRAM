@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/civilware/tela"
 )
 
 // ============== Helper Function Unit Tests ==============
@@ -767,9 +769,33 @@ func TestExtractDocCodeFromSC(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "Standard DOC format",
+			// Kept, but note the name is wrong: no DOC on chain looks like this.
+			// Every fixture in this table used to put the comment first, which is
+			// why the comment-at-END case below went unnoticed and broken.
+			name:     "Comment-first (not a real TELA layout)",
 			code:     "/* <html>content</html> */\nFunction Initialize() Uint64\n10 RETURN 0\nEnd Function",
 			expected: "<html>content</html>",
+		},
+		{
+			// The actual TELA layout: contract first, document appended in a
+			// trailing comment. parse.go writes code + "\n\n/*\n" + doc + "\n*/".
+			name:     "Real TELA DOC - document appended at the end",
+			code:     "Function InitializePrivate() Uint64\n10 RETURN 0\nEnd Function\n\n/*\n<html>content</html>\n*/",
+			expected: "<html>content</html>",
+		},
+		{
+			// Older DOC template: "\n\n/*" + doc + "*/\n", no padding newlines.
+			// A body starting with "//" yields "/*//", so the first "*/" lands
+			// BEFORE the wrapper opens. Index would slice backwards here.
+			name:     "Older template with a body starting in //",
+			code:     "Function InitializePrivate() Uint64\nEnd Function\n\n/*//Install\nvar x = 1;*/\n",
+			expected: "//Install\nvar x = 1;",
+		},
+		{
+			// Document bodies legitimately contain "*/" - CSS and JS comments.
+			name:     "Body containing its own closing marker",
+			code:     "Function InitializePrivate() Uint64\nEnd Function\n\n/*\n/* css comment */\nbody{}\n*/",
+			expected: "/* css comment */\nbody{}",
 		},
 		{
 			name:     "No comment block",
@@ -919,4 +945,82 @@ func TestIntegration_VersionControl(t *testing.T) {
 	t.Log("9. Verify file-based diff shows which files changed")
 	
 	t.Skip("Manual test required - run with Hologram in simulator mode")
+}
+
+// TestDocFileName_NoCollapse is the regression guard for a silent data-loss bug.
+//
+// Callers key a map[fileName]content. inferFileNameFromDocType derives the name
+// from the doc TYPE, so every .js DOC in an app produced the identical string
+// and they overwrote one another. Measured on deaddrop-library.tela: 8 DOCs
+// collapsed to 3 keys, so the version and diff viewers showed 3 files and
+// silently dropped 5 - while the real names sat unread in NameHdr.
+func TestDocFileName_NoCollapse(t *testing.T) {
+	// The real deaddrop-library.tela manifest. Note every DURL is empty and
+	// five DOCs share TELA-JS-1: that combination is what collapsed.
+	docs := []tela.DOC{
+		{DocType: "TELA-HTML-1", Headers: tela.Headers{NameHdr: "index.html.gz"}},
+		{DocType: "TELA-CSS-1", Headers: tela.Headers{NameHdr: "boot.css.gz"}},
+		{DocType: "TELA-JS-1", Headers: tela.Headers{NameHdr: "fx.js.gz"}},
+		{DocType: "TELA-JS-1", Headers: tela.Headers{NameHdr: "reader.js.gz"}},
+		{DocType: "TELA-CSS-1", Headers: tela.Headers{NameHdr: "shelf.css.gz"}},
+		{DocType: "TELA-JS-1", Headers: tela.Headers{NameHdr: "shelf.js.gz"}},
+		{DocType: "TELA-JS-1", Headers: tela.Headers{NameHdr: "deck.js.gz"}},
+		{DocType: "TELA-JS-1", Headers: tela.Headers{NameHdr: "chain.js.gz"}},
+	}
+
+	files := map[string]string{}
+	for _, d := range docs {
+		files[docFileName(d)] = "content"
+	}
+
+	if len(files) != len(docs) {
+		t.Fatalf("%d DOCs collapsed into %d files; every file must survive", len(docs), len(files))
+	}
+	for _, d := range docs {
+		if _, ok := files[d.NameHdr]; !ok {
+			t.Errorf("%q missing from the file map", d.NameHdr)
+		}
+	}
+}
+
+func TestDocFileName(t *testing.T) {
+	tests := []struct {
+		name string
+		doc  tela.DOC
+		want string
+	}{
+		{
+			name: "stored name wins",
+			doc:  tela.DOC{DocType: "TELA-JS-1", Headers: tela.Headers{NameHdr: "main.js.gz"}},
+			want: "main.js.gz",
+		},
+		{
+			// A SubDir of "/" used to yield a leading "//".
+			name: "root subdir adds no prefix",
+			doc:  tela.DOC{DocType: "TELA-CSS-1", SubDir: "/", Headers: tela.Headers{NameHdr: "style.css"}},
+			want: "style.css",
+		},
+		{
+			name: "real subdir is joined once",
+			doc:  tela.DOC{DocType: "TELA-JS-1", SubDir: "js", Headers: tela.Headers{NameHdr: "xswd.js"}},
+			want: "js/xswd.js",
+		},
+		{
+			name: "surrounding slashes trimmed",
+			doc:  tela.DOC{DocType: "TELA-JS-1", SubDir: "/js/", Headers: tela.Headers{NameHdr: "xswd.js"}},
+			want: "js/xswd.js",
+		},
+		{
+			name: "falls back when no name is stored",
+			doc:  tela.DOC{DocType: "TELA-HTML-1"},
+			want: "index.html",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := docFileName(tt.doc); got != tt.want {
+				t.Errorf("docFileName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
