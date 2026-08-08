@@ -83,3 +83,89 @@ func parseWalletMethodPermission(t *testing.T, src string) map[string]string {
 	}
 	return table
 }
+
+// getXSWDBridgeScript exists twice — once in Go for HTTP-served content, once in Svelte for
+// srcdoc — and both are string literals, so nothing in the toolchain notices when they
+// diverge. They had: the file input interceptor was added to the Go copy only, so a dApp on
+// the srcdoc path could never open a file picker.
+//
+// This pins the capability set rather than the text. The two scripts are allowed to differ
+// (the Svelte one carries console forwarding the Go one has no use for); they are not
+// allowed to offer different features to the app running inside them.
+func TestBridgeScriptsInstallTheSameInterceptors(t *testing.T) {
+	goSrc, err := os.ReadFile("server_manager.go")
+	if err != nil {
+		t.Fatalf("read server_manager.go: %v", err)
+	}
+	svelteSrc, err := os.ReadFile("frontend/src/routes/Browser.svelte")
+	if err != nil {
+		t.Fatalf("read Browser.svelte: %v", err)
+	}
+
+	installed := regexp.MustCompile(`\[Bridge\] ([A-Za-z ]+ (?:interceptor|guard)) installed`)
+	collect := func(src string) map[string]bool {
+		out := map[string]bool{}
+		for _, m := range installed.FindAllStringSubmatch(src, -1) {
+			out[m[1]] = true
+		}
+		return out
+	}
+
+	goHas, svelteHas := collect(string(goSrc)), collect(string(svelteSrc))
+	if len(goHas) == 0 {
+		t.Fatal("found no interceptors in server_manager.go — the marker string moved")
+	}
+	for name := range goHas {
+		if !svelteHas[name] {
+			t.Errorf("Go bridge installs the %q interceptor and the Svelte bridge does not", name)
+		}
+	}
+	for name := range svelteHas {
+		if !goHas[name] {
+			t.Errorf("Svelte bridge installs the %q interceptor and the Go bridge does not", name)
+		}
+	}
+}
+
+// Every log() call in a bridge must have a definition in that same bridge. The Svelte copy
+// called log() from its first statement and never declared it, so under 'use strict' the
+// whole script threw ReferenceError at "[Bridge] Initializing..." — and the console
+// forwarding installed just above it kept working, which hid the failure completely.
+func TestBridgeScriptsDefineTheirOwnLogHelper(t *testing.T) {
+	for _, f := range []struct{ path, open string }{
+		{"server_manager.go", "func getXSWDBridgeScript() string {"},
+		{"frontend/src/routes/Browser.svelte", "function getXSWDBridgeScript() {"},
+	} {
+		src, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", f.path, err)
+		}
+		start := strings.Index(string(src), f.open)
+		if start < 0 {
+			t.Fatalf("%s: getXSWDBridgeScript not found — it was renamed or moved", f.path)
+		}
+		// Bound the body by the template literal itself. Closing on the first "\n}" or
+		// "\n  }" instead matches a brace INSIDE the script, truncating before any log()
+		// call and passing vacuously — this test did exactly that until a revert exposed it.
+		open := strings.Index(string(src)[start:], "return `")
+		if open < 0 {
+			t.Fatalf("%s: no template literal in getXSWDBridgeScript", f.path)
+		}
+		open += start + len("return `")
+		close := strings.Index(string(src)[open:], "`")
+		if close < 0 {
+			t.Fatalf("%s: unterminated bridge template literal", f.path)
+		}
+		body := string(src)[open : open+close]
+
+		if !strings.Contains(body, "log(") {
+			t.Errorf("%s: bridge body has no log() calls at all — the extractor is wrong, "+
+				"not the code", f.path)
+			continue
+		}
+		if !strings.Contains(body, "function log(") {
+			t.Errorf("%s: getXSWDBridgeScript calls log() but never defines it — "+
+				"every statement after the first call is dead under 'use strict'", f.path)
+		}
+	}
+}

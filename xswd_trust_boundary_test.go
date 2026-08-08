@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -124,5 +125,48 @@ func TestApproveWalletConnection_DoesNotClobberRememberedGrants(t *testing.T) {
 	}
 	if !pm.HasPermission(origin, PermissionReadPublicData) {
 		t.Fatal("read_public_data should still be granted")
+	}
+}
+
+// A TELA app is untrusted code fetched from the chain, and it must never learn where files
+// live on the host. Both dialog helpers return the absolute path they acted on —
+// SelectFileWithContent and SaveBinaryFileWithDialog — and Browser.svelte forwarded the whole
+// result object into the iframe verbatim, handing every app the user's home directory layout
+// and username.
+//
+// Scraped from Go because the frontend has no svelte-check, no TypeScript and no test runner:
+// dropping the sanitiser would otherwise be a green build and a silent regression.
+func TestBridgeResponsesStripHostPaths(t *testing.T) {
+	const sveltePath = "frontend/src/routes/Browser.svelte"
+	src, err := os.ReadFile(sveltePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", sveltePath, err)
+	}
+	s := string(src)
+
+	if !strings.Contains(s, "const stripHostPaths") {
+		t.Fatal("stripHostPaths is gone — results now cross into the iframe unfiltered")
+	}
+	// The success reply is the one carrying a result object; the error reply carries no
+	// structured result and is checked separately below.
+	if !strings.Contains(s, "result: stripHostPaths(result)") {
+		t.Error("the xswd-response success reply no longer routes its result through " +
+			"stripHostPaths — a host filesystem path can reach untrusted app code")
+	}
+	if strings.Contains(s, "\n          result: result\n") {
+		t.Error("found an unsanitised `result: result` in an xswd-response reply")
+	}
+}
+
+// The Go dialog helpers are allowed to keep returning path — two in-app callers use it. This
+// pins WHY the sanitiser has to exist, so that removing it is a visibly two-sided decision
+// rather than a quiet one.
+func TestDialogHelpersStillReturnPathForInAppCallers(t *testing.T) {
+	src, err := os.ReadFile("file_service.go")
+	if err != nil {
+		t.Fatalf("read file_service.go: %v", err)
+	}
+	if !strings.Contains(string(src), `"path":     selection,`) {
+		t.Skip("SelectFileWithContent no longer returns path — sanitiser may be redundant now")
 	}
 }

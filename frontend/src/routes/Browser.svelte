@@ -1278,6 +1278,23 @@ let addressInput = '';
     };
     if (!destroyed) window.addEventListener('search-result', handleSearchResult);
     
+    // Strip host filesystem paths before a result crosses into untrusted app code.
+    //
+    // SelectFileWithContent (file_service.go:773) and SaveBinaryFileWithDialog (:1586) both
+    // return the absolute path they acted on, and the whole result object was forwarded to
+    // the iframe verbatim. A TELA app has no use for it — it receives the bytes — so this
+    // handed every app the user's home directory layout, username and filing habits, on a
+    // wallet whose entire premise is privacy.
+    //
+    // Filtered HERE rather than in each Go function because this is the trust boundary:
+    // a handler added later inherits the protection instead of having to remember it, and
+    // the two in-app callers of SaveBinaryFileWithDialog keep the path they legitimately use.
+    const stripHostPaths = (r) => {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) return r;
+      const { path, ...safe } = r;
+      return safe;
+    };
+
     // Handle direct browser navigation from Explorer (when user searches for a .tela domain)
     // PostMessage handler for XSWD bridge communication from iframe
     handleXSWDMessage = async (event) => {
@@ -1701,7 +1718,7 @@ let addressInput = '';
         event.source.postMessage({
           type: 'xswd-response',
           id: id,
-          result: result
+          result: stripHostPaths(result)
         }, iframeUsesSrcdoc ? '*' : (expectedFrameOrigin || '*'));
 
       } catch (error) {
@@ -1721,6 +1738,7 @@ let addressInput = '';
     
     // Hot reload listener for local dev mode
     if (!destroyed) EventsOn('localdev:reload', handleLocalDevReload);
+
 
     // Try to restore last loaded TELA session for fast back-navigation.
     //
@@ -2612,6 +2630,21 @@ ${logsText || '(no logs)'}
   function sendLog(payload) {
     try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: payload }, '*'); } catch(e) {}
   }
+
+  // Plain-string status log, mirroring the Go bridge's log(). sendLog above carries
+  // structured dApp output; this carries bridge status, and the parent's 'log' handler
+  // accepts either shape.
+  //
+  // This bridge called log() from its first statement onward and never defined it. Under
+  // 'use strict' that threw ReferenceError at "[Bridge] Initializing...", killing every
+  // later section of the script — WebSocket interception, telaHost, downloads, all of it —
+  // while the console forwarding installed above kept working and masked the failure.
+  //
+  // Deliberately does NOT call console.log: the interceptor below routes console output
+  // through sendLog, so doing so would post every bridge line to the parent twice.
+  function log(msg) {
+    try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*'); } catch(e) {}
+  }
   
   // Intercept console methods to capture dApp logs with structured data
   (function() {
@@ -3004,6 +3037,175 @@ ${logsText || '(no logs)'}
     }, true);
 
     log('[Bridge] Download interceptor installed');
+  })();
+
+  // ── File input interceptor ────────────────────────────────────────────────
+  // Intercepts file input elements so dApps can select files through HOLOGRAM's
+  // native file dialog. This works around iframe sandbox restrictions that
+  // prevent file inputs from working in Wails WebView.
+  (function() {
+    // Override click on file inputs to route through parent
+    function interceptFileInputClick(input) {
+      var accept = input.getAttribute('accept') || '';
+      var title = input.getAttribute('title') || input.getAttribute('data-title') || 'Select File';
+      
+      log('[File] Intercepting file input click: accept=' + accept);
+      
+      request('selectFile', { title: title, accept: accept }).then(function(result) {
+        if (result && result.success && result.base64) {
+          log('[OK] File selected: ' + result.filename + ' (' + result.size + ' bytes)');
+          
+          // Convert base64 to Blob and create a File object
+          var byteString = atob(result.base64);
+          var ab = new ArrayBuffer(byteString.length);
+          var ia = new Uint8Array(ab);
+          for (var i = 0; i < byteString.length; i++) {
+            ia[i] = byteString.charCodeAt(i);
+          }
+          var blob = new Blob([ab], { type: result.mimeType || 'application/octet-stream' });
+          
+          // Create a File object (for browser compatibility)
+          var file;
+          try {
+            file = new File([blob], result.filename, { type: result.mimeType || 'application/octet-stream' });
+          } catch(e) {
+            // Safari workaround - File constructor may not work in some contexts
+            file = blob;
+            file.name = result.filename;
+            file.lastModified = Date.now();
+          }
+          
+          // Create a synthetic FileList-like object
+          var dt = new DataTransfer();
+          dt.items.add(file);
+          
+          // Set the files on the input (this triggers any onchange handlers)
+          try {
+            input.files = dt.files;
+          } catch(e) {
+            log('[Warn] Could not set input.files: ' + e.message);
+          }
+          
+          // Dispatch change event so dApp knows a file was selected
+          var changeEvent = new Event('change', { bubbles: true, cancelable: false });
+          input.dispatchEvent(changeEvent);
+          
+          // Also dispatch input event for completeness
+          var inputEvent = new Event('input', { bubbles: true, cancelable: false });
+          input.dispatchEvent(inputEvent);
+          
+          log('[File] File data injected and events dispatched');
+        } else if (result && result.cancelled) {
+          log('[File] User cancelled file selection');
+        } else {
+          log('[File] Selection failed: ' + (result && result.error || 'unknown'));
+        }
+      }).catch(function(e) {
+        log('[Error] File selection error: ' + e.message);
+      });
+    }
+    
+    // Method 1: Intercept programmatic .click() calls on file inputs
+    var _origInputClick = HTMLInputElement.prototype.click;
+    HTMLInputElement.prototype.click = function() {
+      if (this.type === 'file') {
+        interceptFileInputClick(this);
+        return;
+      }
+      return _origInputClick.call(this);
+    };
+    
+    // Method 2: Intercept direct click events on file inputs
+    document.addEventListener('click', function(e) {
+      var el = e.target;
+      if (el && el.tagName === 'INPUT' && el.type === 'file') {
+        e.preventDefault();
+        e.stopPropagation();
+        interceptFileInputClick(el);
+      }
+    }, true);
+    
+    // Method 3: Override showOpenFilePicker if it exists (modern File System Access API)
+    if (window.showOpenFilePicker) {
+      var _origShowOpenFilePicker = window.showOpenFilePicker;
+      window.showOpenFilePicker = function(options) {
+        log('[File] showOpenFilePicker intercepted');
+        options = options || {};
+        var accept = '';
+        if (options.types && options.types.length > 0) {
+          var exts = [];
+          options.types.forEach(function(t) {
+            if (t.accept) {
+              Object.keys(t.accept).forEach(function(mime) {
+                t.accept[mime].forEach(function(ext) {
+                  exts.push(ext);
+                });
+              });
+            }
+          });
+          accept = exts.join(',');
+        }
+        
+        return new Promise(function(resolve, reject) {
+          request('selectFile', { title: 'Select File', accept: accept }).then(function(result) {
+            if (result && result.success && result.base64) {
+              var byteString = atob(result.base64);
+              var ab = new ArrayBuffer(byteString.length);
+              var ia = new Uint8Array(ab);
+              for (var i = 0; i < byteString.length; i++) {
+                ia[i] = byteString.charCodeAt(i);
+              }
+              var blob = new Blob([ab], { type: result.mimeType || 'application/octet-stream' });
+              
+              // Create a mock FileSystemFileHandle
+              var mockHandle = {
+                kind: 'file',
+                name: result.filename,
+                getFile: function() {
+                  return Promise.resolve(new File([blob], result.filename, { type: result.mimeType }));
+                }
+              };
+              resolve([mockHandle]);
+            } else if (result && result.cancelled) {
+              reject(new DOMException('The user aborted a request.', 'AbortError'));
+            } else {
+              reject(new Error(result && result.error || 'File selection failed'));
+            }
+          }).catch(reject);
+        });
+      };
+    }
+    
+    log('[Bridge] File input interceptor installed');
+  })();
+
+  // ── File drop guard ───────────────────────────────────────────────────────
+  // Without this, dropping a file on a TELA app navigates THIS document to the
+  // file — WebKit's default. Measured 2026-08-08: a dropped PDF replaced the
+  // whole app with WebKit's PDF viewer, with no way back.
+  //
+  // App.svelte's window-level guard cannot reach here. It listens on the parent
+  // window, and an iframe is a separate document, so it never sees these events.
+  // That is why the app-wide DisableWebViewDrop flag was reached for instead —
+  // but on Linux that flag also calls gtk_drag_dest_unset() on the webview
+  // (Wails v2.11.0, linux/window.c SetupWebview), killing the GTK drop
+  // destination that the native file-drop channel needs. It suppressed the
+  // navigation by disabling drops everywhere, including HOLOGRAM's own UI.
+  //
+  // preventDefault on dragenter/dragover is ALSO how a document declares it
+  // accepts a drop, so this is what lets the native channel fire at all rather
+  // than merely being defensive. stopPropagation is deliberately NOT called —
+  // the app's own drop handlers must still run.
+  (function() {
+    ['dragenter','dragover','drop'].forEach(function(name) {
+      document.addEventListener(name, function(e) {
+        try {
+          var t = e.dataTransfer && e.dataTransfer.types;
+          if (t && Array.prototype.indexOf.call(t, 'Files') !== -1) e.preventDefault();
+        } catch(err) {}
+      }, true);
+    });
+    log('[Bridge] File drop guard installed');
   })();
 })();
 <\/script>`;

@@ -1004,6 +1004,35 @@ func getXSWDBridgeScript() string {
     
     log('[Bridge] File input interceptor installed');
   })();
+
+  // ── File drop guard ───────────────────────────────────────────────────────
+  // Without this, dropping a file on a TELA app navigates THIS document to the
+  // file — WebKit's default. Measured 2026-08-08: a dropped PDF replaced the
+  // whole app with WebKit's PDF viewer, with no way back.
+  //
+  // App.svelte's window-level guard cannot reach here. It listens on the parent
+  // window, and an iframe is a separate document, so it never sees these events.
+  // That is why the app-wide DisableWebViewDrop flag was reached for instead —
+  // but on Linux that flag also calls gtk_drag_dest_unset() on the webview
+  // (Wails v2.11.0, linux/window.c SetupWebview), killing the GTK drop
+  // destination that the native file-drop channel needs. It suppressed the
+  // navigation by disabling drops everywhere, including HOLOGRAM's own UI.
+  //
+  // preventDefault on dragenter/dragover is ALSO how a document declares it
+  // accepts a drop, so this is what lets the native channel fire at all rather
+  // than merely being defensive. stopPropagation is deliberately NOT called —
+  // the app's own drop handlers must still run.
+  (function() {
+    ['dragenter','dragover','drop'].forEach(function(name) {
+      document.addEventListener(name, function(e) {
+        try {
+          var t = e.dataTransfer && e.dataTransfer.types;
+          if (t && Array.prototype.indexOf.call(t, 'Files') !== -1) e.preventDefault();
+        } catch(err) {}
+      }, true);
+    });
+    log('[Bridge] File drop guard installed');
+  })();
 })();
 </script>`
 }
