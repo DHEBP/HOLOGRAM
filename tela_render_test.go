@@ -964,3 +964,57 @@ func TestRenderMarkdownSafe_OrdinaryDocumentStillRenders(t *testing.T) {
 		t.Fatal("rendered HTML carries no headings")
 	}
 }
+
+// TestHighlightSource_CompressedNamesMatchTheirLexer pins the fix for the defect
+// found by looking at vault.tela on screen: index.html.gz displayed obvious HTML
+// under a "PLAINTEXT" badge with no colour, because chroma matches on the last
+// extension and only ever saw ".gz".
+//
+// The assertion is against the uncompressed name rather than a hard-coded
+// language string, because chroma's display names are its business, not ours.
+func TestHighlightSource_CompressedNamesMatchTheirLexer(t *testing.T) {
+	cases := []struct {
+		bare    string
+		content string
+	}{
+		{"index.html", "<!DOCTYPE html>\n<html><body><p>hi</p></body></html>"},
+		{"styles.css", "body { color: #fff; }"},
+		{"scripts.js", "const a = 1;\nfunction f() { return a; }"},
+	}
+
+	for _, c := range cases {
+		want := highlightSource(c.bare, c.content)
+		if want.Language == "plaintext" {
+			t.Fatalf("%s: precondition failed, the uncompressed name does not resolve to a lexer", c.bare)
+		}
+
+		for _, ext := range telaCompressionSuffixes {
+			name := c.bare + ext
+			got := highlightSource(name, c.content)
+			if got.Language != want.Language {
+				t.Errorf("%s reported %q, want %q (same as %s)", name, got.Language, want.Language, c.bare)
+			}
+			if !strings.Contains(got.HTML, "<span") {
+				t.Errorf("%s produced no highlight spans, so it rendered as flat text", name)
+			}
+		}
+	}
+}
+
+// TestLexerName covers the helper directly, including the case that must NOT be
+// stripped: a compression suffix is only a suffix, never a whole name.
+func TestLexerName(t *testing.T) {
+	cases := map[string]string{
+		"index.html.gz":    "index.html",
+		"styles.css.br":    "styles.css",
+		"app.js":           "app.js",
+		"README.md":        "README.md",
+		"archive.gz":       "archive",
+		"sub/dir/a.css.gz": "sub/dir/a.css",
+	}
+	for in, want := range cases {
+		if got := lexerName(in); got != want {
+			t.Errorf("lexerName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
