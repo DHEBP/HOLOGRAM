@@ -26,6 +26,35 @@
 
   That last line is the one worth the trouble: a door remembered under one wallet must not
   open for the next one.
+
+  STORAGE GAS — the two SC write buttons, which need a contract and an SCID pasted in.
+
+  A contract call is charged for what it stores and the fee attached IS that budget, so two
+  different things can go wrong and only one is about money. Both are fixed in HOLOGRAM's own
+  screens; a dApp arriving here reaches none of those checks, which is why they are exercised
+  from an actual socket rather than by reading the code.
+
+    Write 5 KB    approve it → OK with a txid. The console shows the transaction being
+                  rebuilt with a larger fee first; without that the write mines and stores
+                  NOTHING while this button still reports success.
+    Write 12 KB   REFUSED before broadcast, with a byte count and no txid. Over the chain's
+                  per-call ceiling no fee can help — attaching more is clamped away — so
+                  funding it would only pay for the funeral.
+
+  A txid coming back from the 12 KB button is the failure this exists to catch.
+
+  Deploy a target contract on the simulator (its SetVar stores the argument verbatim, and it
+  has NO owner check — an owner gate makes the estimate fail, the guard fail open, and every
+  size sail through, which reads on screen as "the guard is broken"):
+
+    Function Initialize() Uint64
+    10 RETURN 0
+    End Function
+
+    Function SetVar(k String, v String) Uint64
+    10 STORE("var_" + k, v)
+    20 RETURN 0
+    End Function
 -->
 <html lang="en">
 <head>
@@ -41,6 +70,9 @@
   button:hover:not(:disabled) { border-color:#5ec8f0; }
   button:disabled { color:#3d4c5a; border-color:#16222c; cursor:not-allowed; }
   button .d { color:#4a5b6b; }
+  input { background:#070a0e; color:#c6d4e1; border:1px solid #1e3242; border-radius:3px;
+          padding:7px 9px; font:inherit; min-width:34em; }
+  input:focus { outline:none; border-color:#5ec8f0; }
   #log { background:#070a0e; border:1px solid #1e3242; border-radius:3px; padding:11px; height:50vh; overflow:auto; white-space:pre-wrap; }
   .ok{color:#4ad38a} .no{color:#f0704a} .dim{color:#6b7d8f} .ev{color:#e0b341} .hi{color:#5ec8f0}
 </style>
@@ -61,6 +93,12 @@
   <button class="gated" disabled id="subtip">Subscribe chain tip</button>
   <button class="gated" disabled id="unsub">Unsubscribe all</button>
   <button id="clear">Clear log</button>
+</div>
+
+<div class="row">
+  <input id="scid" placeholder="SCID of a contract with SetVar(k,v)" spellcheck="false">
+  <button class="gated" disabled id="sc5k">Write 5 KB <span class="d">should store</span></button>
+  <button class="gated" disabled id="sc12k">Write 12 KB <span class="d">should refuse</span></button>
 </div>
 
 <div id="log"></div>
@@ -146,9 +184,16 @@
         return;
       }
 
-      var label = pending[msg.id] || ('id ' + msg.id);
+      // pending holds a plain label for the simple doors, or {label, expectRefusal} for the
+      // SC writes, which are judged against what each is supposed to do rather than by
+      // whether the call errored.
+      var slot = pending[msg.id];
       delete pending[msg.id];
-      report(label, msg);
+      if (slot && typeof slot === 'object') {
+        scReport(slot.label, slot.expectRefusal, msg);
+        return;
+      }
+      report(slot || ('id ' + msg.id), msg);
     };
 
     ws.onerror = function () { say('socket error', 'no'); };
@@ -167,6 +212,53 @@
     send('unsub tip', 'Unsubscribe', { event: 'new_topoheight' });
     send('unsub entry', 'Unsubscribe', { event: 'new_entry' });
   };
+
+  // A storage refusal is a PASS on the 12 KB button and a FAIL on the 5 KB one, so the two
+  // are reported against what each is supposed to do rather than by whether the call errored.
+  // The tell is the message, not the code: a refusal comes back as an ordinary call failure,
+  // the same shape as any other rejected wallet call.
+  function scReport(label, expectRefusal, msg) {
+    var refused = !!(msg.error && /storage gas/i.test(msg.error.message || ''));
+    var txid = msg.result && (msg.result.txid || msg.result.TXID);
+
+    if (expectRefusal) {
+      if (refused) { say(label + '  REFUSED as it should be — ' + msg.error.message, 'ok'); return; }
+      if (txid) {
+        say(label + '  ✗ BROADCAST A DOOMED WRITE  txid ' + txid +
+            '  — over the ceiling, so this mines, charges, and stores nothing', 'no');
+        return;
+      }
+      say(label + '  ✗ expected a storage refusal, got: ' + JSON.stringify(msg.error || msg.result), 'no');
+      return;
+    }
+
+    if (refused) { say(label + '  ✗ refused a write that SHOULD fit — ' + msg.error.message, 'no'); return; }
+    report(label, msg);
+    if (txid) { say('        now confirm it actually STORED — a txid only means it was sent', 'dim'); }
+  }
+
+  function scWrite(label, key, bytes, expectRefusal) {
+    var scid = (document.getElementById('scid').value || '').trim();
+    if (scid.length !== 64) { say('paste a 64-character SCID first', 'no'); return; }
+    var id = ++nextId;
+    pending[id] = { label: label, expectRefusal: expectRefusal };
+    say(label + '  → scinvoke  SetVar(' + key + ', ' + bytes + ' bytes)', 'dim');
+    ws.send(JSON.stringify({
+      jsonrpc: '2.0', id: id, method: 'scinvoke',
+      params: {
+        scid: scid,
+        ringsize: 2,
+        sc_rpc: [
+          { name: 'entrypoint', datatype: 'S', value: 'SetVar' },
+          { name: 'k', datatype: 'S', value: key },
+          { name: 'v', datatype: 'S', value: new Array(bytes + 1).join('A') }
+        ]
+      }
+    }));
+  }
+
+  document.getElementById('sc5k').onclick  = function () { scWrite('SC write 5 KB', 'probe5k', 5000, false); };
+  document.getElementById('sc12k').onclick = function () { scWrite('SC write 12 KB', 'probe12k', 12000, true); };
 
   document.getElementById('clear').onclick = function () { logEl.innerHTML = ''; };
 
