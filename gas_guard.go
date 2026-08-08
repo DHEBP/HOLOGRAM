@@ -114,6 +114,37 @@ func (a *App) storageGasFor(args rpc.Arguments, ringsize uint64, signer string) 
 	return uint64(gasStorage), true
 }
 
+// storageGasWhat names the contract function in a refusal, so the message reads "calling
+// SetVar needs …" rather than something the user has to map back to what they clicked. Falls
+// back to a generic phrase; a refusal that cannot name the entrypoint is still worth sending.
+func storageGasWhat(args rpc.Arguments) string {
+	for _, arg := range args {
+		if arg.Name == "entrypoint" {
+			if name, ok := arg.Value.(string); ok && name != "" {
+				return "calling " + name
+			}
+		}
+	}
+	return "this contract call"
+}
+
+// storageGasRefusal returns the error a contract call should fail with when the chain could not
+// apply it at any fee, or nil to proceed.
+//
+// The ceiling is not a price. dvm/sc.go clamps whatever fee is attached down to
+// MAX_STORAGE_GAS_ATOMIC_UNITS, so a call needing more cannot execute however much is offered:
+// the interpreter panics, the connector discards every change, and the transaction still mines
+// and still costs the fee. Funding such a call to the ceiling — which is what happens without
+// this — just pays for the funeral.
+//
+// FAILS OPEN on measured=false. Every reason a measurement fails is unrelated to size.
+func storageGasRefusal(args rpc.Arguments, need uint64, measured bool) error {
+	if !measured || !storageGasExceeded(need) {
+		return nil
+	}
+	return storageGasError(storageGasWhat(args), need)
+}
+
 // storageTopUp decides whether a built transaction carries enough fee to pay for the storage
 // it is about to perform, and what to rebuild it with if not.
 //

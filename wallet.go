@@ -2400,6 +2400,34 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 					Amount:      0,
 				})
 			}
+			// Measure the storage cost ONCE, before any proof is generated, and let it decide
+			// both questions below: is this possible at all, and is it paid for.
+			//
+			// Measured over scArgs — the very arguments about to be sent, not a reconstruction
+			// of them. An estimate taken over a different arg list underpays by the drift,
+			// because the key rides in the charged argument blob.
+			//
+			// FAILS OPEN, like guardStorageGas: when the cost cannot be measured the call
+			// proceeds exactly as it did before. Every reason measurement fails — no daemon, an
+			// unreachable node, a wrong signer, a missing entrypoint — is unrelated to size.
+			storageNeed, storageMeasured := a.storageGasFor(scArgs, ringsize, wallet.GetAddress().String())
+
+			// Deliberately NOT gated on fees == 0 — an explicit caller-supplied fee cannot buy
+			// past the ceiling either. The Explorer and Studio already refuse this earlier and
+			// more helpfully (sc_function_parser.go); dApps arriving over XSWD reach this site
+			// and no other, which is why the check lives here rather than beside them.
+			if refusal := storageGasRefusal(scArgs, storageNeed, storageMeasured); refusal != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] scinvoke refused: %v", refusal))
+				return map[string]interface{}{
+					"success":        false,
+					"error":          refusal.Error(),
+					"technicalError": fmt.Sprintf("storage gas %d exceeds the per-call ceiling; no fee can raise it", storageNeed),
+				}
+			}
+			if !storageMeasured {
+				a.logToConsole("[WARN] Could not measure this call's storage cost — proceeding with the wallet's default fee")
+			}
+
 			a.logToConsole(fmt.Sprintf("[XSWD] Building scinvoke TX with ringsize=%d fees=%d", ringsize, fees))
 
 			tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
@@ -2431,26 +2459,16 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			// Only ever raises: an already-sufficient fee is left alone and no second proof is
 			// generated, so the common small call is unchanged. An explicit caller-supplied
 			// fee is honoured rather than second-guessed.
-			//
-			// FAILS OPEN, like guardStorageGas — when the cost cannot be measured the call
-			// proceeds exactly as it did before, because every reason measurement fails (no
-			// daemon, wrong signer, missing entrypoint) is unrelated to size.
-			if fees == 0 {
-				// Measured over scArgs — the very arguments being sent, not a reconstruction
-				// of them. An estimate taken over a different arg list underpays by the drift.
-				if need, ok := a.storageGasFor(scArgs, ringsize, wallet.GetAddress().String()); ok {
-					if payFee, short := storageTopUp(tx.Fees(), need); short {
-						a.logToConsole(fmt.Sprintf("[SC] Storage needs %d gas but the built TX carries %d — rebuilding with the measured fee", need, tx.Fees()))
-						topped, topErr := wallet.TransferPayload0(transfers, ringsize, false, scArgs, payFee, false)
-						if topErr != nil {
-							a.logToConsole(fmt.Sprintf("[WARN] Could not rebuild with the storage fee, sending as built: %v", topErr))
-						} else {
-							tx = topped
-							a.logToConsole(fmt.Sprintf("[SC] Rebuilt carrying %d gas", tx.Fees()))
-						}
+			if storageMeasured && fees == 0 {
+				if payFee, short := storageTopUp(tx.Fees(), storageNeed); short {
+					a.logToConsole(fmt.Sprintf("[SC] Storage needs %d gas but the built TX carries %d — rebuilding with the measured fee", storageNeed, tx.Fees()))
+					topped, topErr := wallet.TransferPayload0(transfers, ringsize, false, scArgs, payFee, false)
+					if topErr != nil {
+						a.logToConsole(fmt.Sprintf("[WARN] Could not rebuild with the storage fee, sending as built: %v", topErr))
+					} else {
+						tx = topped
+						a.logToConsole(fmt.Sprintf("[SC] Rebuilt carrying %d gas", tx.Fees()))
 					}
-				} else {
-					a.logToConsole("[WARN] Could not measure this call's storage cost — sending with the wallet's default fee")
 				}
 			}
 

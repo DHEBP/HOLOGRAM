@@ -224,3 +224,91 @@ func TestStorageTopUp_NeverAsksAboveTheChainCeiling(t *testing.T) {
 		t.Fatal("already at the ceiling — a rebuild would buy nothing")
 	}
 }
+
+// ===== the ceiling refusal at the shared broadcast site =====
+
+// dApps arriving over XSWD reach InternalWalletCall directly and pass none of the three
+// pre-flight guards (sc_service.go, sc_function_parser.go, tela_service.go), which sit in
+// HOLOGRAM's own UI handlers. Before this, a dApp asking for an impossible write got the fee
+// funded to the ceiling and broadcast anyway: mined, charged, stored nothing.
+//
+// The ceiling is not a price — dvm/sc.go clamps whatever is attached down to it — so the
+// refusal is deliberately NOT conditional on how much fee the caller offered.
+func TestStorageGasWhat_NamesTheEntrypoint(t *testing.T) {
+	args := rpc.Arguments{
+		{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(0)},
+		{Name: "entrypoint", DataType: rpc.DataString, Value: "SetVar"},
+		{Name: "v", DataType: rpc.DataString, Value: "payload"},
+	}
+	if got := storageGasWhat(args); got != "calling SetVar" {
+		t.Fatalf("refusal must name the function the user invoked, got %q", got)
+	}
+
+	// A call with no usable entrypoint still deserves a refusal, just a vaguer one.
+	if got := storageGasWhat(rpc.Arguments{{Name: "v", DataType: rpc.DataString, Value: "x"}}); got == "" {
+		t.Fatal("must still say something when the entrypoint cannot be read")
+	}
+	// NEGATIVE CONTROL: a non-string entrypoint must not be formatted into the message.
+	odd := rpc.Arguments{{Name: "entrypoint", DataType: rpc.DataString, Value: 42}}
+	if got := storageGasWhat(odd); strings.Contains(got, "42") {
+		t.Fatalf("a non-string entrypoint must not leak into the message, got %q", got)
+	}
+}
+
+// The refusal and the top-up read the SAME measurement. Above the ceiling the call is refused
+// outright; below it the fee is raised to meet it. storageTopUp still clamps as a backstop for
+// any caller that reaches it without the refusal in front.
+func TestStorageGas_RefuseAboveCeiling_TopUpBelow(t *testing.T) {
+	ceiling := uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS)
+
+	if !storageGasExceeded(ceiling + 1) {
+		t.Fatal("one over the ceiling must be refused, not funded to the ceiling")
+	}
+	// Just under: not refused, and topped up to exactly what it needs.
+	if storageGasExceeded(ceiling - 1) {
+		t.Fatal("under the ceiling must proceed")
+	}
+	fee, short := storageTopUp(100, ceiling-1)
+	if !short || fee != ceiling-1 {
+		t.Fatalf("an underfunded possible write must be raised to its measured need, got %d short=%v", fee, short)
+	}
+}
+
+// The refusal decision itself: refuse only what no fee could rescue, and never block on a
+// measurement that did not happen.
+func TestStorageGasRefusal_OnlyWhatNoFeeCanRescue(t *testing.T) {
+	ceiling := uint64(config.MAX_STORAGE_GAS_ATOMIC_UNITS)
+	args := rpc.Arguments{{Name: "entrypoint", DataType: rpc.DataString, Value: "SetVar"}}
+
+	// THE POINT: above the ceiling the write is dead at any price and must be refused rather
+	// than funded to the ceiling and broadcast. Reverting the refusal makes this fail.
+	err := storageGasRefusal(args, ceiling+4090, true)
+	if err == nil {
+		t.Fatal("a write over the ceiling MUST be refused — funding it to the ceiling mines it, " +
+			"charges for it, and stores nothing")
+	}
+	if !strings.Contains(err.Error(), "SetVar") {
+		t.Fatalf("the refusal must name the entrypoint, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "2045") {
+		t.Fatalf("must say how many bytes to cut (4090 gas over = 2045 bytes), got %q", err)
+	}
+
+	// Exactly the ceiling is spendable — the DVM panics on used > limit, not >=.
+	if err := storageGasRefusal(args, ceiling, true); err != nil {
+		t.Fatalf("exactly the ceiling must proceed, got %v", err)
+	}
+	// An ordinary large-but-possible write proceeds and is handled by the top-up.
+	if err := storageGasRefusal(args, 10087, true); err != nil {
+		t.Fatalf("a fundable write must not be refused, got %v", err)
+	}
+	// FAILS OPEN: no measurement is not evidence of a problem.
+	if err := storageGasRefusal(args, 0, false); err != nil {
+		t.Fatalf("an unmeasurable call must proceed exactly as before, got %v", err)
+	}
+	// NEGATIVE CONTROL for fail-open: an absurd need with measured=false is still not refused,
+	// because the number is meaningless when nothing was measured.
+	if err := storageGasRefusal(args, ceiling*100, false); err != nil {
+		t.Fatalf("an unmeasured number must never drive a refusal, got %v", err)
+	}
+}
