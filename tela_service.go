@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
 	"github.com/deroproject/derohe/walletapi"
+	dmpkg "github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -2161,14 +2163,34 @@ func (a *App) DiffCommits(scid string, commitA, commitB int) map[string]interfac
 		summary = strings.Join(parts, ", ")
 	}
 
-	// Also provide legacy single-content diff for backward compatibility
-	// Concatenate all files for simple diff
-	var contentA, contentB string
-	for name, content := range filesA {
-		contentA += fmt.Sprintf("// === %s ===\n%s\n\n", name, content)
+	// Also provide legacy single-content diff for backward compatibility.
+	// Both blobs are concatenated over the SAME sorted key set: ranging the two
+	// maps independently shuffled each side differently, so the legacy diff was
+	// noise even when the files were identical.
+	legacyNames := make([]string, 0, len(filesA)+len(filesB))
+	seen := make(map[string]bool, len(filesA)+len(filesB))
+	for name := range filesA {
+		if !seen[name] {
+			seen[name] = true
+			legacyNames = append(legacyNames, name)
+		}
 	}
-	for name, content := range filesB {
-		contentB += fmt.Sprintf("// === %s ===\n%s\n\n", name, content)
+	for name := range filesB {
+		if !seen[name] {
+			seen[name] = true
+			legacyNames = append(legacyNames, name)
+		}
+	}
+	sort.Strings(legacyNames)
+
+	var contentA, contentB string
+	for _, name := range legacyNames {
+		if content, ok := filesA[name]; ok {
+			contentA += fmt.Sprintf("// === %s ===\n%s\n\n", name, content)
+		}
+		if content, ok := filesB[name]; ok {
+			contentB += fmt.Sprintf("// === %s ===\n%s\n\n", name, content)
+		}
 	}
 	legacyDiff := generateDiff(contentA, contentB)
 
@@ -2195,7 +2217,8 @@ func (a *App) DiffCommits(scid string, commitA, commitB int) map[string]interfac
 func generateFileDiffs(filesA, filesB map[string]string) []FileDiff {
 	diffs := []FileDiff{}
 
-	// Track all filenames
+	// Track all filenames. Sorted, because ranging a map gives a different order
+	// on every call — the same diff would otherwise reshuffle its file list.
 	allFiles := make(map[string]bool)
 	for name := range filesA {
 		allFiles[name] = true
@@ -2203,9 +2226,14 @@ func generateFileDiffs(filesA, filesB map[string]string) []FileDiff {
 	for name := range filesB {
 		allFiles[name] = true
 	}
+	names := make([]string, 0, len(allFiles))
+	for name := range allFiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 
 	// Compare each file
-	for name := range allFiles {
+	for _, name := range names {
 		contentA, existsA := filesA[name]
 		contentB, existsB := filesB[name]
 
@@ -2235,49 +2263,152 @@ func generateFileDiffs(filesA, filesB map[string]string) []FileDiff {
 	return diffs
 }
 
-// generateDiff creates a simple line-by-line diff
-func generateDiff(oldContent, newContent string) []map[string]interface{} {
-	oldLines := strings.Split(oldContent, "\n")
-	newLines := strings.Split(newContent, "\n")
+// normalizeForDiff appends a trailing newline when one is missing.
+//
+// go-diff keys every line *including* its "\n", so "b" and "b\n" hash to two
+// different lines. Without this, diffing "a\nb" against "a\nb\nc" reports the
+// last line as changed instead of reporting a single append. Empty input is
+// left alone — normalizing "" to "\n" would invent a phantom blank line.
+func normalizeForDiff(s string) string {
+	if s == "" || strings.HasSuffix(s, "\n") {
+		return s
+	}
+	return s + "\n"
+}
 
+// splitDiffChunk turns one rehydrated go-diff chunk back into individual lines.
+// DiffCharsToLines joins lines with "" (each already carries its own "\n"), so a
+// single chunk is usually a multi-line block. The trailing empty element that
+// Split produces for a terminating newline is an artifact, not a blank line.
+func splitDiffChunk(text string) []string {
+	if text == "" {
+		return nil
+	}
+	lines := strings.Split(text, "\n")
+	if strings.HasSuffix(text, "\n") {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// diffLine is one line paired with the operation that produced it.
+type diffLine struct {
+	op   dmpkg.Operation
+	text string
+}
+
+// generateDiff computes a line-level diff between two texts.
+//
+// This is a real longest-common-subsequence diff, not a positional comparison.
+// The previous implementation compared oldLines[i] against newLines[i], so
+// inserting a single line at the top of a file reported every following line as
+// modified — a one-line edit to a 500-line file read as 501 changes.
+//
+// The returned wire shape is unchanged so the Svelte consumers need no edit:
+// each entry carries "type" (added|removed|modified), "line", and either
+// "content" or "oldContent"+"newContent". "oldLine"/"newLine" are additive and
+// currently ignored by the UI; they exist so a side-by-side view can be built
+// later without another wire break.
+func generateDiff(oldContent, newContent string) []map[string]interface{} {
 	diff := []map[string]interface{}{}
 
-	maxLen := len(oldLines)
-	if len(newLines) > maxLen {
-		maxLen = len(newLines)
+	if oldContent == newContent {
+		return diff
 	}
 
-	for i := 0; i < maxLen; i++ {
-		oldLine := ""
-		newLine := ""
-		if i < len(oldLines) {
-			oldLine = oldLines[i]
-		}
-		if i < len(newLines) {
-			newLine = newLines[i]
-		}
+	dmp := dmpkg.New()
+	runesOld, runesNew, lineArray := dmp.DiffLinesToRunes(
+		normalizeForDiff(oldContent),
+		normalizeForDiff(newContent),
+	)
+	// checklines=false: the input is already reduced to one rune per line, so
+	// the line-mode pre-pass inside DiffMain would be redundant work.
+	ops := dmp.DiffCharsToLines(dmp.DiffMainRunes(runesOld, runesNew, false), lineArray)
 
-		if oldLine != newLine {
-			if oldLine != "" && newLine == "" {
-				diff = append(diff, map[string]interface{}{
-					"type":    "removed",
-					"line":    i + 1,
-					"content": oldLine,
-				})
-			} else if oldLine == "" && newLine != "" {
-				diff = append(diff, map[string]interface{}{
-					"type":    "added",
-					"line":    i + 1,
-					"content": newLine,
-				})
-			} else {
+	// Flatten the chunks into one line per entry. DiffMain runs DiffCleanupMerge
+	// internally, which normalizes every change block to delete-then-insert, so a
+	// delete run immediately followed by an insert run is a modification.
+	flat := make([]diffLine, 0, len(ops))
+	for _, op := range ops {
+		for _, line := range splitDiffChunk(op.Text) {
+			flat = append(flat, diffLine{op.Type, line})
+		}
+	}
+
+	oldNo, newNo := 1, 1
+	for i := 0; i < len(flat); {
+		switch flat[i].op {
+		case dmpkg.DiffEqual:
+			oldNo++
+			newNo++
+			i++
+
+		case dmpkg.DiffInsert:
+			diff = append(diff, map[string]interface{}{
+				"type":    "added",
+				"line":    newNo,
+				"content": flat[i].text,
+				"oldLine": oldNo,
+				"newLine": newNo,
+			})
+			newNo++
+			i++
+
+		case dmpkg.DiffDelete:
+			// Collect the delete run, then any insert run directly behind it.
+			j := i
+			for j < len(flat) && flat[j].op == dmpkg.DiffDelete {
+				j++
+			}
+			k := j
+			for k < len(flat) && flat[k].op == dmpkg.DiffInsert {
+				k++
+			}
+			dels, ins := flat[i:j], flat[j:k]
+
+			paired := len(dels)
+			if len(ins) < paired {
+				paired = len(ins)
+			}
+
+			for p := 0; p < paired; p++ {
 				diff = append(diff, map[string]interface{}{
 					"type":       "modified",
-					"line":       i + 1,
-					"oldContent": oldLine,
-					"newContent": newLine,
+					"line":       newNo,
+					"oldContent": dels[p].text,
+					"newContent": ins[p].text,
+					"oldLine":    oldNo,
+					"newLine":    newNo,
 				})
+				oldNo++
+				newNo++
 			}
+			for p := paired; p < len(dels); p++ {
+				diff = append(diff, map[string]interface{}{
+					"type":    "removed",
+					"line":    oldNo,
+					"content": dels[p].text,
+					"oldLine": oldNo,
+					"newLine": newNo,
+				})
+				oldNo++
+			}
+			for p := paired; p < len(ins); p++ {
+				diff = append(diff, map[string]interface{}{
+					"type":    "added",
+					"line":    newNo,
+					"content": ins[p].text,
+					"oldLine": oldNo,
+					"newLine": newNo,
+				})
+				newNo++
+			}
+			i = k
+
+		default:
+			// go-diff only emits the three operations above. Advance anyway so
+			// the loop is provably terminating: a hang here would freeze the UI.
+			i++
 		}
 	}
 
