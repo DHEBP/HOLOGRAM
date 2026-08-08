@@ -21,6 +21,20 @@
     }
   }
 
+  // A line whose only difference is its terminator renders as a "-" row and a
+  // "+" row containing the same visible characters and no explanation. TELA DOC
+  // bodies genuinely round-trip through CR stripping (tela_signature.go carries
+  // a toCRLF for exactly that reason), so this happens. Marked rather than
+  // normalised away: a CRLF↔LF change IS a change, it just has no glyph.
+  function isEolOnly(change) {
+    if (change?.type !== 'modified') return false;
+    const before = change.oldContent;
+    const after = change.newContent;
+    if (typeof before !== 'string' || typeof after !== 'string') return false;
+    if (before === after) return false;
+    return before.replace(/\r+$/, '') === after.replace(/\r+$/, '');
+  }
+
   function iconFor(filename) {
     const ext = (filename || '').split('.').pop()?.toLowerCase();
     switch (ext) {
@@ -63,11 +77,22 @@
         {#if fileDiff.lineDiffs && fileDiff.lineDiffs.length > 0}
           <div class="repo-diff-lines">
             {#each fileDiff.lineDiffs.slice(0, MAX_LINES_SHOWN) as change}
-              {#if change.type === 'modified'}
+              {#if change.type === 'notice'}
+                <!-- Not a line: the backend explaining why there are none. No
+                     +/- sign, because nothing was added or removed. -->
+                <div class="repo-diff-row is-notice">
+                  <span class="repo-diff-num"></span>
+                  <span class="repo-diff-sign"></span>
+                  <span class="repo-diff-text">{change.content}</span>
+                </div>
+              {:else if change.type === 'modified'}
                 <div class="repo-diff-row removed">
                   <span class="repo-diff-num">{change.oldLine || change.line || ''}</span>
                   <span class="repo-diff-sign">-</span>
                   <span class="repo-diff-text">{change.oldContent}</span>
+                  {#if isEolOnly(change)}
+                    <span class="repo-diff-eol" title="Only the line ending differs on this line — CR LF against LF.">eol</span>
+                  {/if}
                 </div>
                 <div class="repo-diff-row added">
                   <span class="repo-diff-num">{change.newLine || change.line || ''}</span>
@@ -237,6 +262,27 @@
   .repo-diff-row.removed {
     background: rgba(248, 113, 113, 0.08);
     color: var(--status-err);
+  }
+
+  /* A statement about the diff, not a line of it — no tint either way. */
+  .repo-diff-row.is-notice {
+    color: var(--text-4);
+    font-style: italic;
+  }
+
+  /* Deliberately not --status-warn: a changed line ending is a fact, not an
+     alarm. It only needs to explain why two identical-looking rows are here. */
+  .repo-diff-eol {
+    flex-shrink: 0;
+    align-self: center;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-5);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-xs);
+    padding: 0 4px;
+    cursor: help;
   }
 
   .repo-diff-num {

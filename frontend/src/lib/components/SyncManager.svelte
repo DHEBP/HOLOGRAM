@@ -366,11 +366,27 @@
                   </div>
                   {#if diffData.diff && diffData.diff.length > 0}
                     <div class="diff-content">
+                      <!-- generateDiff emits "line", never "line_num", and a
+                           "modified" entry carries oldContent/newContent rather
+                           than content. Reading the wrong keys rendered every
+                           line number blank and every modified line as an empty
+                           row. -->
                       {#each diffData.diff.slice(0, 50) as line}
-                        <div class="diff-line {line.type}">
-                          <span class="line-num">{line.line_num || ''}</span>
-                          <span class="line-content">{line.content || ''}</span>
-                        </div>
+                        {#if line.type === 'modified'}
+                          <div class="diff-line removed">
+                            <span class="line-num">{line.oldLine || line.line || ''}</span>
+                            <span class="line-content">-{line.oldContent}</span>
+                          </div>
+                          <div class="diff-line added">
+                            <span class="line-num">{line.newLine || line.line || ''}</span>
+                            <span class="line-content">+{line.newContent}</span>
+                          </div>
+                        {:else}
+                          <div class="diff-line {line.type}">
+                            <span class="line-num">{line.line || ''}</span>
+                            <span class="line-content">{line.content || ''}</span>
+                          </div>
+                        {/if}
                       {/each}
                       {#if diffData.diff.length > 50}
                         <div class="diff-truncated">

@@ -30,6 +30,14 @@ import (
 	"github.com/deroproject/derohe/rpc"
 )
 
+// forkRingsize is the ring size every fork installs at.
+//
+// It is a constant rather than a literal at three call sites because it is not
+// a tuning knob: the estimate must be measured at the ring size the install
+// actually uses, and the number is quoted to the user as the reason their
+// address ends up in the contract. See ForkTELA for why it is 2 and not 16.
+const forkRingsize = 2
+
 // ForkRequest is what the user confirmed in the fork panel.
 //
 // It carries NO DOC list. The whole point of a fork is that the file set is the
@@ -200,27 +208,33 @@ func (a *App) forkSigner() string {
 
 // forkResponse describes a worked-out fork for the confirmation panel: what will
 // be installed, what it costs, and whether the chain would refuse it.
+//
+// Every key here is read by RepoFork.svelte. The source's own SCID, dURL, owner
+// and name were on this map and were not — the panel already holds the
+// GetINDEXInfo result it was opened from — and a shape nothing reads is a shape
+// a future frontend has to keep working.
 func (a *App) forkResponse(build *forkBuild) map[string]interface{} {
+	// The same lookup ForkTELA does, so the panel cannot say "ready" for a wallet
+	// the install would then refuse — or refuse in simulator mode, where a
+	// deployable wallet exists that the frontend's own walletState does not know
+	// about.
+	signer := a.forkSigner()
+
 	out := map[string]interface{}{
-		"success":     true,
-		"sourceScid":  build.Source.SCID,
-		"sourceDurl":  build.Source.DURL,
-		"sourceOwner": build.Source.Author,
-		"sourceName":  build.Source.NameHdr,
-		"durl":        build.Fork.DURL,
-		"name":        build.Fork.NameHdr,
-		"description": build.Fork.DescrHdr,
-		"iconUrl":     build.Fork.IconHdr,
-		"mods":        build.Fork.Mods,
-		"docScids":    build.Fork.DOCs,
-		"docCount":    len(build.Fork.DOCs),
-		"ringsize":    2,
+		"success":  true,
+		"durl":     build.Fork.DURL,
+		"mods":     build.Fork.Mods,
+		"docCount": len(build.Fork.DOCs),
+		// Rendered, not decoration: a ring size of 2 is what writes the forker's
+		// address into the contract as its public owner. See ForkTELA.
+		"ringsize":    forkRingsize,
+		"walletReady": signer != "",
 	}
 
 	// Measured over build.Args, the arguments this fork actually installs with.
 	// An estimate taken over anything else underpays by the difference, because
 	// the whole contract body rides in the charged argument blob (gas_guard.go).
-	if gas, ok := a.storageGasFor(build.Args, 2, a.forkSigner()); ok {
+	if gas, ok := a.storageGasFor(build.Args, forkRingsize, signer); ok {
 		out["storageGas"] = gas
 		out["storageGasDero"] = float64(gas) / 100000
 		out["costMeasured"] = true
@@ -301,7 +315,7 @@ func (a *App) ForkTELA(requestJSON string) map[string]interface{} {
 		DURL:        build.Fork.DURL,
 		IconURL:     build.Fork.IconHdr,
 		DOCSCIDs:    build.Fork.DOCs,
-		Ringsize:    2,
+		Ringsize:    forkRingsize,
 		Mods:        build.Fork.Mods,
 	})
 	if err != nil {
@@ -313,9 +327,10 @@ func (a *App) ForkTELA(requestJSON string) map[string]interface{} {
 		return result
 	}
 
-	result["sourceScid"] = build.Source.SCID
-	result["docScids"] = build.Fork.DOCs
+	// txid and durl come from InstallINDEX. Only what the panel prints is added
+	// here; the source SCID and the DOC list were on this map and read nowhere.
 	result["docCount"] = len(build.Fork.DOCs)
+	result["ringsize"] = forkRingsize
 	result["message"] = "Fork submitted — it becomes a contract once the transaction is mined"
 	return result
 }

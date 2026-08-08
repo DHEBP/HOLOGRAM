@@ -2252,6 +2252,14 @@ func generateFileDiffs(filesA, filesB map[string]string) []FileDiff {
 			// File was modified
 			fd.Status = "modified"
 			fd.LineDiffs = generateDiff(contentA, contentB)
+
+			// generateDiff normalises a missing trailing newline away, so an empty
+			// line list on a file whose bytes DID change can only mean that byte
+			// was the whole change. Say which byte rather than render "modified"
+			// above the words "No line changes".
+			if len(fd.LineDiffs) == 0 {
+				fd.LineDiffs = diffNotice("Only the trailing newline differs.")
+			}
 		} else {
 			// File unchanged - skip
 			continue
@@ -2297,6 +2305,37 @@ type diffLine struct {
 	text string
 }
 
+// maxDiffLines is the largest version generateDiff will compare line by line.
+// See the measurement in generateDiff for why it sits here.
+const maxDiffLines = 20000
+
+// countLines counts the lines generateDiff would actually walk. A terminating
+// newline ends the last line rather than starting an empty one, which is the
+// same artifact splitDiffChunk drops.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
+}
+
+// diffNotice is a diff that says why there are no lines in it.
+//
+// An empty result would be indistinguishable from "these versions are the same",
+// which is the one thing a refused comparison must not claim. "notice" is a
+// fourth type alongside added/removed/modified and carries only "content"; the
+// renderers print it as a plain row with no +/- sign.
+func diffNotice(message string) []map[string]interface{} {
+	return []map[string]interface{}{{
+		"type":    "notice",
+		"content": message,
+	}}
+}
+
 // generateDiff computes a line-level diff between two texts.
 //
 // This is a real longest-common-subsequence diff, not a positional comparison.
@@ -2305,7 +2344,7 @@ type diffLine struct {
 // modified — a one-line edit to a 500-line file read as 501 changes.
 //
 // The returned wire shape is unchanged so the Svelte consumers need no edit:
-// each entry carries "type" (added|removed|modified), "line", and either
+// each entry carries "type" (added|removed|modified|notice), "line", and either
 // "content" or "oldContent"+"newContent". "oldLine"/"newLine" are additive and
 // currently ignored by the UI; they exist so a side-by-side view can be built
 // later without another wire break.
@@ -2316,7 +2355,20 @@ func generateDiff(oldContent, newContent string) []map[string]interface{} {
 		return diff
 	}
 
+	if lines := max(countLines(oldContent), countLines(newContent)); lines > maxDiffLines {
+		return diffNotice(fmt.Sprintf("Too large to compare line by line: %d lines against a limit of %d.", lines, maxDiffLines))
+	}
+
 	dmp := dmpkg.New()
+	// DiffTimeout = 0 means "no deadline", which is what makes this function a
+	// FUNCTION: the stock 1s budget made the same two inputs produce different
+	// output from one run to the next, and past roughly 30k lines it silently
+	// degraded to go-diff's bisect fallback — a whole-file delete-then-insert
+	// reported as every line modified. The line cap above is what makes removing
+	// the deadline safe. Measured on this machine with two fully disjoint texts,
+	// the worst shape for an O(ND) diff: 10k lines 0.43s, 20k 1.7s, 40k 6.9s,
+	// 50k 10.8s. The cap is set at the last size that stays under two seconds.
+	dmp.DiffTimeout = 0
 	runesOld, runesNew, lineArray := dmp.DiffLinesToRunes(
 		normalizeForDiff(oldContent),
 		normalizeForDiff(newContent),

@@ -304,8 +304,8 @@ func TestGenerateDiff_EdgeCases(t *testing.T) {
 }
 
 // TestGenerateDiff_VeryLargeFile guards against the diff blowing up or hanging
-// on realistic worst-case input. go-diff carries a 1s internal deadline; a
-// timeout degrades quality but must still return a well-formed diff.
+// on realistic worst-case input. Both inputs sit under maxDiffLines, so this is
+// the real comparison rather than the refusal.
 func TestGenerateDiff_VeryLargeFile(t *testing.T) {
 	const n = 5000
 
@@ -426,6 +426,118 @@ func TestSplitDiffChunk(t *testing.T) {
 	for _, tt := range tests {
 		if got := splitDiffChunk(tt.in); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("splitDiffChunk(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestGenerateDiff_PastLineCapIsRefusedNotDegraded pins the refusal that
+// replaced go-diff's silent quality collapse.
+//
+// Two measured problems sit above this cap, and neither is visible from the
+// output. With go-diff's stock 1s deadline, 40,000 lines with a third of them
+// changed returned 39,998 entries — every line "modified", which is the bisect
+// deadline fallback emitting a whole-file delete-then-insert; 80,000 returned
+// 79,999. The entry count also moved with machine load, so the same two inputs
+// did not give the same diff twice. Removing the deadline makes it exact, and
+// then the cost is the thing that is unbounded: an exact diff of two fully
+// disjoint texts measured 0.43s at 10k lines, 1.7s at 20k, 6.9s at 40k and
+// 10.8s at 50k, all of it blocking the caller.
+//
+// So the cap is what has teeth here, and this test only proves the cap. The
+// deadline removal cannot be given a failing test at capped sizes: probed at
+// 15k-25k lines across five change densities, deadline-on and deadline-off
+// returned identical output every time. It stays because output that depends
+// on how busy the machine is cannot be reasoned about at all.
+func TestGenerateDiff_PastLineCapIsRefusedNotDegraded(t *testing.T) {
+	const n = maxDiffLines + 5000
+
+	var oldB, newB strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&oldB, "the quick brown fox line %d\n", i)
+		if i%3 == 0 {
+			fmt.Fprintf(&newB, "the quick brown fox line %d (edited)\n", i)
+		} else {
+			fmt.Fprintf(&newB, "the quick brown fox line %d\n", i)
+		}
+	}
+
+	diff := generateDiff(oldB.String(), newB.String())
+
+	if len(diff) != 1 {
+		t.Fatalf("got %d entries, want a single notice — a diff this size is refused, not degraded", len(diff))
+	}
+	if diff[0]["type"] != "notice" {
+		t.Fatalf("entry type = %v, want \"notice\"", diff[0]["type"])
+	}
+	if content, _ := diff[0]["content"].(string); content == "" {
+		t.Fatal("the notice carries no text; an empty result is indistinguishable from \"no changes\"")
+	}
+}
+
+// TestGenerateDiff_AtLineCapIsStillCompared: the cap is a ceiling, not a shrug.
+// Content at the limit must still get a real line-by-line comparison.
+func TestGenerateDiff_AtLineCapIsStillCompared(t *testing.T) {
+	var oldB, newB strings.Builder
+	// countLines counts a terminating newline as ending the last line, so
+	// maxDiffLines lines of text is exactly at the limit.
+	for i := 0; i < maxDiffLines; i++ {
+		fmt.Fprintf(&oldB, "line %d\n", i)
+		if i == 7 {
+			fmt.Fprintf(&newB, "line %d changed\n", i)
+		} else {
+			fmt.Fprintf(&newB, "line %d\n", i)
+		}
+	}
+
+	diff := generateDiff(oldB.String(), newB.String())
+
+	if len(diff) != 1 {
+		t.Fatalf("got %d entries, want 1 modified line", len(diff))
+	}
+	if diff[0]["type"] != "modified" {
+		t.Fatalf("entry type = %v, want \"modified\" — the cap must not swallow a legitimate diff", diff[0]["type"])
+	}
+}
+
+// TestGenerateFileDiffs_TrailingNewlineOnlyIsStated: two files that differ only
+// by a terminating newline used to render as a file header with a "modified"
+// badge above the words "No line changes" — a changed file with nothing changed.
+// normalizeForDiff makes them equal on purpose, so the file diff has to say
+// which byte moved.
+func TestGenerateFileDiffs_TrailingNewlineOnlyIsStated(t *testing.T) {
+	diffs := generateFileDiffs(
+		map[string]string{"app.js": "a\nb"},
+		map[string]string{"app.js": "a\nb\n"},
+	)
+
+	if len(diffs) != 1 {
+		t.Fatalf("got %d file diffs, want 1", len(diffs))
+	}
+	if diffs[0].Status != "modified" {
+		t.Fatalf("Status = %q, want modified — the bytes did change", diffs[0].Status)
+	}
+	if len(diffs[0].LineDiffs) != 1 {
+		t.Fatalf("got %d line entries, want a single notice explaining the empty diff", len(diffs[0].LineDiffs))
+	}
+	if diffs[0].LineDiffs[0]["type"] != "notice" {
+		t.Fatalf("entry type = %v, want \"notice\"", diffs[0].LineDiffs[0]["type"])
+	}
+}
+
+func TestCountLines(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"a", 1},
+		{"a\n", 1},
+		{"a\nb", 2},
+		{"a\nb\n", 2},
+	}
+	for _, tc := range cases {
+		if got := countLines(tc.in); got != tc.want {
+			t.Errorf("countLines(%q) = %d, want %d", tc.in, got, tc.want)
 		}
 	}
 }

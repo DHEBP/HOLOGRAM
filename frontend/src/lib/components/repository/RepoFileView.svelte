@@ -148,9 +148,12 @@
         file this way; its own entries carry the contents and the signatures.
       </div>
     {:else if entry.kind === 'unreadable'}
+      <!-- No reason is appended. The backend used to set one that restated this
+           exact sentence, so it printed the same fact twice, the second time in
+           parentheses as though it were extra detail. -->
       <div class="repo-view-note">
         This contract parses as neither a TELA INDEX nor a DOC, so its contents
-        cannot be shown.{entry.reason ? ` (${entry.reason})` : ''}
+        cannot be shown.
       </div>
     {:else if entry.reason && !hasBody}
       <div class="repo-view-note">{entry.reason}</div>

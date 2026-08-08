@@ -35,6 +35,34 @@ type RepositoryFile struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
+// maxRepositoryBytes caps the total document body one GetRepositoryFiles reply
+// carries, across every file in it.
+//
+// ⚠️ It does NOT bound the transient cost of getting there. A DOC body is stored
+// as base64(gzip(...)) and tela.Decompress takes a []byte and returns a []byte
+// with no streaming entry point, so a ~13KB stored blob still expands in full
+// before its size can be judged (tela's own Compress reaches 771:1). Bounding
+// that would mean reimplementing tela's base64+gzip path here, which would
+// silently stop bounding anything the day tela adds a second format - the DOC
+// type already carries a Compression field for exactly that. The expansion is
+// bounded by the chain's contract size limit and is discarded immediately; what
+// is RETAINED and marshalled across the bridge is what this cap governs.
+const maxRepositoryBytes = 8 << 20
+
+// shortSCID abbreviates a SCID for display.
+//
+// It exists because a SCID read off chain is NOT guaranteed to be 64 characters.
+// tela.ParseINDEXForDOCs returns whatever string the INDEX contract stored and
+// applies no length rule to it (tela's own parseDocShards carries a len != 64
+// guard, so the gap is known), which makes every listed DOC SCID an
+// attacker-controlled string. Slicing one directly panics on a short one.
+func shortSCID(scid string) string {
+	if len(scid) <= 16 {
+		return scid
+	}
+	return scid[:16] + "…"
+}
+
 // GetRepositoryFiles lists every file a TELA INDEX carries, with its contents.
 //
 // Entries that are not DOCs are listed rather than dropped. A nested INDEX is
@@ -68,10 +96,17 @@ func (a *App) GetRepositoryFiles(scid string) map[string]interface{} {
 		}
 	}
 
+	// maxPlaintextBytes caps ONE file; this caps the response. Without it an
+	// INDEX listing many large DOCs marshals the sum of them into a single Wails
+	// message - at the measured practical ceiling of 119 DOCs that is nearly
+	// 240MB in one piece. Past the budget an entry is still listed with its real
+	// size, only its body is withheld.
+	remaining := maxRepositoryBytes
+
 	for _, docSCID := range index.DOCs {
 		doc, docErr := tela.GetDOCInfo(docSCID, endpoint)
 		if docErr != nil {
-			entry := RepositoryFile{SCID: docSCID, Kind: "unreadable", Name: docSCID[:16] + "…"}
+			entry := RepositoryFile{SCID: docSCID, Kind: "unreadable", Name: shortSCID(docSCID)}
 			if child, idxErr := tela.GetINDEXInfo(docSCID, endpoint); idxErr == nil {
 				entry.Kind = "index"
 				entry.Reason = "nested INDEX"
@@ -79,14 +114,20 @@ func (a *App) GetRepositoryFiles(scid string) map[string]interface{} {
 					entry.Name = child.DURL
 				}
 			} else {
-				entry.Reason = "could not be read as a TELA DOC or INDEX"
-				a.logToConsole(fmt.Sprintf("[TELA] Repository entry unreadable %s: %v", docSCID[:16]+"...", docErr))
+				a.logToConsole(fmt.Sprintf("[TELA] Repository entry unreadable %s: %v", shortSCID(docSCID), docErr))
 			}
 			files = append(files, entry)
 			continue
 		}
 
-		files = append(files, a.repositoryFileFromDOC(docSCID, doc))
+		entry := a.repositoryFileFromDOC(docSCID, doc)
+		if len(entry.Content) > remaining {
+			entry.Content = ""
+			entry.Reason = "not shown: this repository's files add up to more than can be displayed at once"
+		} else {
+			remaining -= len(entry.Content)
+		}
+		files = append(files, entry)
 	}
 
 	a.logToConsole(fmt.Sprintf("[TELA] Repository %s: %d entries", scid[:16]+"...", len(files)))
@@ -113,6 +154,15 @@ func (a *App) repositoryFileFromDOC(docSCID string, doc tela.DOC) RepositoryFile
 		DocType: doc.DocType,
 		SubDir:  doc.SubDir,
 		Kind:    "doc",
+	}
+
+	// connectToExternalNode restores a nil client when a connection test fails, so
+	// this is a real state and not a theoretical one. Without the guard a nil
+	// client is a panic Wails recovers and never reports, which leaves the pane
+	// waiting forever rather than showing this reason on one file.
+	if a.daemonClient == nil {
+		entry.Reason = "no daemon connection"
+		return entry
 	}
 
 	scData, err := a.daemonClient.GetSC(docSCID, true, false)

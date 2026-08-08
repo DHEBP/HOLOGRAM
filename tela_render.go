@@ -27,6 +27,7 @@ import (
 	"html"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
@@ -60,7 +61,41 @@ const (
 
 	// maxMarkdownBytes caps markdown input. Rejected rather than truncated: a
 	// half-parsed document is a half-sanitised document.
-	maxMarkdownBytes = 1 << 20
+	//
+	// It is NOT the real protection - see markdownRenderBudget. It is set at the
+	// same 256KB as maxHighlightBytes because that is what bounds the work a
+	// render that has already been given up on can still be doing.
+	maxMarkdownBytes = 256 << 10
+
+	// maxMarkdownHTMLBytes caps the HTML handed back to the webview.
+	//
+	// A SECOND gate, not a restatement of the first: input size does not predict
+	// output size, and the worst amplifier measured here is also one of the
+	// fastest, so the time budget above does not catch it. Measured on this
+	// machine at 200KB of input: a ```js fence renders to 3.98MB in 0.57s
+	// (x19.9), ">" to 5.4MB (x27) but slowly, task lists x5.9, tables x5.5,
+	// emphasis x2.8. That HTML is assigned to Svelte's {@html}, so WebKit builds
+	// every element of it on the UI thread — the ">" case is roughly one nested
+	// <blockquote> per input byte.
+	//
+	// 2MB leaves a wide margin over anything a README does: 150KB of ordinary
+	// prose, headings, links and lists renders to well under a tenth of it.
+	maxMarkdownHTMLBytes = 2 << 20
+
+	// markdownRenderBudget is how long a markdown render may take before the
+	// caller is told it failed.
+	//
+	// goldmark is quadratic on some nested-inline shapes and nothing in it takes
+	// a context, so size alone cannot bound the cost. Measured on this machine
+	// with "[x](" repeated: 50KB 0.77s, 100KB 3.0s, 200KB 12.1s - a clean 4x per
+	// doubling. The repository view renders a README the moment it opens, so an
+	// unbounded parse is a zero-click freeze armed by whoever published the DOC.
+	//
+	// ⚠️ Honest residual: goldmark cannot be cancelled, so a render that blows
+	// the budget keeps running to completion on its own goroutine. Nothing waits
+	// for it and its result is dropped, but it does hold a core until it
+	// finishes - which is the reason maxMarkdownBytes above is 256KB and not 1MiB.
+	markdownRenderBudget = 2 * time.Second
 
 	// binarySniffBytes is how much of a file is inspected for NUL bytes and
 	// invalid UTF-8. Same window git uses.
@@ -285,7 +320,9 @@ func highlightSource(filename, content string) HighlightResult {
 //
 // On any error it returns an empty string rather than what it managed to
 // produce, because a partially rendered document is a partially sanitised one.
-func renderMarkdownSafe(source string) (rendered string, err error) {
+// It gives up after markdownRenderBudget rather than blocking the caller for as
+// long as the document takes.
+func renderMarkdownSafe(source string) (string, error) {
 	if len(source) > maxMarkdownBytes {
 		return "", fmt.Errorf("markdown too large to render: %d bytes, limit %d", len(source), maxMarkdownBytes)
 	}
@@ -293,6 +330,34 @@ func renderMarkdownSafe(source string) (rendered string, err error) {
 		return "", fmt.Errorf("markdown content is binary")
 	}
 
+	type outcome struct {
+		html string
+		err  error
+	}
+
+	// Buffered, so the goroutine can finish and exit after the budget expired
+	// instead of blocking forever on a send nobody is receiving.
+	done := make(chan outcome, 1)
+	go func() {
+		html, err := convertMarkdown(source)
+		done <- outcome{html, err}
+	}()
+
+	timer := time.NewTimer(markdownRenderBudget)
+	defer timer.Stop()
+
+	select {
+	case result := <-done:
+		return result.html, result.err
+	case <-timer.C:
+		return "", fmt.Errorf("markdown render took longer than %s", markdownRenderBudget)
+	}
+}
+
+// convertMarkdown is the actual render. It runs on its own goroutine, so it owns
+// the panic recovery: an unrecovered panic there would take the process down
+// rather than being caught by the caller.
+func convertMarkdown(source string) (rendered string, err error) {
 	// goldmark parses hostile input; a panic in it must not take the app down.
 	// Gitea recovers around its convert for the same reason.
 	defer func() {
@@ -305,6 +370,12 @@ func renderMarkdownSafe(source string) (rendered string, err error) {
 	var buf bytes.Buffer
 	if convErr := telaMarkdown.Convert([]byte(source), &buf); convErr != nil {
 		return "", fmt.Errorf("markdown render failed: %w", convErr)
+	}
+
+	// Checked before Sanitize: the point is to never build the string, never
+	// sanitise it and never hand it across the bridge.
+	if buf.Len() > maxMarkdownHTMLBytes {
+		return "", fmt.Errorf("markdown renders to %d bytes of HTML, limit %d", buf.Len(), maxMarkdownHTMLBytes)
 	}
 
 	return telaMarkdownPolicySingleton.Sanitize(buf.String()), nil

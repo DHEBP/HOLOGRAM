@@ -45,6 +45,7 @@
   // are hidden entirely while a historical version is open.
   let signatures = {};
   let signaturesLoading = false;
+  let signaturesError = '';
 
   // History
   let commits = [];
@@ -90,6 +91,7 @@
     repoKind = '';
     durl = '';
     signatures = {};
+    signaturesError = '';
     commits = [];
     viewedCommit = null;
     viewedEntries = [];
@@ -147,17 +149,23 @@
 
   async function loadSignatures() {
     signaturesLoading = true;
+    signaturesError = '';
     try {
       const result = await GetDOCSignatures(scid);
       if (result?.success) {
         const next = {};
         for (const sig of result.signatures || []) next[sig.scid] = sig;
         signatures = next;
+      } else {
+        // Absent badges alone are NOT the honest outcome: a tree with no chips
+        // looks identical to one still loading, and to a build with badges
+        // turned off. Verification not running has to look different from
+        // verification being fine.
+        signaturesError = result?.error || 'unknown reason';
       }
-      // A failed signature read leaves the map empty and the badges absent,
-      // which is the honest outcome: nothing is claimed about any file.
     } catch (error) {
       signatures = {};
+      signaturesError = 'the call did not return';
     } finally {
       signaturesLoading = false;
     }
@@ -314,6 +322,19 @@
 
   $: fileCount = entries.filter((e) => e.kind === 'doc').length;
   $: otherCount = entries.length - fileCount;
+
+  // verifyDOCAt checks each file against that DOC contract's OWN recorded owner,
+  // never against this INDEX. So an INDEX can list a reputable project's DOC
+  // SCIDs and every borrowed file renders a green SIGNED chip carrying a name
+  // that has nothing to do with whoever assembled it. The fork panel states this
+  // to the person creating a fork; whoever opens the result needs it too.
+  $: mixedSigners =
+    atHead &&
+    !!info?.owner &&
+    entries.some((e) => {
+      const sig = e.scid ? signatures[e.scid] : null;
+      return !!sig?.signer && sig.signer !== info.owner;
+    });
 </script>
 
 <div class="repo-layout">
@@ -330,7 +351,10 @@
           <span class="repo-tag">v{info.currentVersion}</span>
         {/if}
         {#if info && info.isLatest === false}
-          <span class="repo-tag warn" title="This INDEX was published against an older TELA contract version.">older contract</span>
+          <!-- Neutral, like mods and v{n}. The amber this used to carry is the
+               same weight the app gives a signature that did not verify, and the
+               age of a TELA contract template is not a claim about the app. -->
+          <span class="repo-tag" title="This INDEX was published against an older TELA contract version.">older contract</span>
         {/if}
         {#if info?.mods}
           <span class="repo-tag">mods {info.mods}</span>
@@ -443,6 +467,17 @@
           <p class="repo-sidebar-note">
             Author signatures describe each file as it stands now, so they are not
             shown for an earlier version.
+          </p>
+        {:else if signaturesError && entries.length > 0}
+          <p class="repo-sidebar-note">
+            Author signatures could not be read, so none are shown. This is not a
+            statement about the files.
+          </p>
+        {:else if mixedSigners}
+          <p class="repo-sidebar-note">
+            Some files are signed by an address that is not this repository's
+            owner. A signature says who wrote a file, not who assembled this
+            INDEX.
           </p>
         {/if}
       </div>
@@ -585,12 +620,6 @@
     border-radius: var(--r-sm);
     padding: 1px var(--s-2);
     white-space: nowrap;
-  }
-
-  .repo-tag.warn {
-    color: var(--status-warn);
-    border-color: rgba(251, 191, 36, 0.4);
-    cursor: help;
   }
 
   .repo-header-sub {

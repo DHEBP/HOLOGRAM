@@ -254,7 +254,9 @@ func (a *App) GetDOCSignatures(scid string) map[string]interface{} {
 				// Both are neutral: neither is a signature failure, and one
 				// entry we cannot read must not blank the whole panel.
 				state := DocSigUnreadable
-				path := docSCID[:16] + "..."
+				// shortSCID, not a direct slice: a listed DOC SCID is whatever
+				// string the INDEX contract stored and can be shorter than 16.
+				path := shortSCID(docSCID)
 				if child, idxErr := tela.GetINDEXInfo(docSCID, endpoint); idxErr == nil {
 					state = DocSigIndex
 					if child.DURL != "" {

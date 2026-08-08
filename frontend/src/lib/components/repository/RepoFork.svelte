@@ -131,11 +131,20 @@
   onDestroy(() => clearTimeout(previewTimer));
 
   $: docCount = preview?.docCount ?? source?.docs?.length ?? 0;
-  $: canFork = !!preview && !preview.tooLarge && !previewError && !forking;
-  $: costLabel =
-    preview?.costMeasured
+  $: walletReady = preview?.walletReady === true;
+  $: canFork = !!preview && !preview.tooLarge && !previewError && !forking && walletReady;
+
+  // "could not be measured" states only what is known. storageGasFor returns
+  // no answer for a missing daemon connection, an RPC error, a result that is
+  // not a map AND a reply with no gasstorage key — only one of those is the
+  // node failing to answer. When the request never reached the node at all,
+  // the warn note above already carries the real reason and this row says
+  // nothing rather than inventing a second one.
+  $: costLabel = previewError
+    ? '—'
+    : preview?.costMeasured
       ? `${preview.storageGas.toLocaleString()} storage gas · about ${preview.storageGasDero.toFixed(5)} DERO`
-      : 'could not be measured — the node did not answer';
+      : 'could not be measured';
 </script>
 
 <svelte:window on:keydown={onKeydown} />
@@ -197,6 +206,13 @@
               original's owner cannot update the fork.
             </li>
             <li>
+              <strong>Your wallet address is recorded, publicly.</strong>
+              A fork installs at ring size {preview?.ringsize ?? 2}, which is what lets you
+              own and update it — the contract stores the signing address as its
+              owner and anyone can read it. A larger ring would hide you and store
+              "anon" instead, but then the fork could never be updated by anyone.
+            </li>
+            <li>
               <strong>Ratings do not carry over.</strong>
               The fork starts at zero likes and zero dislikes, with no history.
             </li>
@@ -246,6 +262,16 @@
             <div class="fork-note warn">{previewError}</div>
           {:else if preview?.tooLarge}
             <div class="fork-note warn">{preview.costWarning}</div>
+          {:else if preview && !walletReady}
+            <!-- Stated here rather than as a toast after the click: the install
+                 signs a transaction, so with no wallet open there is nothing to
+                 sign with and the form cannot go anywhere. walletReady comes
+                 from the same lookup the install performs, so it is right in
+                 simulator mode too. -->
+            <div class="fork-note warn">
+              No wallet is open, so nothing can sign this install. Open one, then
+              reopen this panel.
+            </div>
           {/if}
 
           <div class="fork-cost">

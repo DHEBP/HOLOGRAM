@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/yuin/goldmark"
@@ -882,5 +883,84 @@ func TestAppRenderTELAMarkdown_ResponseShape(t *testing.T) {
 	}
 	if _, ok := bad["html"]; ok {
 		t.Fatalf("failed response must not carry html")
+	}
+}
+
+// TestRenderMarkdownSafe_TimeBudget pins that a document goldmark cannot parse
+// quickly is given up on rather than allowed to hold the caller.
+//
+// maxMarkdownBytes bounds the wrong thing here: goldmark is quadratic on some
+// nested-inline shapes, so measured on this machine "[x](" repeated cost 0.77s
+// at 50KB, 3.0s at 100KB and 12.1s at 200KB. The repository view renders a
+// README the moment it opens (RepoFileView sets asMarkdown off the .md
+// extension and loads immediately), so this is zero-click for whoever publishes
+// the DOC, and the frontend's loadToken only discards the result — it cannot
+// stop the work.
+func TestRenderMarkdownSafe_TimeBudget(t *testing.T) {
+	// 200KB of this measured 12.1s unbounded, six times the budget.
+	source := strings.Repeat("[x](", 50000)
+	if len(source) > maxMarkdownBytes {
+		t.Fatalf("the probe is %d bytes, past the %d-byte input cap; it would be refused for the wrong reason", len(source), maxMarkdownBytes)
+	}
+
+	start := time.Now()
+	html, err := renderMarkdownSafe(source)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected the render to be given up on, got %d bytes of HTML", len(html))
+	}
+	if html != "" {
+		t.Fatalf("a failed render must return nothing, got %d bytes", len(html))
+	}
+	// Generous slack over the budget so this does not flake on a loaded machine,
+	// while still failing outright if the budget is not applied at all.
+	if elapsed > markdownRenderBudget+3*time.Second {
+		t.Fatalf("render took %s against a %s budget", elapsed, markdownRenderBudget)
+	}
+}
+
+// TestConvertMarkdown_OutputCap pins the SECOND gate, using a shape the time
+// budget does not catch.
+//
+// A ```js fence measured 200KB in → 3.98MB out in 0.57 seconds on this machine:
+// x19.9 amplification, well inside the render budget. That HTML would go
+// straight to Svelte's {@html}, so a cheap parse still becomes a multi-megabyte
+// DOM built on the UI thread.
+//
+// It calls convertMarkdown rather than renderMarkdownSafe ON PURPOSE. Going
+// through the wrapper would race the 2s budget, and under -race this render is
+// slow enough to trip it — the test would then pass on the timeout and stop
+// proving the size gate at all. convertMarkdown is where the gate lives.
+func TestConvertMarkdown_OutputCap(t *testing.T) {
+	source := "```js\n" + strings.Repeat("var a=1;\n", 200000/9)
+	if len(source) > maxMarkdownBytes {
+		t.Fatalf("the probe is %d bytes, past the %d-byte input cap", len(source), maxMarkdownBytes)
+	}
+
+	html, err := convertMarkdown(source)
+
+	if err == nil {
+		t.Fatalf("expected the render to be refused on size, got %d bytes of HTML", len(html))
+	}
+	if html != "" {
+		t.Fatalf("a refused render must return nothing, got %d bytes", len(html))
+	}
+}
+
+// TestRenderMarkdownSafe_OrdinaryDocumentStillRenders is the counterweight: the
+// two gates above must not fire on anything a real README does.
+func TestRenderMarkdownSafe_OrdinaryDocumentStillRenders(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 2000; i++ {
+		b.WriteString("## Section\n\nSome prose with a [link](https://example.com) and `code`.\n\n- one\n- two\n\n")
+	}
+
+	html, err := renderMarkdownSafe(b.String())
+	if err != nil {
+		t.Fatalf("an ordinary %d-byte document was refused: %v", b.Len(), err)
+	}
+	if !strings.Contains(html, "<h2>") {
+		t.Fatal("rendered HTML carries no headings")
 	}
 }
