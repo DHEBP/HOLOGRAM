@@ -2,7 +2,8 @@
   import { createEventDispatcher } from 'svelte';
   import { GetCommitHistoryWithLabels, GetCommitContent, DiffCommits, GetDOCSignatures } from '../../../wailsjs/go/main/App.js';
   import { Icons } from './holo';
-  
+  import SignatureBadge from './repository/SignatureBadge.svelte';
+
   export let scid = '';
   export let show = false;
   
@@ -33,29 +34,10 @@
     loadSignatures();
   }
 
-  const SIG_LABEL = {
-    verified: 'signed',
-    anonymous: 'author private',
-    unsigned: 'unsigned',
-    unverified: 'did not verify',
-    index: 'nested index',
-    unreadable: 'unreadable'
-  };
+  // The six-state vocabulary and its wording live in SignatureBadge, which the
+  // repository view renders too. One definition, so the two viewers cannot come
+  // to describe the same signature differently.
 
-  const SIG_TITLE = {
-    verified: 'The recorded author signed exactly the file this contract carries.',
-    anonymous: 'Signed, but published with a ring size above 2, so the chain recorded no author address to check against. A privacy choice, not a fault.',
-    unsigned: 'No signature was stored for this file.',
-    unverified: 'A signature is stored and does not match the file. This can mean the file changed after signing, or that its original bytes cannot be recovered.',
-    index: 'A nested INDEX rather than a single document — this is how TELA shards a large file. Signatures live on its own entries.',
-    unreadable: 'This contract parses as neither a TELA INDEX nor a DOC, so nothing can be said about it.'
-  };
-
-  function shortSigner(addr) {
-    if (!addr) return '';
-    return addr.length > 20 ? `${addr.slice(0, 10)}…${addr.slice(-6)}` : addr;
-  }
-  
   // Get file count from commit files
   $: fileCount = selectedCommit?.files ? Object.keys(selectedCommit.files).length : 0;
   
@@ -476,17 +458,9 @@
                           <span class="doc-scid">{docScid}</span>
                         </div>
                         {#if signaturesLoading}
-                          <span class="sig-chip sig-pending">checking…</span>
+                          <SignatureBadge pending={true} />
                         {:else if sig}
-                          <span
-                            class="sig-chip sig-{sig.state}"
-                            title={SIG_TITLE[sig.state] || ''}
-                          >
-                            {SIG_LABEL[sig.state] || sig.state}
-                          </span>
-                          {#if sig.signer}
-                            <span class="sig-signer" title={sig.signer}>{shortSigner(sig.signer)}</span>
-                          {/if}
+                          <SignatureBadge state={sig.state} signer={sig.signer} showSigner={true} />
                         {/if}
                       </div>
                     {/each}
@@ -1149,55 +1123,7 @@
     margin: calc(var(--s-2) * -1) 0 var(--s-3) 0;
   }
 
-  .sig-chip {
-    flex-shrink: 0;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 2px var(--s-2);
-    border-radius: var(--r-sm);
-    border: 1px solid transparent;
-    white-space: nowrap;
-    cursor: help;
-  }
-
-  .sig-verified {
-    color: var(--status-ok);
-    border-color: var(--status-ok);
-  }
-
-  /* Anonymous is a privacy choice, not a fault - it reads neutral, never as a
-     warning. Rendering it like a failure would punish the stronger option.
-     A nested index and an unreadable contract are not signature outcomes at
-     all, so they stay neutral for the same reason. */
-  .sig-anonymous,
-  .sig-unsigned,
-  .sig-index,
-  .sig-unreadable {
-    color: var(--text-4);
-    border-color: var(--border-dim);
-  }
-
-  /* Warn, not error. A stored signature that does not match can also mean the
-     original bytes are unrecoverable, so this must not read as proven forgery.
-     Red stays reserved for true alarms. */
-  .sig-unverified {
-    color: var(--status-warn);
-    border-color: var(--status-warn);
-  }
-
-  .sig-pending {
-    color: var(--text-4);
-    border-color: var(--border-dim);
-    opacity: 0.6;
-  }
-
-  .sig-signer {
-    flex-shrink: 0;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-4);
-  }
+  /* The .sig-* rules moved to SignatureBadge with the vocabulary they style. */
 
   /* File-based diff styles */
   .diff-header-row {

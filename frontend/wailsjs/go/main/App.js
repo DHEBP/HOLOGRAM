@@ -654,6 +654,10 @@ export function GetRegistrationStatus() {
   return window['go']['main']['App']['GetRegistrationStatus']();
 }
 
+export function GetRepositoryFiles(arg1) {
+  return window['go']['main']['App']['GetRepositoryFiles'](arg1);
+}
+
 export function GetRingMemberSets() {
   return window['go']['main']['App']['GetRingMemberSets']();
 }

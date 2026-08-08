@@ -329,6 +329,8 @@ export function GetRecentWalletsWithInfo():Promise<Array<main.WalletInfo>>;
 
 export function GetRegistrationStatus():Promise<Record<string, any>>;
 
+export function GetRepositoryFiles(arg1:string):Promise<Record<string, any>>;
+
 export function GetRingMemberSets():Promise<Record<string, any>>;
 
 export function GetRingMembers(arg1:string):Promise<Record<string, any>>;

@@ -11,6 +11,7 @@ import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
 import RatingsBreakdown from '../lib/components/RatingsBreakdown.svelte';
 import VersionHistory from '../lib/components/VersionHistory.svelte';
+import { RepositoryView } from '../lib/components/repository';
 import { Star, History, GitBranch, Heart, Link2, X } from 'lucide-svelte';
 import deroIconFallback from '../assets/dero-icon-fallback.svg';
 import OmniSearch from '../lib/components/OmniSearch.svelte';
@@ -774,7 +775,20 @@ let addressInput = '';
   // Version History state
   let showVersionHistory = false;
   let versionHistoryScid = '';
-  
+
+  // Repository view state — "view source" for the app currently loaded.
+  let showRepository = false;
+  let repositoryScid = '';
+
+  // The repository view describes the app sitting underneath it. If that app
+  // changes — a new navigation, or a return to the discover screen — it would
+  // be describing something no longer on screen, so it closes with the content
+  // it belongs to. (The address-bar fallback in toggleRepository only fires
+  // when currentMeta carries no SCID, so it cannot trip this.)
+  $: if (showRepository && (showWelcome || (currentMeta?.scid && currentMeta.scid !== repositoryScid))) {
+    showRepository = false;
+  }
+
   // Ratings breakdown state
   let showRatingsBreakdown = false;
   let breakdownScid = '';
@@ -827,7 +841,42 @@ let addressInput = '';
     window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'studio' }));
     showVersionHistory = false;
   }
-  
+
+  // Repository view functions
+  function toggleRepository() {
+    if (showRepository) {
+      showRepository = false;
+      return;
+    }
+    // Same resolution the history button uses: the resolved SCID if we have
+    // one, otherwise whatever is typed, but only if it is already a SCID.
+    const scid = currentMeta?.scid || addressInput;
+    if (scid && scid.length === 64) {
+      repositoryScid = scid;
+      showRepository = true;
+    } else {
+      toast.warning('No TELA app loaded. Navigate to a TELA app first.');
+    }
+  }
+
+  async function handleRepositoryOpen(event) {
+    const target = event.detail?.durl || event.detail?.scid || '';
+    const sameApp = !!currentMeta?.scid && currentMeta.scid === event.detail?.scid;
+    showRepository = false;
+    // The app is still running underneath, so closing the overlay IS opening it.
+    // Only navigate when the repository being read is not the loaded app.
+    if (!target || sameApp) return;
+    addressInput = target;
+    await navigate();
+  }
+
+  function handleRepositoryExternalLink(event) {
+    const url = event.detail?.url;
+    if (!url || !isAllowedExternalWebUrl(url)) return;
+    externalLinkUrl = url;
+    showExternalLinkModal = true;
+  }
+
   const categories = [
     { id: 'top', label: 'Top Rated (7+)', iconName: 'star' },
     { id: 'good', label: 'Good (5+)', iconName: 'trending' },
@@ -4250,6 +4299,17 @@ ${logsText || '(no logs)'}
       </button>
         </div>
       
+      <!-- Repository (view source) Toggle -->
+      <button
+        on:click={toggleRepository}
+        class="nav-btn"
+        class:active={showRepository}
+        title="Repository — files, README, history and signatures"
+        disabled={showWelcome}
+      >
+        <GitBranch size={14} />
+      </button>
+
       <!-- Version History Toggle -->
       <button
         on:click={openVersionHistory}
@@ -4260,7 +4320,7 @@ ${logsText || '(no logs)'}
       >
         <History size={14} />
       </button>
-      
+
       <!-- JS Console Toggle -->
       <button
         on:click={toggleConsole}
@@ -4633,6 +4693,20 @@ ${logsText || '(no logs)'}
       title="App Content"
     ></iframe>
 
+    <!-- Repository surface.
+         Covers the frame rather than replacing it: the app keeps running
+         underneath, so closing this returns to it with no reload. -->
+    {#if showRepository}
+      <div class="browser-repository-surface">
+        <RepositoryView
+          scid={repositoryScid}
+          on:close={() => (showRepository = false)}
+          on:open={handleRepositoryOpen}
+          on:external={handleRepositoryExternalLink}
+        />
+      </div>
+    {/if}
+
     <!-- v6.1 Console Panel (matches Settings console) -->
     {#if showConsole}
       <div class="browser-console-panel">
@@ -4827,6 +4901,15 @@ ${logsText || '(no logs)'}
      - Console: .browser-console-*
   */
   
+  /* Repository surface — sits over the content frame, inside the same
+     position:relative content area the loading state and iframe use. */
+  .browser-repository-surface {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    background: var(--void-base);
+  }
+
   /* Search icon global style */
   :global(.browser-search-icon) {
     color: var(--text-4, #505068);
