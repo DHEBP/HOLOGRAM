@@ -842,6 +842,10 @@ export function HandleEpochRequest(arg1, arg2) {
   return window['go']['main']['App']['HandleEpochRequest'](arg1, arg2);
 }
 
+export function HighlightSource(arg1, arg2) {
+  return window['go']['main']['App']['HighlightSource'](arg1, arg2);
+}
+
 export function InitializeEpoch() {
   return window['go']['main']['App']['InitializeEpoch']();
 }
@@ -1088,6 +1092,10 @@ export function RemoveTrackedToken(arg1) {
 
 export function RenameRingMemberSet(arg1, arg2) {
   return window['go']['main']['App']['RenameRingMemberSet'](arg1, arg2);
+}
+
+export function RenderTELAMarkdown(arg1) {
+  return window['go']['main']['App']['RenderTELAMarkdown'](arg1);
 }
 
 export function RequestInterceptor(arg1) {

@@ -3,6 +3,7 @@ module github.com/DHEBP/HOLOGRAM
 go 1.25.0
 
 require (
+	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/civilware/Gnomon v0.0.0-20260112113638-0280ea286474
 	github.com/civilware/epoch v0.0.0-20241002060739-1ed2fc6f74cb
 	github.com/civilware/tela v0.0.0-20250806221602-aa892d2ff8d4
@@ -10,8 +11,11 @@ require (
 	github.com/deroproject/graviton v0.0.0-20220130070622-2c248a53b2e1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3
 	github.com/wailsapp/wails/v2 v2.11.0
+	github.com/yuin/goldmark v1.8.5
+	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
 )
 
 // HOLOGRAM builds against github.com/DHEBP/derohe, a curated thin fork of the
@@ -26,6 +30,7 @@ replace github.com/deroproject/derohe => github.com/DHEBP/derohe v0.0.0-20260820
 require (
 	github.com/VictoriaMetrics/metrics v1.23.1 // indirect
 	github.com/beevik/ntp v1.2.0 // indirect
+	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
@@ -39,6 +44,7 @@ require (
 	github.com/dchest/siphash v1.2.3 // indirect
 	github.com/docopt/docopt-go v0.0.0-20180111231733-ee0de3bc6815 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.4.0 // indirect
 	github.com/go-logr/logr v1.2.3 // indirect
 	github.com/go-logr/zapr v1.2.3 // indirect
@@ -46,6 +52,7 @@ require (
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/css v1.0.1 // indirect
 	github.com/hashicorp/golang-lru v0.5.1 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect

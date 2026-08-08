@@ -423,6 +423,8 @@ export function GrantAppPermission(arg1:string,arg2:string,arg3:string):Promise<
 
 export function HandleEpochRequest(arg1:number,arg2:string):Promise<Record<string, any>>;
 
+export function HighlightSource(arg1:string,arg2:string):Promise<Record<string, any>>;
+
 export function InitializeEpoch():Promise<Record<string, any>>;
 
 export function InstallDOC(arg1:string):Promise<Record<string, any>>;
@@ -546,6 +548,8 @@ export function RemoveSearchExclusion(arg1:string):Promise<Record<string, any>>;
 export function RemoveTrackedToken(arg1:string):Promise<Record<string, any>>;
 
 export function RenameRingMemberSet(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function RenderTELAMarkdown(arg1:string):Promise<Record<string, any>>;
 
 export function RequestInterceptor(arg1:string):Promise<Record<string, any>>;
 
