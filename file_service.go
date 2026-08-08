@@ -580,21 +580,36 @@ func (a *App) SelectFile() string {
 	return selection
 }
 
-// SelectFileWithContent opens a native file picker dialog and returns the file content as base64.
-// This is used by TELA dApps that need to select files (e.g., importing images).
+// buildFileFilters turns an HTML accept attribute into dialog filters.
 // The accept parameter is a comma-separated list of MIME types (e.g., "image/png,image/jpeg")
 // or file extensions (e.g., ".png,.jpg"). If empty, all files are shown.
-func (a *App) SelectFileWithContent(title string, accept string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("[FILE] SelectFileWithContent: title=%s, accept=%s", title, accept))
-
-	// Build file filters from accept parameter
-	filters := []runtime.FileFilter{}
+//
+// Split out from SelectFileWithContent so it can be tested without a Wails context: the
+// caller opens a real dialog, this does not.
+func buildFileFilters(accept string) []runtime.FileFilter {
+	// "All Files" goes FIRST and is always present. GTK selects the first filter when the
+	// dialog opens, so a narrow filter in that slot renders every other file unselectable —
+	// a dApp declaring accept="image/*" left a user hunting a greyed-out document with no
+	// sign that a dropdown was hiding it. Filtering here is a convenience; being unable to
+	// reach your own file is not.
+	filters := []runtime.FileFilter{{
+		DisplayName: "All Files",
+		Pattern:     "*.*",
+	}}
 	if accept != "" {
 		// Parse accept string to build filters
 		parts := strings.Split(accept, ",")
 		patterns := []string{}
+		// One unrecognised token voids the narrow filter entirely. Translating only the
+		// tokens we know would quietly narrow the dialog to a SUBSET of what the app
+		// accepts: accept="image/png,application/pdf" would offer PNGs and hide the PDFs
+		// the app explicitly allows.
+		understood := true
 		for _, part := range parts {
 			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
 			if strings.HasPrefix(part, ".") {
 				// Extension like ".png"
 				patterns = append(patterns, "*"+part)
@@ -607,6 +622,8 @@ func (a *App) SelectFileWithContent(title string, accept string) map[string]inte
 					patterns = append(patterns, "*.jpg", "*.jpeg")
 				case "image/gif":
 					patterns = append(patterns, "*.gif")
+				case "image/webp":
+					patterns = append(patterns, "*.webp")
 				case "image/svg+xml":
 					patterns = append(patterns, "*.svg")
 				case "image/*":
@@ -617,25 +634,52 @@ func (a *App) SelectFileWithContent(title string, accept string) map[string]inte
 					patterns = append(patterns, "*.html", "*.htm")
 				case "text/css":
 					patterns = append(patterns, "*.css")
+				case "text/markdown":
+					patterns = append(patterns, "*.md")
+				case "text/csv":
+					patterns = append(patterns, "*.csv")
 				case "application/javascript", "text/javascript":
 					patterns = append(patterns, "*.js")
 				case "application/json":
 					patterns = append(patterns, "*.json")
+				case "application/pdf":
+					patterns = append(patterns, "*.pdf")
+				case "application/zip":
+					patterns = append(patterns, "*.zip")
+				case "application/msword":
+					patterns = append(patterns, "*.doc")
+				case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+					patterns = append(patterns, "*.docx")
+				case "application/vnd.ms-excel":
+					patterns = append(patterns, "*.xls")
+				case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+					patterns = append(patterns, "*.xlsx")
+				default:
+					// Wildcards we cannot enumerate (application/*, audio/*, */*) and any
+					// type absent from the map above. Stop pretending we can express it.
+					understood = false
 				}
+			} else {
+				// Neither an extension nor a MIME type.
+				understood = false
 			}
 		}
-		if len(patterns) > 0 {
+		if understood && len(patterns) > 0 {
 			filters = append(filters, runtime.FileFilter{
 				DisplayName: "Allowed Files",
 				Pattern:     strings.Join(patterns, ";"),
 			})
 		}
 	}
-	// Always add "All Files" as fallback
-	filters = append(filters, runtime.FileFilter{
-		DisplayName: "All Files",
-		Pattern:     "*.*",
-	})
+	return filters
+}
+
+// SelectFileWithContent opens a native file picker dialog and returns the file content as base64.
+// This is used by TELA dApps that need to select files (e.g., importing images).
+func (a *App) SelectFileWithContent(title string, accept string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[FILE] SelectFileWithContent: title=%s, accept=%s", title, accept))
+
+	filters := buildFileFilters(accept)
 
 	dialogTitle := title
 	if dialogTitle == "" {

@@ -1032,3 +1032,75 @@ func TestResolveDropPaths_MultiFile(t *testing.T) {
 	}
 }
 
+// ============== buildFileFilters ==============
+//
+// Reported by chakipu: a TELA app's upload dialog opened with every file greyed out.
+// The dialog was working; the filter derived from the app's accept attribute was not.
+
+// The dialog selects its first filter on open, so a narrow filter in slot 0 makes every
+// other file unselectable. "All Files" must lead regardless of what accept says.
+func TestBuildFileFilters_AllFilesIsAlwaysFirst(t *testing.T) {
+	for _, accept := range []string{"", "image/*", ".png", "application/pdf", "image/png,.txt"} {
+		filters := buildFileFilters(accept)
+		if len(filters) == 0 {
+			t.Fatalf("accept=%q produced no filters", accept)
+		}
+		if filters[0].DisplayName != "All Files" || filters[0].Pattern != "*.*" {
+			t.Errorf("accept=%q: first filter = %q/%q, want All Files/*.*",
+				accept, filters[0].DisplayName, filters[0].Pattern)
+		}
+	}
+}
+
+// A single untranslatable token must void the narrow filter entirely. Translating only the
+// recognised half would offer PNGs while hiding the MP3s the app also accepts.
+func TestBuildFileFilters_UnknownMimeVoidsNarrowFilter(t *testing.T) {
+	filters := buildFileFilters("image/png,audio/mpeg")
+	if len(filters) != 1 {
+		t.Fatalf("got %d filters, want 1 (All Files only); filters=%+v", len(filters), filters)
+	}
+	if filters[0].DisplayName != "All Files" {
+		t.Errorf("sole filter = %q, want All Files", filters[0].DisplayName)
+	}
+}
+
+// Documents were absent from the MIME map, so a document-uploading app could never get a
+// filter that matched its own files.
+func TestBuildFileFilters_DocumentTypesAreMapped(t *testing.T) {
+	cases := map[string]string{
+		"application/pdf":  "*.pdf",
+		"application/zip":  "*.zip",
+		"text/csv":         "*.csv",
+		"text/markdown":    "*.md",
+		"image/webp":       "*.webp",
+		"application/json": "*.json",
+	}
+	for accept, want := range cases {
+		filters := buildFileFilters(accept)
+		if len(filters) != 2 {
+			t.Errorf("accept=%q: got %d filters, want 2 (All Files + Allowed Files)", accept, len(filters))
+			continue
+		}
+		if filters[1].Pattern != want {
+			t.Errorf("accept=%q: pattern = %q, want %q", accept, filters[1].Pattern, want)
+		}
+	}
+}
+
+func TestBuildFileFilters_EmptyAcceptOffersEverything(t *testing.T) {
+	filters := buildFileFilters("")
+	if len(filters) != 1 || filters[0].Pattern != "*.*" {
+		t.Errorf("empty accept produced %+v, want a single *.* filter", filters)
+	}
+}
+
+// Extensions are translated verbatim and stay usable as a secondary filter.
+func TestBuildFileFilters_ExtensionsStillNarrow(t *testing.T) {
+	filters := buildFileFilters(".png,.jpg")
+	if len(filters) != 2 {
+		t.Fatalf("got %d filters, want 2; filters=%+v", len(filters), filters)
+	}
+	if filters[1].Pattern != "*.png;*.jpg" {
+		t.Errorf("pattern = %q, want *.png;*.jpg", filters[1].Pattern)
+	}
+}
