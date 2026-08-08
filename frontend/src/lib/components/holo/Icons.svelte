@@ -13,7 +13,7 @@
     Terminal, Shield, Key, Users, Target, Crosshair, Sparkles, Gauge, Blocks,
     CircleDot, Hexagon, Triangle, Square, Diamond, Circle, Wrench, Puzzle,
     Play, Pause, StopCircle, PickaxeIcon, TrendingUp, Heart, Globe2, Gamepad2,
-    Github, BookOpen
+    Github, BookOpen, GitBranch
   } from 'lucide-svelte';
 
   export let name = 'circle';
@@ -87,6 +87,7 @@
     'chevron-right': ChevronRight,
     'panel': PanelLeft,
     'history': History,
+    'git-branch': GitBranch,
     'clock': Clock,
     'terminal': Terminal,
     'target': Target,

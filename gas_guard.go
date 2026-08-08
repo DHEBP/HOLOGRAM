@@ -80,11 +80,17 @@ func (a *App) storageGasFor(args rpc.Arguments, ringsize uint64, signer string) 
 	// The exception is a hash: crypto.Hash is a [32]byte and would serialise as an array of
 	// numbers, so it goes as the hex string the daemon expects.
 	scRPC := make([]map[string]interface{}, 0, len(args))
+	code := ""
 	for _, arg := range args {
 		value := arg.Value
 		if arg.DataType == rpc.DataHash {
 			if h, ok := value.(crypto.Hash); ok {
 				value = h.String()
+			}
+		}
+		if arg.Name == rpc.SCCODE {
+			if s, ok := value.(string); ok {
+				code = s
 			}
 		}
 		scRPC = append(scRPC, map[string]interface{}{
@@ -97,6 +103,17 @@ func (a *App) storageGasFor(args rpc.Arguments, ringsize uint64, signer string) 
 	params := map[string]interface{}{"sc_rpc": scRPC, "ringsize": ringsize}
 	if signer != "" {
 		params["signer"] = signer
+	}
+
+	// An INSTALL has to be estimated through the daemon's install branch, and that
+	// branch is chosen by the presence of the top-level "sc" parameter — with sc_rpc
+	// alone the daemon takes the call branch and answers "cannot install code using
+	// this api" (dvm/simulator.go RunSC), which fails open and measures nothing.
+	// Measured against a live simulator: without this the estimate errored at every
+	// size. A call never carries SC_CODE, so this is inert on the invoke paths, and
+	// leaving the argument in sc_rpc as well is the shape tela itself sends.
+	if code != "" {
+		params["sc"] = code
 	}
 
 	result, err := a.daemonClient.Call("DERO.GetGasEstimate", params)

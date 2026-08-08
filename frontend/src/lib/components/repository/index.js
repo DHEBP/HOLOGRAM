@@ -14,4 +14,5 @@ export { default as RepoFileTree } from './RepoFileTree.svelte';
 export { default as RepoFileView } from './RepoFileView.svelte';
 export { default as RepoCommitRail } from './RepoCommitRail.svelte';
 export { default as RepoDiff } from './RepoDiff.svelte';
+export { default as RepoFork } from './RepoFork.svelte';
 export { default as SignatureBadge } from './SignatureBadge.svelte';

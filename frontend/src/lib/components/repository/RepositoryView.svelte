@@ -17,6 +17,7 @@
   import RepoFileView from './RepoFileView.svelte';
   import RepoCommitRail from './RepoCommitRail.svelte';
   import RepoDiff from './RepoDiff.svelte';
+  import RepoFork from './RepoFork.svelte';
 
   export let scid = '';
   export let closable = true;
@@ -65,6 +66,8 @@
   let cloning = false;
   let clonePrompt = '';
 
+  let forkOpen = false;
+
   // Re-selecting a commit would otherwise re-clone the whole version from chain
   // every time. Keyed by commit number and thrown away with the component.
   const commitCache = new Map();
@@ -97,6 +100,7 @@
     compareB = null;
     diffResult = null;
     clonePrompt = '';
+    forkOpen = false;
     commitCache.clear();
   }
 
@@ -357,6 +361,23 @@
         <Icons name="download" size={13} />
         <span>{cloning ? 'Cloning…' : 'Clone'}</span>
       </button>
+      {#if info?.docs?.length}
+        <!-- Disabled while an earlier version is open: a fork always lists the
+             documents the INDEX holds NOW, so offering it beside a historical
+             file tree would promise a version it does not install. -->
+        <button
+          type="button"
+          class="repo-btn"
+          on:click={() => (forkOpen = true)}
+          disabled={!atHead}
+          title={atHead
+            ? 'Publish your own INDEX listing these same documents'
+            : 'Return to the latest version to fork — a fork lists what the INDEX holds now'}
+        >
+          <Icons name="git-branch" size={13} />
+          <span>Fork</span>
+        </button>
+      {/if}
       {#if closable}
         <button type="button" class="repo-btn icon" title="Close" on:click={() => dispatch('close')}>
           <Icons name="close" size={14} />
@@ -498,6 +519,13 @@
     </section>
   </div>
 </div>
+
+<RepoFork
+  show={forkOpen}
+  scid={scid}
+  source={info}
+  on:close={() => (forkOpen = false)}
+/>
 
 <style>
   .repo-layout {

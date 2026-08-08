@@ -147,6 +147,8 @@ export function FetchTELAContent(arg1:string):Promise<main.TELAContent>;
 
 export function FilterSearchResults(arg1:Array<Record<string, any>>):Promise<Array<Record<string, any>>>;
 
+export function ForkTELA(arg1:string):Promise<Record<string, any>>;
+
 export function FormatBlockAge(arg1:number):Promise<string>;
 
 export function FundTestWallet(arg1:number,arg2:number):Promise<Record<string, any>>;
@@ -510,6 +512,8 @@ export function PreviewDOC(arg1:string):Promise<Record<string, any>>;
 export function PreviewRegistrationDCSP(arg1:string):Promise<Record<string, any>>;
 
 export function PreviewTELAApp(arg1:string):Promise<Record<string, any>>;
+
+export function PreviewTELAFork(arg1:string):Promise<Record<string, any>>;
 
 export function QuickDeployFile(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 

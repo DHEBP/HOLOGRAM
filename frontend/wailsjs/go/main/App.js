@@ -290,6 +290,10 @@ export function FilterSearchResults(arg1) {
   return window['go']['main']['App']['FilterSearchResults'](arg1);
 }
 
+export function ForkTELA(arg1) {
+  return window['go']['main']['App']['ForkTELA'](arg1);
+}
+
 export function FormatBlockAge(arg1) {
   return window['go']['main']['App']['FormatBlockAge'](arg1);
 }
@@ -1016,6 +1020,10 @@ export function PreviewRegistrationDCSP(arg1) {
 
 export function PreviewTELAApp(arg1) {
   return window['go']['main']['App']['PreviewTELAApp'](arg1);
+}
+
+export function PreviewTELAFork(arg1) {
+  return window['go']['main']['App']['PreviewTELAFork'](arg1);
 }
 
 export function QuickDeployFile(arg1, arg2, arg3) {
