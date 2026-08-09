@@ -1093,6 +1093,51 @@ func detectMimeType(filename string) string {
 	return "application/octet-stream"
 }
 
+// maxDroppedFileBytes bounds a file handed to a TELA app. The bytes cross into the frame
+// as base64 through postMessage — a structured-clone copy of a ~33% inflated string — so a
+// large file stalls the renderer rather than failing outright.
+const maxDroppedFileBytes = 25 * 1024 * 1024
+
+// ReadDroppedFile reads a file the user dropped onto the window, base64-encoded.
+//
+// The path is never supplied by an app. It arrives on Wails' native file-drop channel,
+// which only fires after a real drag-and-release by the user, and the caller is the parent
+// document. The path is deliberately NOT returned: the app receives bytes and a filename,
+// never the user's directory layout.
+//
+// This channel exists because on Linux the DOM cannot supply the file at all. Measured on
+// WebKitGTK 2026-08-09: an external drag reports types=text/uri-list,text/html with
+// files.length 0 and an empty text/uri-list, so a drop event alone carries nothing to read.
+func (a *App) ReadDroppedFile(path string) map[string]interface{} {
+	info, err := os.Stat(path)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("Cannot read file: %v", err)}
+	}
+	if info.IsDir() {
+		return map[string]interface{}{"success": false, "error": "Folders cannot be handed to an app"}
+	}
+	if info.Size() > maxDroppedFileBytes {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("%s is too large to hand to an app (max 25 MB)", info.Name()),
+		}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("Failed to read file: %v", err)}
+	}
+
+	a.logToConsole(fmt.Sprintf("[Drop] Read %s (%d bytes)", info.Name(), info.Size()))
+	return map[string]interface{}{
+		"success":  true,
+		"filename": info.Name(),
+		"size":     info.Size(),
+		"mimeType": detectMimeType(info.Name()),
+		"base64":   base64.StdEncoding.EncodeToString(data),
+	}
+}
+
 // ================== BATCH UPLOAD (Folder Scanner) ==================
 
 // FolderScanResult represents the result of scanning a folder

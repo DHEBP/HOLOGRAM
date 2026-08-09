@@ -16,6 +16,7 @@
   import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions, NotifyWizardComplete, ConsumeLaunchURL, NoteWalletActivity } from '../wailsjs/go/main/App.js';
   import { EventsOn } from '../wailsjs/runtime/runtime.js';
   import { waitForWails } from './lib/utils/wails.js';
+  import { isFileDrag } from './lib/utils/dragdrop.js';
   
   // Module-level interval ID to prevent duplicates during HMR
   let statusPollingInterval = null;
@@ -131,10 +132,18 @@
 
     // Prevent WebKit from navigating to dropped files (Linux #3686).
     // Only preventDefault — do not stopPropagation, so Wails drag listeners still run.
+    //
+    // A file dragged from the desktop does NOT advertise 'Files' here. Measured on
+    // WebKitGTK 2026-08-09: a drag from the file manager carries exactly
+    // text/uri-list,text/html. Keying only on 'Files' meant this guard never fired,
+    // nothing cancelled dragover, so WebKit never dispatched drop at all and performed
+    // its default instead — navigating the whole webview to the dropped file.
     const preventFileDropNavigation = (e) => {
-      if (e.dataTransfer?.types?.includes('Files')) {
-        e.preventDefault();
-      }
+      try {
+        if (isFileDrag(e.dataTransfer && e.dataTransfer.types)) {
+          e.preventDefault();
+        }
+      } catch (err) { /* a drag we cannot inspect is a drag we do not claim */ }
     };
     for (const evtName of ['dragover', 'drop', 'dragleave', 'dragenter']) {
       window.addEventListener(evtName, preventFileDropNavigation, true);

@@ -3,9 +3,10 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState, requestPayment } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline, GetConnectedApps, GrantAppPermission } from '../../wailsjs/go/main/App.js';
+  import { isDropPointInElement } from '../lib/utils/fileDrop.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline, GetConnectedApps, GrantAppPermission, ReadDroppedFile } from '../../wailsjs/go/main/App.js';
   import ReloadSplitButton from '../lib/components/browser/ReloadSplitButton.svelte';
-  import { EventsOn, EventsOff, ClipboardSetText } from '../../wailsjs/runtime/runtime.js';
+  import { EventsOn, EventsOff, ClipboardSetText, OnFileDrop, OnFileDropOff } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
 import RatingsBreakdown from '../lib/components/RatingsBreakdown.svelte';
@@ -308,6 +309,50 @@ let addressInput = '';
   
   // Console panel state
   let showConsole = false;
+
+  /**
+   * A file dropped on a TELA app, handed to that app.
+   *
+   * The path comes from Wails' NATIVE drop channel, not from the DOM. The DOM drop event
+   * does fire in the frame — the bridge guard cancels it so WebKit stops navigating to the
+   * file — but on Linux it arrives empty: measured 2026-08-09, types=text/uri-list,text/html
+   * with files.length 0 and an empty text/uri-list. So the event says WHERE, and this says
+   * WHAT.
+   *
+   * Read here, in the trusted document, and handed across as bytes. The app never learns
+   * the path.
+   */
+  async function handleNativeFileDrop(x, y, paths) {
+    if (!paths || paths.length === 0) return;
+    if (showWelcome || loading || !contentFrame) return;
+    if (!isDropPointInElement(x, y, contentFrame)) return;   // dropped on HOLOGRAM's own UI
+
+    if (paths.length > 1) {
+      toast.info(`Dropped ${paths.length} files — sending only the first`);
+    }
+    try {
+      const result = await ReadDroppedFile(paths[0]);
+      if (!result || !result.success) {
+        toast.error(result?.error || 'Could not read the dropped file');
+        addConsoleLog(`[Error] Drop failed: ${result?.error || 'unknown'}`);
+        return;
+      }
+      const rect = contentFrame.getBoundingClientRect();
+      contentFrame.contentWindow.postMessage({
+        type: 'hologram-file-drop',
+        filename: result.filename,
+        mimeType: result.mimeType,
+        base64: result.base64,
+        // Frame-relative, so the bridge can aim the event at whatever is under the cursor.
+        x: Math.round(x - rect.left),
+        y: Math.round(y - rect.top)
+      }, iframeUsesSrcdoc ? '*' : (expectedFrameOrigin || '*'));
+      addConsoleLog(`[Drop] Handed ${result.filename} (${result.size} bytes) to the app`);
+    } catch (err) {
+      toast.error('Could not read the dropped file');
+      addConsoleLog(`[Error] Drop failed: ${err.message || err}`);
+    }
+  }
   let consoleLogs = [];
   let unsubscribeConsole;
   let consoleViewport;
@@ -1278,6 +1323,14 @@ let addressInput = '';
     };
     if (!destroyed) window.addEventListener('search-result', handleSearchResult);
     
+    // The file a user drops on a TELA app arrives on the native channel, which carries real
+    // filesystem paths and the drop coordinates. useDropTarget=false: hit-test against the
+    // frame here rather than through Wails' CSS drop-target filter, matching Studio.
+    //
+    // Register after the DOM is ready — required on Linux.
+    await tick();
+    if (!destroyed) OnFileDrop(handleNativeFileDrop, false);
+
     // Strip host filesystem paths before a result crosses into untrusted app code.
     //
     // SelectFileWithContent (file_service.go:773) and SaveBinaryFileWithDialog (:1586) both
@@ -1299,6 +1352,19 @@ let addressInput = '';
     // PostMessage handler for XSWD bridge communication from iframe
     handleXSWDMessage = async (event) => {
       try {
+        // The frame reports whether the app actually took the file. Silence after a drop
+        // is the original bug, so an app with no drop handler has to say so out loud.
+        if (contentFrame && event.source === contentFrame.contentWindow &&
+            event.data?.type === 'hologram-file-drop-result') {
+          const { handled, filename } = event.data;
+          if (handled) {
+            toast.success(`${filename} sent to ${currentMeta?.name || 'the app'}`);
+          } else {
+            toast.info(`${currentMeta?.name || 'This app'} does not accept dropped files`);
+          }
+          addConsoleLog(`[Drop] ${filename} — app ${handled ? 'accepted' : 'ignored'} it`);
+          return;
+        }
         if (contentFrame && event.source === contentFrame.contentWindow && event.data?.type === 'xswd-request') {
           addConsoleLog(`[Browser] Received: action=${event.data.action}, id=${event.data.id}`);
         }
@@ -1775,6 +1841,9 @@ let addressInput = '';
     if (unsubscribeConsole) unsubscribeConsole();
     if (unsubscribeWalletRequests) unsubscribeWalletRequests();
     clearAppDiscoveryRetryTimer();
+    // Wails keeps ONE native drop callback for the whole window, so leaving this one
+    // registered would answer for whichever route mounts next (Studio has its own).
+    OnFileDropOff();
     EventsOff('localdev:reload');
     stopXSWDSubscriptionPolling();
     saveBrowserSession();
@@ -3196,16 +3265,90 @@ ${logsText || '(no logs)'}
   // accepts a drop, so this is what lets the native channel fire at all rather
   // than merely being defensive. stopPropagation is deliberately NOT called —
   // the app's own drop handlers must still run.
+  // A file dragged from the desktop does NOT advertise 'Files'. Measured on WebKitGTK
+  // 2026-08-09: the drag carries exactly text/uri-list,text/html. A guard keying only on
+  // 'Files' therefore never cancelled dragover, and an uncancelled dragover means the
+  // engine never dispatches drop at all — it navigates to the file instead.
+  //
+  // isTrusted is load-bearing. The receiver below dispatches a synthetic drop whose
+  // DataTransfer contains a file, so it looks like a file drag to this guard; without the
+  // check, this listener cancels it during capture, before the app's own handler runs, and
+  // the receiver's defaultPrevented test then reports EVERY app as having accepted the
+  // file. Measured 2026-08-09: calculator.tela, which has no drop handler, reported
+  // "app accepted it". Only a real user drag can navigate the webview, and a real drag is
+  // always trusted, so skipping untrusted events costs the guard nothing.
   (function() {
+    function isFileDrag(t) {
+      if (!t) return false;
+      return Array.prototype.indexOf.call(t, 'Files') !== -1 ||
+             Array.prototype.indexOf.call(t, 'text/uri-list') !== -1;
+    }
     ['dragenter','dragover','drop'].forEach(function(name) {
       document.addEventListener(name, function(e) {
         try {
-          var t = e.dataTransfer && e.dataTransfer.types;
-          if (t && Array.prototype.indexOf.call(t, 'Files') !== -1) e.preventDefault();
+          if (e.isTrusted && isFileDrag(e.dataTransfer && e.dataTransfer.types)) e.preventDefault();
         } catch(err) {}
       }, true);
     });
     log('[Bridge] File drop guard installed');
+  })();
+
+  // ── File drop receiver ────────────────────────────────────────────────────
+  // A file dropped on a TELA app never reaches this document. HOLOGRAM's window
+  // owns the drop, and an iframe is a separate document, so the app's own ondrop
+  // never fires — which is why dropping on a TELA app did nothing at all.
+  //
+  // The parent catches the drop on an overlay it puts over this frame, reads the
+  // file itself, and hands the bytes here. This rebuilds a real File and
+  // dispatches the drop the app was already waiting for, so an app written for an
+  // ordinary browser needs no changes.
+  //
+  // The app cannot start this. There is no request it can send that produces a
+  // file; the parent only sends one after a real drag-and-release by the user,
+  // and only the file that was dropped.
+  (function() {
+    window.addEventListener('message', function(e) {
+      var d = e.data;
+      if (!d || d.type !== 'hologram-file-drop') return;
+      if (e.source !== window.parent) return;
+      var handled = false;
+      try {
+        var bin = atob(d.base64);
+        var buf = new ArrayBuffer(bin.length);
+        var view = new Uint8Array(buf);
+        for (var i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
+        var type = d.mimeType || 'application/octet-stream';
+        var file;
+        try {
+          file = new File([buf], d.filename, { type: type });
+        } catch(err) {
+          file = new Blob([buf], { type: type });
+          file.name = d.filename;
+        }
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        var target = document.elementFromPoint(d.x, d.y) || document.body;
+        // dragenter and dragover first: apps commonly set their drop state there,
+        // and a drop arriving with no preceding drag reads as a spurious event.
+        ['dragenter','dragover'].forEach(function(name) {
+          target.dispatchEvent(new DragEvent(name, { bubbles: true, cancelable: true, dataTransfer: dt }));
+        });
+        var drop = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt });
+        target.dispatchEvent(drop);
+        // An app that handles a drop calls preventDefault. If nothing did, the app
+        // has no drop handler and the parent should say so rather than claim success.
+        handled = drop.defaultPrevented;
+        log('[Drop] ' + d.filename + (handled ? ' delivered' : ' — app has no drop handler'));
+      } catch(err) {
+        log('[Error] Could not deliver dropped file: ' + err.message);
+      }
+      try {
+        window.parent.postMessage({
+          type: 'hologram-file-drop-result', handled: handled, filename: d.filename
+        }, '*');
+      } catch(err) {}
+    });
+    log('[Bridge] File drop receiver installed');
   })();
 })();
 <\/script>`;
@@ -4486,7 +4629,7 @@ ${logsText || '(no logs)'}
       allow="clipboard-read; clipboard-write"
       title="App Content"
     ></iframe>
-    
+
     <!-- v6.1 Console Panel (matches Settings console) -->
     {#if showConsole}
       <div class="browser-console-panel">

@@ -102,7 +102,7 @@ func TestBridgeScriptsInstallTheSameInterceptors(t *testing.T) {
 		t.Fatalf("read Browser.svelte: %v", err)
 	}
 
-	installed := regexp.MustCompile(`\[Bridge\] ([A-Za-z ]+ (?:interceptor|guard)) installed`)
+	installed := regexp.MustCompile(`\[Bridge\] ([A-Za-z ]+ (?:interceptor|guard|receiver)) installed`)
 	collect := func(src string) map[string]bool {
 		out := map[string]bool{}
 		for _, m := range installed.FindAllStringSubmatch(src, -1) {
@@ -124,6 +124,57 @@ func TestBridgeScriptsInstallTheSameInterceptors(t *testing.T) {
 		if !goHas[name] {
 			t.Errorf("Svelte bridge installs the %q interceptor and the Go bridge does not", name)
 		}
+	}
+}
+
+// A file dragged from the desktop does not advertise 'Files'. On WebKitGTK it arrives as
+// text/uri-list,text/html, so a guard testing only for 'Files' never cancels dragover — and
+// an uncancelled dragover means the engine never dispatches drop at all: it navigates the
+// webview to the dropped file instead, destroying the session with no way back.
+//
+// That is what shipped, in four places at once, because every site had written the check by
+// hand. This pins the predicate wherever it is spelled out: both bridge copies, which cannot
+// import the shared helper because they are string literals injected into another document.
+func TestBridgeGuardsAcceptURIListDrags(t *testing.T) {
+	for _, path := range []string{"server_manager.go", "frontend/src/routes/Browser.svelte"} {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		// Matches the EXPRESSION, not the phrase: the phrase appears in the comments that
+		// explain the bug, so a prose match would pass even with the check deleted.
+		if !strings.Contains(string(src), `indexOf.call(t, 'text/uri-list')`) {
+			t.Errorf("%s: bridge file-drop guard does not accept text/uri-list, so a desktop "+
+				"drag will not be cancelled and WebKit will navigate to the file", path)
+		}
+	}
+}
+
+// The same predicate, in the two documents HOLOGRAM itself owns. These CAN import the shared
+// helper, and must — a hand-written copy here is how the bug reached four sites.
+func TestParentDocumentsUseTheSharedFileDragPredicate(t *testing.T) {
+	for _, path := range []string{"frontend/src/App.svelte", "frontend/src/routes/Browser.svelte"} {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		// Browser.svelte also CONTAINS the srcdoc bridge as a string literal, and that copy
+		// is injected into another document where the import does not exist — so only the
+		// component's own code is held to this.
+		own := string(src)
+		if i := strings.Index(own, "function getXSWDBridgeScript()"); i != -1 {
+			own = own[:i]
+		}
+		if strings.Contains(own, "indexOf.call(t, 'Files')") {
+			t.Errorf("%s: hand-written 'Files' check — use isFileDrag() from lib/utils/dragdrop.js", path)
+		}
+	}
+	src, err := os.ReadFile("frontend/src/lib/utils/dragdrop.js")
+	if err != nil {
+		t.Fatalf("read dragdrop.js: %v", err)
+	}
+	if !strings.Contains(string(src), `indexOf.call(types, 'text/uri-list')`) {
+		t.Fatal("isFileDrag() does not accept text/uri-list — a desktop file drag will not be recognised")
 	}
 }
 

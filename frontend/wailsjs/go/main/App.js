@@ -1022,6 +1022,10 @@ export function RateTELAApp(arg1, arg2) {
   return window['go']['main']['App']['RateTELAApp'](arg1, arg2);
 }
 
+export function ReadDroppedFile(arg1) {
+  return window['go']['main']['App']['ReadDroppedFile'](arg1);
+}
+
 export function ReadTextFile(arg1) {
   return window['go']['main']['App']['ReadTextFile'](arg1);
 }

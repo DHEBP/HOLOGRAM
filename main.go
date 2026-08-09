@@ -76,31 +76,28 @@ func main() {
 			EnableFileDrop: true,
 			// ⚠️ On Linux this suppresses the NATIVE file-drop channel that EnableFileDrop
 			// above is asking for. SetupWebview (Wails v2.11.0,
-			// internal/frontend/desktop/linux/window.c) calls gtk_drag_dest_unset(webview)
+			// internal/frontend/desktop/linux/window.c:571) calls gtk_drag_dest_unset(webview)
 			// when this is set, so the widget stops being a GTK drop destination — and then
 			// connects "drag-drop" and "drag-data-received" to it anyway. Those signals only
 			// fire on a widget that IS a drop destination, and Wails never calls
 			// gtk_drag_dest_set() to restore it.
 			//
-			// Measured 2026-08-08: with this true, no wails:file-drop event fired for a drop
-			// on the TELA frame OR on app chrome. So OnFileDrop and the real filesystem paths
-			// it delivers are unavailable while this is set.
+			// ⚠️ IT MUST STAY FALSE, and it is HALF of a pair. The other half is the file-drop
+			// guard in the XSWD bridge (server_manager.go), which cancels dragover inside the
+			// TELA frame. Measured 2026-08-09, both halves are load-bearing:
 			//
-			// Studio's drop zones are NOT affected and have worked throughout: DropZone.svelte
-			// preventDefaults and reads event.dataTransfer.items directly, which is plain DOM
-			// and needs no native channel. Studio's OnFileDrop registration is a second path
-			// for cases DOM cannot serve (real paths for folder uploads); the common case
-			// never depended on it.
+			//   true            → no drag events reach any document; a dropped file is ignored,
+			//                     and OnFileDrop never fires, so nothing can deliver it.
+			//   false, no guard → an uncancelled dragover means WebKit never dispatches drop at
+			//                     all; it performs its default instead and NAVIGATES the whole
+			//                     webview to the file, with no way back.
+			//   false + guard   → drop is dispatched in the frame and cancelled, and OnFileDrop
+			//                     delivers the real path to Browser.svelte.
 			//
-			// It stays true because with it false, a drop landing on a TELA app navigates the
-			// webview to the file and takes the whole app with it. App.svelte's window-level
-			// guard cannot prevent that — the drop is delivered to the iframe's document,
-			// which the parent never sees events from.
-			//
-			// Flipping this to false requires the parent to own the drop first (an overlay
-			// over the iframe during a drag) so the guard can fire. Until then, silently
-			// ignoring drops on TELA apps beats destroying the user's session.
-			DisableWebViewDrop: true,
+			// The DOM alone is not enough on Linux and cannot become enough: the drop event
+			// fires but arrives EMPTY (types=text/uri-list,text/html, files.length 0, empty
+			// text/uri-list). The native channel is the only source of the bytes.
+			DisableWebViewDrop: false,
 		},
 		Mac: &mac.Options{
 			TitleBar: &mac.TitleBar{

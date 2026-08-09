@@ -513,6 +513,8 @@ export function RateTELA(arg1:string,arg2:number):Promise<Record<string, any>>;
 
 export function RateTELAApp(arg1:string,arg2:number):Promise<Record<string, any>>;
 
+export function ReadDroppedFile(arg1:string):Promise<Record<string, any>>;
+
 export function ReadTextFile(arg1:string):Promise<Record<string, any>>;
 
 export function RebuildTagIndex():Promise<Record<string, any>>;
