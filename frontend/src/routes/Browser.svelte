@@ -3,7 +3,7 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState, requestPayment } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { isDropPointInElement } from '../lib/utils/fileDrop.js';
+  import { resolveDropPoint } from '../lib/utils/fileDrop.js';
   import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline, GetConnectedApps, GrantAppPermission, ReadDroppedFile } from '../../wailsjs/go/main/App.js';
   import ReloadSplitButton from '../lib/components/browser/ReloadSplitButton.svelte';
   import { EventsOn, EventsOff, ClipboardSetText, OnFileDrop, OnFileDropOff } from '../../wailsjs/runtime/runtime.js';
@@ -325,7 +325,8 @@ let addressInput = '';
   async function handleNativeFileDrop(x, y, paths) {
     if (!paths || paths.length === 0) return;
     if (showWelcome || loading || !contentFrame) return;
-    if (!isDropPointInElement(x, y, contentFrame)) return;   // dropped on HOLOGRAM's own UI
+    const point = resolveDropPoint(x, y, contentFrame);
+    if (!point) return;                                      // dropped on HOLOGRAM's own UI
 
     if (paths.length > 1) {
       toast.info(`Dropped ${paths.length} files — sending only the first`);
@@ -344,8 +345,10 @@ let addressInput = '';
         mimeType: result.mimeType,
         base64: result.base64,
         // Frame-relative, so the bridge can aim the event at whatever is under the cursor.
-        x: Math.round(x - rect.left),
-        y: Math.round(y - rect.top)
+        // From the resolved point, not the raw native coords: the hit test above may have
+        // matched in CSS space, and mixing the two aims at dpr times the intended offset.
+        x: Math.round(point.x - rect.left),
+        y: Math.round(point.y - rect.top)
       }, iframeUsesSrcdoc ? '*' : (expectedFrameOrigin || '*'));
       addConsoleLog(`[Drop] Handed ${result.filename} (${result.size} bytes) to the app`);
     } catch (err) {
