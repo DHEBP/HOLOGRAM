@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"mime"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1089,6 +1090,15 @@ func detectMimeType(filename string) string {
 	}
 	if mime, ok := mimeTypes[ext]; ok {
 		return mime
+	}
+	// The table above covers what TELA serves. A file a user drags in is anything at all, and
+	// falling straight to octet-stream told apps that a .txt was opaque binary — enough for an
+	// app filtering on type to refuse a file it handles fine. Measured 2026-08-09: dragtest.txt
+	// reached drop-probe as application/octet-stream. The table still wins where it has an
+	// entry, so nothing TELA serves changes (stdlib answers .js as text/javascript, not
+	// application/javascript).
+	if mt := mime.TypeByExtension(ext); mt != "" {
+		return mt
 	}
 	return "application/octet-stream"
 }
