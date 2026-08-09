@@ -580,6 +580,20 @@ func (a *App) SelectFile() string {
 	return selection
 }
 
+// saveFilters wraps a caller's save-dialog filter, dropping catch-all patterns.
+//
+// Same macOS trap as buildFileFilters: WailsContext.m hands the pattern to NSSavePanel's
+// allowedFileTypes after stripping "*.", so "*.*" arrives as "*" and matches no extension.
+// Callers pass exactly that as their fallback for an unrecognised file type, so a save that
+// should have been unrestricted became a dialog that refused every name.
+func saveFilters(name, pattern string) []runtime.FileFilter {
+	p := strings.TrimSpace(pattern)
+	if p == "" || p == "*.*" || p == "*" {
+		return nil
+	}
+	return []runtime.FileFilter{{DisplayName: name, Pattern: p}}
+}
+
 // buildFileFilters turns an HTML accept attribute into dialog filters.
 // The accept parameter is a comma-separated list of MIME types (e.g., "image/png,image/jpeg")
 // or file extensions (e.g., ".png,.jpg"). If empty, all files are shown.
@@ -587,15 +601,16 @@ func (a *App) SelectFile() string {
 // Split out from SelectFileWithContent so it can be tested without a Wails context: the
 // caller opens a real dialog, this does not.
 func buildFileFilters(accept string) []runtime.FileFilter {
-	// "All Files" goes FIRST and is always present. GTK selects the first filter when the
-	// dialog opens, so a narrow filter in that slot renders every other file unselectable —
-	// a dApp declaring accept="image/*" left a user hunting a greyed-out document with no
-	// sign that a dropdown was hiding it. Filtering here is a convenience; being unable to
-	// reach your own file is not.
-	filters := []runtime.FileFilter{{
-		DisplayName: "All Files",
-		Pattern:     "*.*",
-	}}
+	// NO "All Files" catch-all. It looks like a safe fallback and on macOS it is the
+	// opposite: WailsContext.m strips "*." from every pattern and hands the remainder to
+	// NSOpenPanel's allowedFileTypes, which takes bare EXTENSIONS. "*.*" becomes "*", no
+	// file has the extension "*", and every file greys out. darwin also flattens all
+	// filters into one list, so there is no dropdown to escape to. On GTK "*.*" is a real
+	// glob and matches everything, which is why this only ever bit macOS users.
+	//
+	// Emitting no filters means "allow anything" on both platforms, so that is what an
+	// absent or untranslatable accept produces.
+	filters := []runtime.FileFilter{}
 	if accept != "" {
 		// Parse accept string to build filters
 		parts := strings.Split(accept, ",")
@@ -670,6 +685,9 @@ func buildFileFilters(accept string) []runtime.FileFilter {
 				Pattern:     strings.Join(patterns, ";"),
 			})
 		}
+	}
+	if len(filters) == 0 {
+		return nil
 	}
 	return filters
 }
@@ -1497,12 +1515,7 @@ func (a *App) SaveBinaryFileWithDialog(defaultFilename string, base64Content str
 	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		DefaultFilename: defaultFilename,
 		Title:           "Save File",
-		Filters: []runtime.FileFilter{
-			{
-				DisplayName: filterName,
-				Pattern:     filterPattern,
-			},
-		},
+		Filters:         saveFilters(filterName, filterPattern),
 	})
 
 	if err != nil {
@@ -1546,12 +1559,7 @@ func (a *App) SaveFileWithDialog(defaultFilename string, content string, filterN
 	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		DefaultFilename: defaultFilename,
 		Title:           "Save File",
-		Filters: []runtime.FileFilter{
-			{
-				DisplayName: filterName,
-				Pattern:     filterPattern,
-			},
-		},
+		Filters:         saveFilters(filterName, filterPattern),
 	})
 
 	if err != nil {

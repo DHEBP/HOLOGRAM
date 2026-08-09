@@ -1032,40 +1032,46 @@ func TestResolveDropPaths_MultiFile(t *testing.T) {
 	}
 }
 
-// ============== buildFileFilters ==============
+// ============== buildFileFilters / saveFilters ==============
 //
-// Reported by chakipu: a TELA app's upload dialog opened with every file greyed out.
-// The dialog was working; the filter derived from the app's accept attribute was not.
+// Reported by chakipu on macOS: a TELA app's upload dialog opened with every file greyed
+// out and nothing selectable, whatever the extension. His input carried NO accept
+// attribute, so the only filter present was the "All Files" catch-all — and that is the
+// one that breaks. WailsContext.m strips "*." and passes the rest to NSOpenPanel's
+// allowedFileTypes, which takes bare extensions, so "*.*" arrives as "*" and matches
+// nothing. GTK treats "*.*" as a glob, which is why Linux never showed it.
 
-// The dialog selects its first filter on open, so a narrow filter in slot 0 makes every
-// other file unselectable. "All Files" must lead regardless of what accept says.
-func TestBuildFileFilters_AllFilesIsAlwaysFirst(t *testing.T) {
-	for _, accept := range []string{"", "image/*", ".png", "application/pdf", "image/png,.txt"} {
-		filters := buildFileFilters(accept)
-		if len(filters) == 0 {
-			t.Fatalf("accept=%q produced no filters", accept)
-		}
-		if filters[0].DisplayName != "All Files" || filters[0].Pattern != "*.*" {
-			t.Errorf("accept=%q: first filter = %q/%q, want All Files/*.*",
-				accept, filters[0].DisplayName, filters[0].Pattern)
+// An absent accept must produce NO filters. Emitting a catch-all instead is what greyed
+// out every file on macOS.
+func TestBuildFileFilters_EmptyAcceptEmitsNoFilters(t *testing.T) {
+	if f := buildFileFilters(""); len(f) != 0 {
+		t.Errorf("empty accept produced %+v, want no filters at all", f)
+	}
+}
+
+// No filter may ever carry a catch-all pattern: on macOS it excludes everything rather
+// than allowing everything.
+func TestBuildFileFilters_NeverEmitsCatchAllPattern(t *testing.T) {
+	for _, accept := range []string{"", "image/*", ".png", "application/pdf", "image/png,.txt", "audio/mpeg"} {
+		for _, f := range buildFileFilters(accept) {
+			if f.Pattern == "*.*" || f.Pattern == "*" {
+				t.Errorf("accept=%q emitted catch-all pattern %q — greys out every file on macOS",
+					accept, f.Pattern)
+			}
 		}
 	}
 }
 
-// A single untranslatable token must void the narrow filter entirely. Translating only the
+// A single untranslatable token must produce no filter at all. Translating only the
 // recognised half would offer PNGs while hiding the MP3s the app also accepts.
-func TestBuildFileFilters_UnknownMimeVoidsNarrowFilter(t *testing.T) {
-	filters := buildFileFilters("image/png,audio/mpeg")
-	if len(filters) != 1 {
-		t.Fatalf("got %d filters, want 1 (All Files only); filters=%+v", len(filters), filters)
-	}
-	if filters[0].DisplayName != "All Files" {
-		t.Errorf("sole filter = %q, want All Files", filters[0].DisplayName)
+func TestBuildFileFilters_UnknownMimeEmitsNoFilters(t *testing.T) {
+	if f := buildFileFilters("image/png,audio/mpeg"); len(f) != 0 {
+		t.Errorf("got %+v, want no filters — an unexpressible accept must not restrict", f)
 	}
 }
 
 // Documents were absent from the MIME map, so a document-uploading app could never get a
-// filter that matched its own files.
+// filter matching its own files.
 func TestBuildFileFilters_DocumentTypesAreMapped(t *testing.T) {
 	cases := map[string]string{
 		"application/pdf":  "*.pdf",
@@ -1076,31 +1082,41 @@ func TestBuildFileFilters_DocumentTypesAreMapped(t *testing.T) {
 		"application/json": "*.json",
 	}
 	for accept, want := range cases {
-		filters := buildFileFilters(accept)
-		if len(filters) != 2 {
-			t.Errorf("accept=%q: got %d filters, want 2 (All Files + Allowed Files)", accept, len(filters))
+		f := buildFileFilters(accept)
+		if len(f) != 1 {
+			t.Errorf("accept=%q: got %d filters, want exactly 1", accept, len(f))
 			continue
 		}
-		if filters[1].Pattern != want {
-			t.Errorf("accept=%q: pattern = %q, want %q", accept, filters[1].Pattern, want)
+		if f[0].Pattern != want {
+			t.Errorf("accept=%q: pattern = %q, want %q", accept, f[0].Pattern, want)
 		}
 	}
 }
 
-func TestBuildFileFilters_EmptyAcceptOffersEverything(t *testing.T) {
-	filters := buildFileFilters("")
-	if len(filters) != 1 || filters[0].Pattern != "*.*" {
-		t.Errorf("empty accept produced %+v, want a single *.* filter", filters)
+func TestBuildFileFilters_ExtensionsNarrowExactly(t *testing.T) {
+	f := buildFileFilters(".png,.jpg")
+	if len(f) != 1 {
+		t.Fatalf("got %d filters, want 1; %+v", len(f), f)
+	}
+	if f[0].Pattern != "*.png;*.jpg" {
+		t.Errorf("pattern = %q, want *.png;*.jpg", f[0].Pattern)
 	}
 }
 
-// Extensions are translated verbatim and stay usable as a secondary filter.
-func TestBuildFileFilters_ExtensionsStillNarrow(t *testing.T) {
-	filters := buildFileFilters(".png,.jpg")
-	if len(filters) != 2 {
-		t.Fatalf("got %d filters, want 2; filters=%+v", len(filters), filters)
+// The save dialog takes its filter from the caller, and callers pass "*.*" as their
+// fallback for an unrecognised extension — the same pattern that refuses every name on
+// macOS.
+func TestSaveFilters_DropsCatchAllAndEmpty(t *testing.T) {
+	for _, pattern := range []string{"*.*", "*", "", "  "} {
+		if f := saveFilters("All Files", pattern); len(f) != 0 {
+			t.Errorf("pattern %q produced %+v, want no filters", pattern, f)
+		}
 	}
-	if filters[1].Pattern != "*.png;*.jpg" {
-		t.Errorf("pattern = %q, want *.png;*.jpg", filters[1].Pattern)
+}
+
+func TestSaveFilters_KeepsRealPattern(t *testing.T) {
+	f := saveFilters("PNG Image", "*.png")
+	if len(f) != 1 || f[0].Pattern != "*.png" || f[0].DisplayName != "PNG Image" {
+		t.Errorf("got %+v, want a single PNG Image/*.png filter", f)
 	}
 }
