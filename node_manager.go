@@ -1336,8 +1336,14 @@ func (a *App) SetNetworkMode(network string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[NET] Network mode set to: %s (RPC: %d, P2P: %d)", mode, netConfig.RPCPort, netConfig.P2PPort))
 
-	// Update daemon client endpoint to match new network
+	// Update daemon client endpoint to match new network — unless the user set one.
+	// Starting a node repoints this at the node HOLOGRAM starts, so a custom endpoint
+	// only survives while the user is driving their own daemon.
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+	if current, _ := a.settings["daemon_endpoint"].(string); !isDerivedEndpoint(current) {
+		a.logToConsole(fmt.Sprintf("[NET] Keeping custom daemon endpoint %s across the switch to %s", current, mode))
+		endpoint = current
+	}
 	a.daemonClient = NewDaemonClient(endpoint)
 
 	// Update settings (used by Gnomon and other services) and persist immediately
@@ -1406,9 +1412,10 @@ func (a *App) GetNetworkMode() map[string]interface{} {
 		if inferred, hasInference := inferNetworkModeFromDaemonInfo(info, inferEndpoint); hasInference && inferred != mode {
 			mode = inferred
 			netConfig = GetNetworkConfig(inferred)
-			// For localhost endpoints only, correct the port to match the
-			// detected network. Remote endpoints are left untouched.
-			if isLocalhostEndpoint(endpoint) {
+			// Only correct the port on an endpoint HOLOGRAM derived. A remote node
+			// and a localhost node on a custom port are both the user's, so only
+			// the network label is corrected for them.
+			if isDerivedEndpoint(endpoint) {
 				endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
 			}
 
