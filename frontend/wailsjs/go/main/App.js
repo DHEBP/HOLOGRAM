@@ -1110,6 +1110,10 @@ export function ResolveDropPaths(arg1) {
   return window['go']['main']['App']['ResolveDropPaths'](arg1);
 }
 
+export function ResolveNameForSend(arg1) {
+  return window['go']['main']['App']['ResolveNameForSend'](arg1);
+}
+
 export function RespondToXSWDRequest(arg1, arg2, arg3) {
   return window['go']['main']['App']['RespondToXSWDRequest'](arg1, arg2, arg3);
 }

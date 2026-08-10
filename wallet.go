@@ -859,6 +859,38 @@ func (a *App) ClipboardClearIf(expected string) map[string]interface{} {
 	}
 }
 
+// ResolveNameForSend turns a registered DERO name into an address for the send path.
+//
+// Deliberately NOT App.ResolveDeroName: that answers from the NRS cache first, and the cache is a
+// permanent Graviton store with no expiry — right for Explorer labels, wrong where the answer
+// decides who receives money, because a name that changed hands would resolve to the old owner
+// forever on this machine.
+//
+// walletapi's own resolver is the canonical path the CLI uses (cmd/dero-wallet-cli/prompt.go):
+// it always asks the daemon at the current tip and fails closed with "offline or not connected"
+// rather than guessing. Callers must try parsing the input as an address FIRST and only fall back
+// to a name, which is the same order the CLI uses.
+func (a *App) ResolveNameForSend(name string) map[string]interface{} {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return map[string]interface{}{"success": false, "error": "Enter a name or address"}
+	}
+
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{"success": false, "error": "No wallet is currently open"}
+	}
+
+	addr, err := walletManager.wallet.NameToAddress(name)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": FriendlyError(err), "name": name}
+	}
+
+	return map[string]interface{}{"success": true, "name": name, "address": addr}
+}
+
 // GetIntegratedAddress generates an integrated address with optional destination port (payment ID)
 // In DERO, "payment ID" is implemented as a destination port (uint64) embedded in the address.
 // The resulting address changes from dero.../deto... to deroi.../detoi... format.

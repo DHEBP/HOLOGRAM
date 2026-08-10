@@ -1,7 +1,7 @@
 <script>
   import { walletState, appState, settingsState, addressMasked, balanceMasked, toast, handleBackendError, syncNetworkMode, pendingPayment, clearPendingPayment } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents, GetRegistrationStatus, RegisterWallet, CancelRegistration, GetRingMemberSets, GetAllSettings, SetSetting } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents, GetRegistrationStatus, RegisterWallet, CancelRegistration, ResolveNameForSend, GetRingMemberSets, GetAllSettings, SetSetting } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { 
     Copy, ArrowUp, ArrowDown, ArrowLeftRight,
@@ -276,6 +276,41 @@
     (paymentState.state === 'pending' && paymentParsed?.kind === 'integrated' && paymentParsed?.needsDecode)
   );
   $: canSend = isValidSendAmount && isValidSendAddress && !sendBlockedByUriState;
+
+  // Registered-name resolution for the recipient field. Address first, name only as a fallback —
+  // the same order dero-wallet-cli uses. sendDest always ends up holding the ADDRESS; the name is
+  // kept only so the confirm step can show what was typed beside what will be signed.
+  let sendDestName = '';
+  let sendNameResolving = false;
+  let sendNameError = '';
+
+  async function resolveSendName() {
+    const typed = sendDest.trim();
+    sendNameError = '';
+    if (!typed || isValidSendAddress) return; // already an address — nothing to resolve
+    sendNameResolving = true;
+    try {
+      const res = await ResolveNameForSend(typed);
+      if (res?.success && res.address) {
+        sendDestName = typed;
+        sendDest = res.address;
+      } else {
+        sendDestName = '';
+        sendNameError = res?.error || 'Could not resolve that name';
+      }
+    } catch (err) {
+      sendDestName = '';
+      sendNameError = 'Could not resolve that name';
+    } finally {
+      sendNameResolving = false;
+    }
+  }
+
+  // Any edit invalidates a previous resolution — the name must never outlive the address it produced.
+  function onSendDestInput() {
+    sendDestName = '';
+    sendNameError = '';
+  }
   
   // Reactive display address for Receive section
   $: displayAddress = (addressType === 'integrated' && receiveIntegratedAddress) ? receiveIntegratedAddress : $walletState.address;
@@ -2295,7 +2330,10 @@
                       class:uri-half={paymentState.state === 'halfFilled'}
                       readonly={(paymentParsed?.hadScheme === true || paymentParsed?.kind === 'integrated') && !editingMalformed && (paymentState.state === 'ok' || paymentState.state === 'selfPayment' || paymentState.state === 'wrongNetwork')}
                       bind:value={sendDest}
-                      placeholder="dero1..."
+                      on:input={onSendDestInput}
+                      on:blur={resolveSendName}
+                      on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); resolveSendName(); } }}
+                      placeholder="dero1... or a registered name"
                     />
                     <button
                       class="btn btn-ghost btn-sm"
@@ -2322,8 +2360,14 @@
                       <div class="contact-picker-empty">No saved contacts</div>
                     </div>
                   {/if}
-                  {#if (paymentState.state === 'pending' || editingMalformed) && sendDest && !isValidSendAddress}
-                    <span class="form-error">Invalid DERO address</span>
+                  {#if sendNameResolving}
+                    <span class="form-hint">Looking up name…</span>
+                  {:else if sendNameError}
+                    <span class="form-error">{sendNameError}</span>
+                  {:else if sendDestName}
+                    <span class="form-hint">{sendDestName} → {formatAddress(sendDest)}</span>
+                  {:else if (paymentState.state === 'pending' || editingMalformed) && sendDest && !isValidSendAddress}
+                    <span class="form-error">Invalid DERO address or name</span>
                   {/if}
                   {#if paymentState.state !== 'pending'}
                     <div class="uri-hint-row uri-hint-row--{paymentState.severity}">
@@ -2504,7 +2548,7 @@
                     {#if showFullSendAddress}
                       <span class="confirm-address-full">{sendDest}</span>
                     {:else}
-                      <span class="confirm-value confirm-value-address">{formatAddress(sendDest)}</span>
+                      <span class="confirm-value confirm-value-address">{#if sendDestName}{sendDestName} · {/if}{formatAddress(sendDest)}</span>
                     {/if}
                     <button class="confirm-address-toggle" on:click={() => showFullSendAddress = !showFullSendAddress}>
                       {showFullSendAddress ? 'Hide full address' : 'Show full address'}
