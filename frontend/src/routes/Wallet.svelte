@@ -116,8 +116,19 @@
   $: sendCuratedCount = selectedSendSet ? (selectedSendSet.members || []).length : 0;
   // Curation is only active when Anonymize is armed above ring 2.
   $: ringCurationActive = sendAnonymize && sendRingsize > 2;
+  // How many of the set actually reach the ring. curatedRingCandidates() puts preferred
+  // decoys first and appends random members, so a set larger than the ring is truncated by
+  // position — displaying the raw count would print arithmetic that exceeds the ring size.
+  $: sendCuratedUsed = ringCurationActive ? Math.min(sendCuratedCount, Math.max(0, sendRingsize - 2)) : 0;
   // Honest math: 2 fixed slots (you + recipient) + curated + random = ring.
-  $: sendRandomFill = Math.max(0, sendRingsize - 2 - (ringCurationActive ? sendCuratedCount : 0));
+  $: sendRandomFill = Math.max(0, sendRingsize - 2 - sendCuratedUsed);
+  // Joined here rather than in the markup: an {#if} block swallows the space in front of its
+  // first character, which rendered the breakdown as "recipient+ 2 chosen+ 12 random".
+  $: sendRingBreakdown = [
+    'you + recipient',
+    sendCuratedUsed > 0 ? `${sendCuratedUsed} chosen` : null,
+    sendRandomFill > 0 ? `${sendRandomFill} random` : null,
+  ].filter(Boolean).join(' + ');
   
   // ============================================
   // RECEIVE SECTION STATE
@@ -2464,7 +2475,7 @@
                       {#if ringCurationActive}
                         <div class="decoy-summary">
                           {#if selectedSendSet && sendCuratedCount > 0}
-                            You + recipient + <b>{sendCuratedCount} chosen</b> · {sendRandomFill} random fill the rest of ring {sendRingsize}
+                            You + recipient + <b>{sendCuratedUsed} chosen</b> · {sendRandomFill} random fill the rest of ring {sendRingsize}
                           {:else}
                             Auto — ring {sendRingsize} filled with random registered members.
                           {/if}
@@ -2499,17 +2510,26 @@
                       {showFullSendAddress ? 'Hide full address' : 'Show full address'}
                     </button>
                   </div>
-                  <div class="confirm-row">
+                  <div class="confirm-row confirm-row-sub">
                     <span class="confirm-label">Ring Size</span>
-                    <span class="confirm-value">{sendRingsize}{sendRingsize === 2 ? ' (non-anonymous)' : ''}</span>
+                    <span class="confirm-value">{sendRingsize}{sendRingsize === 2 ? ' (non-anonymous)' : ''}
+                      <span class="confirm-sub">{sendRingBreakdown}</span>
+                    </span>
                   </div>
-                  <div class="confirm-row">
+                  {#if ringCurationActive && selectedSendSet && sendCuratedCount > 0}
+                    <div class="confirm-row">
+                      <span class="confirm-label">Ring members</span>
+                      <span class="confirm-value confirm-value-setname">{selectedSendSet.name}</span>
+                    </div>
+                  {/if}
+                  <div class="confirm-row confirm-row-sub">
                     <span class="confirm-label">Sender visibility</span>
                     <span class="confirm-value">
                       {#if sendRingsize === 2}
                         Pinned · Ring 2
                       {:else if sendAnonymize}
-                        Anonymize · 1 of {sendRingsize - 1}{#if ringCurationActive && selectedSendSet && sendCuratedCount > 0} · {selectedSendSet.name} ({sendCuratedCount}){/if}
+                        Anonymize
+                        <span class="confirm-sub">attribution points at a decoy — you are 1 of {sendRingsize - 1}</span>
                       {:else}
                         Show me (attribution → you)
                       {/if}
@@ -4751,6 +4771,25 @@
   .confirm-value { font-size: 13px; color: var(--text-1); font-family: var(--font-mono); }
   .confirm-value-amount { color: var(--cyan-400); font-weight: 600; font-size: 16px; }
   .confirm-value-address { font-size: 11px; }
+
+  /* A row whose value carries an explanatory second line. Top-aligned so the label
+     sits with the value it names rather than centring against both lines. */
+  .confirm-row-sub { align-items: flex-start; }
+  .confirm-sub {
+    display: block;
+    text-align: right;
+    font-size: 11px;
+    color: var(--text-4);
+    margin-top: 3px;
+  }
+  /* Set names are user-typed and can be long; the value column must not push the row wide. */
+  .confirm-value-setname {
+    max-width: 60%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+  }
   
   /* Success State */
   .success-state {
