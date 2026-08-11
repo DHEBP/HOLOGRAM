@@ -3,6 +3,7 @@
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
   import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents, GetRegistrationStatus, RegisterWallet, CancelRegistration, ResolveNameForSend, GetRingMemberSets, GetAllSettings, SetSetting } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
+  import { looksLikeDeroAddress } from '../lib/utils/deroAddress.js';
   import { 
     Copy, ArrowUp, ArrowDown, ArrowLeftRight,
     Wallet, Plus, RotateCcw, AlertTriangle, Check, FolderOpen, Pickaxe, Snowflake,
@@ -306,10 +307,45 @@
     }
   }
 
+  // Live name probe. Answers "does this name exist?" WHILE typing, so committing is never a guess.
+  // Deliberately non-destructive: it never writes sendDest, because replacing the field mid-keystroke
+  // would yank the text out from under the typist. The blur/Enter path below still owns the swap.
+  let sendNameProbeState = ''; // '' | 'checking' | 'found' | 'missing'
+  let sendNameProbeAddr = '';
+  let sendNameProbeTimer;
+
+  async function probeSendName(typed) {
+    sendNameProbeState = 'checking';
+    try {
+      const res = await ResolveNameForSend(typed);
+      if (sendDest.trim() !== typed) return; // typing moved on — this answer is stale
+      if (res?.success && res.address) {
+        sendNameProbeState = 'found';
+        sendNameProbeAddr = res.address;
+      } else {
+        sendNameProbeState = 'missing';
+      }
+    } catch (err) {
+      if (sendDest.trim() === typed) sendNameProbeState = 'missing';
+    }
+  }
+
   // Any edit invalidates a previous resolution — the name must never outlive the address it produced.
   function onSendDestInput() {
     sendDestName = '';
     sendNameError = '';
+    clearTimeout(sendNameProbeTimer);
+    sendNameProbeState = '';
+    sendNameProbeAddr = '';
+    const typed = sendDest.trim();
+    // Prefix-tested against the typed value, not the reactive isValidSendAddress — that has not
+    // recomputed yet inside this handler.
+    if (!typed || looksLikeDeroAddress(typed)) return;
+    // Enter 'checking' NOW, not when the timer fires. The debounce gap is still "we do not know
+    // yet" — leaving it blank makes every keystroke fall through to the error state for 350ms,
+    // which reads as a red flash per character.
+    sendNameProbeState = 'checking';
+    sendNameProbeTimer = setTimeout(() => probeSendName(typed), 350);
   }
   
   // Reactive display address for Receive section
@@ -2322,7 +2358,8 @@
                     <input
                       type="text"
                       class="input"
-                      class:input-error={(paymentState.state === 'pending' || editingMalformed) && sendDest && !isValidSendAddress}
+                      class:input-error={(paymentState.state === 'pending' || editingMalformed) && sendDest && !isValidSendAddress && !sendNameProbeState}
+                      class:input-ok={sendNameProbeState === 'found'}
                       class:uri-locked={paymentState.state === 'ok' || paymentState.state === 'selfPayment'}
                       class:uri-morphed={paymentMorphFired && paymentState.state === 'ok'}
                       class:uri-warn={paymentState.severity === 'warn'}
@@ -2366,6 +2403,12 @@
                     <span class="form-error">{sendNameError}</span>
                   {:else if sendDestName}
                     <span class="form-hint">{sendDestName} → {formatAddress(sendDest)}</span>
+                  {:else if sendNameProbeState === 'checking'}
+                    <span class="form-hint">Checking “{sendDest.trim()}”…</span>
+                  {:else if sendNameProbeState === 'found'}
+                    <span class="form-hint c-ok">✓ “{sendDest.trim()}” is registered → {formatAddress(sendNameProbeAddr)}</span>
+                  {:else if sendNameProbeState === 'missing'}
+                    <span class="form-hint">No registered name “{sendDest.trim()}”</span>
                   {:else if (paymentState.state === 'pending' || editingMalformed) && sendDest && !isValidSendAddress}
                     <span class="form-error">Invalid DERO address or name</span>
                   {/if}
