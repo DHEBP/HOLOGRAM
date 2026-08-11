@@ -23,8 +23,9 @@
     // Time Machine Watch List
     GetWatchedSmartContracts, UnwatchSmartContract, RefreshWatchedSCs,
     // Ring Members (sender-visibility decoy curation)
-    GetRingMemberSets, AddRingMemberSet, RenameRingMemberSet, AddRingMember, RemoveRingMember, DeleteRingMemberSet, IsAddressRegistered
+    GetRingMemberSets, AddRingMemberSet, RenameRingMemberSet, AddRingMember, RemoveRingMember, DeleteRingMemberSet, IsAddressRegistered, ResolveNameForSend
   } from '../../wailsjs/go/main/App.js';
+  import { looksLikeDeroAddress } from '../lib/utils/deroAddress.js';
   import OfflineCacheManager from '../lib/components/OfflineCacheManager.svelte';
   import SyncManager from '../lib/components/SyncManager.svelte';
   import SafeBrowsingSettings from '../lib/components/SafeBrowsingSettings.svelte';
@@ -95,6 +96,10 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
   let selectedRingSetId = '';      // which set's members are open in the editor
   let newRingMemberAddr = '';
   let ringMemberError = '';
+  let ringMemberResolving = false;
+  let ringMemberProbeState = ''; // '' | 'checking' | 'found' | 'missing'
+  let ringMemberProbeAddr = '';
+  let ringMemberProbeTimer;
   let ringSetDeleteArmed = '';     // confirm-tap: id armed for delete
   let ringSetRenamingId = '';      // which set is in inline-rename mode
   let ringSetRenameName = '';      // draft name while renaming
@@ -838,14 +843,70 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
     }
   }
 
+  // Live name probe, mirroring the send field: tells you the name exists BEFORE you commit,
+  // and never writes the input while you are still typing in it.
+  async function probeRingMemberName(typed) {
+    ringMemberProbeState = 'checking';
+    try {
+      const res = await ResolveNameForSend(typed);
+      if (newRingMemberAddr.trim() !== typed) return; // stale
+      if (res?.success && res.address) {
+        ringMemberProbeState = 'found';
+        ringMemberProbeAddr = res.address;
+      } else {
+        ringMemberProbeState = 'missing';
+      }
+    } catch (e) {
+      if (newRingMemberAddr.trim() === typed) ringMemberProbeState = 'missing';
+    }
+  }
+
+  function onRingMemberInput() {
+    ringMemberError = '';
+    clearTimeout(ringMemberProbeTimer);
+    ringMemberProbeState = '';
+    ringMemberProbeAddr = '';
+    const typed = newRingMemberAddr.trim();
+    if (!typed || looksLikeDeroAddress(typed)) return;
+    // 'checking' starts at the keystroke, not at the timer — see the send field for why.
+    ringMemberProbeState = 'checking';
+    ringMemberProbeTimer = setTimeout(() => probeRingMemberName(typed), 350);
+  }
+
+  // Address first, registered name only as a fallback — the same order the send field uses.
+  // What gets STORED is always the resolved address: a name is transferable on chain, so a set
+  // that remembered the name would silently start pointing at whoever holds it next.
+  // Anything address-shaped is passed through untouched so the Go layer keeps issuing its own
+  // verdicts (integrated address, own address, duplicate) rather than having them guessed here.
   async function addRingMember() {
     ringMemberError = '';
-    const addr = newRingMemberAddr.trim();
-    if (!addr || !selectedRingSetId) return;
+    const typed = newRingMemberAddr.trim();
+    if (!typed || !selectedRingSetId) return;
+
+    let addr = typed;
+    if (!looksLikeDeroAddress(typed)) {
+      ringMemberResolving = true;
+      try {
+        const res = await ResolveNameForSend(typed);
+        if (!res?.success || !res.address) {
+          ringMemberError = res?.error || 'Could not resolve that name';
+          return;
+        }
+        addr = res.address;
+      } catch (e) {
+        ringMemberError = 'Could not resolve that name';
+        return;
+      } finally {
+        ringMemberResolving = false;
+      }
+    }
+
     try {
       const result = await AddRingMember(selectedRingSetId, addr);
       if (result.success) {
         newRingMemberAddr = '';
+        ringMemberProbeState = '';
+        ringMemberProbeAddr = '';
         await loadRingMemberSets();
         probeOne(addr);
       } else {
@@ -3127,14 +3188,22 @@ import { HoloCard, DotIndicator, HoloBadge, Icons } from '../lib/components/holo
                         <input
                           type="text"
                           bind:value={newRingMemberAddr}
-                          placeholder="dero1… — add a registered address"
+                          placeholder="dero1… or a registered name"
                           class="input"
+                          class:input-ok={ringMemberProbeState === 'found'}
+                          on:input={onRingMemberInput}
                           on:keydown={(e) => e.key === 'Enter' && addRingMember()}
                         />
-                        <button class="btn btn-primary btn-sm" on:click={addRingMember} disabled={!newRingMemberAddr.trim()}>Add</button>
+                        <button class="btn btn-primary btn-sm" on:click={addRingMember} disabled={!newRingMemberAddr.trim() || ringMemberResolving}>{ringMemberResolving ? 'Resolving…' : 'Add'}</button>
                       </div>
                       {#if ringMemberError}
                         <span class="form-error" style="display:block;margin-top:var(--s-2);">{ringMemberError}</span>
+                      {:else if ringMemberProbeState === 'checking'}
+                        <span class="form-hint" style="display:block;margin-top:var(--s-2);">Checking “{newRingMemberAddr.trim()}”…</span>
+                      {:else if ringMemberProbeState === 'found'}
+                        <span class="form-hint c-ok" style="display:block;margin-top:var(--s-2);">✓ “{newRingMemberAddr.trim()}” is registered → {formatAddress(ringMemberProbeAddr)}</span>
+                      {:else if ringMemberProbeState === 'missing'}
+                        <span class="form-hint" style="display:block;margin-top:var(--s-2);">No registered name “{newRingMemberAddr.trim()}”</span>
                       {/if}
                       {#if memberCount > 0}
                         <div class="decoy-chips">
