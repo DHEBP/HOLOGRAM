@@ -1045,16 +1045,51 @@ func checkIntegratedInvoice(addr *rpc.Address, amount uint64, now time.Time) str
 			return fmt.Sprintf("This payment address requests exactly %s DERO, but you entered %s DERO. Match the requested amount, or use a plain address — a wrong amount cannot be undone.", formatDEROAmount(want), formatDEROAmount(amount))
 		}
 	}
-	// A service that sets RPC_NEEDS_REPLYBACK_ADDRESS answers by sending a transfer back, so
-	// it needs the payer's address in the payload. HOLOGRAM never sets Payload_RPC on an
-	// outgoing transfer, and walletapi only auto-copies the destination port — so the address
-	// is not attached and the service's own guard drops the request while keeping the money.
-	// Block it rather than let the payment succeed and buy nothing. Lifting this means
-	// attaching the address, which discloses who paid and therefore needs the user's consent.
-	if addr.Arguments.Has(rpc.RPC_NEEDS_REPLYBACK_ADDRESS, rpc.DataUint64) {
-		return "This address belongs to a service that replies back, so it requires your wallet address to answer. HOLOGRAM cannot attach it yet, so the service would take the payment and send nothing. Pay it from dero-wallet-cli, which can."
-	}
 	return ""
+}
+
+// addressNeedsReplyback reports whether a destination is a service that answers by sending a
+// transfer back, and therefore requires the payer's address in the payload. Note the type:
+// the service flag is RPC_NEEDS_REPLYBACK_ADDRESS as DataUint64. Engram overloads the SAME
+// constant as DataString to carry a username in its messaging feature — a different thing
+// entirely, and matching on it here would attach an address to ordinary messages.
+func addressNeedsReplyback(addr *rpc.Address) bool {
+	if addr == nil || !addr.IsIntegratedAddress() {
+		return false
+	}
+	return addr.Arguments.Has(rpc.RPC_NEEDS_REPLYBACK_ADDRESS, rpc.DataUint64)
+}
+
+// attachReplybackAddresses adds the payer's address to every transfer whose destination asks
+// for one. Without it the service drops the request for want of a return address and keeps the
+// payment, while the wallet reports success.
+//
+// This is a real disclosure: a DERO recipient normally cannot tell who paid, so attaching the
+// address converts an anonymous payment into an identified one. It is done automatically
+// (matching Engram, `functions.go:1177`) because the destination address itself states the
+// requirement — but unlike Engram, both confirm surfaces say so before the user commits.
+//
+// Applied to the whole slice rather than at each construction site: transfers are built in
+// three places across App.Transfer and InternalWalletCall, and a per-site fix would be one
+// forgotten call away from silently paying a service that can never answer.
+func attachReplybackAddresses(transfers []rpc.Transfer, self rpc.Address) int {
+	attached := 0
+	for i := range transfers {
+		addr, err := rpc.NewAddress(strings.TrimSpace(transfers[i].Destination))
+		if err != nil || !addressNeedsReplyback(addr) {
+			continue
+		}
+		if transfers[i].Payload_RPC.Has(rpc.RPC_REPLYBACK_ADDRESS, rpc.DataAddress) {
+			continue // already present — never attach twice
+		}
+		transfers[i].Payload_RPC = append(transfers[i].Payload_RPC, rpc.Argument{
+			Name:     rpc.RPC_REPLYBACK_ADDRESS,
+			DataType: rpc.DataAddress,
+			Value:    self,
+		})
+		attached++
+	}
+	return attached
 }
 
 // checkTransfersIntegratedInvoices runs checkIntegratedInvoice on every transfer
@@ -1188,6 +1223,9 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string, ring
 
 	if ringsize < 2 {
 		ringsize = 16
+	}
+	if n := attachReplybackAddresses(transfers, wallet.GetAddress()); n > 0 {
+		a.logToConsole(fmt.Sprintf("[Transfer] Service requires a reply address — disclosing this wallet's address to %d destination(s)", n))
 	}
 	tx, err := wallet.TransferPayload0(transfers, ringsize, false, rpc.Arguments{}, 0, false)
 	if err != nil {
@@ -2168,6 +2206,12 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		if invoiceErr := checkTransfersIntegratedInvoices(transfers, time.Now()); invoiceErr != "" {
 			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED integrated-address invoice: %s", invoiceErr))
 			return map[string]interface{}{"success": false, "error": invoiceErr}
+		}
+
+		// Sits beside the invoice check so both routes into the wallet reach it (R2-B7): this
+		// is the branch the Send UI and XSWD both call, App.Transfer covers the other.
+		if n := attachReplybackAddresses(transfers, wallet.GetAddress()); n > 0 {
+			a.logToConsole(fmt.Sprintf("[Transfer] Service requires a reply address — disclosing this wallet's address to %d destination(s)", n))
 		}
 
 		runTransfer := func() map[string]interface{} {

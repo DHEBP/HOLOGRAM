@@ -43,6 +43,79 @@ func integratedAddr(t *testing.T, args rpc.Arguments) *rpc.Address {
 // expired address and an amount that does not match the requested amount must be
 // rejected (non-empty error), while a satisfied invoice and a plain (non-integrated)
 // address must pass (empty error). A regression here re-opens silent mis-payment.
+// The payer's address is attached only when the destination asks for it, and the disclosure
+// is real: a DERO recipient normally cannot tell who paid, so a false positive here silently
+// deanonymises an ordinary payment. Hence the negative cases carry as much weight as the
+// positive one.
+func TestAttachReplybackAddresses(t *testing.T) {
+	self, err := rpc.NewAddress(testBaseMainnetAddr)
+	if err != nil {
+		t.Fatalf("parse self address: %v", err)
+	}
+
+	hasReplyback := func(tr rpc.Transfer) bool {
+		return tr.Payload_RPC.Has(rpc.RPC_REPLYBACK_ADDRESS, rpc.DataAddress)
+	}
+
+	t.Run("service asks -> attached", func(t *testing.T) {
+		addr := integratedAddr(t, rpc.Arguments{
+			{Name: rpc.RPC_NEEDS_REPLYBACK_ADDRESS, DataType: rpc.DataUint64, Value: uint64(0)},
+		})
+		transfers := []rpc.Transfer{{Destination: addr.String(), Amount: 12345}}
+		if n := attachReplybackAddresses(transfers, *self); n != 1 {
+			t.Fatalf("expected 1 attachment, got %d", n)
+		}
+		if !hasReplyback(transfers[0]) {
+			t.Fatal("service demanded a reply address and none was attached — the service " +
+				"would keep the payment and answer nothing")
+		}
+	})
+
+	t.Run("plain address -> nothing attached", func(t *testing.T) {
+		transfers := []rpc.Transfer{{Destination: testBaseMainnetAddr, Amount: 12345}}
+		if n := attachReplybackAddresses(transfers, *self); n != 0 {
+			t.Fatalf("expected 0 attachments, got %d", n)
+		}
+		if hasReplyback(transfers[0]) {
+			t.Fatal("attached the payer's address to an ordinary payment — that discloses " +
+				"who paid when the recipient could not otherwise tell")
+		}
+	})
+
+	t.Run("destination port only -> nothing attached", func(t *testing.T) {
+		addr := integratedAddr(t, rpc.Arguments{
+			{Name: rpc.RPC_DESTINATION_PORT, DataType: rpc.DataUint64, Value: uint64(0x1234)},
+		})
+		transfers := []rpc.Transfer{{Destination: addr.String(), Amount: 12345}}
+		if n := attachReplybackAddresses(transfers, *self); n != 0 {
+			t.Fatalf("an ordinary invoice must not disclose the payer, got %d attachments", n)
+		}
+	})
+
+	// Engram overloads this same constant as DataString to carry a username in its messaging
+	// feature. Matching on the string form would attach an address to ordinary messages.
+	t.Run("string form is messaging, not a service -> nothing attached", func(t *testing.T) {
+		addr := integratedAddr(t, rpc.Arguments{
+			{Name: rpc.RPC_NEEDS_REPLYBACK_ADDRESS, DataType: rpc.DataString, Value: "someuser"},
+		})
+		transfers := []rpc.Transfer{{Destination: addr.String(), Amount: 12345}}
+		if n := attachReplybackAddresses(transfers, *self); n != 0 {
+			t.Fatalf("the DataString form is Engram messaging, not a reply-back service, got %d", n)
+		}
+	})
+
+	t.Run("never attached twice", func(t *testing.T) {
+		addr := integratedAddr(t, rpc.Arguments{
+			{Name: rpc.RPC_NEEDS_REPLYBACK_ADDRESS, DataType: rpc.DataUint64, Value: uint64(0)},
+		})
+		transfers := []rpc.Transfer{{Destination: addr.String(), Amount: 12345}}
+		attachReplybackAddresses(transfers, *self)
+		if n := attachReplybackAddresses(transfers, *self); n != 0 {
+			t.Fatalf("second pass must be a no-op, got %d", n)
+		}
+	})
+}
+
 func TestCheckIntegratedInvoice(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	past := now.Add(-time.Hour)
@@ -88,28 +161,14 @@ func TestCheckIntegratedInvoice(t *testing.T) {
 		}
 	})
 
-	// A reply-back service answers with a transfer, so it needs the payer's address in the
-	// payload. HOLOGRAM never sets Payload_RPC, so the service drops the request and keeps
-	// the money. Blocking is the only honest outcome until the address is attached (which
-	// discloses the payer and therefore needs consent).
-	t.Run("needs replyback -> blocked", func(t *testing.T) {
+	// A reply-back service is no longer blocked — the address is attached instead (see
+	// TestAttachReplybackAddresses). The invoice check must not veto it.
+	t.Run("needs replyback -> not an invoice error", func(t *testing.T) {
 		addr := integratedAddr(t, rpc.Arguments{
 			{Name: rpc.RPC_NEEDS_REPLYBACK_ADDRESS, DataType: rpc.DataUint64, Value: uint64(0)},
 		})
-		if msg := checkIntegratedInvoice(addr, 12345, now); msg == "" {
-			t.Fatal("a service requiring a reply-back address must be blocked: HOLOGRAM " +
-				"cannot attach it, so the payment would succeed and buy nothing")
-		}
-	})
-
-	// The guard must key on the requirement flag, not on integrated addresses generally —
-	// an ordinary invoice with a destination port must still go through.
-	t.Run("destination port without replyback -> ok", func(t *testing.T) {
-		addr := integratedAddr(t, rpc.Arguments{
-			{Name: rpc.RPC_DESTINATION_PORT, DataType: rpc.DataUint64, Value: uint64(0x1234)},
-		})
 		if msg := checkIntegratedInvoice(addr, 12345, now); msg != "" {
-			t.Fatalf("a plain destination-port invoice must still pass, got %q", msg)
+			t.Fatalf("reply-back is handled by attaching the address, not by blocking, got %q", msg)
 		}
 	})
 

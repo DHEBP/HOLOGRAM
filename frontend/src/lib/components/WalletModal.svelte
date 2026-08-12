@@ -1,7 +1,7 @@
 <script>
   import { fly, fade } from 'svelte/transition';
   import { walletState, settingsState, addressMasked, walletRequests, activeWalletRequest, approveWalletRequest, denyWalletRequest, handleBackendError } from '../stores/appState.js';
-  import { OpenWallet, GetBalance, ListRecentWallets, SelectWalletFile, GetRecentWalletsWithInfo, SwitchWallet } from '../../../wailsjs/go/main/App.js';
+  import { OpenWallet, GetBalance, ListRecentWallets, SelectWalletFile, GetRecentWalletsWithInfo, SwitchWallet, SplitIntegratedAddress } from '../../../wailsjs/go/main/App.js';
 
   // Derived from activeWalletRequest
   $: request = $activeWalletRequest;
@@ -26,6 +26,33 @@
     ];
     return rows.some(arg => arg?.name === 'entrypoint' && String(arg?.value ?? arg?.Value ?? '').trim().length > 0);
   })();
+
+  // A destination that sets RPC_NEEDS_REPLYBACK_ADDRESS is answered by a transfer back, so the
+  // wallet attaches the payer's address to the payload. A DERO recipient normally cannot tell
+  // who paid, so this converts an anonymous payment into an identified one -- the approval has
+  // to say so, or a dApp discloses the user's identity with nothing on screen.
+  // Resolved per destination, not per request: one call can mix disclosing and ordinary
+  // recipients. SplitIntegratedAddress parses locally and needs no open wallet.
+  let replybackDests = {};
+  $: resolveReplybackDisclosure(request);
+
+  async function resolveReplybackDisclosure(req) {
+    replybackDests = {};
+    const dests = (req?.payload?.transfers || [])
+      .map(t => t?.destination)
+      .filter(d => typeof d === 'string' && d.trim().length > 0);
+    for (const d of dests) {
+      try {
+        const res = await SplitIntegratedAddress(d.trim());
+        if (res && res.success && res.needsReplyback) {
+          replybackDests = { ...replybackDests, [d]: true };
+        }
+      } catch (err) {
+        // Fail loud rather than silent: if we cannot tell, say we cannot tell.
+        replybackDests = { ...replybackDests, [d]: 'unknown' };
+      }
+    }
+  }
 
   // Total native-DERO (zero-SCID) burn across the request's transfers + top-level SC deposits.
   $: scDeroDeposit = Number(request?.payload?.sc_dero_deposit) || 0;
@@ -594,6 +621,16 @@
                     <div class="modal-tx-field">
                       <div class="modal-tx-label">{destinations.length > 1 ? `DESTINATION ${di + 1}` : 'DESTINATION'}</div>
                       <div class="modal-tx-destination">{dest}</div>
+                      {#if replybackDests[dest] === true}
+                        <div class="modal-tx-replyback">
+                          This service replies by sending you a transfer, so your wallet address
+                          is attached — it will know you paid.
+                        </div>
+                      {:else if replybackDests[dest] === 'unknown'}
+                        <div class="modal-tx-replyback">
+                          Could not check whether this destination requires your address.
+                        </div>
+                      {/if}
                     </div>
                   {/each}
                 {/if}
@@ -1223,6 +1260,16 @@
     font-size: 12px;
     line-height: 1.5;
     color: var(--text-3);
+  }
+
+  /* Amber, matching the Send confirm step: losing anonymity is a consequence to notice
+     before approving, not an alarm. Red stays reserved for what cannot work. */
+  .modal-tx-replyback {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--status-warn);
+    margin-top: var(--s-2);
   }
 
   .modal-tx-attribution-note {

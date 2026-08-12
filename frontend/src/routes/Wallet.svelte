@@ -1,7 +1,7 @@
 <script>
   import { walletState, appState, settingsState, addressMasked, balanceMasked, toast, handleBackendError, syncNetworkMode, pendingPayment, clearPendingPayment } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents, GetRegistrationStatus, RegisterWallet, CancelRegistration, ResolveNameForSend, GetRingMemberSets, GetAllSettings, SetSetting } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, SplitIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents, GetRegistrationStatus, RegisterWallet, CancelRegistration, ResolveNameForSend, GetRingMemberSets, GetAllSettings, SetSetting } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { looksLikeDeroAddress } from '../lib/utils/deroAddress.js';
   import { 
@@ -304,6 +304,24 @@
       sendNameError = 'Could not resolve that name';
     } finally {
       sendNameResolving = false;
+    }
+  }
+
+  // A reply-back service is answered by a transfer back, so the payer's address is attached to
+  // the payload. A DERO recipient normally cannot tell who paid, so this is a real disclosure
+  // and the confirm step has to say so before the user commits. Resolved on entering confirm
+  // rather than from the URI state machine, which only decodes on some paths — a missed path
+  // here would disclose silently.
+  let sendDiscloses = false;
+
+  async function enterConfirmStep() {
+    sendStep = 2;
+    sendDiscloses = false;
+    try {
+      const res = await SplitIntegratedAddress(sendDest.trim());
+      sendDiscloses = !!(res && res.success && res.needsReplyback);
+    } catch (err) {
+      sendDiscloses = false;
     }
   }
 
@@ -2573,7 +2591,7 @@
                 </div>
 
                 <div class="form-actions">
-                  <button class="btn btn-primary" disabled={!canSend} on:click={() => sendStep = 2}>
+                  <button class="btn btn-primary" disabled={!canSend} on:click={enterConfirmStep}>
                     Review Transaction
                     <ChevronRight size={14} />
                   </button>
@@ -2622,8 +2640,17 @@
                       {/if}
                     </span>
                   </div>
+                  {#if sendDiscloses}
+                    <div class="confirm-row confirm-row-sub">
+                      <span class="confirm-label">Your address</span>
+                      <span class="confirm-value confirm-value-warn">
+                        Shared with this service
+                        <span class="confirm-sub">it replies by sending you a transfer, so it will know you paid</span>
+                      </span>
+                    </div>
+                  {/if}
                 </div>
-                
+
                 <div class="form-group">
                   <label class="form-label">Wallet Password</label>
                   <PasswordInput bind:value={sendPassword} placeholder="Enter password" />
@@ -4858,6 +4885,8 @@
   .confirm-value { font-size: 13px; color: var(--text-1); font-family: var(--font-mono); }
   .confirm-value-amount { color: var(--cyan-400); font-weight: 600; font-size: 16px; }
   .confirm-value-address { font-size: 11px; }
+  /* Amber, not red: disclosing your address is a consequence to notice, not an alarm. */
+  .confirm-value-warn { color: var(--status-warn); }
 
   /* A row whose value carries an explanatory second line. Top-aligned so the label
      sits with the value it names rather than centring against both lines. */
