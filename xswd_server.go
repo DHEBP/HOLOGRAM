@@ -1005,6 +1005,16 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 		return
 	}
 
+	// A dApp calling the nameservice must use ring 2 (see nameServiceSCID): ring>2 yields a
+	// zero signer, so the name would land owned by nobody and be hijackable. Force it here,
+	// before the approval modal, so the user sees the ring size we will actually broadcast.
+	switch req.Method {
+	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
+		if scid, _ := paramsMap["scid"].(string); scid == nameServiceSCID {
+			paramsMap["ringsize"] = float64(2)
+		}
+	}
+
 	// Get app name and origin for this connection
 	s.lock.RLock()
 	appName := s.clientAppNames[conn]

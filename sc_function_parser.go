@@ -202,6 +202,23 @@ func (a *App) ValidateSCCode(code string) map[string]interface{} {
 	}
 }
 
+// nameServiceSCID is the hardcoded on-chain name-registration contract. Calls that read
+// SIGNER() (Register/TransferOwnership) must use ring 2, or the signer is all-zero and the
+// name lands owned by nobody — anyone can then seize it. We force ring 2 for this SCID
+// regardless of anonymous mode. The contract itself cannot be fixed (editing hardcoded_sc
+// would fork the chain), so this client-side guard is the remediation.
+const nameServiceSCID = "0000000000000000000000000000000000000000000000000000000000000001"
+
+// scinvokeRingsize picks the ring size for an SC call: 2 (attributable) by default, 16 when
+// the caller requests anonymity — except nameservice calls, which must stay ring 2 so the
+// stored SIGNER() is a real key (ring>2 => zero signer => name owned by nobody, hijackable).
+func scinvokeRingsize(scid string, anonymous bool) uint64 {
+	if anonymous && scid != nameServiceSCID {
+		return 16
+	}
+	return 2
+}
+
 // InvokeSCFunctionParams represents the parameters for invoking an SC function
 type InvokeSCFunctionParams struct {
 	SCID        string                 `json:"scid"`
@@ -248,10 +265,7 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 	// a 10 KB SetVar sent from here was mined, charged, and stored nothing while the UI
 	// reported success. estimateSCInvokeGas answers 0 when it cannot measure, which reads as
 	// "proceed", so the guard only ever blocks a size it actually saw.
-	guardRingsize := uint64(2)
-	if params.Anonymous {
-		guardRingsize = 16
-	}
+	guardRingsize := scinvokeRingsize(params.SCID, params.Anonymous)
 	if gas := a.estimateSCInvokeGas(params, wallet, guardRingsize); storageGasExceeded(gas) {
 		err := storageGasError(fmt.Sprintf("calling %s", params.Function), gas)
 		a.logToConsole(fmt.Sprintf("[ERR] SC invoke refused: %v", err))
@@ -290,10 +304,7 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 	walletParams := map[string]interface{}{
 		"scid":     params.SCID,
 		"sc_rpc":   scRPC,
-		"ringsize": float64(2),
-	}
-	if params.Anonymous {
-		walletParams["ringsize"] = float64(16)
+		"ringsize": float64(scinvokeRingsize(params.SCID, params.Anonymous)),
 	}
 	if params.DeroAmount > 0 {
 		walletParams["sc_dero_deposit"] = float64(params.DeroAmount)
