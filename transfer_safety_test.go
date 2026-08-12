@@ -88,6 +88,31 @@ func TestCheckIntegratedInvoice(t *testing.T) {
 		}
 	})
 
+	// A reply-back service answers with a transfer, so it needs the payer's address in the
+	// payload. HOLOGRAM never sets Payload_RPC, so the service drops the request and keeps
+	// the money. Blocking is the only honest outcome until the address is attached (which
+	// discloses the payer and therefore needs consent).
+	t.Run("needs replyback -> blocked", func(t *testing.T) {
+		addr := integratedAddr(t, rpc.Arguments{
+			{Name: rpc.RPC_NEEDS_REPLYBACK_ADDRESS, DataType: rpc.DataUint64, Value: uint64(0)},
+		})
+		if msg := checkIntegratedInvoice(addr, 12345, now); msg == "" {
+			t.Fatal("a service requiring a reply-back address must be blocked: HOLOGRAM " +
+				"cannot attach it, so the payment would succeed and buy nothing")
+		}
+	})
+
+	// The guard must key on the requirement flag, not on integrated addresses generally —
+	// an ordinary invoice with a destination port must still go through.
+	t.Run("destination port without replyback -> ok", func(t *testing.T) {
+		addr := integratedAddr(t, rpc.Arguments{
+			{Name: rpc.RPC_DESTINATION_PORT, DataType: rpc.DataUint64, Value: uint64(0x1234)},
+		})
+		if msg := checkIntegratedInvoice(addr, 12345, now); msg != "" {
+			t.Fatalf("a plain destination-port invoice must still pass, got %q", msg)
+		}
+	})
+
 	t.Run("not yet expired -> ok", func(t *testing.T) {
 		addr := integratedAddr(t, rpc.Arguments{
 			{Name: rpc.RPC_EXPIRY, DataType: rpc.DataTime, Value: future},

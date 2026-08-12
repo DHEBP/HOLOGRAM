@@ -1045,6 +1045,15 @@ func checkIntegratedInvoice(addr *rpc.Address, amount uint64, now time.Time) str
 			return fmt.Sprintf("This payment address requests exactly %s DERO, but you entered %s DERO. Match the requested amount, or use a plain address — a wrong amount cannot be undone.", formatDEROAmount(want), formatDEROAmount(amount))
 		}
 	}
+	// A service that sets RPC_NEEDS_REPLYBACK_ADDRESS answers by sending a transfer back, so
+	// it needs the payer's address in the payload. HOLOGRAM never sets Payload_RPC on an
+	// outgoing transfer, and walletapi only auto-copies the destination port — so the address
+	// is not attached and the service's own guard drops the request while keeping the money.
+	// Block it rather than let the payment succeed and buy nothing. Lifting this means
+	// attaching the address, which discloses who paid and therefore needs the user's consent.
+	if addr.Arguments.Has(rpc.RPC_NEEDS_REPLYBACK_ADDRESS, rpc.DataUint64) {
+		return "This address belongs to a service that replies back, so it requires your wallet address to answer. HOLOGRAM cannot attach it yet, so the service would take the payment and send nothing. Pay it from dero-wallet-cli, which can."
+	}
 	return ""
 }
 
