@@ -1,0 +1,18 @@
+#!/bin/sh
+# Block pushing commits that reference fork-only derohe walletapi symbols
+# (SenderVerified/RingSize wiring) while the committed go.mod still resolves
+# upstream derohe — such a commit does not build from a clean checkout.
+# Clears itself naturally once go.mod pins a published fork ref.
+# Override (deliberately): git push --no-verify
+while read local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+  if git grep -q "SenderVerified" "$local_sha" -- '*.go' 2>/dev/null; then
+    if ! git show "$local_sha:go.mod" 2>/dev/null | grep -Eq 'derohe[[:space:]]*=>[[:space:]]*(github\.com|gitlab\.com)'; then
+      echo "pre-push: $local_ref references fork-only derohe symbols but its go.mod has no published fork pin." >&2
+      echo "pre-push: this commit cannot build from a clean checkout. Publish the fork and pin go.mod first." >&2
+      echo "pre-push: (git push --no-verify to override deliberately)" >&2
+      exit 1
+    fi
+  fi
+done
+exit 0
