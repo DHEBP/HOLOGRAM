@@ -20,7 +20,7 @@ require (
 // also open as upstream PRs; the fork is rebased onto each upstream Release tag so
 // it stays consensus-identical (patches are walletapi/UX only, never consensus).
 // As upstream merges the PRs, this fork's delta shrinks toward zero.
-replace github.com/deroproject/derohe => github.com/DHEBP/derohe v0.0.0-20260813173348-a64dda325a34
+replace github.com/deroproject/derohe => github.com/DHEBP/derohe v0.0.0-20260814193948-113c0488c422
 
 require (
 	github.com/VictoriaMetrics/metrics v1.23.1 // indirect
