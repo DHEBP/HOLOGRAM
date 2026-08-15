@@ -60,8 +60,18 @@ func (a *App) GetLiveStats() map[string]interface{} {
 	stableHeight := getInt64(info, "stableheight", 0)
 	totalSupply := getInt64(info, "total_supply", 0)
 
-	// Calculate hashrate from difficulty (difficulty / block_time)
-	hashrate := float64(difficulty) / averageBlockTime
+	// Calculate hashrate from difficulty (difficulty / block_time) -- guarded
+	// against averageBlockTime == 0, which the daemon genuinely reports (not
+	// just "field missing", the field is present and zero) on a freshly
+	// wiped/genesis chain before 50 blocks' worth of real elapsed time have
+	// accumulated (e.g. every sim-dev.sh/sim-qa.sh restart). Unguarded, this
+	// divides a positive difficulty by 0.0 and produces +Inf, which
+	// encoding/json refuses to marshal -- confirmed live, crashed the whole
+	// app when Wails tried to serialize this map back to the frontend.
+	hashrate := float64(0)
+	if averageBlockTime > 0 {
+		hashrate = float64(difficulty) / averageBlockTime
+	}
 
 	// Total peers
 	peers := incomingPeers + outgoingPeers
