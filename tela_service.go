@@ -587,7 +587,12 @@ func (a *App) InstallINDEX(indexJSON string) map[string]interface{} {
 		// For non-simulator: use walletapi.Connect()
 		a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi to daemon: %s", endpoint))
 		if err := walletapi.Connect(endpoint); err != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
+			a.logToConsole(fmt.Sprintf("[ERR] walletapi.Connect failed: %v", err))
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Could not connect to daemon: " + FriendlyError(err),
+				"technicalError": err.Error(),
+			}
 		}
 		wallet.SetDaemonAddress(endpoint)
 		wallet.SetOnlineMode()
@@ -675,7 +680,12 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		// Connect walletapi for non-simulator mode
 		a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi to daemon: %s", endpoint))
 		if err := walletapi.Connect(endpoint); err != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
+			a.logToConsole(fmt.Sprintf("[ERR] walletapi.Connect failed: %v", err))
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Could not connect to daemon: " + FriendlyError(err),
+				"technicalError": err.Error(),
+			}
 		}
 		wallet.SetDaemonAddress(endpoint)
 		wallet.SetOnlineMode()

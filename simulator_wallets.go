@@ -230,7 +230,7 @@ func (swm *SimulatorWalletManager) RegisterAllWallets(daemonEndpoint string) err
 
 	// Connect walletapi for registration
 	if err := walletapi.Connect(daemonEndpoint); err != nil {
-		swm.log(fmt.Sprintf("[WARN] walletapi.Connect returned error: %v (continuing anyway)", err))
+		return fmt.Errorf("walletapi.Connect failed: %v", err)
 	}
 
 	registeredCount := 0
@@ -427,7 +427,7 @@ func (swm *SimulatorWalletManager) SyncSingleWallet(daemonEndpoint string, index
 
 	// Connect walletapi for sync
 	if err := walletapi.Connect(daemonEndpoint); err != nil {
-		swm.log(fmt.Sprintf("[WARN] walletapi.Connect returned error: %v", err))
+		return 0, fmt.Errorf("walletapi.Connect failed: %v", err)
 	}
 
 	balance, err := swm.syncSingleWalletUnlocked(index)
@@ -445,7 +445,7 @@ func (swm *SimulatorWalletManager) SyncBalances(daemonEndpoint string) error {
 
 	// Connect walletapi for sync
 	if err := walletapi.Connect(daemonEndpoint); err != nil {
-		swm.log(fmt.Sprintf("[WARN] walletapi.Connect returned error: %v", err))
+		return fmt.Errorf("walletapi.Connect failed: %v", err)
 	}
 
 	swm.syncBalancesUnlocked()
@@ -794,24 +794,32 @@ func (a *App) OpenSimulatorTestWallet(index int) map[string]interface{} {
 
 	gnomonWasRunning := a.pauseGnomonForSimulator()
 
-	if err := walletapi.Connect(endpoint); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
-	}
-	internalWallet.SetDaemonAddress(endpoint)
-	internalWallet.SetOnlineMode()
+	connectErr := walletapi.Connect(endpoint)
+	if connectErr != nil {
+		a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v - wallet opened offline, balance may be stale", connectErr))
+	} else {
+		internalWallet.SetDaemonAddress(endpoint)
+		internalWallet.SetOnlineMode()
 
-	// Sync wallet
-	if err := internalWallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Failed to sync test wallet: %v", err))
+		// Sync wallet
+		if err := internalWallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+			a.logToConsole(fmt.Sprintf("[WARN] Failed to sync test wallet: %v", err))
+		}
 	}
 
 	// wallet.Get_Balance() returns stale data in simulator mode because the
 	// in-memory wallet hasn't scanned genesis/funding blocks.  Use the direct
 	// daemon query (same as syncBalancesUnlocked) for an accurate balance.
+	// Skipped when Connect failed above - the client just failed its own
+	// probe and calling into it again would hit the same dead connection.
 	var mature, locked uint64
-	var zerohash [32]byte
-	if bal, _, err := internalWallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, walletInfo.Address); err == nil {
-		mature = bal
+	if connectErr == nil {
+		var zerohash [32]byte
+		if bal, _, err := internalWallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, walletInfo.Address); err == nil {
+			mature = bal
+		} else {
+			mature, locked = internalWallet.Get_Balance()
+		}
 	} else {
 		mature, locked = internalWallet.Get_Balance()
 	}
@@ -974,7 +982,8 @@ func (a *App) FundTestWallet(targetIndex int, amount uint64) map[string]interfac
 
 	// Connect to daemon for balance queries
 	if err := walletapi.Connect(endpoint); err != nil {
-		a.logToConsole(fmt.Sprintf("[WARN] Connect for balance query failed: %v", err))
+		a.logToConsole(fmt.Sprintf("[WARN] Connect for balance query failed: %v - skipping direct balance query, stored balance may lag", err))
+		goto balancePollDone
 	}
 
 	// Try querying balance up to 5 times with delays
@@ -1006,6 +1015,7 @@ func (a *App) FundTestWallet(targetIndex int, amount uint64) map[string]interfac
 		}
 	}
 
+balancePollDone:
 	disconnectWalletAPI()
 
 	// Also update source wallet balances using direct query
