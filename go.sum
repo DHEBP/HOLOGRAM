@@ -6,6 +6,8 @@ github.com/DHEBP/derohe v0.0.0-20260813173348-a64dda325a34 h1:yP5NK3X9QTDoBnY0Mg
 github.com/DHEBP/derohe v0.0.0-20260813173348-a64dda325a34/go.mod h1:EWHh1VkXRnCHvyGML98kXhngDFYebmOhk/9kZ1ATJ1c=
 github.com/DHEBP/derohe v0.0.0-20260814193948-113c0488c422 h1:Uh5nyu5F1QSOAyQ/4IEaTorvhLD3uVT5ucR9wUIglwg=
 github.com/DHEBP/derohe v0.0.0-20260814193948-113c0488c422/go.mod h1:EWHh1VkXRnCHvyGML98kXhngDFYebmOhk/9kZ1ATJ1c=
+github.com/DHEBP/derohe v0.0.0-20260820134946-b00fb9d72b3a h1:radVTZcKYdj/kGC1BiBFcvs9dFntmsB5qAiDE3QZtgY=
+github.com/DHEBP/derohe v0.0.0-20260820134946-b00fb9d72b3a/go.mod h1:EWHh1VkXRnCHvyGML98kXhngDFYebmOhk/9kZ1ATJ1c=
 github.com/OneOfOne/xxhash v1.2.2 h1:KMrpdQIwFcEqXDklaen+P1axHaj9BSKzvpUUfnHldSE=
 github.com/OneOfOne/xxhash v1.2.2/go.mod h1:HSdplMjZKSmBqAxg5vPj2TmRDmfkzw+cTzAElWljhcU=
 github.com/VictoriaMetrics/metrics v1.23.1 h1:/j8DzeJBxSpL2qSIdqnRFLvQQhbJyJbbEi22yMm7oL0=
