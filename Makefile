@@ -56,6 +56,23 @@ endif
 BUILD_DIR = build/bin
 DEROHE_PKG = github.com/deroproject/derohe
 
+# Toolchain for the chain binaries ONLY. HOLOGRAM itself follows your default Go.
+#
+# derod is the node our users run, so it has to behave like the rest of the
+# network. Some of that behaviour is decided by the Go standard library rather
+# than by derohe's source, and those details change between Go releases — a
+# derod built on an unvalidated toolchain can differ from the network while
+# looking normal and passing every test.
+#
+# So these two binaries are pinned to a toolchain that has been checked against
+# the network, and both targets verify the result afterwards: removing the pin
+# fails the build instead of silently shipping.
+#
+# ⚠️ DO NOT raise or delete this pin without asking DHEBP first. It is not stale
+# and it is not lint. The specific rationale is recorded outside this repository,
+# deliberately.
+DEROD_TOOLCHAIN ?= go1.26.5
+
 # Get derohe module path from go mod
 
 # Default target - build derod/simulator FIRST, then hologram
@@ -91,18 +108,22 @@ release: derod simulator check-invariants
 derod: check-derohe
 	@echo "🔨 Building derod from derohe source..."
 	@mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(DEROD_BIN) $(DEROHE_PKG)/cmd/derod
+	GOTOOLCHAIN=$(DEROD_TOOLCHAIN) go build -o $(BUILD_DIR)/$(DEROD_BIN) $(DEROHE_PKG)/cmd/derod
 	@chmod +x $(BUILD_DIR)/$(DEROD_BIN)
-	@echo "✅ derod built: $(BUILD_DIR)/$(DEROD_BIN)"
+	@go version -m $(BUILD_DIR)/$(DEROD_BIN) | head -1 | grep -q '$(DEROD_TOOLCHAIN)' \
+		|| { echo "❌ derod was built with $$(go version -m $(BUILD_DIR)/$(DEROD_BIN) | head -1 | awk '{print $$2}'), expected $(DEROD_TOOLCHAIN) — refusing"; exit 1; }
+	@echo "✅ derod built: $(BUILD_DIR)/$(DEROD_BIN) ($(DEROD_TOOLCHAIN))"
 
 # Build simulator from derohe source
 # Note: We build from HOLOGRAM's module context so dependencies resolve correctly
 simulator: check-derohe
 	@echo "🔨 Building simulator from derohe source..."
 	@mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(SIMULATOR_BIN) $(DEROHE_PKG)/cmd/simulator
+	GOTOOLCHAIN=$(DEROD_TOOLCHAIN) go build -o $(BUILD_DIR)/$(SIMULATOR_BIN) $(DEROHE_PKG)/cmd/simulator
 	@chmod +x $(BUILD_DIR)/$(SIMULATOR_BIN)
-	@echo "✅ simulator built: $(BUILD_DIR)/$(SIMULATOR_BIN)"
+	@go version -m $(BUILD_DIR)/$(SIMULATOR_BIN) | head -1 | grep -q '$(DEROD_TOOLCHAIN)' \
+		|| { echo "❌ simulator was built with $$(go version -m $(BUILD_DIR)/$(SIMULATOR_BIN) | head -1 | awk '{print $$2}'), expected $(DEROD_TOOLCHAIN) — refusing"; exit 1; }
+	@echo "✅ simulator built: $(BUILD_DIR)/$(SIMULATOR_BIN) ($(DEROD_TOOLCHAIN))"
 
 # Check that derohe dependency is available and add cmd dependencies.
 # No version is pinned here: the derohe module is resolved by go.mod (currently a
