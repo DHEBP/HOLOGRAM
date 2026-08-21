@@ -2237,7 +2237,7 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 				}
 			}
 
-			ringsize := uint64(2)
+			ringsize := uint64(16)
 			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
 				ringsize = uint64(rs)
 			}

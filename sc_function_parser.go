@@ -514,6 +514,19 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		ringsize = 16
 	}
 
+	storageNeed, storageMeasured := a.storageGasFor(scArgs, ringsize, wallet.GetAddress().String())
+	if refusal := storageGasRefusal(scArgs, storageNeed, storageMeasured); refusal != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] SC install refused: %v", refusal))
+		return map[string]interface{}{
+			"success":        false,
+			"error":          refusal.Error(),
+			"technicalError": fmt.Sprintf("storage gas %d exceeds the per-call ceiling; no fee can raise it", storageNeed),
+		}
+	}
+	if !storageMeasured {
+		a.logToConsole("[WARN] Could not measure this call's storage cost — proceeding with the wallet's default fee")
+	}
+
 	endpoint := a.getDaemonEndpointForWallet()
 
 	if isSimulator {
@@ -568,6 +581,19 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 			return map[string]interface{}{
 				"success": false,
 				"error":   "Transaction failed: " + err.Error(),
+			}
+		}
+
+		if storageMeasured {
+			if payFee, short := storageTopUp(tx.Fees(), storageNeed); short {
+				a.logToConsole(fmt.Sprintf("[SC] Storage needs %d gas but the built TX carries %d — rebuilding with the measured fee", storageNeed, tx.Fees()))
+				topped, topErr := wallet.TransferPayload0(transfers, ringsize, false, scArgs, payFee, false)
+				if topErr != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] Could not rebuild with the storage fee, sending as built: %v", topErr))
+				} else {
+					tx = topped
+					a.logToConsole(fmt.Sprintf("[SC] Rebuilt carrying %d gas", tx.Fees()))
+				}
 			}
 		}
 
@@ -629,6 +655,19 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Transaction failed: " + err.Error(),
+		}
+	}
+
+	if storageMeasured {
+		if payFee, short := storageTopUp(tx.Fees(), storageNeed); short {
+			a.logToConsole(fmt.Sprintf("[SC] Storage needs %d gas but the built TX carries %d — rebuilding with the measured fee", storageNeed, tx.Fees()))
+			topped, topErr := wallet.TransferPayload0(transfers, ringsize, false, scArgs, payFee, false)
+			if topErr != nil {
+				a.logToConsole(fmt.Sprintf("[WARN] Could not rebuild with the storage fee, sending as built: %v", topErr))
+			} else {
+				tx = topped
+				a.logToConsole(fmt.Sprintf("[SC] Rebuilt carrying %d gas", tx.Fees()))
+			}
 		}
 	}
 
