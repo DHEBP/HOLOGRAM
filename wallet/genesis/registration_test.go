@@ -1,11 +1,11 @@
 package genesis
 
-// Tests for the registration miner. The 24-bit PoW correctness of the lifted
+// Tests for the registration miner. The 28-bit PoW correctness of the lifted
 // mmarcel/Dirtybird algorithm is already pinned by the burned-vector gate
 // (TestBurnedVector_DerivesAndRegistrationComplete). Here we test the logic THIS
 // port adds around it: cancellation, the progress callback, and seed
 // re-derivation — all fast. The full real mine is -short-gated (it is a genuine
-// ~16-min 24-bit grind).
+// multi-minute 28-bit grind).
 
 import (
 	"testing"
@@ -109,10 +109,47 @@ func TestMineRegistrationFromSeed_DerivesCorrectWallet(t *testing.T) {
 	}
 }
 
-// ---- full live mine: real 24-bit grind, -short-gated ----
+// ---- 28-bit target boundary: the exact byte-and-nibble comparison mineWorker
+// uses, independent of any real mining. Pins the case that would have wrongly
+// passed under the old 24-bit (3-zero-byte-only) check. ----
+func TestRegistrationPoW_28BitBoundary(t *testing.T) {
+	meets28Bit := func(hash [32]byte) bool {
+		return hash[0] == 0 && hash[1] == 0 && hash[2] == 0 && hash[3]&0xF0 == 0
+	}
+
+	cases := []struct {
+		name string
+		b3   byte // hash[3]
+		want bool
+	}{
+		{"byte4 = 0x00 — meets 28-bit target", 0x00, true},
+		{"byte4 = 0x0F (high nibble zero) — meets 28-bit target", 0x0F, true},
+		{"byte4 = 0x10 (high nibble nonzero) — just misses 28-bit target", 0x10, false},
+		{"byte4 = 0xF0 — meets old 24-bit target but fails 28-bit", 0xF0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var hash [32]byte
+			hash[3] = c.b3
+			if got := meets28Bit(hash); got != c.want {
+				t.Fatalf("hash[3]=%#x: got %v, want %v", c.b3, got, c.want)
+			}
+		})
+	}
+
+	t.Run("byte3 nonzero — fails", func(t *testing.T) {
+		var hash [32]byte
+		hash[2] = 0x01
+		if meets28Bit(hash) {
+			t.Fatal("hash[2] nonzero must fail regardless of hash[3]")
+		}
+	})
+}
+
+// ---- full live mine: real 28-bit grind, -short-gated ----
 func TestMineRegistrationFromSeed_Live(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping live 24-bit cold registration mine (mean ~16 min); run without -short")
+		t.Skip("skipping live 28-bit cold registration mine (mean ~16 min at 24-bit hashrate; longer at 28-bit); run without -short")
 	}
 	cleanGlobals(t)
 

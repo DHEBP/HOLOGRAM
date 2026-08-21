@@ -5066,8 +5066,12 @@ func (a *App) RegisterWallet() map[string]interface{} {
 							}
 						}
 
-						// Check if hash meets the difficulty requirement (3 leading zero bytes)
-						if hash[0] == 0 && hash[1] == 0 && hash[2] == 0 {
+						// Check if hash meets the difficulty requirement (28 leading zero bits:
+						// 3 full zero bytes plus the top 4 bits of the 4th byte). Raised from 24
+						// bits to match wallet/genesis/registration.go's cold-miner target — the
+						// increment-optimized search made 24-bit hashing ~10-20x cheaper, and a
+						// 28-bit winner still satisfies derohe's own 24-bit IsRegistrationValid().
+						if hash[0] == 0 && hash[1] == 0 && hash[2] == 0 && hash[3]&0xF0 == 0 {
 							// Found a valid hash! Send the transaction immediately before returning
 							doneOnce.Do(func() {
 								close(doneCh) // Signal other threads to stop

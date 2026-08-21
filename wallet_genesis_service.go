@@ -104,7 +104,7 @@ func (a *App) VerifyColdWallet(seed, address, network, registrationHex string) m
 // MineRegistration mines the offline registration PoW for a cold wallet derived
 // from `seed`, streaming progress as `genesis:registration_*` events and
 // returning the registration hex (for QR / paper / DCSP transport). It does NOT
-// broadcast. The mine is a multi-minute 24-bit grind; it runs on a background
+// broadcast. The mine is a multi-minute 28-bit grind; it runs on a background
 // goroutine and is cancellable via CancelRegistration.
 //
 // Events (namespaced separately from the hot wallet's wallet:registration_*, so
