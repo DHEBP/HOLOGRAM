@@ -7,9 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.0.8] - 2026-08-06
+## [1.0.8] - 2026-08-20
 
-A rebuilt consent model for dApps — connecting no longer asks for wallet access, and access that is remembered is remembered per wallet. Plus sender-attribution privacy, cold-wallet genesis, XSWD/Browser trust-boundary hardening, fund-safety guards on the hot send path, and Linux launch fixes for WebKitGTK.
+A rebuilt consent model for dApps — connecting no longer asks for wallet access, and access that is remembered is remembered per wallet. Plus sender-attribution privacy, cold-wallet genesis, XSWD/Browser trust-boundary hardening, fund-safety guards on the hot send path, Linux launch fixes for WebKitGTK, TELA file-drop, name resolution, and a required consensus repin ahead of the DERO network's HF3 activation.
+
+### Security
+- **Repinned the embedded `derod` to the `DHEBP/derohe` fork's HF3-ready state.** Without this, HOLOGRAM's bundled node would have forked off the DERO network at block 7,504,640 — silently, with no error surfaced to the user. The fork carries the full set of transactions affected by the HF3 nonce-parity change and has been verified reaching chain tip with zero verification failures.
 
 ### Added
 - Wallet: cold-wallet offline genesis — mine registration air-gapped, then broadcast a saved DCSP blob from inside HOLOGRAM (paste → fingerprint check → send).
@@ -48,6 +51,14 @@ A rebuilt consent model for dApps — connecting no longer asks for wallet acces
 - Browser: Discover Apps keeps polling until Gnomon’s first index finishes (~5 min), with a one-shot TOP RATED → ALL fallback on empty cold start.
 - Wallet: empty-destination sends rejected; wrong-network destinations blocked on XSWD/token paths; unresolved destinations no longer misdiagnosed as “not registered.”
 - Linux: WebKitGTK DMA-BUF hang on NVIDIA/Wayland — set `WEBKIT_DISABLE_DMABUF_RENDERER=1` before the WebView starts.
+- TELA: dropping a file on an app no longer navigates the whole window away to that file. Fixed across all three bridges (proxy, srcdoc, and locally-served apps), which previously disagreed on drag-and-drop behavior.
+- TELA: a dropped file is now identified by its real type instead of always reading as generic binary, so apps that filter by file type work correctly.
+- Wallet: a registered name typed into the Send field or a Ring Members entry now resolves to its address live, with a status indicator, instead of reporting "Invalid DERO address."
+- Wallet: a custom daemon endpoint is no longer silently overwritten when switching networks.
+- XSWD: `DERO.GetSC` string values returned to dApps are no longer double-decoded, so contract data read through HOLOGRAM now matches what other XSWD-compliant wallets return.
+- Wallet: send-confirmation now clearly separates the ring breakdown (you + recipient + chosen + random) from the named decoy set, instead of running both together on one ambiguous line.
+- Wallet: paying an address that requests a reply-back destination no longer spends funds against a request the wallet couldn't actually fulfil; sending to such a destination is refused up front. Reply-back payments are now supported when the paying wallet chooses to disclose its address, shown plainly in the send confirmation and the XSWD approval modal before it's sent.
+- Fixed a crash where dividing by a zero-sized cache produced an unrepresentable number that the frontend bridge could not serialize, freezing the UI.
 
 ---
 
