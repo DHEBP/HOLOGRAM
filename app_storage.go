@@ -211,7 +211,7 @@ func (a *App) collectCategories() []StorageCategory {
 	network := a.getNetworkName()
 	gnomonRunning := a.gnomonClient != nil && a.gnomonClient.IsRunning()
 
-	gnomonPath := filepath.Join(getDatashardsDir(), fmt.Sprintf("gravdb-%s", network))
+	gnomonPath, _ := gnomonDBDir(network) // A15: single source of truth, matches Gnomon Start/CleanDB (retired the old phantom path)
 	offlinePath := filepath.Join(getDatashardsDir(), "offline_cache")
 	derodPath := filepath.Join(getHologramDataDir(), "derod")
 	telaPath := filepath.Join(getDatashardsDir(), "tela")
@@ -453,7 +453,10 @@ func tierMembers(tier string) []string {
 
 func (a *App) clearGnomonIndex() (int64, error) {
 	network := a.getNetworkName()
-	path := filepath.Join(getDatashardsDir(), fmt.Sprintf("gravdb-%s", network))
+	path, err := gnomonDBDir(network) // A15: target the real Gnomon index (retired the old phantom path)
+	if err != nil {
+		return 0, err
+	}
 
 	if a.gnomonClient != nil && a.gnomonClient.IsRunning() {
 		return 0, fmt.Errorf("Gnomon is running — stop it first")
@@ -610,6 +613,7 @@ func (a *App) restoreSettings() (int64, error) {
 	a.settings["avatar_hidden"] = false
 	a.settings["privacy_mode"] = false
 	a.settings["signal_dark"] = false
+	a.settings["active_ring_member_set"] = ""
 
 	wailsRuntime.EventsEmit(a.ctx, "settings:restored", nil)
 	return before, nil

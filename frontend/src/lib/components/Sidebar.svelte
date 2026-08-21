@@ -545,7 +545,13 @@
         });
         
         if (approval && approval.approved) {
-          await ApproveWalletConnection();
+          const granted = Array.isArray(approval.permissions) ? approval.permissions : [];
+          await ApproveWalletConnection(
+            'hologram://status',
+            'Hologram',
+            'Status indicator connect',
+            granted
+          );
         }
       } else {
         // For external XSWD

@@ -60,8 +60,7 @@ func (a *App) GetLiveStats() map[string]interface{} {
 	stableHeight := getInt64(info, "stableheight", 0)
 	totalSupply := getInt64(info, "total_supply", 0)
 
-	// Calculate hashrate from difficulty (difficulty / block_time)
-	hashrate := float64(difficulty) / averageBlockTime
+	hashrate := computeHashrate(difficulty, averageBlockTime)
 
 	// Total peers
 	peers := incomingPeers + outgoingPeers
@@ -405,6 +404,20 @@ func getInt64(m map[string]interface{}, key string, defaultVal int64) int64 {
 		}
 	}
 	return defaultVal
+}
+
+// computeHashrate divides difficulty by block time, refusing the one input that cannot be
+// divided by. The daemon genuinely reports averageblocktime50 as 0 on a fresh chain -- the
+// field is PRESENT and zero, not missing, so getFloat64's default never fires and cannot be
+// relied on as the guard. Measured on a fresh simulator: still 0 at height 5, so this is the
+// normal state of a sim session rather than a brief startup window. Unguarded it yields +Inf,
+// which encoding/json refuses, failing the entire stats payload -- height, peers and supply
+// go down with the hashrate.
+func computeHashrate(difficulty int64, averageBlockTime float64) float64 {
+	if averageBlockTime <= 0 {
+		return 0
+	}
+	return float64(difficulty) / averageBlockTime
 }
 
 func getFloat64(m map[string]interface{}, key string, defaultVal float64) float64 {

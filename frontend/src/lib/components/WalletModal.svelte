@@ -1,7 +1,7 @@
 <script>
   import { fly, fade } from 'svelte/transition';
   import { walletState, settingsState, addressMasked, walletRequests, activeWalletRequest, approveWalletRequest, denyWalletRequest, handleBackendError } from '../stores/appState.js';
-  import { OpenWallet, GetBalance, ListRecentWallets, SelectWalletFile, GetRecentWalletsWithInfo, SwitchWallet } from '../../../wailsjs/go/main/App.js';
+  import { OpenWallet, GetBalance, ListRecentWallets, SelectWalletFile, GetRecentWalletsWithInfo, SwitchWallet, SplitIntegratedAddress } from '../../../wailsjs/go/main/App.js';
 
   // Derived from activeWalletRequest
   $: request = $activeWalletRequest;
@@ -14,21 +14,52 @@
 
   const ZERO_SCID = '0000000000000000000000000000000000000000000000000000000000000000';
 
-  // A request carries a real smart contract call only when there is actual SC invocation
-  // data -- an entrypoint, or a non-empty sc_data/sc_args array. This mirrors the backend:
-  // parseXSWDScArgs (wallet.go) yields args only when sc_rpc carries an entrypoint, so a bare
-  // scid string with no entrypoint is NOT an SC call. Without this mirror, a dApp could send a
-  // scid with no sc_rpc to make the UI show "Approve" while the backend blocks it as a burn.
-  // A burn routed to a real contract is a deposit, not destruction.
-  $: hasSCCall =
-    (typeof request?.payload?.entrypoint === 'string' && request.payload.entrypoint.length > 0) ||
-    (Array.isArray(request?.payload?.sc_data) && request.payload.sc_data.length > 0) ||
-    (Array.isArray(request?.payload?.sc_args) && request.payload.sc_args.length > 0);
+  // A request carries a real smart contract call only when there is an actual entrypoint
+  // (top-level or inside sc_rpc/sc_data). A non-empty sc_args/sc_data array of junk rows is
+  // NOT a call — treating it as one labeled burns as "Deposit" while the chain no-ops (R2-B6).
+  $: hasSCCall = (() => {
+    const ep = request?.payload?.entrypoint;
+    if (typeof ep === 'string' && ep.trim().length > 0) return true;
+    const rows = [
+      ...(Array.isArray(request?.payload?.sc_data) ? request.payload.sc_data : []),
+      ...(Array.isArray(request?.payload?.sc_args) ? request.payload.sc_args : []),
+    ];
+    return rows.some(arg => arg?.name === 'entrypoint' && String(arg?.value ?? arg?.Value ?? '').trim().length > 0);
+  })();
 
-  // Total native-DERO (zero-SCID) burn across the request's transfers.
+  // A destination that sets RPC_NEEDS_REPLYBACK_ADDRESS is answered by a transfer back, so the
+  // wallet attaches the payer's address to the payload. A DERO recipient normally cannot tell
+  // who paid, so this converts an anonymous payment into an identified one -- the approval has
+  // to say so, or a dApp discloses the user's identity with nothing on screen.
+  // Resolved per destination, not per request: one call can mix disclosing and ordinary
+  // recipients. SplitIntegratedAddress parses locally and needs no open wallet.
+  let replybackDests = {};
+  $: resolveReplybackDisclosure(request);
+
+  async function resolveReplybackDisclosure(req) {
+    replybackDests = {};
+    const dests = (req?.payload?.transfers || [])
+      .map(t => t?.destination)
+      .filter(d => typeof d === 'string' && d.trim().length > 0);
+    for (const d of dests) {
+      try {
+        const res = await SplitIntegratedAddress(d.trim());
+        if (res && res.success && res.needsReplyback) {
+          replybackDests = { ...replybackDests, [d]: true };
+        }
+      } catch (err) {
+        // Fail loud rather than silent: if we cannot tell, say we cannot tell.
+        replybackDests = { ...replybackDests, [d]: 'unknown' };
+      }
+    }
+  }
+
+  // Total native-DERO (zero-SCID) burn across the request's transfers + top-level SC deposits.
+  $: scDeroDeposit = Number(request?.payload?.sc_dero_deposit) || 0;
+  $: scTokenDeposit = Number(request?.payload?.sc_token_deposit) || 0;
   $: nativeBurnTotal = (request?.payload?.transfers || [])
     .filter(t => !t.scid || t.scid === ZERO_SCID)
-    .reduce((sum, t) => sum + (typeof t.burn === 'number' ? t.burn : 0), 0);
+    .reduce((sum, t) => sum + (typeof t.burn === 'number' ? t.burn : 0), 0) + scDeroDeposit;
 
   // BLOCKED: a native-DERO burn with no contract attached destroys the coins permanently and
   // sends them to no one. HOLOGRAM never burns DERO -- this request is rejected outright, with
@@ -36,36 +67,73 @@
   $: isBurnBlocked = nativeBurnTotal > 0 && !hasSCCall;
   $: blockedBurnAmount = Math.round(nativeBurnTotal / 100000);
 
+  // Effective ring size the backend will actually use. A dApp that requests anonymize
+  // but omits/undersizes the ring is clamped up to 16 (minAnonymizeRingSize, wallet.go)
+  // so the decoy promise below is truthful -- ring 2 structurally pins the sender.
+  $: requestedRing = Number(request?.payload?.ringsize) || 0;
+  $: effectiveRing = request?.payload?.anonymize ? Math.max(requestedRing, 16) : requestedRing;
+
   let recentWallets = [];
   let recentWalletsInfo = [];
   let showWalletSwitcher = false;
   let switchPassword = '';
   let selectedSwitchWallet = null;
   
-  // Permission management for XSWD connections
-  let grantedPermissions = {};
-  
-  // Initialize permissions when request changes
-  $: if (request && request.type === 'connect' && request.requestedPermissions) {
-    // Initialize all requested permissions as granted by default
-    grantedPermissions = {};
-    for (const perm of request.requestedPermissions) {
-      // Use existing permission state if available, otherwise default to true
-      const existingValue = request.existingPermissions?.[perm.id];
-      grantedPermissions[perm.id] = existingValue !== undefined ? existingValue : true;
+  // Set by "Always allow" so handleApprove can tell the two answers apart. Reset on every
+  // new request object, or one "always" would silently persist the next app's grant too.
+  let rememberChoice = false;
+  let rememberResetFor = null;
+  $: if (request && request !== rememberResetFor) {
+    rememberResetFor = request;
+    rememberChoice = false;
+  }
+
+  // One predicate for BOTH the password demand and the unlock UI, so they cannot diverge.
+  //
+  // A connect grants public chain data only, so it needs no wallet — EXCEPT the empty-sheet
+  // case, which is Sign In with DERO (handleAuthComplete): that signs a challenge and does.
+  // A use-time permission prompt needs the wallet for the two doors that read wallet state.
+  function requestNeedsOpenWallet(req) {
+    if (!req) return true;
+    if (req.type === 'permission') {
+      return req.permission?.id === 'view_address' || req.permission?.id === 'view_balance';
     }
+    if (req.type !== 'connect') return true;
+    if (req.isSignIn) return true; // signs a challenge, so the wallet must open
+    // A WebSocket dApp still names its doors at connect (that plane has no use-time
+    // prompt), so it needs the wallet if any of them read wallet state.
+    return connectGrantIds(req).some(id => id === 'view_address' || id === 'view_balance');
   }
-  
-  function togglePermission(permId) {
-    grantedPermissions[permId] = !grantedPermissions[permId];
-    grantedPermissions = grantedPermissions; // Trigger reactivity
+
+  // A TELA origin is a 64-char SCID, which overran the card and was clipped mid-string —
+  // an origin you cannot read is not a disclosure. Ellipsise the MIDDLE so both ends stay
+  // checkable against the address bar; the full value is on the title attribute.
+  function shortOrigin(origin) {
+    const s = (origin || '').trim();
+    if (!s) return 'Local App';
+    if (/^[0-9a-fA-F]{64}$/.test(s)) return `${s.slice(0, 10)}…${s.slice(-8)}`;
+    return s;
   }
-  
-  function getGrantedPermissionsList() {
-    return Object.entries(grantedPermissions)
-      .filter(([_, granted]) => granted)
-      .map(([id, _]) => id);
+
+  // Doors a connect will actually grant. Empty for the in-browser path, which grants public
+  // chain data only and asks for everything else at the moment of use.
+  // alwaysAsk entries are excluded because they are never stored (CanStorePermission) —
+  // listing them would promise a standing grant the wallet refuses to keep.
+  function connectGrantList(req) {
+    const sheet = Array.isArray(req?.requestedPermissions) ? req.requestedPermissions : [];
+    return sheet.filter(p => p?.id && p.id !== 'read_public_data' && !p.alwaysAsk);
   }
+  function connectGrantIds(req) {
+    return connectGrantList(req).map(p => p.id);
+  }
+  // Did the app ask for spending? It gets no standing grant, but say so rather than
+  // silently dropping the request from the sheet.
+  function connectAsksToSpend(req) {
+    const sheet = Array.isArray(req?.requestedPermissions) ? req.requestedPermissions : [];
+    return sheet.some(p => p?.alwaysAsk);
+  }
+
+  $: connectNeedsWallet = requestNeedsOpenWallet(request);
 
   function getWalletFilename(path) {
     if (!path) return '';
@@ -173,11 +241,11 @@
   async function handleApprove() {
     if (!request) return;
     
-    // Read-only requests don't need wallet access
-    const isReadOnlyRequest = request.type === 'connect' && request.isReadOnly;
-    
-    // If wallet is not open AND this is not a read-only request, require password AND wallet path
-    if (!$walletState.isOpen && !isReadOnlyRequest) {
+    // Same predicate the template uses to decide whether to DRAW the unlock form,
+    // so the modal can never demand a password it never rendered a field for.
+    const needsOpenWallet = requestNeedsOpenWallet(request);
+
+    if (!$walletState.isOpen && needsOpenWallet) {
       if (!walletPath) {
         error = 'Please select a wallet file';
         return;
@@ -244,12 +312,15 @@
     }
 
     try {
-      // For connect requests, pass the granted permissions
-      const permissions = request.type === 'connect' ? getGrantedPermissionsList() : null;
-      await approveWalletRequest(request.id, password, null, permissions);
+      // A connect grants exactly the doors the sheet showed — nothing hidden is added, and
+      // the in-browser path shows none, so this is null and Go falls back to public data.
+      const permissions = request.type === 'connect' && connectGrantIds(request).length > 0
+        ? connectGrantIds(request)
+        : null;
+      await approveWalletRequest(request.id, password, null, permissions, rememberChoice);
       password = ''; // Clear password after use
       walletPath = ''; // Reset for next time
-      grantedPermissions = {}; // Reset permissions
+      rememberChoice = false;
 
       // Restore focus to main document to prevent iframe from capturing scroll
       restoreFocus();
@@ -341,23 +412,81 @@
           <div class="modal-app-icon">◎</div>
           <div>
             <div class="modal-app-name">{request.appName || 'Unknown App'}</div>
-            <div class="modal-app-origin">{request.origin || 'Local App'}</div>
+            <div class="modal-app-origin" title={request.origin || ''}>
+              {shortOrigin(request.origin)}
+              <!-- The name and the address are both chosen by the asker unless the
+                   browser vouched for the origin. Say which one you are looking at.
+                   Shown on permission prompts too: those grant MORE than a connect,
+                   so warning only on connect would drop the caveat where it matters most. -->
+              {#if (request.type === 'connect' || request.type === 'permission') && !request.originVerified}
+                <span class="modal-app-origin-unverified" title="This app told us its own name and address. Nothing has confirmed them.">· self-reported</span>
+              {/if}
+            </div>
           </div>
         </div>
       </div>
 
       <!-- Request Details -->
       <div class="wallet-request-details">
-        {#if request.type === 'connect'}
+        {#if request.type === 'permission'}
+          <!-- Asked at the moment of use, so it can name the thing being reached for. -->
           <div>
-            {#if request.isReadOnly}
-              <!-- Read-only app - simplified UI -->
+            <h3 class="modal-section-title">{request.permission?.name || 'Wallet Access'}</h3>
+            <p class="wallet-readonly-desc">{request.permission?.description || ''}</p>
+            <!-- The note is a flex row, so everything after the icon has to sit inside ONE
+                 child. An inline element left as a bare sibling becomes its own flex item and
+                 the sentence lays out as columns. -->
+            {#if request.methodName}
+              <p class="wallet-info-note">
+                <span class="wallet-info-icon">i</span>
+                <span class="wallet-info-text">Requested by <code>{request.methodName}</code></span>
+              </p>
+            {/if}
+            <p class="wallet-info-note">
+              <span class="wallet-info-icon">i</span>
+              <span class="wallet-info-text">
+                "Always allow" is remembered for this app <strong>and this wallet only</strong> —
+                another wallet is asked again. Take it back in Settings → Connected Apps.
+              </span>
+            </p>
+          </div>
+        {:else if request.type === 'connect'}
+          <div>
+            {#if request.isSignIn}
+              <!-- Signs a challenge. Say what approving does; do not draw a permission
+                   sheet it does not have. -->
+              <p class="wallet-info-note">
+                <span class="wallet-info-icon">i</span>
+                {request.description}
+              </p>
+            {:else if connectGrantList(request).length > 0}
+              <!-- WebSocket dApps name their doors at connect: that plane has no use-time
+                   prompt, so this is where they are granted. One decision, no checkboxes. -->
+              <h3 class="modal-section-title">This app will be granted</h3>
+              <div class="wallet-readonly-permissions">
+                {#each connectGrantList(request) as perm}
+                  <div class="wallet-readonly-item">
+                    <span class="wallet-check-icon">✓</span>
+                    <span>{perm.name} — {perm.description}</span>
+                  </div>
+                {/each}
+                {#if connectAsksToSpend(request)}
+                  <div class="wallet-readonly-item wallet-readonly-item-denied">
+                    <span class="wallet-denied-icon">✗</span>
+                    <span>Spending is not granted here — every transaction is approved separately</span>
+                  </div>
+                {/if}
+              </div>
+            {:else}
+              <!-- The in-browser path. Connecting buys public chain data and nothing else. -->
               <div class="wallet-readonly-badge">
                 <span class="wallet-readonly-icon">◎</span>
-                <span>Read-Only Access</span>
+                <span>Public Data Only</span>
               </div>
               <p class="wallet-readonly-desc">
-                This app only reads public blockchain data. No wallet access is required.
+                Connecting lets this app read public blockchain data. It gets no access to
+                your wallet — if it needs your address, your balance, or to spend, it has to
+                ask you then.
               </p>
               <div class="wallet-readonly-permissions">
                 <div class="wallet-readonly-item">
@@ -366,60 +495,13 @@
                 </div>
                 <div class="wallet-readonly-item wallet-readonly-item-denied">
                   <span class="wallet-denied-icon">✗</span>
-                  <span>Cannot access wallet address or balance</span>
+                  <span>Cannot see your address, balance or history without asking</span>
                 </div>
                 <div class="wallet-readonly-item wallet-readonly-item-denied">
                   <span class="wallet-denied-icon">✗</span>
-                  <span>Cannot request transactions</span>
+                  <span>Cannot spend — every transaction is approved separately</span>
                 </div>
               </div>
-            {:else}
-              <h3 class="modal-section-title">Permissions Requested</h3>
-              {#if request.requestedPermissions && request.requestedPermissions.length > 0}
-                <div class="modal-permissions-list">
-                  {#each request.requestedPermissions as perm}
-                    <label 
-                      class="modal-permission-item {grantedPermissions[perm.id] ? 'modal-permission-item-active' : ''}"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={grantedPermissions[perm.id]}
-                        on:change={() => togglePermission(perm.id)}
-                        disabled={perm.alwaysAsk}
-                        class="modal-permission-checkbox"
-                      />
-                      <div class="modal-permission-content">
-                        <div class="modal-permission-header">
-                          <span class="modal-permission-name">{perm.name}</span>
-                          {#if perm.alwaysAsk}
-                            <span class="modal-permission-badge">Always asks</span>
-                          {/if}
-                        </div>
-                        <p class="modal-permission-desc">{perm.description}</p>
-                      </div>
-                    </label>
-                  {/each}
-                </div>
-                
-                {#if request.existingPermissions}
-                  <p class="wallet-info-note">
-                    <span class="wallet-info-icon">i</span>
-                    This app has connected before. Your previous permissions are shown.
-                  </p>
-                {/if}
-              {:else}
-                <!-- Fallback for old-style requests without permission info -->
-                <ul class="wallet-fallback-permissions">
-                  <li class="wallet-fallback-item">
-                    <span class="wallet-check-icon">✓</span>
-                    <span>Read public blockchain data</span>
-                  </li>
-                </ul>
-                <p class="wallet-info-note">
-                  <span class="wallet-info-icon">i</span>
-                  This app will request additional permissions as needed.
-                </p>
-              {/if}
             {/if}
           </div>
         {:else if request.type === 'sign'}
@@ -448,16 +530,18 @@
                 </div>
               {/if}
               
-              <!-- Transfers (DERO or token amounts) -->
-              {#if request.payload.transfers && request.payload.transfers.length > 0}
-                {@const deroTransfers = request.payload.transfers.filter(t => !t.scid || t.scid === ZERO_SCID)}
-                <!-- Sum all cost fields: amount, burn (if numeric), fees from transfers AND top-level fees -->
+              <!-- Transfers + deposits (DERO / token) — must match what executes (R2-B4) -->
+              {#if (request.payload.transfers && request.payload.transfers.length > 0) || scDeroDeposit > 0 || scTokenDeposit > 0}
+                {@const allTransfers = request.payload.transfers || []}
+                {@const deroTransfers = allTransfers.filter(t => !t.scid || t.scid === ZERO_SCID)}
+                {@const tokenTransfers = allTransfers.filter(t => t.scid && t.scid !== ZERO_SCID)}
                 {@const totalAmount = deroTransfers.reduce((sum, t) => sum + (t.amount || 0), 0)}
-                {@const totalBurn = deroTransfers.reduce((sum, t) => sum + (typeof t.burn === 'number' ? t.burn : 0), 0)}
+                {@const totalBurn = deroTransfers.reduce((sum, t) => sum + (typeof t.burn === 'number' ? t.burn : 0), 0) + scDeroDeposit}
                 {@const transferFees = deroTransfers.reduce((sum, t) => sum + (t.fees || 0), 0)}
                 {@const topLevelFees = request.payload.fees || 0}
                 {@const totalFees = transferFees + topLevelFees}
                 {@const totalDero = totalAmount + totalBurn + totalFees}
+                {@const destinations = allTransfers.map(t => t.destination).filter(d => typeof d === 'string' && d.trim().length > 0)}
 
                 <!-- BLOCKED BURN: native-DERO burn with no contract attached destroys the coins
                      permanently and sends them to no one. HOLOGRAM never burns DERO, so this
@@ -483,7 +567,7 @@
                 {/if}
 
                 <!-- Show total DERO cost -->
-                {#if deroTransfers.length > 0 && !isBurnBlocked}
+                {#if totalDero > 0 && !isBurnBlocked}
                   <div class="modal-tx-field">
                     <div class="modal-tx-label">TOTAL COST</div>
                     <div class="modal-tx-amount modal-tx-amount-total">
@@ -495,13 +579,19 @@
                 <!-- Show breakdown of costs if any non-zero values. Suppressed entirely for a
                      blocked burn (nothing here is approvable). A burn that reaches this point
                      therefore always routes to a contract -- a deposit, not destruction. -->
-                {#if !isBurnBlocked && (totalAmount > 0 || totalBurn > 0 || totalFees > 0)}
+                {#if !isBurnBlocked && (totalAmount > 0 || totalBurn > 0 || totalFees > 0 || scTokenDeposit > 0 || tokenTransfers.length > 0)}
                   <div class="modal-tx-breakdown">
                     <div class="modal-tx-label modal-tx-label-small">BREAKDOWN</div>
                     {#if totalBurn > 0}
                       <div class="modal-tx-breakdown-item">
                         <span class="modal-tx-breakdown-label">Deposit to contract:</span>
                         <span class="modal-tx-breakdown-value">{(totalBurn / 100000).toLocaleString()} DERO</span>
+                      </div>
+                    {/if}
+                    {#if scTokenDeposit > 0}
+                      <div class="modal-tx-breakdown-item">
+                        <span class="modal-tx-breakdown-label">Token deposit:</span>
+                        <span class="modal-tx-breakdown-value">{(scTokenDeposit).toLocaleString()} atomic{#if request.payload.sc_token_deposit_scid} · {String(request.payload.sc_token_deposit_scid).slice(0, 8)}…{/if}</span>
                       </div>
                     {/if}
                     {#if totalFees > 0}
@@ -516,17 +606,64 @@
                         <span class="modal-tx-breakdown-value">{(totalAmount / 100000).toLocaleString()} DERO</span>
                       </div>
                     {/if}
+                    {#each tokenTransfers as tt, ti}
+                      <div class="modal-tx-breakdown-item">
+                        <span class="modal-tx-breakdown-label">Token transfer{tokenTransfers.length > 1 ? ` ${ti + 1}` : ''}:</span>
+                        <span class="modal-tx-breakdown-value modal-tx-token-scid">{(tt.amount || 0).toLocaleString()}{#if tt.burn} + burn {(tt.burn || 0).toLocaleString()}{/if} · {String(tt.scid).slice(0, 8)}…</span>
+                      </div>
+                    {/each}
                   </div>
                 {/if}
 
-                <!-- Show destination only when funds actually go somewhere. For a blocked burn
-                     there is no recipient and nothing is approvable, so it is suppressed. -->
-                {#if request.payload.transfers[0]?.destination && !isBurnBlocked}
-                  <div class="modal-tx-field">
-                    <div class="modal-tx-label">DESTINATION</div>
-                    <div class="modal-tx-destination">
-                      {request.payload.transfers[0].destination}
+                <!-- Every destination that will execute — not just transfers[0] (R2-B4) -->
+                {#if destinations.length > 0 && !isBurnBlocked}
+                  {#each destinations as dest, di}
+                    <div class="modal-tx-field">
+                      <div class="modal-tx-label">{destinations.length > 1 ? `DESTINATION ${di + 1}` : 'DESTINATION'}</div>
+                      <div class="modal-tx-destination">{dest}</div>
+                      {#if replybackDests[dest] === true}
+                        <div class="modal-tx-replyback">
+                          This service replies by sending you a transfer, so your wallet address
+                          is attached — it will know you paid.
+                        </div>
+                      {:else if replybackDests[dest] === 'unknown'}
+                        <div class="modal-tx-replyback">
+                          Could not check whether this destination requires your address.
+                        </div>
+                      {/if}
                     </div>
+                  {/each}
+                {/if}
+
+                <!-- APPARENT SENDER (attribution disclosure)
+                     Surfaces what the dApp asked for via anonymize / preferred_decoys, so the
+                     approval reflects the WHOLE request. Informational only -- removes no
+                     capability; the user still approves exactly what they approved before.
+                     Rendered ONLY when the dApp set one of these knobs; a default honest send
+                     shows nothing (the norm needs no disclosure). Neutral/HUD treatment -- not
+                     the warning palette, no padlock. Claimed addresses are shown in full
+                     (never middle-folded) so the user can read who the payment will appear from. -->
+                {#if request.payload.preferred_decoys?.length || request.payload.anonymize}
+                  <div class="modal-tx-field">
+                    <div class="modal-tx-label">APPARENT SENDER</div>
+                    {#if request.payload.preferred_decoys?.length}
+                      <!-- Load-bearing case: dApp named the address(es) the payment will appear from -->
+                      <div class="modal-tx-attribution-copy">
+                        This payment will appear to come from an address this app specified:
+                      </div>
+                      {#each request.payload.preferred_decoys as decoyAddr}
+                        <div class="modal-tx-destination">{decoyAddr}</div>
+                      {/each}
+                      <div class="modal-tx-attribution-note">
+                        It does not change who actually sent it, the amount, or the recipient.
+                      </div>
+                    {:else if effectiveRing > 2}
+                      <!-- anonymize: appears from an unnamed decoy ring member. The ring is
+                           clamped >2 server-side (wallet.go), so this promise holds. -->
+                      <div class="modal-tx-attribution-copy">
+                        This payment will appear to come from a decoy ring member, not your address (ring size {effectiveRing}).
+                      </div>
+                    {/if}
                   </div>
                 {/if}
               {:else if request.payload.scid}
@@ -573,10 +710,10 @@
               {/if}
               
               <!-- Ring size if specified -->
-              {#if request.payload.ringsize}
+              {#if effectiveRing}
                 <div class="modal-tx-field modal-tx-field-secondary">
                   <div class="modal-tx-label">RING SIZE</div>
-                  <div class="modal-tx-ringsize">{request.payload.ringsize}</div>
+                  <div class="modal-tx-ringsize">{effectiveRing}</div>
                 </div>
               {/if}
             </div>
@@ -594,22 +731,12 @@
       </div>
 
       <!-- Wallet State Section - only show for non-read-only requests -->
-      {#if request.type === 'connect' && request.isReadOnly && !request.walletNotOpen}
-        <!-- Read-only apps don't need wallet access -->
+      {#if request.type === 'connect' && !connectNeedsWallet}
+        <!-- Nothing here touches the wallet, so approving needs no unlock. There is no
+             sheet to select from any more, so the copy must not refer to one. -->
         <div class="wallet-readonly-info">
           <span class="wallet-readonly-info-icon">◎</span>
-          <span>No wallet needed for this connection</span>
-        </div>
-      {:else if request.type === 'connect' && request.walletNotOpen}
-        <!-- Warning: integrated wallet mode but no wallet open -->
-        <div class="modal-alert modal-alert-warning" style="margin-bottom: 1rem;">
-          <span class="modal-alert-icon">!</span>
-          <div style="flex: 1;">
-            <strong>No wallet open</strong><br/>
-            <span style="font-size: 0.85rem; opacity: 0.9;">
-              This app may require wallet features. Open a wallet first or the app may not work correctly.
-            </span>
-          </div>
+          <span>No wallet access needed to connect</span>
         </div>
       {:else if $walletState.isOpen}
         <!-- Current wallet is open - show wallet switcher option -->
@@ -786,7 +913,8 @@
     </div>
 
     <!-- Actions -->
-    <div class="modal-panel-actions">
+    <!-- Only the permission sheet offers three answers; two fit the 384px foot, three do not. -->
+    <div class="modal-panel-actions" class:modal-panel-actions-stack={request.type === 'permission'}>
       {#if isBurnBlocked}
         <!-- A blocked burn has no approve path at all -- only a way to dismiss it. -->
         <button
@@ -795,6 +923,32 @@
           disabled={isLoading}
         >
           Dismiss
+        </button>
+      {:else if request.type === 'permission'}
+        <!-- Allow once · Always allow · Deny, stacked. Only reachable for the storable doors —
+             spending never routes here, so "Always allow" cannot appear for a transaction.
+             Least commitment first: see the .modal-panel-actions-stack note in hologram.css. -->
+        <button
+          on:click={() => { rememberChoice = false; handleApprove(); }}
+          class="modal-panel-btn modal-panel-btn-once"
+          disabled={isLoading}
+        >
+          {isLoading ? 'Processing...' : 'Allow once'}
+        </button>
+        <button
+          on:click={() => { rememberChoice = true; handleApprove(); }}
+          class="modal-panel-btn modal-panel-btn-always"
+          disabled={isLoading}
+        >
+          {isLoading ? 'Processing...' : 'Always allow'}
+        </button>
+        <div class="modal-panel-actions-sep"></div>
+        <button
+          on:click={handleDeny}
+          class="modal-panel-btn modal-panel-btn-deny"
+          disabled={isLoading}
+        >
+          Deny
         </button>
       {:else}
         <button
@@ -842,6 +996,12 @@
     line-height: 1.5;
   }
   
+  /* Holds the whole sentence as a single flex item so it wraps as prose, not columns. */
+  .wallet-info-text {
+    flex: 1;
+    min-width: 0;
+  }
+
   .wallet-info-icon {
     display: inline-flex;
     align-items: center;
@@ -1092,7 +1252,33 @@
   .modal-tx-field-secondary {
     opacity: 0.7;
   }
-  
+
+  /* Attribution disclosure (APPARENT SENDER) -- neutral/informational, not a warning.
+     Pairs with the .modal-tx-destination boxed value reused for the address(es). */
+  .modal-tx-attribution-copy {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-3);
+  }
+
+  /* Amber, matching the Send confirm step: losing anonymity is a consequence to notice
+     before approving, not an alarm. Red stays reserved for what cannot work. */
+  .modal-tx-replyback {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--status-warn);
+    margin-top: var(--s-2);
+  }
+
+  .modal-tx-attribution-note {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-4);
+  }
+
   /* Wallet Switcher */
   .wallet-switcher {
     display: flex;

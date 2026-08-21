@@ -707,8 +707,11 @@ func (a *App) getNetworkName() string {
 	if a.IsInSimulatorMode() {
 		return "simulator"
 	}
-	if networkMode, ok := a.settings["network_mode"].(string); ok {
-		if networkMode == "simulator" {
+	// A16: read the real settings key ("network"), which every writer uses — the old
+	// "network_mode" key is never written, so this branch was dead and the panel was
+	// pinned to mainnet even while a simulator index was live.
+	if net, ok := a.settings["network"].(string); ok {
+		if net == "simulator" {
 			return "simulator"
 		}
 	}

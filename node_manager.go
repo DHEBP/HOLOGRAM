@@ -553,6 +553,23 @@ func findBinaryInDir(dir, binaryName string) string {
 	return found
 }
 
+// resolveNodeDataDir makes the node data directory canonical and absolute
+// regardless of what the frontend supplied (A10) — this normalization is
+// AUTHORITATIVE; the frontend value is advisory. Empty/whitespace or relative
+// values resolve under ~/.dero/hologram, and a leading ~ is expanded (Go does not
+// expand ~), so a stale or misconfigured frontend can never litter $HOME or create
+// a directory literally named "~".
+func resolveNodeDataDir(dataDir string) string {
+	dataDir = expandTilde(strings.TrimSpace(dataDir))
+	if dataDir == "" {
+		return getHologramDataDir()
+	}
+	if !filepath.IsAbs(dataDir) {
+		return filepath.Join(getHologramDataDir(), dataDir)
+	}
+	return dataDir
+}
+
 // StartNode starts the embedded derod node (defaults to current network mode)
 func (a *App) StartNode(dataDir string) map[string]interface{} {
 	return a.StartNodeWithNetwork(dataDir, string(nodeManager.networkMode))
@@ -639,6 +656,10 @@ func (a *App) StartNodeWithNetwork(dataDir string, network string) map[string]in
 	// No external node - start embedded
 	a.logToConsole("[INFO] No external node detected, starting embedded node...")
 
+	// A10: normalize the frontend-supplied dataDir server-side (authoritative) before
+	// deriving the network subdir, so embedded-node chain data always lands under the
+	// canonical tree instead of a CWD-relative or "~"-literal path.
+	dataDir = resolveNodeDataDir(dataDir)
 	fullDataDir := filepath.Join(dataDir, netConfig.DataDir)
 	a.logToConsole(fmt.Sprintf("[START] Starting %s node with data directory: %s", networkMode, fullDataDir))
 
@@ -1315,8 +1336,14 @@ func (a *App) SetNetworkMode(network string) map[string]interface{} {
 
 	a.logToConsole(fmt.Sprintf("[NET] Network mode set to: %s (RPC: %d, P2P: %d)", mode, netConfig.RPCPort, netConfig.P2PPort))
 
-	// Update daemon client endpoint to match new network
+	// Update daemon client endpoint to match new network — unless the user set one.
+	// Starting a node repoints this at the node HOLOGRAM starts, so a custom endpoint
+	// only survives while the user is driving their own daemon.
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
+	if current, _ := a.settings["daemon_endpoint"].(string); !isDerivedEndpoint(current) {
+		a.logToConsole(fmt.Sprintf("[NET] Keeping custom daemon endpoint %s across the switch to %s", current, mode))
+		endpoint = current
+	}
 	a.daemonClient = NewDaemonClient(endpoint)
 
 	// Update settings (used by Gnomon and other services) and persist immediately
@@ -1385,9 +1412,10 @@ func (a *App) GetNetworkMode() map[string]interface{} {
 		if inferred, hasInference := inferNetworkModeFromDaemonInfo(info, inferEndpoint); hasInference && inferred != mode {
 			mode = inferred
 			netConfig = GetNetworkConfig(inferred)
-			// For localhost endpoints only, correct the port to match the
-			// detected network. Remote endpoints are left untouched.
-			if isLocalhostEndpoint(endpoint) {
+			// Only correct the port on an endpoint HOLOGRAM derived. A remote node
+			// and a localhost node on a custom port are both the user's, so only
+			// the network label is corrected for them.
+			if isDerivedEndpoint(endpoint) {
 				endpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
 			}
 

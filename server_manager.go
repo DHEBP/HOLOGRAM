@@ -345,9 +345,15 @@ func injectScriptIntoHTML(html, script string) string {
 	return script + "\n" + html
 }
 
-// getHologramClipboardBridgeScript wraps navigator.clipboard read/write inside the TELA iframe.
+// getHologramClipboardBridgeScript wraps navigator.clipboard WRITE inside the TELA iframe.
 // WKWebKit/WebKitGTK often rejects the Clipboard API in embedded frames even with sandbox flags;
-// the parent resolves operations via Wails ClipboardGetText / ClipboardSetText (see Browser.svelte).
+// the parent resolves writes via Wails ClipboardSetText (see Browser.svelte).
+//
+// READ is deliberately NOT bridged. Bridging readText would let untrusted TELA content read the
+// host OS clipboard — including a recovery seed/secret key the user just copied from the reveal
+// modal (a ~30s window before auto-clear) — which is total, irreversible key exposure. TELA apps
+// have no legitimate need to read the host clipboard; only their copy buttons (write) do. We leave
+// the native readText in place (WebKit may reject it in-frame, which is the correct posture).
 func getHologramClipboardBridgeScript() string {
 	return `<script>
 (function() {
@@ -356,9 +362,8 @@ func getHologramClipboardBridgeScript() string {
     if (!navigator || !navigator.clipboard || window.parent === window) return;
     var clip = navigator.clipboard;
     var ow = clip.writeText && clip.writeText.bind(clip);
-    var or = clip.readText && clip.readText.bind(clip);
 
-    function viaBridge(op, text) {
+    function viaBridgeWrite(text) {
       return new Promise(function(resolve, reject) {
         var id = 'hcb_' + Math.random().toString(36).slice(2) + '_' + Date.now();
         function onMsg(ev) {
@@ -366,10 +371,8 @@ func getHologramClipboardBridgeScript() string {
           if (!d || d.type !== 'hologram-clipboard-response' || d.id !== id) return;
           window.removeEventListener('message', onMsg);
           clearTimeout(tmo);
-          if (d.ok) {
-            if (op === 'read') resolve(typeof d.text === 'string' ? d.text : '');
-            else resolve();
-          } else reject(new Error(d.error || 'Clipboard operation failed'));
+          if (d.ok) resolve();
+          else reject(new Error(d.error || 'Clipboard operation failed'));
         }
         window.addEventListener('message', onMsg);
         var tmo = setTimeout(function() {
@@ -377,7 +380,7 @@ func getHologramClipboardBridgeScript() string {
           reject(new Error('Clipboard bridge timeout'));
         }, 15000);
         try {
-          window.parent.postMessage({ type: 'hologram-clipboard-request', id: id, op: op, text: text === undefined || text === null ? '' : String(text) }, '*');
+          window.parent.postMessage({ type: 'hologram-clipboard-request', id: id, op: 'write', text: text === undefined || text === null ? '' : String(text) }, '*');
         } catch (e) {
           window.removeEventListener('message', onMsg);
           clearTimeout(tmo);
@@ -387,13 +390,10 @@ func getHologramClipboardBridgeScript() string {
     }
 
     clip.writeText = function(txt) {
-      if (!ow) return viaBridge('write', txt);
-      return ow(txt).catch(function() { return viaBridge('write', txt); });
+      if (!ow) return viaBridgeWrite(txt);
+      return ow(txt).catch(function() { return viaBridgeWrite(txt); });
     };
-    clip.readText = function() {
-      if (!or) return viaBridge('read');
-      return or().catch(function() { return viaBridge('read'); });
-    };
+    // readText intentionally left as the native implementation — never bridged.
   } catch (e) {}
 })();
 </script>`
@@ -430,7 +430,15 @@ func getXSWDBridgeScript() string {
     if (e.data && e.data.type === 'xswd-response' && pending[e.data.id]) {
       var p = pending[e.data.id];
       delete pending[e.data.id];
-      e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.result);
+      if (e.data.error) {
+        var err = new Error(e.data.error);
+        // Preserve the JSON-RPC code (-32043 permission denied) so the shim can report
+        // it verbatim instead of flattening every failure to -32000.
+        if (typeof e.data.errorCode === 'number') err.code = e.data.errorCode;
+        p.reject(err);
+      } else {
+        p.resolve(e.data.result);
+      }
     }
   });
   
@@ -618,11 +626,11 @@ func getXSWDBridgeScript() string {
           if (ok) {
             log('[OK] Connection approved, processing original RPC call');
             // Now process the original RPC call
-            request('call', { method: msg.method, params: msg.params, authState: self._auth }).then(function(r) {
+            request('call', { method: msg.method, params: msg.params }).then(function(r) {
               self._respond({ jsonrpc: '2.0', id: msg.id, result: r });
             }).catch(function(e) {
               log('[Error] RPC call failed:', e.message);
-              self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
+              self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: (e && typeof e.code === 'number') ? e.code : -32000, message: e.message } });
             });
           } else {
             log('[Denied] Connection denied');
@@ -631,16 +639,16 @@ func getXSWDBridgeScript() string {
         }).catch(function(e) {
           log('[Error] Connection request error:', e.message);
           self._auth = 'denied';
-          self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
+          self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: (e && typeof e.code === 'number') ? e.code : -32000, message: e.message } });
         });
         return;
       }
       
       // Normal RPC call (after handshake)
-      request('call', { method: msg.method, params: msg.params, authState: self._auth }).then(function(r) {
+      request('call', { method: msg.method, params: msg.params }).then(function(r) {
         self._respond({ jsonrpc: '2.0', id: msg.id, result: r });
       }).catch(function(e) {
-        self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
+        self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: (e && typeof e.code === 'number') ? e.code : -32000, message: e.message } });
       });
     } catch(e) {
       log('[Error] XSWD error: ' + e.message);
@@ -995,6 +1003,109 @@ func getXSWDBridgeScript() string {
     }
     
     log('[Bridge] File input interceptor installed');
+  })();
+
+  // ── File drop guard ───────────────────────────────────────────────────────
+  // Without this, dropping a file on a TELA app navigates THIS document to the
+  // file — WebKit's default. Measured 2026-08-08: a dropped PDF replaced the
+  // whole app with WebKit's PDF viewer, with no way back.
+  //
+  // App.svelte's window-level guard cannot reach here. It listens on the parent
+  // window, and an iframe is a separate document, so it never sees these events.
+  // That is why the app-wide DisableWebViewDrop flag was reached for instead —
+  // but on Linux that flag also calls gtk_drag_dest_unset() on the webview
+  // (Wails v2.11.0, linux/window.c SetupWebview), killing the GTK drop
+  // destination that the native file-drop channel needs. It suppressed the
+  // navigation by disabling drops everywhere, including HOLOGRAM's own UI.
+  //
+  // preventDefault on dragenter/dragover is ALSO how a document declares it
+  // accepts a drop, so this is what lets the native channel fire at all rather
+  // than merely being defensive. stopPropagation is deliberately NOT called —
+  // the app's own drop handlers must still run.
+  // A file dragged from the desktop does NOT advertise 'Files'. Measured on WebKitGTK
+  // 2026-08-09: the drag carries exactly text/uri-list,text/html. A guard keying only on
+  // 'Files' therefore never cancelled dragover, and an uncancelled dragover means the
+  // engine never dispatches drop at all — it navigates to the file instead.
+  //
+  // isTrusted is load-bearing. The receiver below dispatches a synthetic drop whose
+  // DataTransfer contains a file, so it looks like a file drag to this guard; without the
+  // check, this listener cancels it during capture, before the app's own handler runs, and
+  // the receiver's defaultPrevented test then reports EVERY app as having accepted the
+  // file. Measured 2026-08-09: calculator.tela, which has no drop handler, reported
+  // "app accepted it". Only a real user drag can navigate the webview, and a real drag is
+  // always trusted, so skipping untrusted events costs the guard nothing.
+  (function() {
+    function isFileDrag(t) {
+      if (!t) return false;
+      return Array.prototype.indexOf.call(t, 'Files') !== -1 ||
+             Array.prototype.indexOf.call(t, 'text/uri-list') !== -1;
+    }
+    ['dragenter','dragover','drop'].forEach(function(name) {
+      document.addEventListener(name, function(e) {
+        try {
+          if (e.isTrusted && isFileDrag(e.dataTransfer && e.dataTransfer.types)) e.preventDefault();
+        } catch(err) {}
+      }, true);
+    });
+    log('[Bridge] File drop guard installed');
+  })();
+
+  // ── File drop receiver ────────────────────────────────────────────────────
+  // A file dropped on a TELA app never reaches this document. HOLOGRAM's window
+  // owns the drop, and an iframe is a separate document, so the app's own ondrop
+  // never fires — which is why dropping on a TELA app did nothing at all.
+  //
+  // The parent catches the drop on an overlay it puts over this frame, reads the
+  // file itself, and hands the bytes here. This rebuilds a real File and
+  // dispatches the drop the app was already waiting for, so an app written for an
+  // ordinary browser needs no changes.
+  //
+  // The app cannot start this. There is no request it can send that produces a
+  // file; the parent only sends one after a real drag-and-release by the user,
+  // and only the file that was dropped.
+  (function() {
+    window.addEventListener('message', function(e) {
+      var d = e.data;
+      if (!d || d.type !== 'hologram-file-drop') return;
+      if (e.source !== window.parent) return;
+      var handled = false;
+      try {
+        var bin = atob(d.base64);
+        var buf = new ArrayBuffer(bin.length);
+        var view = new Uint8Array(buf);
+        for (var i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
+        var type = d.mimeType || 'application/octet-stream';
+        var file;
+        try {
+          file = new File([buf], d.filename, { type: type });
+        } catch(err) {
+          file = new Blob([buf], { type: type });
+          file.name = d.filename;
+        }
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        var target = document.elementFromPoint(d.x, d.y) || document.body;
+        // dragenter and dragover first: apps commonly set their drop state there,
+        // and a drop arriving with no preceding drag reads as a spurious event.
+        ['dragenter','dragover'].forEach(function(name) {
+          target.dispatchEvent(new DragEvent(name, { bubbles: true, cancelable: true, dataTransfer: dt }));
+        });
+        var drop = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt });
+        target.dispatchEvent(drop);
+        // An app that handles a drop calls preventDefault. If nothing did, the app
+        // has no drop handler and the parent should say so rather than claim success.
+        handled = drop.defaultPrevented;
+        log('[Drop] ' + d.filename + (handled ? ' delivered' : ' — app has no drop handler'));
+      } catch(err) {
+        log('[Error] Could not deliver dropped file: ' + err.message);
+      }
+      try {
+        window.parent.postMessage({
+          type: 'hologram-file-drop-result', handled: handled, filename: d.filename
+        }, '*');
+      } catch(err) {}
+    });
+    log('[Bridge] File drop receiver installed');
   })();
 })();
 </script>`

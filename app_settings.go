@@ -33,6 +33,7 @@ var persistedSettingKeys = []string{
 	"avatar_hidden",
 	"privacy_mode",
 	"signal_dark",
+	"active_ring_member_set",
 }
 
 // Settings Functions
@@ -140,6 +141,34 @@ func isLocalhostEndpoint(endpoint string) bool {
 		strings.Contains(lower, "::1")
 }
 
+// isDerivedEndpoint reports whether an endpoint is one HOLOGRAM generates itself —
+// empty, or localhost on a network's own default RPC port.
+//
+// Several places recompute the endpoint from the network mode and write the result back
+// (network switch, and three reconciliation branches at startup). That is correct for an
+// endpoint HOLOGRAM derived — a stale simulator :20000 left over on a mainnet restart has
+// to be corrected — and destructive for one the user typed, which is how a node on any
+// other port silently lost its configuration on every network switch.
+//
+// Anything else is treated as the user's and left alone, including a remote host and a
+// localhost node on a non-default port. Deliberately conservative: an endpoint we cannot
+// prove we generated is not ours to overwrite.
+func isDerivedEndpoint(endpoint string) bool {
+	if strings.TrimSpace(endpoint) == "" {
+		return true
+	}
+	if !isLocalhostEndpoint(endpoint) {
+		return false
+	}
+	port := inferRPCPortFromEndpoint(endpoint)
+	for _, mode := range []NetworkMode{NetworkMainnet, NetworkSimulator} {
+		if port == GetNetworkConfig(mode).RPCPort {
+			return true
+		}
+	}
+	return false
+}
+
 // reconcileDaemonEndpoint ensures daemon_endpoint, daemonClient, and network are
 // consistent after loading persisted settings. This handles the case where a user
 // was previously on simulator (port 20000) but is now restarting on mainnet — the
@@ -170,7 +199,7 @@ func (a *App) reconcileDaemonEndpoint() {
 					// endpoints, correct the port to match the detected network.
 					netConfig := GetNetworkConfig(inferredMode)
 					correctEndpoint := loadedEndpoint
-					if isLocalhostEndpoint(loadedEndpoint) {
+					if isDerivedEndpoint(loadedEndpoint) {
 						correctEndpoint = fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
 					}
 
@@ -201,11 +230,12 @@ func (a *App) reconcileDaemonEndpoint() {
 	}
 
 	// Step 3: Loaded endpoint is unreachable.
-	// Only attempt fallback corrections for localhost endpoints. Remote endpoints
-	// (LAN nodes, remote nodes) are preserved so the user can fix connectivity
-	// on their end without HOLOGRAM overwriting their configuration.
-	if !isLocalhostEndpoint(loadedEndpoint) {
-		log.Printf("[Settings] Remote endpoint %s is currently unreachable — preserving for user to reconnect", loadedEndpoint)
+	// Only attempt fallback corrections for endpoints HOLOGRAM derived itself. A remote
+	// node and a localhost node on a custom port are both the user's configuration, and
+	// are preserved so they can fix connectivity on their end rather than finding their
+	// endpoint silently replaced.
+	if !isDerivedEndpoint(loadedEndpoint) {
+		log.Printf("[Settings] User-set endpoint %s is currently unreachable — preserving for user to reconnect", loadedEndpoint)
 		return
 	}
 
@@ -238,10 +268,11 @@ func (a *App) reconcileDaemonEndpoint() {
 		a.daemonClient.SetEndpoint(loadedEndpoint)
 	}
 
-	// For localhost endpoints only: if the port doesn't match the persisted
+	// For endpoints HOLOGRAM derived only: if the port doesn't match the persisted
 	// network's expected port (e.g. user switched network label without updating
-	// endpoint), correct the localhost port.
-	if loadedNetwork != "" && isLocalhostEndpoint(loadedEndpoint) {
+	// endpoint), correct the localhost port. A user-set endpoint never reaches here —
+	// the guard above returns first — and the test asserts that.
+	if loadedNetwork != "" && isDerivedEndpoint(loadedEndpoint) {
 		netConfig := GetNetworkConfig(NetworkMode(loadedNetwork))
 		expectedEndpoint := fmt.Sprintf("http://127.0.0.1:%d", netConfig.RPCPort)
 

@@ -30,6 +30,28 @@ type WalletManager struct {
 	walletPath    string
 	isOpen        bool
 	recentWallets []string
+	lastActivity  time.Time // updated on any wallet use; drives idle auto-lock
+}
+
+// defaultAutoLockMinutes is the idle window after which an open wallet is locked: the
+// wallet handle is closed and further operations are refused (isOpen=false), so an
+// unattended machine can't be used to move funds and the UI drops to the unlock screen.
+// This is an app-layer lock -- it does not yet zero the secret scalar already resident in
+// process memory. 0 disables (set via the auto_lock_minutes setting).
+const defaultAutoLockMinutes = 15
+
+// minAnonymizeRingSize is the ring size the dApp/XSWD transfer path is clamped up to
+// when a request sets anonymize. Attribution framing is a structural no-op at ring
+// size 2 (the sender stays pinned and the receiver decodes it), so honoring an
+// anonymize request means guaranteeing a real anonymity set. Matches the Send default.
+const minAnonymizeRingSize = 16
+
+// noteWalletActivity stamps the wallet as recently used. Call under no lock; it takes
+// the manager lock itself. Cheap enough to call on every wallet operation.
+func noteWalletActivity() {
+	walletManager.Lock()
+	walletManager.lastActivity = time.Now()
+	walletManager.Unlock()
 }
 
 // NewWalletManager creates a new wallet manager
@@ -288,6 +310,7 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 	walletManager.wallet = wallet
 	walletManager.walletPath = filePath
 	walletManager.isOpen = true
+	walletManager.lastActivity = time.Now() // arm the idle auto-lock window
 
 	// Set network mode (mainnet vs simulator) - MUST be called before GetAddress()
 	wallet.SetNetwork(currentNetwork == "mainnet")
@@ -365,11 +388,26 @@ func (a *App) OpenWallet(filePath, password string) map[string]interface{} {
 		// encrypted balances are fetched and kept fresh by the ongoing sync.
 		// Without this, non-native token balances would read 0 until the user
 		// re-adds them. Errors are benign (e.g. "token already added").
-		for _, t := range loadTrackedTokens() {
-			if err := wallet.TokenAdd(crypto.HashHexToHash(strings.ToLower(t.SCID))); err != nil {
-				continue
+		//
+		// Defensive: walletapi's TokenAdd writes to account.EntriesNative without
+		// a nil-guard (its sibling InsertReplace has one), so on a freshly
+		// restored/unsynced wallet — common for cold-genesis wallets, which are
+		// unregistered until broadcast — EntriesNative is nil and TokenAdd panics
+		// ("assignment to entry in nil map"). The real fix is in the derohe fork;
+		// here we recover so a token-tracking convenience can never crash the app
+		// during an otherwise-successful wallet open.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					a.logToConsole(fmt.Sprintf("[WARN] skipped tracked-token registration (wallet not sync-ready): %v", r))
+				}
+			}()
+			for _, t := range loadTrackedTokens() {
+				if err := wallet.TokenAdd(crypto.HashHexToHash(strings.ToLower(t.SCID))); err != nil {
+					continue
+				}
 			}
-		}
+		}()
 	}()
 
 	result := map[string]interface{}{
@@ -409,6 +447,63 @@ func (a *App) CloseWallet() map[string]interface{} {
 		"success": true,
 		"message": "Wallet closed successfully",
 	}
+}
+
+// NoteWalletActivity is called by the frontend on user interaction to defer the idle
+// auto-lock. It is a no-op when no wallet is open.
+func (a *App) NoteWalletActivity() {
+	noteWalletActivity()
+}
+
+// autoLockMinutes returns the configured idle auto-lock window in minutes (0 = disabled).
+func (a *App) autoLockMinutes() int {
+	if v, ok := a.settings["auto_lock_minutes"]; ok {
+		switch n := v.(type) {
+		case float64:
+			return int(n)
+		case int:
+			return n
+		}
+	}
+	return defaultAutoLockMinutes
+}
+
+// startIdleAutoLockWatcher runs a background loop that locks the wallet once it has been
+// idle longer than the configured window. Started once from startup(). Locking closes the
+// wallet handle (isOpen=false), refuses further operations, and drops the UI to the unlock
+// screen via the wallet:autoLocked event. This is an app-layer lock: it does not yet zero
+// the secret scalar already resident in process memory, so the secret persists in RAM until
+// the process exits (unchanged from an always-open wallet).
+func (a *App) startIdleAutoLockWatcher() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			mins := a.autoLockMinutes()
+			if mins <= 0 {
+				continue // disabled
+			}
+			walletManager.RLock()
+			open := walletManager.isOpen && walletManager.wallet != nil
+			idle := time.Since(walletManager.lastActivity)
+			last := walletManager.lastActivity
+			walletManager.RUnlock()
+
+			if !open || last.IsZero() {
+				continue
+			}
+			if idle >= time.Duration(mins)*time.Minute {
+				a.logToConsole(fmt.Sprintf("[WALLET] Auto-locking after %d min idle", mins))
+				res := a.CloseWallet()
+				if ok, _ := res["success"].(bool); ok && a.ctx != nil {
+					runtime.EventsEmit(a.ctx, "wallet:autoLocked", map[string]interface{}{
+						"reason":      "idle",
+						"idleMinutes": mins,
+					})
+				}
+			}
+		}
+	}()
 }
 
 // GetWalletStatus returns the current wallet status
@@ -460,10 +555,15 @@ func (a *App) GetBalance() map[string]interface{} {
 	if a.simulatorManager != nil && a.simulatorManager.isInitialized {
 		var zerohash [32]byte
 		addr := wallet.GetAddress().String()
-		if bal, _, err := wallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, addr); err == nil {
+		if bal, _, err := wallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, addr); err == nil && bal > 0 {
 			mature = bal
+			_, locked = wallet.Get_Balance()
 		} else {
-			// No active connection -- use cached in-memory balance.
+			// No active WS connection (err != nil) or no decrypted balance available
+			// yet: fall back to the cached in-memory balance. In simulator mode this
+			// is the same accurate-then-fallback pattern the status broadcaster uses
+			// (see XSWDServer.GetWalletBalance) so the dashboard and the periodic
+			// status push report the same value.
 			mature, locked = wallet.Get_Balance()
 		}
 	} else {
@@ -759,6 +859,38 @@ func (a *App) ClipboardClearIf(expected string) map[string]interface{} {
 	}
 }
 
+// ResolveNameForSend turns a registered DERO name into an address for the send path.
+//
+// Deliberately NOT App.ResolveDeroName: that answers from the NRS cache first, and the cache is a
+// permanent Graviton store with no expiry — right for Explorer labels, wrong where the answer
+// decides who receives money, because a name that changed hands would resolve to the old owner
+// forever on this machine.
+//
+// walletapi's own resolver is the canonical path the CLI uses (cmd/dero-wallet-cli/prompt.go):
+// it always asks the daemon at the current tip and fails closed with "offline or not connected"
+// rather than guessing. Callers must try parsing the input as an address FIRST and only fall back
+// to a name, which is the same order the CLI uses.
+func (a *App) ResolveNameForSend(name string) map[string]interface{} {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return map[string]interface{}{"success": false, "error": "Enter a name or address"}
+	}
+
+	walletManager.RLock()
+	defer walletManager.RUnlock()
+
+	if !walletManager.isOpen || walletManager.wallet == nil {
+		return map[string]interface{}{"success": false, "error": "No wallet is currently open"}
+	}
+
+	addr, err := walletManager.wallet.NameToAddress(name)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": FriendlyError(err), "name": name}
+	}
+
+	return map[string]interface{}{"success": true, "name": name, "address": addr}
+}
+
 // GetIntegratedAddress generates an integrated address with optional destination port (payment ID)
 // In DERO, "payment ID" is implemented as a destination port (uint64) embedded in the address.
 // The resulting address changes from dero.../deto... to deroi.../detoi... format.
@@ -892,6 +1024,94 @@ func (a *App) ListRecentWallets() []string {
 	return walletManager.recentWallets
 }
 
+// checkIntegratedInvoice reconciles a send against an integrated-address (deroi…)
+// invoice. RPC_VALUE_TRANSFER is a "pay exactly X" request and RPC_EXPIRY a deadline;
+// the protocol does NOT auto-honor either (RPC_VALUE_TRANSFER is "readable, value is
+// never transferred"). Returns a non-empty, user-facing error string when the send
+// must be blocked — an expired address, or an amount that does not match the requested
+// amount — so a mis-payment cannot be made silently. Returns "" when the send is fine
+// (non-integrated address, or invoice satisfied). Pure and wallet-free for testability.
+func checkIntegratedInvoice(addr *rpc.Address, amount uint64, now time.Time) string {
+	if addr == nil || !addr.IsIntegratedAddress() {
+		return ""
+	}
+	if addr.Arguments.Has(rpc.RPC_EXPIRY, rpc.DataTime) {
+		if exp, ok := addr.Arguments.Value(rpc.RPC_EXPIRY, rpc.DataTime).(time.Time); ok && now.After(exp) {
+			return "This payment address has expired. Ask the recipient for a current address before sending — a send cannot be undone."
+		}
+	}
+	if addr.Arguments.Has(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64) {
+		if want, ok := addr.Arguments.Value(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64).(uint64); ok && want != amount {
+			return fmt.Sprintf("This payment address requests exactly %s DERO, but you entered %s DERO. Match the requested amount, or use a plain address — a wrong amount cannot be undone.", formatDEROAmount(want), formatDEROAmount(amount))
+		}
+	}
+	return ""
+}
+
+// addressNeedsReplyback reports whether a destination is a service that answers by sending a
+// transfer back, and therefore requires the payer's address in the payload. Note the type:
+// the service flag is RPC_NEEDS_REPLYBACK_ADDRESS as DataUint64. Engram overloads the SAME
+// constant as DataString to carry a username in its messaging feature — a different thing
+// entirely, and matching on it here would attach an address to ordinary messages.
+func addressNeedsReplyback(addr *rpc.Address) bool {
+	if addr == nil || !addr.IsIntegratedAddress() {
+		return false
+	}
+	return addr.Arguments.Has(rpc.RPC_NEEDS_REPLYBACK_ADDRESS, rpc.DataUint64)
+}
+
+// attachReplybackAddresses adds the payer's address to every transfer whose destination asks
+// for one. Without it the service drops the request for want of a return address and keeps the
+// payment, while the wallet reports success.
+//
+// This is a real disclosure: a DERO recipient normally cannot tell who paid, so attaching the
+// address converts an anonymous payment into an identified one. It is done automatically
+// (matching Engram, `functions.go:1177`) because the destination address itself states the
+// requirement — but unlike Engram, both confirm surfaces say so before the user commits.
+//
+// Applied to the whole slice rather than at each construction site: transfers are built in
+// three places across App.Transfer and InternalWalletCall, and a per-site fix would be one
+// forgotten call away from silently paying a service that can never answer.
+func attachReplybackAddresses(transfers []rpc.Transfer, self rpc.Address) int {
+	attached := 0
+	for i := range transfers {
+		addr, err := rpc.NewAddress(strings.TrimSpace(transfers[i].Destination))
+		if err != nil || !addressNeedsReplyback(addr) {
+			continue
+		}
+		if transfers[i].Payload_RPC.Has(rpc.RPC_REPLYBACK_ADDRESS, rpc.DataAddress) {
+			continue // already present — never attach twice
+		}
+		transfers[i].Payload_RPC = append(transfers[i].Payload_RPC, rpc.Argument{
+			Name:     rpc.RPC_REPLYBACK_ADDRESS,
+			DataType: rpc.DataAddress,
+			Value:    self,
+		})
+		attached++
+	}
+	return attached
+}
+
+// checkTransfersIntegratedInvoices runs checkIntegratedInvoice on every transfer
+// destination. Used by InternalWalletCall (the hot Send / XSWD path) — App.Transfer()
+// alone is not what the UI calls (R2-B7).
+func checkTransfersIntegratedInvoices(transfers []rpc.Transfer, now time.Time) string {
+	for _, t := range transfers {
+		dest := strings.TrimSpace(t.Destination)
+		if dest == "" {
+			continue
+		}
+		addr, err := rpc.NewAddress(dest)
+		if err != nil {
+			continue
+		}
+		if msg := checkIntegratedInvoice(addr, t.Amount, now); msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
 // Transfer sends DERO to another address
 func (a *App) Transfer(destination string, amount uint64, paymentID string, ringsize uint64) map[string]interface{} {
 	walletManager.Lock()
@@ -922,6 +1142,42 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string, ring
 		}
 	}
 
+	// Validate the destination's network matches the active network. The DERO
+	// library rejects an unparseable address at build time, but it never checks
+	// the address network byte: a mainnet (dero1) and a testnet/simulator (deto1)
+	// address wrap the SAME public key, so a wrong-network paste builds and sends
+	// silently. Reject it here — a send is irreversible and there is no legitimate
+	// reason to send to an address rendered for a different network than this
+	// wallet. (NameToAddress names are resolved by the library, so only skip the
+	// check when the input does not parse as a bech32 address at all.)
+	if addr, addrErr := rpc.NewAddress(destination); addrErr == nil {
+		walletIsMainnet := !a.IsInSimulatorMode()
+		if addr.IsMainnet() != walletIsMainnet {
+			destNet, walletNet := "simulator/testnet", "simulator/testnet"
+			if addr.IsMainnet() {
+				destNet = "mainnet"
+			}
+			if walletIsMainnet {
+				walletNet = "mainnet"
+			}
+			a.logToConsole(fmt.Sprintf("[Transfer] BLOCKED network mismatch: %s address while wallet is on %s", destNet, walletNet))
+			return map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("This is a %s address but your wallet is on %s. Sending to a wrong-network address cannot be undone — double-check you pasted the right address.", destNet, walletNet),
+			}
+		}
+
+		// Reconcile an integrated-address (deroi…) invoice (expiry + requested amount)
+		// so a wrong-amount or expired-invoice send is rejected, not made silently.
+		if invoiceErr := checkIntegratedInvoice(addr, amount, time.Now()); invoiceErr != "" {
+			a.logToConsole(fmt.Sprintf("[Transfer] BLOCKED integrated-address invoice: %s", invoiceErr))
+			return map[string]interface{}{
+				"success": false,
+				"error":   invoiceErr,
+			}
+		}
+	}
+
 	destPreview := destination
 	if len(destination) > 16 {
 		destPreview = destination[:16] + "..."
@@ -936,10 +1192,10 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string, ring
 		},
 	}
 
-	// Handle payment ID if provided (integrated address or separate)
+	// A payment ID baked into an integrated destination is carried on-chain by the
+	// address itself (and its invoice fields are reconciled above). A separately
+	// supplied paymentID is not attached here; log it for visibility.
 	if paymentID != "" {
-		// Payment IDs are typically embedded in integrated addresses
-		// For now, log it - full implementation would handle this
 		a.logToConsole(fmt.Sprintf("[Transfer] Payment ID provided: %s", paymentID))
 	}
 
@@ -967,6 +1223,9 @@ func (a *App) Transfer(destination string, amount uint64, paymentID string, ring
 
 	if ringsize < 2 {
 		ringsize = 16
+	}
+	if n := attachReplybackAddresses(transfers, wallet.GetAddress()); n > 0 {
+		a.logToConsole(fmt.Sprintf("[Transfer] Service requires a reply address — disclosing this wallet's address to %d destination(s)", n))
 	}
 	tx, err := wallet.TransferPayload0(transfers, ringsize, false, rpc.Arguments{}, 0, false)
 	if err != nil {
@@ -1042,9 +1301,13 @@ func (a *App) GetTransactionHistory(limit int) map[string]interface{} {
 			"coinbase":    e.Coinbase,
 			"destination": e.Destination,
 			"sender":      e.Sender,
-			"proof":       e.Proof,
-			"status":      e.Status,
-			"time":        e.Time.Unix(),
+			// Attribution trust: sender is structurally pinned only at ring size 2;
+			// for larger rings it is sender-reported (see rpc.Entry in derohe fork).
+			"sender_verified": e.SenderVerified,
+			"ringsize":        e.RingSize,
+			"proof":           e.Proof,
+			"status":          e.Status,
+			"time":            e.Time.Unix(),
 		}
 
 		// Extract payload comment if available
@@ -1375,10 +1638,63 @@ func init() {
 	walletManager.recentWallets = loadRecentWallets()
 }
 
-// ApproveWalletConnection signals that the user has approved a dApp connection
-func (a *App) ApproveWalletConnection() map[string]interface{} {
-	a.logToConsole("[OK] Wallet connection approved by user")
-	return map[string]interface{}{"success": true}
+// ApproveWalletConnection records a Browser/TELA connect approval: persists the
+// granted permission set for origin and marks the client active. Empty origin is
+// rejected — a no-op success here was the "permission theater" bug (R2-B2).
+func (a *App) ApproveWalletConnection(origin, appName, description string, permissions []string) map[string]interface{} {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return map[string]interface{}{"success": false, "error": "origin is required"}
+	}
+
+	pm := GetPermissionManager()
+	if pm == nil {
+		return map[string]interface{}{"success": false, "error": "permission manager unavailable"}
+	}
+
+	perms := make([]XSWDPermission, 0, len(permissions))
+	for _, p := range permissions {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		perms = append(perms, XSWDPermission(p))
+	}
+
+	if appName == "" {
+		appName = origin
+	}
+	// Additive, NOT a replace. Connecting grants public chain data; a door the user chose to
+	// remember on an earlier visit must survive the app reconnecting, and a replace here
+	// would silently revoke it — the app would then re-prompt for something already answered.
+	// Non-storable permissions are refused by AddPermission, so a caller cannot smuggle
+	// spending in through this path either.
+	for _, p := range perms {
+		if !CanStorePermission(p) {
+			continue
+		}
+		if err := pm.AddPermission(origin, appName, description, p); err != nil {
+			// A wallet door offered at connect with no wallet open cannot be filed against
+			// an identity. Skip it rather than failing the whole connection: the connection
+			// itself only buys public chain data, and the door will be asked for at the
+			// moment the app reaches for it, which is where it belongs anyway.
+			if RequiresWallet(p) && walletFingerprint() == "" {
+				a.logToConsole(fmt.Sprintf("[WALLET] %s not stored for %s — no wallet open; it will be asked for at first use", p, origin))
+				continue
+			}
+			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+		}
+	}
+	// A connect with no storable permissions still has to register the app, or a returning
+	// visit has no record to recognise.
+	if pm.GetApp(origin) == nil {
+		if err := pm.GrantPermissions(origin, appName, description, nil); err != nil {
+			return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+		}
+	}
+	pm.SetActiveClient(origin, true)
+	a.logToConsole(fmt.Sprintf("[OK] Wallet connection approved for %s (%d permissions)", origin, len(perms)))
+	return map[string]interface{}{"success": true, "origin": origin, "permissions": permissions}
 }
 
 // checkDaemonConnectivity verifies the wallet can reach the daemon before attempting a transaction.
@@ -1515,7 +1831,10 @@ func parseXSWDScArgs(params map[string]interface{}, scid string) rpc.Arguments {
 	}
 
 	if entrypoint == "" && !hasEntrypointInScRpc {
-		return scArgs
+		// No real SC call — do not return junk sc_rpc rows. Callers used to treat
+		// len(scArgs)>0 as "has SC call", which let a decoy sc_rpc bypass the burn guard
+		// (R2-B6) while the chain no-ops without SCACTION.
+		return rpc.Arguments{}
 	}
 
 	hasSCACTION := false
@@ -1542,6 +1861,26 @@ func parseXSWDScArgs(params map[string]interface{}, scid string) rpc.Arguments {
 	return append(prefix, scArgs...)
 }
 
+// scArgsAreRealCall reports whether scArgs is a genuine SC invocation the chain will
+// execute: SCACTION present and a non-empty entrypoint. Junk sc_rpc without those is
+// not a call — treating it as one disabled the native-DERO burn guard (R2-B6).
+func scArgsAreRealCall(scArgs rpc.Arguments) bool {
+	hasAction := false
+	hasEntrypoint := false
+	for _, arg := range scArgs {
+		if arg.Name == rpc.SCACTION {
+			hasAction = true
+		}
+		if arg.Name == "entrypoint" {
+			switch v := arg.Value.(type) {
+			case string:
+				hasEntrypoint = strings.TrimSpace(v) != ""
+			}
+		}
+	}
+	return hasAction && hasEntrypoint
+}
+
 // detectDestructiveBurn scans transfers for a burn that would permanently destroy native
 // DERO. A burn on a non-zero SCID moves token value within that asset's pool (a normal
 // token transfer); a burn on the zero SCID (native DERO) with no smart contract attached
@@ -1565,6 +1904,59 @@ func detectDestructiveBurn(transfers []rpc.Transfer, hasSCCall bool) (uint64, bo
 // Anyone who genuinely intends to burn DERO must use the DERO CLI wallet. There is no override.
 func shouldBlockBurn(transfers []rpc.Transfer, hasSCCall bool) (uint64, bool) {
 	return detectDestructiveBurn(transfers, hasSCCall)
+}
+
+// hasEmptyValueDestination reports whether any transfer would move value (Amount > 0) to an
+// empty/whitespace destination. derohe rejects such a transfer as "Main Destination cannot be
+// empty" and the daemon then reports a misleading "-32098 leaf not found" from resolving the
+// empty string -- the incident where the Send screen showed a valid recipient but dispatched an
+// empty one. Rejecting it up front gives a clear message. Standalone so it is unit-testable.
+func hasEmptyValueDestination(transfers []rpc.Transfer) bool {
+	for _, t := range transfers {
+		if t.Amount > 0 && strings.TrimSpace(t.Destination) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// firstWrongNetworkDestination reports the network label ("mainnet" or
+// "simulator/testnet") of the first transfer whose destination parses as an address
+// rendered for a different network than the wallet, and whether such a mismatch was
+// found. A mainnet (dero1) and a simulator/testnet (deto1) address wrap the SAME
+// public key, so a wrong-network paste builds and broadcasts silently -- the wallet
+// library never checks the network byte. Destinations that do not parse as an address
+// (names the library resolves, empty SC-deposit entries) are skipped. The plain
+// Transfer path already guards this inline; this makes the same rule reusable at the
+// XSWD and token chokepoints. Standalone so it is unit-testable without a wallet.
+func firstWrongNetworkDestination(transfers []rpc.Transfer, walletIsMainnet bool) (destNet string, mismatch bool) {
+	for _, t := range transfers {
+		addr, err := rpc.NewAddress(strings.TrimSpace(t.Destination))
+		if err != nil {
+			continue
+		}
+		if addr.IsMainnet() != walletIsMainnet {
+			if addr.IsMainnet() {
+				return "mainnet", true
+			}
+			return "simulator/testnet", true
+		}
+	}
+	return "", false
+}
+
+// networkMismatchError is the shared user-facing rejection for a wrong-network
+// destination, so every value-send chokepoint returns the identical message.
+func networkMismatchError(destNet string, walletIsMainnet bool) map[string]interface{} {
+	walletNet := "simulator/testnet"
+	if walletIsMainnet {
+		walletNet = "mainnet"
+	}
+	return map[string]interface{}{
+		"success":        false,
+		"error":          fmt.Sprintf("This is a %s address but your wallet is on %s. Sending to a wrong-network address cannot be undone — double-check you pasted the right address.", destNet, walletNet),
+		"technicalError": "rejected transfer: destination network does not match wallet network",
+	}
 }
 
 // buildTokenTransfer constructs the transfer for a plain wallet-to-wallet token (or native
@@ -1778,17 +2170,48 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			return map[string]interface{}{"success": false, "error": "Please specify a transfer amount and destination, or a smart contract call."}
 		}
 
+		// Reject a value transfer whose destination never made it through. The Send screen can
+		// show a valid recipient while dispatching an empty one; forwarding that produces an
+		// opaque "Main Destination cannot be empty" and a misleading -32098 "leaf not found".
+		if hasEmptyValueDestination(transfers) {
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Destination address is required.",
+				"technicalError": "rejected transfer: non-zero amount with an empty destination",
+			}
+		}
+
+		// Reject a destination rendered for a different network than the wallet (a dero1
+		// mainnet address dispatched by a simulator wallet, or the reverse). Mirrors the
+		// plain Transfer path guard; the XSWD path never had it.
+		walletIsMainnet := !a.IsInSimulatorMode()
+		if destNet, mismatch := firstWrongNetworkDestination(transfers, walletIsMainnet); mismatch {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED network mismatch: %s destination while wallet is on a different network", destNet))
+			return networkMismatchError(destNet, walletIsMainnet)
+		}
+
 		// Reject any burn that would permanently destroy native DERO. A native-DERO (zero-SCID)
 		// burn with no smart contract attached does not send funds anywhere -- it destroys them
 		// irrecoverably. HOLOGRAM never burns DERO; there is no override. Anyone who genuinely
 		// intends to burn DERO must use the DERO CLI wallet. This is a hard, unconditional block.
-		if burnAmt, block := shouldBlockBurn(transfers, len(scArgs) > 0); block {
+		if burnAmt, block := shouldBlockBurn(transfers, scArgsAreRealCall(scArgs)); block {
 			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED native-DERO burn: %s DERO with no contract attached", formatDEROAmount(burnAmt)))
 			return map[string]interface{}{
 				"success":        false,
 				"error":          fmt.Sprintf("HOLOGRAM does not allow burning DERO. This request would permanently destroy %s DERO -- a burn with no smart contract attached sends the coins to no one and cannot be undone. If you intend to deliberately burn DERO, use the DERO CLI wallet.", formatDEROAmount(burnAmt)),
 				"technicalError": fmt.Sprintf("rejected native-DERO burn of %d atomic units (zero SCID, no SC call); HOLOGRAM prohibits burns", burnAmt),
 			}
+		}
+
+		if invoiceErr := checkTransfersIntegratedInvoices(transfers, time.Now()); invoiceErr != "" {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED integrated-address invoice: %s", invoiceErr))
+			return map[string]interface{}{"success": false, "error": invoiceErr}
+		}
+
+		// Sits beside the invoice check so both routes into the wallet reach it (R2-B7): this
+		// is the branch the Send UI and XSWD both call, App.Transfer covers the other.
+		if n := attachReplybackAddresses(transfers, wallet.GetAddress()); n > 0 {
+			a.logToConsole(fmt.Sprintf("[Transfer] Service requires a reply address — disclosing this wallet's address to %d destination(s)", n))
 		}
 
 		runTransfer := func() map[string]interface{} {
@@ -1818,6 +2241,15 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
 				ringsize = uint64(rs)
 			}
+			// A dApp that requests anonymize but omits/undersizes the ring would otherwise
+			// get a ring-2 transfer, where attribution framing is a structural no-op: the
+			// receiver decodes the real sender while the approval modal promises a decoy.
+			// Clamp the ring up so the anonymity the user approved actually happens. Mirrors
+			// the interactive Send guard (Wallet.svelte). See TestXSWDAnonymizeClampsRingSize.
+			anonymize, _ := params["anonymize"].(bool)
+			if anonymize && ringsize < minAnonymizeRingSize {
+				ringsize = minAnonymizeRingSize
+			}
 			// dApp-requested fee (0 = let daemon pick)
 			fees := uint64(0)
 			if f, ok := params["fees"].(float64); ok && f > 0 {
@@ -1825,13 +2257,34 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			}
 			a.logToConsole(fmt.Sprintf("[XSWD] Building transfer TX with ringsize=%d fees=%d", ringsize, fees))
 
-			tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+			// Opt-in sender-privacy knobs. A zero-value TransferOptions reproduces
+			// TransferPayload0 exactly, so the default path is unchanged. anonymize →
+			// attribution witness points at a decoy instead of you (requires ring >2,
+			// guaranteed by the clamp above); preferred_decoys → seed the front of the
+			// ring (random tops up). Strict:false → bad/unregistered decoys skipped, not fatal.
+			opts := walletapi.TransferOptions{}
+			if anonymize {
+				opts.Attribution = walletapi.AttributionAnonymous
+			}
+			if decoys, ok := params["preferred_decoys"].([]interface{}); ok && len(decoys) > 0 {
+				members := make([]string, 0, len(decoys))
+				for _, d := range decoys {
+					if s, ok := d.(string); ok && s != "" {
+						members = append(members, s)
+					}
+				}
+				if len(members) > 0 {
+					opts.Ring = &walletapi.RingPreference{PreferredDecoys: members}
+				}
+			}
+
+			tx, err := wallet.TransferPayload0WithOptions(transfers, ringsize, false, scArgs, fees, false, opts)
 			if err != nil {
 				a.logToConsole(fmt.Sprintf("[WARN] Transfer build failed, retrying after resync: %v", err))
 				if syncErr := wallet.Sync_Wallet_Memory_With_Daemon(); syncErr != nil {
 					a.logToConsole(fmt.Sprintf("[WARN] Retry sync failed: %v", syncErr))
 				}
-				tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
+				tx, err = wallet.TransferPayload0WithOptions(transfers, ringsize, false, scArgs, fees, false, opts)
 				if err != nil {
 					return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
 				}
@@ -1944,17 +2397,41 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 		// Merge deposit entries in front of any explicit transfers
 		transfers = append(scDeposit, transfers...)
 
+		// Same empty-destination guard as the plain transfer path: an attached value transfer
+		// (Amount > 0) with no destination would reach derohe as the opaque empty-dest failure.
+		// Deposits (Amount:0 / Burn) and the len==0 ring-member fallback are unaffected.
+		if hasEmptyValueDestination(transfers) {
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Destination address is required.",
+				"technicalError": "rejected scinvoke transfer: non-zero amount with an empty destination",
+			}
+		}
+
+		// Same wrong-network guard as the transfer path. SC deposits target ring members drawn
+		// from the wallet's own network, so only an explicit wrong-network transfer trips this.
+		walletIsMainnet := !a.IsInSimulatorMode()
+		if destNet, mismatch := firstWrongNetworkDestination(transfers, walletIsMainnet); mismatch {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED network mismatch in scinvoke: %s destination while wallet is on a different network", destNet))
+			return networkMismatchError(destNet, walletIsMainnet)
+		}
+
 		// Defense in depth: a native-DERO (zero-SCID) burn is only safe here when it routes to
 		// a real contract call. Block it explicitly at this broadcast site too, so the burn
 		// prohibition does not silently depend on chain-side refund behavior if this path is
 		// ever refactored. HOLOGRAM never burns DERO; deliberate burns belong in the CLI.
-		if burnAmt, block := shouldBlockBurn(transfers, len(scArgs) > 0); block {
+		if burnAmt, block := shouldBlockBurn(transfers, scArgsAreRealCall(scArgs)); block {
 			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED native-DERO burn in scinvoke: %s DERO with no contract attached", formatDEROAmount(burnAmt)))
 			return map[string]interface{}{
 				"success":        false,
 				"error":          fmt.Sprintf("HOLOGRAM does not allow burning DERO. This request would permanently destroy %s DERO with no contract attached. If you intend to deliberately burn DERO, use the DERO CLI wallet.", formatDEROAmount(burnAmt)),
 				"technicalError": fmt.Sprintf("rejected native-DERO burn of %d atomic units in scinvoke (zero SCID, no SC call); HOLOGRAM prohibits burns", burnAmt),
 			}
+		}
+
+		if invoiceErr := checkTransfersIntegratedInvoices(transfers, time.Now()); invoiceErr != "" {
+			a.logToConsole(fmt.Sprintf("[XSWD] BLOCKED integrated-address invoice on scinvoke: %s", invoiceErr))
+			return map[string]interface{}{"success": false, "error": invoiceErr}
 		}
 
 		runSCInvoke := func() map[string]interface{} {
@@ -2008,6 +2485,34 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 					Amount:      0,
 				})
 			}
+			// Measure the storage cost ONCE, before any proof is generated, and let it decide
+			// both questions below: is this possible at all, and is it paid for.
+			//
+			// Measured over scArgs — the very arguments about to be sent, not a reconstruction
+			// of them. An estimate taken over a different arg list underpays by the drift,
+			// because the key rides in the charged argument blob.
+			//
+			// FAILS OPEN, like guardStorageGas: when the cost cannot be measured the call
+			// proceeds exactly as it did before. Every reason measurement fails — no daemon, an
+			// unreachable node, a wrong signer, a missing entrypoint — is unrelated to size.
+			storageNeed, storageMeasured := a.storageGasFor(scArgs, ringsize, wallet.GetAddress().String())
+
+			// Deliberately NOT gated on fees == 0 — an explicit caller-supplied fee cannot buy
+			// past the ceiling either. The Explorer and Studio already refuse this earlier and
+			// more helpfully (sc_function_parser.go); dApps arriving over XSWD reach this site
+			// and no other, which is why the check lives here rather than beside them.
+			if refusal := storageGasRefusal(scArgs, storageNeed, storageMeasured); refusal != nil {
+				a.logToConsole(fmt.Sprintf("[ERR] scinvoke refused: %v", refusal))
+				return map[string]interface{}{
+					"success":        false,
+					"error":          refusal.Error(),
+					"technicalError": fmt.Sprintf("storage gas %d exceeds the per-call ceiling; no fee can raise it", storageNeed),
+				}
+			}
+			if !storageMeasured {
+				a.logToConsole("[WARN] Could not measure this call's storage cost — proceeding with the wallet's default fee")
+			}
+
 			a.logToConsole(fmt.Sprintf("[XSWD] Building scinvoke TX with ringsize=%d fees=%d", ringsize, fees))
 
 			tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
@@ -2019,6 +2524,36 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 				tx, err = wallet.TransferPayload0(transfers, ringsize, false, scArgs, fees, false)
 				if err != nil {
 					return map[string]interface{}{"success": false, "error": FriendlyError(err), "technicalError": err.Error()}
+				}
+			}
+
+			// Fund the storage the call is about to perform. The fee IS the storage budget:
+			// the block connector hands tx.Fees() to the DVM as gasstorage_incoming
+			// (blockchain/transaction_execute.go), and the interpreter panics with
+			// "Insufficient Storage Gas" the moment consumption passes it — after which every
+			// change is discarded while the transaction still mines and still costs the fee.
+			//
+			// The wallet's own fee formula covers 1.5 atomic units per SCDATA byte
+			// (walletapi/transaction_build.go) against a chain cost of 2 for a byte that is
+			// both passed and stored, so anything past a few hundred bytes is under-funded by
+			// construction and is lost silently. Measured on a simulator chain: a 500-byte
+			// write mined and stored nothing.
+			//
+			// Compared against tx.Fees() rather than the fees variable on purpose — Fees()
+			// sums the zero-SCID statements, which is the exact number the chain will read.
+			// Only ever raises: an already-sufficient fee is left alone and no second proof is
+			// generated, so the common small call is unchanged. An explicit caller-supplied
+			// fee is honoured rather than second-guessed.
+			if storageMeasured && fees == 0 {
+				if payFee, short := storageTopUp(tx.Fees(), storageNeed); short {
+					a.logToConsole(fmt.Sprintf("[SC] Storage needs %d gas but the built TX carries %d — rebuilding with the measured fee", storageNeed, tx.Fees()))
+					topped, topErr := wallet.TransferPayload0(transfers, ringsize, false, scArgs, payFee, false)
+					if topErr != nil {
+						a.logToConsole(fmt.Sprintf("[WARN] Could not rebuild with the storage fee, sending as built: %v", topErr))
+					} else {
+						tx = topped
+						a.logToConsole(fmt.Sprintf("[SC] Rebuilt carrying %d gas", tx.Fees()))
+					}
 				}
 			}
 
@@ -3461,10 +3996,36 @@ func (a *App) TransferToken(scid, destination string, amount uint64, password st
 
 	wallet := walletManager.wallet
 
-	a.logToConsole(fmt.Sprintf("[Transfer] Transferring %d units of token %s to %s", amount, scid[:16]+"...", destination[:16]+"..."))
+	// A token send with no recipient reaches derohe as an empty main destination (the opaque
+	// "Main Destination cannot be empty" failure). Reject it up front. This also avoids the
+	// slice-bounds panic in the log preview below when destination is empty or shorter than 16.
+	if strings.TrimSpace(destination) == "" {
+		return map[string]interface{}{
+			"success":        false,
+			"error":          "Destination address is required.",
+			"technicalError": "TransferToken: empty destination",
+		}
+	}
+
+	scidPreview, destPreview := scid, destination
+	if len(scidPreview) > 16 {
+		scidPreview = scidPreview[:16] + "..."
+	}
+	if len(destPreview) > 16 {
+		destPreview = destPreview[:16] + "..."
+	}
+	a.logToConsole(fmt.Sprintf("[Transfer] Transferring %d units of token %s to %s", amount, scidPreview, destPreview))
 
 	// Credit the recipient from Amount on the named SCID; never Burn (see helper for why).
 	transfers := buildTokenTransfer(scid, destination, amount)
+
+	// Reject a wrong-network recipient. TransferToken builds transfers directly and bypasses
+	// the XSWD-path guard (see burn note below), so enforce the same network check here.
+	walletIsMainnet := !a.IsInSimulatorMode()
+	if destNet, mismatch := firstWrongNetworkDestination(transfers, walletIsMainnet); mismatch {
+		a.logToConsole(fmt.Sprintf("[Transfer] BLOCKED token send to %s address while wallet is on a different network", destNet))
+		return networkMismatchError(destNet, walletIsMainnet)
+	}
 
 	// Centralized burn prohibition. TransferToken builds transfers directly and does NOT go
 	// through InternalWalletCall, so the XSWD-path guard never runs here. Enforce the same
@@ -3685,6 +4246,237 @@ func (a *App) DeleteContact(id string) map[string]interface{} {
 	}
 }
 
+// ============================================
+// RING MEMBER SET CRUD (bound to Wails)
+// ============================================
+//
+// These mirror the address-book CRUD shape. Member validation here is the same set
+// the fork's curatedRingCandidates enforces at send time (parseable, not your own,
+// distinct), MINUS registration — registration is advisory in the UI (via
+// IsAddressRegistered) and re-checked by the fork at send, so an address that
+// registers later still works without re-editing the set.
+
+// GetRingMemberSets returns all saved ring member sets.
+func (a *App) GetRingMemberSets() map[string]interface{} {
+	sets := loadRingMemberSets()
+	return map[string]interface{}{
+		"success": true,
+		"sets":    sets,
+		"count":   len(sets),
+	}
+}
+
+// AddRingMemberSet creates a new, empty named set.
+func (a *App) AddRingMemberSet(name string) map[string]interface{} {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return map[string]interface{}{"success": false, "error": "Name is required"}
+	}
+
+	sets := loadRingMemberSets()
+	for _, s := range sets {
+		if strings.EqualFold(s.Name, name) {
+			return map[string]interface{}{"success": false, "error": "A set with that name already exists"}
+		}
+	}
+
+	id := fmt.Sprintf("ringset_%d", time.Now().UnixNano())
+	newSet := RingMemberSet{
+		ID:        id,
+		Name:      name,
+		Members:   []string{},
+		CreatedAt: time.Now().Unix(),
+		UpdatedAt: time.Now().Unix(),
+	}
+
+	sets = append(sets, newSet)
+	saveRingMemberSets(sets)
+	a.logToConsole(fmt.Sprintf("[RingMembers] Created set: %s", name))
+
+	return map[string]interface{}{"success": true, "set": newSet, "message": "Ring member set created"}
+}
+
+// RenameRingMemberSet changes a set's display name. Mirrors AddRingMemberSet's
+// validation: non-empty and no case-insensitive collision with a *different* set.
+func (a *App) RenameRingMemberSet(setID, name string) map[string]interface{} {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return map[string]interface{}{"success": false, "error": "Name is required"}
+	}
+
+	sets := loadRingMemberSets()
+	idx := -1
+	for i := range sets {
+		if sets[i].ID == setID {
+			idx = i
+		} else if strings.EqualFold(sets[i].Name, name) {
+			return map[string]interface{}{"success": false, "error": "A set with that name already exists"}
+		}
+	}
+	if idx == -1 {
+		return map[string]interface{}{"success": false, "error": "Ring member set not found"}
+	}
+
+	sets[idx].Name = name
+	sets[idx].UpdatedAt = time.Now().Unix()
+	saveRingMemberSets(sets)
+	a.logToConsole(fmt.Sprintf("[RingMembers] Renamed set to: %s", name))
+
+	return map[string]interface{}{"success": true, "set": sets[idx], "message": "Ring member set renamed"}
+}
+
+// AddRingMember adds one address to a set after local validation. The footgun guard
+// (your own address collapses your anonymity set) mirrors curatedRingCandidates.
+func (a *App) AddRingMember(setID, address string) map[string]interface{} {
+	address = strings.TrimSpace(address)
+
+	// Parseable DERO base address only — reject integrated (deto1) and malformed.
+	addr, err := rpc.NewAddress(address)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": "Invalid DERO address format"}
+	}
+	if addr.IsIntegratedAddress() {
+		return map[string]interface{}{"success": false, "error": "Use a plain (dero1) address, not an integrated address"}
+	}
+
+	// Footgun: a ring member that is your own address collapses your anonymity set.
+	walletManager.Lock()
+	if walletManager.isOpen && walletManager.wallet != nil {
+		if address == walletManager.wallet.GetAddress().String() {
+			walletManager.Unlock()
+			return map[string]interface{}{"success": false, "error": "A ring member cannot be your own address — it would collapse your anonymity set"}
+		}
+	}
+	walletManager.Unlock()
+
+	sets := loadRingMemberSets()
+	idx := -1
+	for i := range sets {
+		if sets[i].ID == setID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return map[string]interface{}{"success": false, "error": "Ring member set not found"}
+	}
+
+	for _, m := range sets[idx].Members {
+		if m == address {
+			return map[string]interface{}{"success": false, "error": "Address already in this set"}
+		}
+	}
+
+	sets[idx].Members = append(sets[idx].Members, address)
+	sets[idx].UpdatedAt = time.Now().Unix()
+	saveRingMemberSets(sets)
+
+	return map[string]interface{}{"success": true, "set": sets[idx], "message": "Ring member added"}
+}
+
+// RemoveRingMember drops one address from a set.
+func (a *App) RemoveRingMember(setID, address string) map[string]interface{} {
+	sets := loadRingMemberSets()
+	idx := -1
+	for i := range sets {
+		if sets[i].ID == setID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return map[string]interface{}{"success": false, "error": "Ring member set not found"}
+	}
+
+	newMembers := make([]string, 0, len(sets[idx].Members))
+	found := false
+	for _, m := range sets[idx].Members {
+		if m == address {
+			found = true
+			continue
+		}
+		newMembers = append(newMembers, m)
+	}
+	if !found {
+		return map[string]interface{}{"success": false, "error": "Address not in this set"}
+	}
+
+	sets[idx].Members = newMembers
+	sets[idx].UpdatedAt = time.Now().Unix()
+	saveRingMemberSets(sets)
+
+	return map[string]interface{}{"success": true, "set": sets[idx], "message": "Ring member removed"}
+}
+
+// DeleteRingMemberSet removes an entire set.
+func (a *App) DeleteRingMemberSet(setID string) map[string]interface{} {
+	sets := loadRingMemberSets()
+	newSets := make([]RingMemberSet, 0, len(sets))
+	found := false
+	for _, s := range sets {
+		if s.ID != setID {
+			newSets = append(newSets, s)
+		} else {
+			found = true
+		}
+	}
+	if !found {
+		return map[string]interface{}{"success": false, "error": "Ring member set not found"}
+	}
+
+	saveRingMemberSets(newSets)
+	return map[string]interface{}{"success": true, "message": "Ring member set deleted"}
+}
+
+// IsAddressRegistered probes whether an address is registered on the base (zero-SCID)
+// balance tree — the same registration test curatedRingCandidates applies to a decoy
+// at send time. It uses HOLOGRAM's own daemon client (the canonical connection, always
+// pointed at the active network incl. the simulator) rather than the open wallet's
+// connection, so it works in Settings regardless of wallet sync state.
+//
+// The stock daemon's DERO.GetEncryptedBalance does not return a clean "unregistered"
+// status — it PANICS and surfaces an RPC error for an unregistered base-tree account.
+// So any error here is treated as not-registered (the conservative ⚠), which also
+// matches what the send path does: curatedRingCandidates silently skips it.
+func (a *App) IsAddressRegistered(address string) map[string]interface{} {
+	address = strings.TrimSpace(address)
+	if _, err := rpc.NewAddress(address); err != nil {
+		return map[string]interface{}{"success": false, "error": "Invalid DERO address format"}
+	}
+
+	params := map[string]interface{}{
+		"address":    address,
+		"topoheight": -1,
+	}
+
+	var result interface{}
+	var err error
+	if a.xswdClient.IsConnected() {
+		result, err = a.xswdClient.Call("DERO.GetEncryptedBalance", params)
+	} else {
+		result, err = a.daemonClient.Call("DERO.GetEncryptedBalance", params)
+	}
+	if err != nil {
+		// Unregistered (the daemon panics) OR a transient connection issue. Either way
+		// the address isn't usable as a decoy right now — show ⚠, never a false ✓.
+		return map[string]interface{}{"success": true, "registered": false}
+	}
+
+	// A registered base-tree account returns a result carrying registration:1.
+	if m, ok := result.(map[string]interface{}); ok {
+		if reg, ok := m["registration"]; ok {
+			switch v := reg.(type) {
+			case float64:
+				return map[string]interface{}{"success": true, "registered": v >= 1}
+			case int64:
+				return map[string]interface{}{"success": true, "registered": v >= 1}
+			}
+		}
+	}
+	// Got a result with no error → treat as registered (daemon answered the balance query).
+	return map[string]interface{}{"success": true, "registered": true}
+}
+
 // Helper functions for address book storage
 func loadAddressBook() []AddressBookEntry {
 	configFile := filepath.Join(getDatashardsDir(), "settings", "address_book.json")
@@ -3716,6 +4508,58 @@ func saveAddressBook(contacts []AddressBookEntry) {
 
 	if err := os.WriteFile(filepath.Join(configDir, "address_book.json"), data, 0600); err != nil {
 		log.Printf("Failed to save address book: %v", err)
+	}
+}
+
+// ============================================
+// RING MEMBER SETS
+// ============================================
+//
+// A Ring Member Set is a named, HOLOGRAM-LOCAL list of addresses the user chooses
+// to seed the front of a transfer's ring. It is a convenience expanded into the
+// fork's per-transfer PreferredDecoys at send time — NOT a protocol feature.
+// Curation never raises anonymity above ring size; random members top up the rest.
+// Storage mirrors the address book exactly (separate ring_members.json).
+
+// RingMemberSet is a named set of addresses curated to lead a transfer ring.
+type RingMemberSet struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Members   []string `json:"members"`
+	CreatedAt int64    `json:"createdAt"`
+	UpdatedAt int64    `json:"updatedAt"`
+}
+
+func loadRingMemberSets() []RingMemberSet {
+	configFile := filepath.Join(getDatashardsDir(), "settings", "ring_members.json")
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return []RingMemberSet{}
+	}
+
+	var sets []RingMemberSet
+	if err := json.Unmarshal(data, &sets); err != nil {
+		return []RingMemberSet{}
+	}
+
+	return sets
+}
+
+func saveRingMemberSets(sets []RingMemberSet) {
+	configDir := filepath.Join(getDatashardsDir(), "settings")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		log.Printf("Failed to create settings directory: %v", err)
+		return
+	}
+
+	data, err := json.Marshal(sets)
+	if err != nil {
+		log.Printf("Failed to marshal ring member sets: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(configDir, "ring_members.json"), data, 0600); err != nil {
+		log.Printf("Failed to save ring member sets: %v", err)
 	}
 }
 

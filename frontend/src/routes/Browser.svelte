@@ -3,9 +3,10 @@
   import { writable, get } from 'svelte/store';
   import { appState, settingsState, walletState, addToHistory, addConsoleLog, pendingNavigation, clearPendingNavigation, requestWalletApproval, walletRequests, consoleLogs as consoleLogsStore, clearConsoleLogs as clearConsoleLogsStore, navigateTo, updateStatus, toast, setAppDiscoveryState, requestPayment } from '../lib/stores/appState.js';
   import { favorites } from '../lib/stores/favorites.js';
-  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline } from '../../wailsjs/go/main/App.js';
+  import { resolveDropPoint } from '../lib/utils/fileDrop.js';
+  import { Navigate, FetchSCID, FetchByDURL, GetAppRating, GetNameSuggestions, CallXSWD, ConnectXSWD, ApproveWalletConnection, InternalWalletCall, GetDiscoveredApps, StartGnomon, EnsureGnomonRunning, GetLocalDevServerStatus, StartLocalDevServer, ServeTELAContent, ShutdownServer, ListActiveServers, ClearConsoleLogs as ClearBackendLogs, SetGnomonAutostart, GetGnomonAutostart, GetAllTags, GetTELAAppsWithTags, GetSCIDMetadata, CheckAppFilter, GetContentFilterConfig, ManuallyAllowApp, ManuallyBlockApp, ClearAppFilterOverride, GetLiveStats, GetBalance, GetTransactionHistory, SaveBinaryFileWithDialog, SelectFileWithContent, OpenURLInBrowserIfAllowed, ClearAppCache, IsAppCachedOffline, GetConnectedApps, GrantAppPermission, ReadDroppedFile } from '../../wailsjs/go/main/App.js';
   import ReloadSplitButton from '../lib/components/browser/ReloadSplitButton.svelte';
-  import { EventsOn, EventsOff, ClipboardSetText, ClipboardGetText } from '../../wailsjs/runtime/runtime.js';
+  import { EventsOn, EventsOff, ClipboardSetText, OnFileDrop, OnFileDropOff } from '../../wailsjs/runtime/runtime.js';
 import { HoloBadge, DotIndicator, Icons } from '../lib/components/holo';
 import RatingModal from '../lib/components/RatingModal.svelte';
 import RatingsBreakdown from '../lib/components/RatingsBreakdown.svelte';
@@ -28,7 +29,7 @@ function getPermissionName(permId) {
   const names = {
     'read_public_data': 'Read Public Blockchain Data',
     'view_address': 'View Wallet Address',
-    'view_balance': 'View Balance',
+    'view_balance': 'View Balance & History',
     'sign_transaction': 'Sign Transactions',
     'sc_invoke': 'Smart Contract Calls'
   };
@@ -39,7 +40,7 @@ function getPermissionDescription(permId) {
   const descriptions = {
     'read_public_data': 'Can read public blockchain info (blocks, transactions, network stats)',
     'view_address': 'Can see your public wallet address',
-    'view_balance': 'Can see your wallet balance',
+    'view_balance': 'Can see your balance and full transfer history — senders, recipients, amounts, payment proofs, comments and your private labels',
     'sign_transaction': 'Can request to send DERO (requires approval each time)',
     'sc_invoke': 'Can request smart contract interactions (requires approval each time)'
   };
@@ -127,14 +128,25 @@ function stopXSWDSubscriptionPolling() {
 function sendXSWDEvent(method, params) {
   try {
     if (!contentFrame || !contentFrame.contentWindow) return;
+    // Address the feed to the origin we granted, not to whoever is in the frame now.
+    // With '*' a document that navigated itself off-box keeps receiving balance and
+    // transfer events. srcdoc has an opaque origin and can only be addressed as '*'.
+    const target = iframeUsesSrcdoc ? '*' : expectedFrameOrigin;
+    if (!target) return; // HTTP mode with no known origin -> send nothing
     contentFrame.contentWindow.postMessage({
       type: 'xswd-event',
       method,
       params
-    }, '*');
+    }, target);
   } catch (e) {
     // Silently ignore cross-origin errors - expected when iframe has different origin
   }
+}
+
+// Permission required to keep a subscription FEEDING, not just to open it. Gating only
+// at Subscribe leaves an established feed streaming after the grant is narrowed or revoked.
+function subscriptionAllowed(permId) {
+  return hasGrant(permId);
 }
 
 async function pollXSWDSubscriptions() {
@@ -143,7 +155,7 @@ async function pollXSWDSubscriptions() {
   if (xswdPollingActive) return;
   xswdPollingActive = true;
   try {
-    if (xswdSubscriptions.new_topoheight) {
+    if (xswdSubscriptions.new_topoheight && subscriptionAllowed('read_public_data')) {
       const stats = await GetLiveStats();
       const topo = stats?.topoheight;
       if (typeof topo === 'number' && topo !== lastTopoheight) {
@@ -152,7 +164,7 @@ async function pollXSWDSubscriptions() {
       }
     }
 
-    if (xswdSubscriptions.new_balance) {
+    if (xswdSubscriptions.new_balance && subscriptionAllowed('view_balance')) {
       const balanceResult = await GetBalance();
       if (balanceResult?.success) {
         const currentBalance = balanceResult?.balance ?? balanceResult?.result?.balance;
@@ -163,7 +175,7 @@ async function pollXSWDSubscriptions() {
       }
     }
 
-    if (xswdSubscriptions.new_entry) {
+    if (xswdSubscriptions.new_entry && subscriptionAllowed('view_balance')) {
       const history = await GetTransactionHistory(10);
       if (history?.success && Array.isArray(history.transactions) && history.transactions.length > 0) {
         // Iterate through all transactions (oldest to newest) and emit events for new ones
@@ -297,6 +309,53 @@ let addressInput = '';
   
   // Console panel state
   let showConsole = false;
+
+  /**
+   * A file dropped on a TELA app, handed to that app.
+   *
+   * The path comes from Wails' NATIVE drop channel, not from the DOM. The DOM drop event
+   * does fire in the frame — the bridge guard cancels it so WebKit stops navigating to the
+   * file — but on Linux it arrives empty: measured 2026-08-09, types=text/uri-list,text/html
+   * with files.length 0 and an empty text/uri-list. So the event says WHERE, and this says
+   * WHAT.
+   *
+   * Read here, in the trusted document, and handed across as bytes. The app never learns
+   * the path.
+   */
+  async function handleNativeFileDrop(x, y, paths) {
+    if (!paths || paths.length === 0) return;
+    if (showWelcome || loading || !contentFrame) return;
+    const point = resolveDropPoint(x, y, contentFrame);
+    if (!point) return;                                      // dropped on HOLOGRAM's own UI
+
+    if (paths.length > 1) {
+      toast.info(`Dropped ${paths.length} files — sending only the first`);
+    }
+    try {
+      const result = await ReadDroppedFile(paths[0]);
+      if (!result || !result.success) {
+        toast.error(result?.error || 'Could not read the dropped file');
+        addConsoleLog(`[Error] Drop failed: ${result?.error || 'unknown'}`);
+        return;
+      }
+      const rect = contentFrame.getBoundingClientRect();
+      contentFrame.contentWindow.postMessage({
+        type: 'hologram-file-drop',
+        filename: result.filename,
+        mimeType: result.mimeType,
+        base64: result.base64,
+        // Frame-relative, so the bridge can aim the event at whatever is under the cursor.
+        // From the resolved point, not the raw native coords: the hit test above may have
+        // matched in CSS space, and mixing the two aims at dpr times the intended offset.
+        x: Math.round(point.x - rect.left),
+        y: Math.round(point.y - rect.top)
+      }, iframeUsesSrcdoc ? '*' : (expectedFrameOrigin || '*'));
+      addConsoleLog(`[Drop] Handed ${result.filename} (${result.size} bytes) to the app`);
+    } catch (err) {
+      toast.error('Could not read the dropped file');
+      addConsoleLog(`[Error] Drop failed: ${err.message || err}`);
+    }
+  }
   let consoleLogs = [];
   let unsubscribeConsole;
   let consoleViewport;
@@ -362,8 +421,14 @@ let addressInput = '';
   let waitingForInitialApps = false;
   let appDiscoveryRetryCount = 0;
   let appDiscoveryRetryTimer = null;
+  let coldStartFilterChecked = false; // Option 2: one-shot cold-start filter fallback (TOP RATED -> ALL if empty)
   const APP_DISCOVERY_RETRY_DELAY_MS = 5000;
-  const APP_DISCOVERY_MAX_RETRIES = 12;
+  // Gnomon's first TELA-app discovery can take several minutes on a cold index
+  // (fast-sync + block/SC indexing), during which GetDiscoveredApps returns 0 apps.
+  // Keep polling every 5s across that whole window so the grid auto-populates the
+  // moment apps land, instead of giving up after ~60s and showing "No Apps Found".
+  // 120 * 5s = ~10min backstop before an honest empty state on a genuinely appless chain.
+  const APP_DISCOVERY_MAX_RETRIES = 120;
   let selectedCategory = 'top';
   let sortBy = 'rating';
   
@@ -399,10 +464,304 @@ let addressInput = '';
   let localDevUrl = '';
   let hotReloadInProgress = false; // Flag to auto-approve XSWD during hot reload
   
-  // Session approval tracking - prevents double-modal when stale content reloads via HTTP
+  // Session approval tracking - parent-owned wallet auth (R2-B2/B3).
+  // Never trust iframe-supplied authState; only set these after a real connect approval.
   let sessionApprovedScid = null;
   let sessionApprovedAppName = null;
-  let sessionApprovalTime = 0;
+  let sessionWalletAuthorized = false;
+  let sessionGrantedPermissions = new Set();
+
+  // onMount is async, so Svelte discards the cleanup it returns. These are hoisted so
+  // onDestroy can unregister them, and `destroyed` stops a listener being registered
+  // at all if the component is torn down mid-await (tab switch during Gnomon start).
+  let destroyed = false;
+  let handleSearchResult, handleXSWDMessage, handleConsoleShortcut;
+
+  // External-wallet mode: disclose ONCE per session that the wallet sees "HOLOGRAM" as a
+  // single app, so its approval spans every TELA app opened here.
+  let externalScopeDisclosed = false;
+  // srcdoc + allow-same-origin collapses to the parent origin (R2-B5). Track mode
+  // so the sandbox attribute can drop same-origin for srcdoc loads.
+  // CRITICAL: set sandbox imperatively BEFORE assigning srcdoc — reactive
+  // iframeUsesSrcdoc alone races (srcdoc lands while same-origin is still on).
+  let iframeUsesSrcdoc = false;
+  // Origin we navigated the frame to, in HTTP mode. Compared per message so a document
+  // that navigates itself elsewhere cannot keep using a grant issued to the original app.
+  let expectedFrameOrigin = null;
+  const IFRAME_SANDBOX_SRCDOC =
+    'allow-scripts allow-forms allow-modals allow-clipboard-read allow-clipboard-write';
+  const IFRAME_SANDBOX_HTTP =
+    'allow-scripts allow-same-origin allow-forms allow-modals allow-clipboard-read allow-clipboard-write';
+
+  /** Lock sandbox without same-origin, then callers may assign srcdoc safely. */
+  function prepareIframeForSrcdoc() {
+    if (!contentFrame) return;
+    contentFrame.setAttribute('sandbox', IFRAME_SANDBOX_SRCDOC);
+    contentFrame.removeAttribute('src');
+    iframeUsesSrcdoc = true;
+    expectedFrameOrigin = null; // srcdoc is an opaque origin; nothing to compare against
+  }
+
+  /** Restore HTTP sandbox (same-origin OK — iframe origin is 127.0.0.1, not parent). */
+  function prepareIframeForHttp(url) {
+    if (!contentFrame) return;
+    contentFrame.setAttribute('sandbox', IFRAME_SANDBOX_HTTP);
+    contentFrame.removeAttribute('srcdoc');
+    iframeUsesSrcdoc = false;
+    // Record where we are SENDING the frame. contentWindow survives a same-frame
+    // navigation, so source identity alone cannot tell an app that navigated itself
+    // off-box from the app we loaded. event.origin can, and the browser sets it.
+    try {
+      expectedFrameOrigin = url ? new URL(url, window.location.href).origin : null;
+    } catch (e) {
+      expectedFrameOrigin = null; // unparseable -> fail closed
+    }
+  }
+
+  // Standing grants read back from the durable store (app.go:1570 GetConnectedApps).
+  // The Browser plane used to WRITE grants and never read them, so "remember this" could not
+  // survive a tab switch no matter what was on disk. This is that missing read path.
+  let storedGrants = new Set();
+  // In-flight consent prompts, keyed by permission. An app that fires GetBalance and
+  // GetTransfers together must raise ONE prompt, not one per call.
+  let consentInFlight = new Map();
+  // Which wallet the cached grants above were answered for. A door is remembered per app AND
+  // per wallet (xswd_permissions.go WalletPermissions); this is the renderer's half of that.
+  // InternalWalletCall performs no permission check of its own, so for the browser plane
+  // these caches ARE the gate — stale ones hand the next wallet's address to an app that was
+  // only ever approved against the last one.
+  let grantsWallet = null;
+
+  function clearBrowserWalletSession() {
+    expectedFrameOrigin = null; // no grant, no expected origin — both re-established together
+    sessionWalletAuthorized = false;
+    sessionGrantedPermissions = new Set();
+    sessionApprovedScid = null;
+    sessionApprovedAppName = null;
+    storedGrants = new Set();
+    consentInFlight = new Map();
+    grantsWallet = null;
+  }
+
+  /**
+   * Drop every cached answer that belongs to a different wallet. Synchronous on purpose:
+   * hasGrant is synchronous, so this cannot be left to an effect that might not have run yet.
+   * Connect grants survive — reading public chain data is not a question about the wallet.
+   */
+  function forgetGrantsIfWalletChanged() {
+    const addr = get(walletState).address || '';
+    if (grantsWallet === addr) return false;
+    grantsWallet = addr;
+    sessionGrantedPermissions = new Set(CONNECT_GRANTS.filter(p => sessionGrantedPermissions.has(p)));
+    storedGrants = new Set();
+    consentInFlight = new Map();
+    return true;
+  }
+
+  // Reload the new wallet's remembered doors so switching back to a wallet that already
+  // answered does not ask again. Safety comes from forgetGrantsIfWalletChanged above; this
+  // only buys back the convenience, so a missed run costs an extra prompt, never a leak.
+  $: if (sessionWalletAuthorized && ($walletState.address || '') !== grantsWallet) {
+    forgetGrantsIfWalletChanged();
+    loadStoredGrants(browserOriginKey());
+  }
+
+  /**
+   * Has this exact origin been connected before? Only a chain-resolved SCID counts: an
+   * address the page typed for itself is self-reported, and auto-resuming on that would let
+   * a new page claim a trusted app's identity and skip the prompt entirely.
+   */
+  async function isReturningApp() {
+    const origin = browserOriginKey();
+    if (!origin || !currentMeta?.scid) return false;
+    try {
+      const apps = await GetConnectedApps();
+      return (apps || []).some(a => a.origin === origin);
+    } catch (e) {
+      return false; // fail closed — ask again rather than assume
+    }
+  }
+
+  async function loadStoredGrants(origin) {
+    // GetConnectedApps reports permissions for the wallet open at the moment it is called.
+    // Stamp which wallet that was, and re-check after the await: a switch mid-flight would
+    // otherwise apply one wallet's remembered doors to another.
+    const forWallet = get(walletState).address || '';
+    storedGrants = new Set();
+    grantsWallet = forWallet;
+    if (!origin) return;
+    try {
+      const apps = await GetConnectedApps();
+      if ((get(walletState).address || '') !== forWallet) return;
+      const app = (apps || []).find(a => a.origin === origin);
+      if (app && Array.isArray(app.permissions)) {
+        // sign_transaction / sc_invoke can never appear here — CanStorePermission drops them
+        // at the Go write path — so nothing filters them out on the way back in.
+        storedGrants = new Set(app.permissions);
+      }
+    } catch (e) {
+      // Fail closed: no stored grants means the user is asked again, never auto-allowed.
+      addConsoleLog(`[Warn] Could not read stored grants: ${e.message}`);
+    }
+  }
+
+  function browserOriginKey() {
+    return (currentMeta?.scid || addressInput || '').trim();
+  }
+
+  // Three doors. Connecting grants public chain data and NOTHING else; the wallet doors are
+  // asked for at the moment of use and the answer is remembered; spending is asked every
+  // time, forever. Five checkboxes on connect asked the user to decide things they had no
+  // context for, and two of those boxes did not gate spending anyway — the per-action modal
+  // did, and still does.
+  const CONNECT_GRANTS = ['read_public_data'];
+
+  // Approved per action, never stored. Mirrors CanStorePermission in xswd_permissions.go,
+  // which enforces it at the Go write path so this cannot be bypassed from here.
+  const ALWAYS_ASK_PERMISSIONS = ['sign_transaction', 'sc_invoke'];
+
+  function permissionDescriptor(id) {
+    return {
+      id,
+      name: getPermissionName(id),
+      description: getPermissionDescription(id),
+      alwaysAsk: ALWAYS_ASK_PERMISSIONS.includes(id)
+    };
+  }
+
+  /**
+   * Map an XSWD wallet method to the permission it needs.
+   * Mirrors GetRequiredPermission in xswd_permissions.go — pinned by
+   * TestBrowserPlaneKnowsEveryGatedMethod, because these two tables have drifted before.
+   */
+  function walletMethodPermission(methodLower) {
+    const m = (methodLower || '').replace(/^dero\./, '');
+    switch (m) {
+      case 'getaddress':
+      case 'getpublickey':
+      case 'makeintegratedaddress':
+      case 'splitintegratedaddress':
+        return 'view_address';
+      // The daemon endpoint is public-chain access, not wallet access, so it rides the
+      // connect grant and never prompts.
+      case 'getdaemon':
+        return 'read_public_data';
+      case 'getbalance':
+      case 'getheight':
+      case 'gettransfers':
+      case 'gettransferbytxid':
+      case 'gettrackedassets':
+        return 'view_balance';
+      case 'transfer':
+      case 'transfer_split':
+      case 'signdata':
+      case 'decryptpayload':
+        return 'sign_transaction';
+      case 'scinvoke':
+      case 'sc_invoke':
+        return 'sc_invoke';
+      default:
+        return null;
+    }
+  }
+
+  /** A denial the dApp can branch on. -32043 is the canonical XSWD PermissionDenied code. */
+  function permissionDeniedError(message) {
+    const err = new Error(message);
+    err.code = -32043;
+    return err;
+  }
+
+  /** Does a standing grant already cover this door — from this session or from disk? */
+  function hasGrant(permId) {
+    if (!sessionWalletAuthorized) return false;
+    forgetGrantsIfWalletChanged();
+    if (!permId || permId === 'read_public_data') return true; // covered by connect
+    return sessionGrantedPermissions.has(permId) || storedGrants.has(permId);
+  }
+
+  /**
+   * Ask for a door at the moment it is used, and remember the answer if the user says so.
+   * Returns false when denied; callers turn that into a -32043.
+   */
+  async function ensureWalletPermission(permId, methodName) {
+    if (!sessionWalletAuthorized) return false;
+    if (hasGrant(permId)) return true;
+    // Spending is never a standing grant, so it must never reach this prompt — the
+    // per-action modal (amount, destination, entrypoint) is its only gate.
+    if (ALWAYS_ASK_PERMISSIONS.includes(permId)) return true;
+
+    // Coalesce: a second caller for the same door joins the prompt already on screen
+    // instead of stacking another one behind it.
+    if (consentInFlight.has(permId)) return await consentInFlight.get(permId);
+
+    const pending = (async () => {
+      const origin = browserOriginKey();
+      const appName = sessionApprovedAppName || currentMeta?.name || 'App';
+      // The answer belongs to the wallet that was open when the question was asked. If the
+      // user switches wallets while the prompt is up, the approval no longer describes what
+      // would happen, so it is dropped rather than applied to whoever is open now.
+      const askedForWallet = get(walletState).address || '';
+      // denyWalletRequest REJECTS the promise (appState.js) rather than resolving with
+      // {approved:false}. Without this catch the rejection escapes the whole gate and is
+      // reported as a generic failure, so the -32043 below never gets attached and a dApp
+      // cannot tell "the user said no" from "the call broke".
+      let approval;
+      try {
+        approval = await requestWalletApproval({
+          type: 'permission',
+          appName,
+          origin: origin || addressInput,
+          originVerified: !!currentMeta?.scid,
+          permission: permissionDescriptor(permId),
+          methodName: methodName || ''
+        });
+      } catch (e) {
+        return false;
+      }
+      if (!approval?.approved) return false;
+      if ((get(walletState).address || '') !== askedForWallet) return false;
+
+      sessionGrantedPermissions = new Set([...sessionGrantedPermissions, permId]);
+      if (approval.remember && origin) {
+        try {
+          await GrantAppPermission(origin, appName, permId);
+          storedGrants = new Set([...storedGrants, permId]);
+        } catch (e) {
+          // The grant still holds for this session; it just will not survive a reload.
+          addConsoleLog(`[Warn] Could not persist grant ${permId}: ${e.message}`);
+        }
+      }
+      return true;
+    })();
+
+    consentInFlight.set(permId, pending);
+    try {
+      return await pending;
+    } finally {
+      consentInFlight.delete(permId);
+    }
+  }
+
+  async function persistConnectApproval(appName, description) {
+    const origin = browserOriginKey();
+    const approveResult = await ApproveWalletConnection(
+      origin,
+      appName || 'App',
+      description || '',
+      CONNECT_GRANTS
+    );
+    if (approveResult?.success) {
+      sessionWalletAuthorized = true;
+      sessionGrantedPermissions = new Set(CONNECT_GRANTS);
+      sessionApprovedScid = currentMeta?.scid || null;
+      sessionApprovedAppName = appName || null;
+      // Pick up doors this app was already given on an earlier visit, so a returning user
+      // is not asked again for something they chose to remember.
+      await loadStoredGrants(origin);
+    }
+    return approveResult;
+  }
   
   // Favorites
   let showAllFavorites = false;
@@ -535,6 +894,7 @@ let addressInput = '';
         }
         apps = result.apps;
         applyFilters();
+        maybeFallbackToAllOnColdStart();
       }
       
       // Load available tags for filtering (Simple-Gnomon feature)
@@ -552,7 +912,11 @@ let addressInput = '';
         appsLoaded = true;
         waitingForInitialApps = false;
         appDiscoveryRetryCount = 0;
-      } else if (get(appState).gnomonRunning) {
+      } else if (get(appState).gnomonRunning && get(appState).gnomonIndexerStatus !== 'indexed') {
+        // Only spin while the index is genuinely still building. Heights/progress cannot
+        // gate this: mainnet fastsync sets indexed = chain BEFORE the multi-minute SCID
+        // import that discovers TELA apps, so a height check would show "No Apps Found"
+        // within seconds of a cold start (the 2026-07-27 regression, 1262c11).
         appsLoaded = false;
         if (appDiscoveryRetryCount < APP_DISCOVERY_MAX_RETRIES) {
           appDiscoveryRetryCount += 1;
@@ -631,6 +995,7 @@ let addressInput = '';
     clearAppDiscoveryRetryTimer();
     waitingForInitialApps = false;
     appDiscoveryRetryCount = 0;
+    coldStartFilterChecked = false;
     appsLoaded = false;
     appsLoading = false;
     apps = [];
@@ -645,8 +1010,10 @@ let addressInput = '';
   }
   
   // Reactive: reload apps when Gnomon syncs more blocks (finds new apps)
-  // Reload when indexed height increases by at least 1000 blocks
-  $: if ($appState.gnomonRunning && $appState.gnomonIndexedHeight > lastIndexedHeight + 1000 && !appsLoading) {
+  // Reload when indexed height increases by at least 1000 blocks, or on ANY new block
+  // while settled-but-empty — that is the only recovery path once the empty state shows,
+  // and on a small chain (simulator) +1000 blocks never arrives.
+  $: if ($appState.gnomonRunning && !appsLoading && ($appState.gnomonIndexedHeight > lastIndexedHeight + 1000 || (appsLoaded && apps.length === 0 && $appState.gnomonIndexedHeight > lastIndexedHeight))) {
     lastIndexedHeight = $appState.gnomonIndexedHeight;
     loadApps();
   }
@@ -774,7 +1141,22 @@ let addressInput = '';
     
     filteredApps = result;
   }
-  
+
+  // Option 2 — cold-start filter fallback: the Browser defaults to the TOP RATED (7+)
+  // filter. On a freshly/sparsely-rated chain that view can be empty even though apps
+  // exist, which reads as a broken screen. On the first load that actually returns apps,
+  // if TOP RATED has nothing to show, fall back to ALL APPS so the user never lands on
+  // an empty grid. Fires once per discovery cycle; a later deliberate switch back to
+  // TOP RATED is respected and not overridden.
+  function maybeFallbackToAllOnColdStart() {
+    if (coldStartFilterChecked || apps.length === 0) return;
+    coldStartFilterChecked = true;
+    if (selectedCategory === 'top' && filteredApps.length === 0) {
+      selectedCategory = 'all';
+      applyFilters();
+    }
+  }
+
   function handleCategoryChange(categoryId) {
     selectedCategory = categoryId;
     applyFilters();
@@ -930,7 +1312,7 @@ let addressInput = '';
       previousWalletRequestCount = currentCount;
     });
     
-    const handleSearchResult = (e) => {
+    handleSearchResult = (e) => {
       const { type, query, result } = e.detail;
       if (result && result.success && (type === 'sc' || type === 'durl')) {
         if (type === 'sc') {
@@ -942,12 +1324,50 @@ let addressInput = '';
         }
       }
     };
-    window.addEventListener('search-result', handleSearchResult);
+    if (!destroyed) window.addEventListener('search-result', handleSearchResult);
     
+    // The file a user drops on a TELA app arrives on the native channel, which carries real
+    // filesystem paths and the drop coordinates. useDropTarget=false: hit-test against the
+    // frame here rather than through Wails' CSS drop-target filter, matching Studio.
+    //
+    // Register after the DOM is ready — required on Linux.
+    await tick();
+    if (!destroyed) OnFileDrop(handleNativeFileDrop, false);
+
+    // Strip host filesystem paths before a result crosses into untrusted app code.
+    //
+    // SelectFileWithContent (file_service.go:773) and SaveBinaryFileWithDialog (:1586) both
+    // return the absolute path they acted on, and the whole result object was forwarded to
+    // the iframe verbatim. A TELA app has no use for it — it receives the bytes — so this
+    // handed every app the user's home directory layout, username and filing habits, on a
+    // wallet whose entire premise is privacy.
+    //
+    // Filtered HERE rather than in each Go function because this is the trust boundary:
+    // a handler added later inherits the protection instead of having to remember it, and
+    // the two in-app callers of SaveBinaryFileWithDialog keep the path they legitimately use.
+    const stripHostPaths = (r) => {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) return r;
+      const { path, ...safe } = r;
+      return safe;
+    };
+
     // Handle direct browser navigation from Explorer (when user searches for a .tela domain)
     // PostMessage handler for XSWD bridge communication from iframe
-    const handleXSWDMessage = async (event) => {
+    handleXSWDMessage = async (event) => {
       try {
+        // The frame reports whether the app actually took the file. Silence after a drop
+        // is the original bug, so an app with no drop handler has to say so out loud.
+        if (contentFrame && event.source === contentFrame.contentWindow &&
+            event.data?.type === 'hologram-file-drop-result') {
+          const { handled, filename } = event.data;
+          if (handled) {
+            toast.success(`${filename} sent to ${currentMeta?.name || 'the app'}`);
+          } else {
+            toast.info(`${currentMeta?.name || 'This app'} does not accept dropped files`);
+          }
+          addConsoleLog(`[Drop] ${filename} — app ${handled ? 'accepted' : 'ignored'} it`);
+          return;
+        }
         if (contentFrame && event.source === contentFrame.contentWindow && event.data?.type === 'xswd-request') {
           addConsoleLog(`[Browser] Received: action=${event.data.action}, id=${event.data.id}`);
         }
@@ -983,6 +1403,20 @@ let addressInput = '';
         return;
       }
 
+      // Prove document identity PER MESSAGE, not per load. contentWindow is unchanged by a
+      // same-frame navigation, so the source check above passes for a document that sent
+      // itself somewhere else — and it would keep using the grant issued to the app we
+      // loaded. event.origin is set by the browser and cannot be forged by the page.
+      // srcdoc is exempt: its origin is opaque, so there is nothing to compare. 'log' is
+      // exempt because it is the one thing that works in srcdoc and it carries no authority.
+      if (event.data && event.data.type === 'xswd-request' && event.data.action !== 'log'
+          && !iframeUsesSrcdoc) {
+        if (!expectedFrameOrigin || event.origin !== expectedFrameOrigin) {
+          addConsoleLog(`[Warn] Blocked xswd-request from unexpected origin: ${event.origin || 'null'} (expected ${expectedFrameOrigin || 'none'})`);
+          return;
+        }
+      }
+
       if (event.data && event.data.type === 'hologram-external-link') {
         const url = typeof event.data.url === 'string' ? event.data.url.trim() : '';
         if (url && isAllowedExternalWebUrl(url)) {
@@ -1002,7 +1436,11 @@ let addressInput = '';
         return;
       }
 
-      // TELA iframe: Clipboard API fallback via native Wails clipboard (keep in sync with server_manager.go getHologramClipboardBridgeScript)
+      // TELA iframe: Clipboard WRITE fallback via native Wails clipboard (keep in sync with
+      // server_manager.go getHologramClipboardBridgeScript). READ is intentionally refused —
+      // bridging clipboard read would let untrusted TELA content exfiltrate the host OS
+      // clipboard (e.g. a recovery seed the user just copied from the reveal modal), so 'read'
+      // is rejected here even though the injected script no longer requests it (defense in depth).
       if (event.data && event.data.type === 'hologram-clipboard-request') {
         const { id, op, text } = event.data;
         if (!id || !op || !event.source || typeof event.source.postMessage !== 'function') return;
@@ -1011,11 +1449,9 @@ let addressInput = '';
             if (op === 'write') {
               await ClipboardSetText(text == null ? '' : String(text));
               event.source.postMessage({ type: 'hologram-clipboard-response', id, ok: true }, '*');
-            } else if (op === 'read') {
-              const t = await ClipboardGetText();
-              event.source.postMessage({ type: 'hologram-clipboard-response', id, ok: true, text: t == null ? '' : String(t) }, '*');
             } else {
-              event.source.postMessage({ type: 'hologram-clipboard-response', id, ok: false, error: 'unknown clipboard op' }, '*');
+              // 'read' and any other op are refused: untrusted content must never read the host clipboard.
+              event.source.postMessage({ type: 'hologram-clipboard-response', id, ok: false, error: 'clipboard read not permitted' }, '*');
             }
           } catch (e) {
             const msg = e && e.message ? e.message : String(e);
@@ -1058,74 +1494,55 @@ let addressInput = '';
             addConsoleLog(`[Browser] integratedWallet setting: ${settings.integratedWallet}`);
             addConsoleLog(`[Browser] wallet isOpen: ${currentWalletState.isOpen}`);
             if (settings.integratedWallet) {
-              // Check if wallet is open - most dApps need wallet methods after connect
               if (!currentWalletState.isOpen) {
                 addConsoleLog('[Browser] Integrated wallet mode but no wallet open - warning user');
               }
               try {
-                // Auto-approve during hot reload to avoid modal interruption
-                if (hotReloadInProgress) {
-                  addConsoleLog('[Browser] Hot reload in progress - auto-approving XSWD reconnection');
-                  const approveResult = await ApproveWalletConnection();
-                  addConsoleLog(`[Browser] Auto-approve result: ${JSON.stringify(approveResult)}`);
+                const connectingAppName = payload.appInfo?.name || currentMeta?.name || 'App';
+                const connectingDesc = payload.appInfo?.description || '';
+                // Reconnect / hot reload: reuse this session's grants for as long as the
+                // SAME app stays loaded. Keyed on the chain-resolved SCID, never on the
+                // app name (R2-B2 / name-spoof), and the session is wiped by
+                // clearBrowserWalletSession() the moment we navigate anywhere else.
+                //
+                // There is deliberately no time limit. A 30s window stopped nothing — a
+                // hostile app just waits it out — while an honest one that re-handshakes
+                // (Cipher Snake does, roughly every 30s) faced the consent prompt again
+                // and again for a decision the user had already made.
+                const sameScid = sessionApprovedScid != null && currentMeta?.scid && sessionApprovedScid === currentMeta.scid;
+                if (sessionWalletAuthorized && sameScid) {
+                  addConsoleLog(`[Browser] Reusing session grants for SCID reconnect: ${connectingAppName}`);
                   result = true;
+                } else if (await isReturningApp()) {
+                  // Approved on an earlier visit. Connecting buys public chain data only, so
+                  // re-asking the same question teaches the user to click through prompts.
+                  // The wallet doors are still gated — anything not remembered is asked for
+                  // at the moment of use, exactly as on a first visit.
+                  addConsoleLog(`[Browser] Resuming stored connection: ${connectingAppName}`);
+                  const approveResult = await persistConnectApproval(connectingAppName, connectingDesc);
+                  result = approveResult?.success === true;
                 } else {
-                  // Check if this app was already approved in this session (prevents double-modal
-                  // when stale cached content loads in srcdoc then switches to HTTP server)
-                  const connectingAppName = payload.appInfo?.name || '';
-                  const timeSinceApproval = Date.now() - sessionApprovalTime;
-                  const sameScid = sessionApprovedScid != null && currentMeta?.scid && sessionApprovedScid === currentMeta.scid;
-                  const sameName = sessionApprovedAppName != null && connectingAppName && sessionApprovedAppName === connectingAppName;
-                  
-                  if ((sameScid || sameName) && timeSinceApproval < 30000) {
-                    addConsoleLog(`[Browser] Auto-approving reconnect for: ${connectingAppName} (already approved in this session)`);
-                    const approveResult = await ApproveWalletConnection();
+                  addConsoleLog('[Browser] Requesting wallet approval via modal...');
+                  // Connecting is one decision, not five. It grants public chain data and
+                  // nothing else; anything touching the wallet is asked for when the app
+                  // actually reaches for it, where the request has context.
+                  const approval = await requestWalletApproval({
+                    type: 'connect',
+                    appName: connectingAppName,
+                    origin: browserOriginKey() || addressInput,
+                    // A SCID we resolved from the chain ourselves is NOT self-reported.
+                    // Anything else here (a typed local dev URL) genuinely is.
+                    originVerified: !!currentMeta?.scid,
+                    description: connectingDesc
+                  });
+                  addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
+                  if (approval && approval.approved) {
+                    const approveResult = await persistConnectApproval(connectingAppName, connectingDesc);
+                    addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
                     result = approveResult?.success === true;
                   } else {
-                    addConsoleLog('[Browser] Requesting wallet approval via modal...');
-                    // Check if app requests specific permissions in handshake
-                    const requestedPerms = payload.appInfo?.permissions || [];
-                    const hasWalletPerms = requestedPerms.some(p => 
-                      ['view_address', 'view_balance', 'sign_transaction', 'sc_invoke'].includes(p)
-                    );
-                    // Default to read-only unless app explicitly requests wallet permissions
-                    const isReadOnly = !hasWalletPerms;
-                    // Flag if wallet is not open but app likely needs it
-                    const walletNotOpen = !currentWalletState.isOpen;
-                    
-                    const approval = await requestWalletApproval({
-                      type: 'connect',
-                      appName: payload.appInfo?.name || currentMeta.name || 'App',
-                      origin: addressInput,
-                      description: payload.appInfo?.description || '',
-                      isReadOnly: isReadOnly,
-                      walletNotOpen: walletNotOpen,
-                      requestedPermissions: requestedPerms.length > 0 ? requestedPerms.map(p => ({
-                        id: p,
-                        name: getPermissionName(p),
-                        description: getPermissionDescription(p),
-                        alwaysAsk: ['sign_transaction', 'sc_invoke'].includes(p)
-                      })) : [{ 
-                        id: 'read_public_data', 
-                        name: 'Read Public Blockchain Data',
-                        description: 'Can read public blockchain info (blocks, transactions, network stats)',
-                        alwaysAsk: false
-                      }]
-                    });
-                    addConsoleLog(`[Browser] Approval result: approved=${approval?.approved}`);
-                    if (approval && approval.approved) {
-                      addConsoleLog('[Browser] Calling ApproveWalletConnection...');
-                      const approveResult = await ApproveWalletConnection();
-                      addConsoleLog(`[Browser] ApproveWalletConnection result: ${JSON.stringify(approveResult)}`);
-                      // Record this approval for reconnect deduplication
-                      sessionApprovedScid = currentMeta?.scid || null;
-                      sessionApprovedAppName = connectingAppName;
-                      sessionApprovalTime = Date.now();
-                      result = true;
-                    } else {
-                      addConsoleLog('[Browser] User denied connection');
-                      result = false;
-                    }
+                    addConsoleLog('[Browser] User denied connection');
+                    result = false;
                   }
                 }
               } catch (e) {
@@ -1134,15 +1551,31 @@ let addressInput = '';
               }
             } else {
               addConsoleLog('[Browser] Using external XSWD (integratedWallet=false)');
-              result = await ConnectXSWD();
+              const connectResult = await ConnectXSWD();
+              result = connectResult?.success === true || connectResult === true;
+              if (result && !externalScopeDisclosed) {
+                // Your wallet approves this, not HOLOGRAM — but it sees ONE client named
+                // "HOLOGRAM", so say plainly what that approval covers. Once per session.
+                externalScopeDisclosed = true;
+                toast.info(
+                  'Your external wallet approves this connection. It sees HOLOGRAM as a single app, so that approval covers every TELA app opened in this browser.',
+                  9000
+                );
+              }
             }
             break;
             
           case 'call':
             // Handle XSWD method call
-            const { method, params, authState } = payload;
+            const { method, params } = payload;
             const normalizedMethod = method.replace('DERO.', '');
           const methodLower = normalizedMethod.toLowerCase();
+          // Stripping the DERO. prefix makes DERO.GetHeight (chain tip, public data) collide
+          // with GetHeight (the wallet's own sync height), so a public chain query was routed
+          // to the wallet and demanded balance access. GetHeight is the ONLY such collision —
+          // DERO.Transfer and DERO.SC_Invoke really are wallet methods and must stay routed.
+          // Matches GetRequiredPermission in xswd_permissions.go.
+          const isDaemonScoped = method === 'DERO.GetHeight';
           const callSettings = get(settingsState);
           
           // Handle Subscribe/Unsubscribe for integrated wallet by polling
@@ -1152,7 +1585,14 @@ let addressInput = '';
               throw new Error(`Unknown event type: ${eventType || 'undefined'}`);
             }
             
+            // This branch runs BEFORE the wallet-method gate below, and Subscribe is not
+            // in walletMethods — so without this check any app gets the balance and the
+            // last 10 transfers (with proofs and comments) on the first poll, unapproved.
             if (methodLower === 'subscribe') {
+              const subPerm = eventType === 'new_topoheight' ? 'read_public_data' : 'view_balance';
+              if (!await ensureWalletPermission(subPerm, `Subscribe:${eventType}`)) {
+                throw permissionDeniedError(`${getPermissionName(subPerm)} required for ${eventType}`);
+              }
               xswdSubscriptions[eventType] = true;
               addConsoleLog(`[Browser] Subscribed (internal): ${eventType}`);
               startXSWDSubscriptionPolling();
@@ -1177,10 +1617,25 @@ let addressInput = '';
             
             const walletMethodsLower = walletMethods.map(m => m.toLowerCase());
 
-            // Check authorization for wallet methods
-            // Accept both 'accepted' and 'ok' for backward compatibility
-            if (walletMethodsLower.includes(methodLower) && authState !== 'accepted' && authState !== 'ok') {
-              throw new Error('Wallet not authorized');
+            // Parent-owned session auth (R2-B3): ignore any client-supplied authState.
+            // Wallet methods require a successful connect approval in this Browser session.
+            //
+            // Integrated mode ONLY. With an external wallet HOLOGRAM holds no keys and is not
+            // the authority — that wallet runs its own approval and can refuse. Enforcing here
+            // too would deny everything, because nothing in the external connect path grants a
+            // session. Note the external wallet sees one client named "HOLOGRAM"
+            // (xswd_client.go), not the individual TELA app, so its approval covers every app
+            // in this browser; that is disclosed to the user on connect rather than papered over.
+            if (callSettings.integratedWallet && !isDaemonScoped && walletMethodsLower.includes(methodLower)) {
+              if (!sessionWalletAuthorized) {
+                throw permissionDeniedError('Wallet not authorized: connect first');
+              }
+              // Ask for the door this method needs, at the moment it is used. Spending
+              // returns true here and is gated by the per-action modal further down.
+              const needed = walletMethodPermission(methodLower);
+              if (!await ensureWalletPermission(needed, method)) {
+                throw permissionDeniedError(`${getPermissionName(needed)} was declined`);
+              }
             }
             
             // Handle special methods
@@ -1195,7 +1650,13 @@ let addressInput = '';
                                     'AttemptEPOCH', 'AttemptEPOCHWithAddr', 'GetMaxHashesEPOCH', 'GetSessionEPOCH', 'GetAddressEPOCH'];
               result = knownMethods.map(m => m.toLowerCase()).includes((params?.name || '').toLowerCase());
             } else if (methodLower === 'getdaemon') {
-              // GetDaemon - returns daemon endpoint for direct node communication
+              // GetDaemon - returns daemon endpoint for direct node communication.
+              // Gated here because app.go handles it before any permission check, and it
+              // is absent from walletMethods, so this branch was previously reachable with
+              // no approval at all. Handing over the endpoint lets an app leave HOLOGRAM.
+              if (callSettings.integratedWallet && !hasGrant('read_public_data')) {
+                throw permissionDeniedError('Wallet not authorized: connect first');
+              }
               // Always route through CallXSWD since it's handled specially in app.go
               addConsoleLog(`[Browser] GetDaemon requested - routing to backend`);
               const xswdResult = await CallXSWD(JSON.stringify({ method: 'GetDaemon', params: params || {} }));
@@ -1215,7 +1676,7 @@ let addressInput = '';
                                    'GetTransfers', 'GetTrackedAssets', 'MakeIntegratedAddress',
                                    'SplitIntegratedAddress', 'CheckSignature'];
               
-              const isWalletMethod = walletMethodsLower.includes(methodLower);
+              const isWalletMethod = !isDaemonScoped && walletMethodsLower.includes(methodLower);
               const isSigningMethod = signingMethods.map(m => m.toLowerCase()).includes(methodLower);
               
               if (callSettings.integratedWallet && isWalletMethod) {
@@ -1226,13 +1687,20 @@ let addressInput = '';
                   // Signing methods need user approval each time
                   // Parse SC payload for proper display in wallet modal
                   const parsedPayload = parseScPayload(params);
-                  const approval = await requestWalletApproval({
-                    type: 'sign',
-                    appName: currentMeta.name || 'App',
-                    origin: addressInput,
-                    payload: parsedPayload
-                  });
-                  
+                  // Deny REJECTS rather than resolving, so the else below is unreachable
+                  // without this catch and the refusal loses its code (see -32043 note).
+                  let approval;
+                  try {
+                    approval = await requestWalletApproval({
+                      type: 'sign',
+                      appName: currentMeta.name || 'App',
+                      origin: addressInput,
+                      payload: parsedPayload
+                    });
+                  } catch (e) {
+                    throw permissionDeniedError('User denied transaction');
+                  }
+
                   if (approval.approved) {
                     const walletResult = await InternalWalletCall(method, params, approval.password);
                     if (walletResult && walletResult.success) {
@@ -1242,7 +1710,7 @@ let addressInput = '';
                       throw new Error(walletResult?.error || 'Internal wallet call failed');
                     }
                   } else {
-                    throw new Error('User denied transaction');
+                    throw permissionDeniedError('User denied transaction');
                   }
                 } else {
                   // Read methods (GetAddress, GetBalance, etc.) don't need password
@@ -1314,55 +1782,71 @@ let addressInput = '';
         
         // Send response back to iframe
         addConsoleLog(`[OK] Sending response for ${action}: ${typeof result === 'object' ? JSON.stringify(result).substring(0, 100) : result}`);
+        // Reply to the origin that asked. A request can be in flight across a navigation,
+        // and '*' would hand the answer to whatever document arrived in the meantime.
         event.source.postMessage({
           type: 'xswd-response',
           id: id,
-          result: result
-        }, '*');
-        
+          result: stripHostPaths(result)
+        }, iframeUsesSrcdoc ? '*' : (expectedFrameOrigin || '*'));
+
       } catch (error) {
         // Send error response back to iframe
         addConsoleLog(`[Error] Error in ${action}: ${error.message || String(error)}`);
         event.source.postMessage({
           type: 'xswd-response',
           id: id,
-          error: error.message || String(error)
-        }, '*');
+          error: error.message || String(error),
+          // Carry the JSON-RPC code so a denial arrives as the canonical -32043 rather
+          // than a generic failure the dApp cannot tell apart from a network error.
+          errorCode: typeof error.code === 'number' ? error.code : undefined
+        }, iframeUsesSrcdoc ? '*' : (expectedFrameOrigin || '*'));
       }
     };
-    window.addEventListener('message', handleXSWDMessage);
+    if (!destroyed) window.addEventListener('message', handleXSWDMessage);
     
     // Hot reload listener for local dev mode
-    EventsOn('localdev:reload', handleLocalDevReload);
+    if (!destroyed) EventsOn('localdev:reload', handleLocalDevReload);
 
-    // Try to restore last loaded TELA session for fast back-navigation
-    await restoreTelaSession();
+
+    // Try to restore last loaded TELA session for fast back-navigation.
+    //
+    // Skipped when a navigation is already queued. The pendingNavigation subscriber above
+    // sets addressInput and schedules navigate() on a 50ms timer, and restoreTelaSession
+    // assigns addressInput from the STORED session — so restoring here overwrote the
+    // requested address before the timer read it, and the queued navigate() reloaded the
+    // previous app instead. Clicking the wallet avatar asked for villager.tela and got
+    // whatever was open before. An explicit request beats a restored session.
+    if (!hasNavigated) {
+      await restoreTelaSession();
+    }
 
     if ($appState.gnomonRunning && !appsLoaded && !appsLoading && !waitingForInitialApps) {
       loadApps();
     }
     
     // Keyboard shortcut: Cmd/Ctrl+Shift+J to toggle JS Console
-    const handleKeydown = (e) => {
+    handleConsoleShortcut = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         toggleConsole();
       }
     };
-    window.addEventListener('keydown', handleKeydown);
-    
-    return () => {
-      window.removeEventListener('search-result', handleSearchResult);
-      window.removeEventListener('message', handleXSWDMessage);
-      window.removeEventListener('keydown', handleKeydown);
-    };
+    if (!destroyed) window.addEventListener('keydown', handleConsoleShortcut);
   });
-  
+
   onDestroy(async () => {
+    destroyed = true;
+    if (handleSearchResult) window.removeEventListener('search-result', handleSearchResult);
+    if (handleXSWDMessage) window.removeEventListener('message', handleXSWDMessage);
+    if (handleConsoleShortcut) window.removeEventListener('keydown', handleConsoleShortcut);
     if (unsubscribePending) unsubscribePending();
     if (unsubscribeConsole) unsubscribeConsole();
     if (unsubscribeWalletRequests) unsubscribeWalletRequests();
     clearAppDiscoveryRetryTimer();
+    // Wails keeps ONE native drop callback for the whole window, so leaving this one
+    // registered would answer for whichever route mounts next (Studio has its own).
+    OnFileDropOff();
     EventsOff('localdev:reload');
     stopXSWDSubscriptionPolling();
     saveBrowserSession();
@@ -1667,9 +2151,8 @@ ${logsText || '(no logs)'}
     hasNavigated = false;
     resetXSWDSubscriptions();
     // Reset session approval so new app navigations always show the approval modal
-    sessionApprovedScid = null;
-    sessionApprovedAppName = null;
-    sessionApprovalTime = 0;
+    clearBrowserWalletSession();
+    iframeUsesSrcdoc = false;
     
     // Strip any existing dero:// prefix from input (badge provides it visually)
     let cleanInput = addressInput.trim();
@@ -1761,9 +2244,8 @@ ${logsText || '(no logs)'}
   // This enables developers to test dApps locally with full telaHost API access
   async function navigateToLocalFile(filePath, fromHistory = false) {
     resetXSWDSubscriptions();
-    sessionApprovedScid = null;
-    sessionApprovedAppName = null;
-    sessionApprovalTime = 0;
+    clearBrowserWalletSession();
+    iframeUsesSrcdoc = false;
     
     // Clean up the file path
     let cleanPath = filePath.trim();
@@ -1902,33 +2384,14 @@ ${logsText || '(no logs)'}
       // Use srcdoc with modified HTML (includes XSWD bridge + telaHost placeholder)
       // Assets use absolute URLs so they still load from server
       if (contentFrame) {
-        contentFrame.removeAttribute('src');
+        prepareIframeForSrcdoc();
         contentFrame.srcdoc = html;
         showWelcome = false;
-        
-        // Inject actual telaHost API immediately after iframe loads
-        // The placeholder prevents errors, but we need the real API
-        contentFrame.onload = () => {
-          setTimeout(() => {
-            try {
-              injectTelaHostAPI();
-              // Verify injection worked - but don't error if cross-origin prevents access
-              try {
-                const iframeWindow = contentFrame?.contentWindow;
-                if (iframeWindow?.telaHost) {
-                  addConsoleLog('[OK] telaHost API injected successfully (placeholder was set early)');
-                }
-                // Don't warn - cross-origin is expected for local dev server
-              } catch (e) {
-                // Cross-origin access denied - XSWD bridge will handle communication instead
-              }
-            } catch (e) {
-              // Silently ignore cross-origin errors - XSWD bridge handles communication
-            }
-          }, 10);
-        };
+        // postMessage bridge is in the HTML; same-origin Go injection is unavailable
+        // (and unsafe) on srcdoc without allow-same-origin.
+        contentFrame.onload = () => {};
       }
-      addConsoleLog(`[OK] Local file loaded via HTTP (telaHost available)`);
+      addConsoleLog(`[OK] Local file loaded via srcdoc (sandbox locked before load)`);
       
     } catch (fetchError) {
       addConsoleLog(`[Error] Failed to fetch from local server: ${fetchError}`, 'error');
@@ -1943,9 +2406,8 @@ ${logsText || '(no logs)'}
   async function navigateToLocalDev(url, fromHistory = false) {
     const directory = url.slice(8); // Remove 'local://'
     resetXSWDSubscriptions();
-    sessionApprovedScid = null;
-    sessionApprovedAppName = null;
-    sessionApprovalTime = 0;
+    clearBrowserWalletSession();
+    iframeUsesSrcdoc = false;
     
     try {
       // Check if Local Dev Server is running
@@ -2027,8 +2489,8 @@ ${logsText || '(no logs)'}
         // This gives proper HTTP context so external scripts can load
         // (srcdoc uses about: protocol which blocks script loading)
         if (contentFrame) {
-          contentFrame.removeAttribute('srcdoc');
           const cacheBustedUrl = `${status.url}?_t=${Date.now()}`;
+          prepareIframeForHttp(cacheBustedUrl);
           contentFrame.src = cacheBustedUrl;
           showWelcome = false;
           
@@ -2076,12 +2538,26 @@ ${logsText || '(no logs)'}
       activeTelaUrl = session.serverUrl;
       addressInput = session.durl || session.scid;
 
+      // currentMeta drives browserOriginKey(), the origin-verified badge and returning-app
+      // detection. Leaving it empty after a restore made browserOriginKey() fall back to the
+      // address bar, so the SAME app stored its grants under the SCID on one visit and the
+      // dURL on the next — a remembered answer was written to one key and looked for under
+      // another. It also printed "self-reported" for an app we resolved from chain ourselves.
+      // The session record already carries everything needed.
+      currentMeta = {
+        ...currentMeta,
+        scid: session.scid,
+        name: session.title || currentMeta?.name || '',
+        durl: session.durl || ''
+      };
+
       updateActiveTab(session.title || 'App', addressInput, 'box');
       addConsoleLog(`[Server] Reusing active TELA server: ${session.serverUrl}`);
 
       if (contentFrame) {
-        contentFrame.removeAttribute('srcdoc');
-        contentFrame.src = `${session.serverUrl}?_t=${Date.now()}`;
+        const restoreUrl = `${session.serverUrl}?_t=${Date.now()}`;
+        prepareIframeForHttp(restoreUrl);
+        contentFrame.src = restoreUrl;
         showWelcome = false;
         loading = false;
       }
@@ -2142,13 +2618,11 @@ ${logsText || '(no logs)'}
         
         // Load iframe from real HTTP URL
         if (contentFrame) {
-          // Remove srcdoc attribute entirely (it takes precedence over src when present)
-          // Setting srcdoc='' still keeps the attribute and shows blank page
-          contentFrame.removeAttribute('srcdoc');
           // Add cache-busting to force reload even if URL is the same port
           // This is needed because proxy servers reuse ports (50000+) and
           // the browser won't reload if src URL appears unchanged
           const cacheBustedUrl = `${serverResult.url}?_t=${Date.now()}`;
+          prepareIframeForHttp(cacheBustedUrl);
           contentFrame.src = cacheBustedUrl;
           showWelcome = false;
         }
@@ -2227,6 +2701,21 @@ ${logsText || '(no logs)'}
   // Send structured log to parent
   function sendLog(payload) {
     try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: payload }, '*'); } catch(e) {}
+  }
+
+  // Plain-string status log, mirroring the Go bridge's log(). sendLog above carries
+  // structured dApp output; this carries bridge status, and the parent's 'log' handler
+  // accepts either shape.
+  //
+  // This bridge called log() from its first statement onward and never defined it. Under
+  // 'use strict' that threw ReferenceError at "[Bridge] Initializing...", killing every
+  // later section of the script — WebSocket interception, telaHost, downloads, all of it —
+  // while the console forwarding installed above kept working and masked the failure.
+  //
+  // Deliberately does NOT call console.log: the interceptor below routes console output
+  // through sendLog, so doing so would post every bridge line to the parent twice.
+  function log(msg) {
+    try { window.parent.postMessage({ type: 'xswd-request', id: 0, action: 'log', payload: msg }, '*'); } catch(e) {}
   }
   
   // Intercept console methods to capture dApp logs with structured data
@@ -2358,7 +2847,14 @@ ${logsText || '(no logs)'}
     if (e.data && e.data.type === 'xswd-response' && pending[e.data.id]) {
       var p = pending[e.data.id];
       delete pending[e.data.id];
-      e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.result);
+      if (e.data.error) {
+        var err = new Error(e.data.error);
+        // Preserve the JSON-RPC code (-32043 permission denied); see server_manager.go.
+        if (typeof e.data.errorCode === 'number') err.code = e.data.errorCode;
+        p.reject(err);
+      } else {
+        p.resolve(e.data.result);
+      }
     }
   });
   
@@ -2438,11 +2934,11 @@ ${logsText || '(no logs)'}
         return;
       }
       
-      // RPC call
-      request('call', { method: msg.method, params: msg.params, authState: self._auth }).then(function(r) {
+      // RPC call — parent owns session auth; do not send a forgeable authState
+      request('call', { method: msg.method, params: msg.params }).then(function(r) {
         self._respond({ jsonrpc: '2.0', id: msg.id, result: r });
       }).catch(function(e) {
-        self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
+        self._respond({ jsonrpc: '2.0', id: msg.id, error: { code: (e && typeof e.code === 'number') ? e.code : -32000, message: e.message } });
       });
     } catch(e) {
       log('[Error] XSWD error: ' + e.message);
@@ -2496,22 +2992,22 @@ ${logsText || '(no logs)'}
   window.telaHost = {
     getDaemon: function() {
       log('[telaHost] getDaemon called');
-      return request('call', { method: 'GetDaemon', params: {}, authState: 'ok' }).then(function(r) {
+      return request('call', { method: 'GetDaemon', params: {} }).then(function(r) {
         log('[telaHost] getDaemon result: ' + JSON.stringify(r));
         return r && r.endpoint ? r.endpoint : r;
       });
     },
     call: function(method, params) {
       log('[telaHost] call: ' + method);
-      return request('call', { method: method, params: params || {}, authState: 'ok' });
+      return request('call', { method: method, params: params || {} });
     },
     getAddress: function() {
-      return request('call', { method: 'GetAddress', params: {}, authState: 'ok' }).then(function(r) {
+      return request('call', { method: 'GetAddress', params: {} }).then(function(r) {
         return r && r.address ? r.address : r;
       });
     },
     getBalance: function() {
-      return request('call', { method: 'GetBalance', params: {}, authState: 'ok' }).then(function(r) {
+      return request('call', { method: 'GetBalance', params: {} }).then(function(r) {
         return { balance: r && r.balance || 0, unlocked: r && r.unlocked_balance || 0 };
       });
     },
@@ -2613,6 +3109,249 @@ ${logsText || '(no logs)'}
     }, true);
 
     log('[Bridge] Download interceptor installed');
+  })();
+
+  // ── File input interceptor ────────────────────────────────────────────────
+  // Intercepts file input elements so dApps can select files through HOLOGRAM's
+  // native file dialog. This works around iframe sandbox restrictions that
+  // prevent file inputs from working in Wails WebView.
+  (function() {
+    // Override click on file inputs to route through parent
+    function interceptFileInputClick(input) {
+      var accept = input.getAttribute('accept') || '';
+      var title = input.getAttribute('title') || input.getAttribute('data-title') || 'Select File';
+      
+      log('[File] Intercepting file input click: accept=' + accept);
+      
+      request('selectFile', { title: title, accept: accept }).then(function(result) {
+        if (result && result.success && result.base64) {
+          log('[OK] File selected: ' + result.filename + ' (' + result.size + ' bytes)');
+          
+          // Convert base64 to Blob and create a File object
+          var byteString = atob(result.base64);
+          var ab = new ArrayBuffer(byteString.length);
+          var ia = new Uint8Array(ab);
+          for (var i = 0; i < byteString.length; i++) {
+            ia[i] = byteString.charCodeAt(i);
+          }
+          var blob = new Blob([ab], { type: result.mimeType || 'application/octet-stream' });
+          
+          // Create a File object (for browser compatibility)
+          var file;
+          try {
+            file = new File([blob], result.filename, { type: result.mimeType || 'application/octet-stream' });
+          } catch(e) {
+            // Safari workaround - File constructor may not work in some contexts
+            file = blob;
+            file.name = result.filename;
+            file.lastModified = Date.now();
+          }
+          
+          // Create a synthetic FileList-like object
+          var dt = new DataTransfer();
+          dt.items.add(file);
+          
+          // Set the files on the input (this triggers any onchange handlers)
+          try {
+            input.files = dt.files;
+          } catch(e) {
+            log('[Warn] Could not set input.files: ' + e.message);
+          }
+          
+          // Dispatch change event so dApp knows a file was selected
+          var changeEvent = new Event('change', { bubbles: true, cancelable: false });
+          input.dispatchEvent(changeEvent);
+          
+          // Also dispatch input event for completeness
+          var inputEvent = new Event('input', { bubbles: true, cancelable: false });
+          input.dispatchEvent(inputEvent);
+          
+          log('[File] File data injected and events dispatched');
+        } else if (result && result.cancelled) {
+          log('[File] User cancelled file selection');
+        } else {
+          log('[File] Selection failed: ' + (result && result.error || 'unknown'));
+        }
+      }).catch(function(e) {
+        log('[Error] File selection error: ' + e.message);
+      });
+    }
+    
+    // Method 1: Intercept programmatic .click() calls on file inputs
+    var _origInputClick = HTMLInputElement.prototype.click;
+    HTMLInputElement.prototype.click = function() {
+      if (this.type === 'file') {
+        interceptFileInputClick(this);
+        return;
+      }
+      return _origInputClick.call(this);
+    };
+    
+    // Method 2: Intercept direct click events on file inputs
+    document.addEventListener('click', function(e) {
+      var el = e.target;
+      if (el && el.tagName === 'INPUT' && el.type === 'file') {
+        e.preventDefault();
+        e.stopPropagation();
+        interceptFileInputClick(el);
+      }
+    }, true);
+    
+    // Method 3: Override showOpenFilePicker if it exists (modern File System Access API)
+    if (window.showOpenFilePicker) {
+      var _origShowOpenFilePicker = window.showOpenFilePicker;
+      window.showOpenFilePicker = function(options) {
+        log('[File] showOpenFilePicker intercepted');
+        options = options || {};
+        var accept = '';
+        if (options.types && options.types.length > 0) {
+          var exts = [];
+          options.types.forEach(function(t) {
+            if (t.accept) {
+              Object.keys(t.accept).forEach(function(mime) {
+                t.accept[mime].forEach(function(ext) {
+                  exts.push(ext);
+                });
+              });
+            }
+          });
+          accept = exts.join(',');
+        }
+        
+        return new Promise(function(resolve, reject) {
+          request('selectFile', { title: 'Select File', accept: accept }).then(function(result) {
+            if (result && result.success && result.base64) {
+              var byteString = atob(result.base64);
+              var ab = new ArrayBuffer(byteString.length);
+              var ia = new Uint8Array(ab);
+              for (var i = 0; i < byteString.length; i++) {
+                ia[i] = byteString.charCodeAt(i);
+              }
+              var blob = new Blob([ab], { type: result.mimeType || 'application/octet-stream' });
+              
+              // Create a mock FileSystemFileHandle
+              var mockHandle = {
+                kind: 'file',
+                name: result.filename,
+                getFile: function() {
+                  return Promise.resolve(new File([blob], result.filename, { type: result.mimeType }));
+                }
+              };
+              resolve([mockHandle]);
+            } else if (result && result.cancelled) {
+              reject(new DOMException('The user aborted a request.', 'AbortError'));
+            } else {
+              reject(new Error(result && result.error || 'File selection failed'));
+            }
+          }).catch(reject);
+        });
+      };
+    }
+    
+    log('[Bridge] File input interceptor installed');
+  })();
+
+  // ── File drop guard ───────────────────────────────────────────────────────
+  // Without this, dropping a file on a TELA app navigates THIS document to the
+  // file — WebKit's default. Measured 2026-08-08: a dropped PDF replaced the
+  // whole app with WebKit's PDF viewer, with no way back.
+  //
+  // App.svelte's window-level guard cannot reach here. It listens on the parent
+  // window, and an iframe is a separate document, so it never sees these events.
+  // That is why the app-wide DisableWebViewDrop flag was reached for instead —
+  // but on Linux that flag also calls gtk_drag_dest_unset() on the webview
+  // (Wails v2.11.0, linux/window.c SetupWebview), killing the GTK drop
+  // destination that the native file-drop channel needs. It suppressed the
+  // navigation by disabling drops everywhere, including HOLOGRAM's own UI.
+  //
+  // preventDefault on dragenter/dragover is ALSO how a document declares it
+  // accepts a drop, so this is what lets the native channel fire at all rather
+  // than merely being defensive. stopPropagation is deliberately NOT called —
+  // the app's own drop handlers must still run.
+  // A file dragged from the desktop does NOT advertise 'Files'. Measured on WebKitGTK
+  // 2026-08-09: the drag carries exactly text/uri-list,text/html. A guard keying only on
+  // 'Files' therefore never cancelled dragover, and an uncancelled dragover means the
+  // engine never dispatches drop at all — it navigates to the file instead.
+  //
+  // isTrusted is load-bearing. The receiver below dispatches a synthetic drop whose
+  // DataTransfer contains a file, so it looks like a file drag to this guard; without the
+  // check, this listener cancels it during capture, before the app's own handler runs, and
+  // the receiver's defaultPrevented test then reports EVERY app as having accepted the
+  // file. Measured 2026-08-09: calculator.tela, which has no drop handler, reported
+  // "app accepted it". Only a real user drag can navigate the webview, and a real drag is
+  // always trusted, so skipping untrusted events costs the guard nothing.
+  (function() {
+    function isFileDrag(t) {
+      if (!t) return false;
+      return Array.prototype.indexOf.call(t, 'Files') !== -1 ||
+             Array.prototype.indexOf.call(t, 'text/uri-list') !== -1;
+    }
+    ['dragenter','dragover','drop'].forEach(function(name) {
+      document.addEventListener(name, function(e) {
+        try {
+          if (e.isTrusted && isFileDrag(e.dataTransfer && e.dataTransfer.types)) e.preventDefault();
+        } catch(err) {}
+      }, true);
+    });
+    log('[Bridge] File drop guard installed');
+  })();
+
+  // ── File drop receiver ────────────────────────────────────────────────────
+  // A file dropped on a TELA app never reaches this document. HOLOGRAM's window
+  // owns the drop, and an iframe is a separate document, so the app's own ondrop
+  // never fires — which is why dropping on a TELA app did nothing at all.
+  //
+  // The parent catches the drop on an overlay it puts over this frame, reads the
+  // file itself, and hands the bytes here. This rebuilds a real File and
+  // dispatches the drop the app was already waiting for, so an app written for an
+  // ordinary browser needs no changes.
+  //
+  // The app cannot start this. There is no request it can send that produces a
+  // file; the parent only sends one after a real drag-and-release by the user,
+  // and only the file that was dropped.
+  (function() {
+    window.addEventListener('message', function(e) {
+      var d = e.data;
+      if (!d || d.type !== 'hologram-file-drop') return;
+      if (e.source !== window.parent) return;
+      var handled = false;
+      try {
+        var bin = atob(d.base64);
+        var buf = new ArrayBuffer(bin.length);
+        var view = new Uint8Array(buf);
+        for (var i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
+        var type = d.mimeType || 'application/octet-stream';
+        var file;
+        try {
+          file = new File([buf], d.filename, { type: type });
+        } catch(err) {
+          file = new Blob([buf], { type: type });
+          file.name = d.filename;
+        }
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        var target = document.elementFromPoint(d.x, d.y) || document.body;
+        // dragenter and dragover first: apps commonly set their drop state there,
+        // and a drop arriving with no preceding drag reads as a spurious event.
+        ['dragenter','dragover'].forEach(function(name) {
+          target.dispatchEvent(new DragEvent(name, { bubbles: true, cancelable: true, dataTransfer: dt }));
+        });
+        var drop = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt });
+        target.dispatchEvent(drop);
+        // An app that handles a drop calls preventDefault. If nothing did, the app
+        // has no drop handler and the parent should say so rather than claim success.
+        handled = drop.defaultPrevented;
+        log('[Drop] ' + d.filename + (handled ? ' delivered' : ' — app has no drop handler'));
+      } catch(err) {
+        log('[Error] Could not deliver dropped file: ' + err.message);
+      }
+      try {
+        window.parent.postMessage({
+          type: 'hologram-file-drop-result', handled: handled, filename: d.filename
+        }, '*');
+      } catch(err) {}
+    });
+    log('[Bridge] File drop receiver installed');
   })();
 })();
 <\/script>`;
@@ -2740,17 +3479,14 @@ ${logsText || '(no logs)'}
       
       // Remove src attribute - we're using srcdoc for inline content
       // This ensures clean state when switching between HTTP and inline modes
-      contentFrame.removeAttribute('src');
-      
-      // Use srcdoc for inline content (fallback when HTTP server fails)
-      // blob: URLs cause protocol issues (location.protocol = 'blob:')
+      // Lock sandbox WITHOUT allow-same-origin BEFORE srcdoc (R2-B5 Round-3):
+      // reactive iframeUsesSrcdoc alone races — first nested document would be same-origin.
+      prepareIframeForSrcdoc();
       contentFrame.srcdoc = injectedHtml;
       showWelcome = false;
       
-      // Wait for iframe to load, then inject telaHost API
-      contentFrame.onload = () => {
-        setTimeout(() => injectTelaHostAPI(), 50);
-      };
+      // Wait for iframe to load; do not inject Go closures into srcdoc (opaque origin).
+      contentFrame.onload = () => {};
     } catch (e) {
       console.error('Error rendering content:', e);
     }
@@ -2787,21 +3523,34 @@ ${logsText || '(no logs)'}
             const methodLower = method.toLowerCase().replace('dero.', '');
             
             if (settings.integratedWallet && signingMethods.includes(methodLower)) {
+              // telaHost.connect() establishes the session, so telaHost.call() must honour
+              // it. Without this an app that never connected — or was denied — could still
+              // raise a signing prompt, which is the permission theater R2-B2 removed from
+              // the postMessage path.
+              if (!sessionWalletAuthorized) {
+                throw permissionDeniedError('Wallet not authorized: connect first');
+              }
               // Parse SC payload for proper display in wallet modal
               const parsedPayload = parseScPayload(params);
-              const approval = await requestWalletApproval({
-                type: 'sign',
-                appName: currentMeta.name || 'App',
-                origin: addressInput,
-                payload: parsedPayload
-              });
-              
+              // Deny REJECTS rather than resolving; catch it so the refusal keeps its code.
+              let approval;
+              try {
+                approval = await requestWalletApproval({
+                  type: 'sign',
+                  appName: currentMeta.name || 'App',
+                  origin: addressInput,
+                  payload: parsedPayload
+                });
+              } catch (e) {
+                throw permissionDeniedError('User denied transaction');
+              }
+
               if (approval.approved) {
                 const result = await InternalWalletCall(method, params, approval.password);
                 if (result && result.success) return result.result;
                 throw new Error(result?.error || 'Internal wallet call failed');
               } else {
-                throw new Error('User denied transaction');
+                throw permissionDeniedError('User denied transaction');
               }
             }
           
@@ -2826,22 +3575,17 @@ ${logsText || '(no logs)'}
           const settings = get(settingsState);
           if (settings.integratedWallet) {
             try {
-              // Default to read-only for initial connect
+              // Same one-click connect as the bridge path. Wallet doors are asked for at
+              // the moment of use, so there is nothing to offer here.
               const approval = await requestWalletApproval({
                 type: 'connect',
                 appName: currentMeta.name || 'App',
                 origin: addressInput,
-                isReadOnly: true,
-                requestedPermissions: [{ 
-                  id: 'read_public_data', 
-                  name: 'Read Public Blockchain Data',
-                  description: 'Can read public blockchain info (blocks, transactions, network stats)',
-                  alwaysAsk: false
-                }]
+                originVerified: !!currentMeta?.scid
               });
               if (approval.approved) {
-                await ApproveWalletConnection();
-                return true;
+                const res = await persistConnectApproval(currentMeta.name || 'App', '');
+                return res?.success === true;
               }
               return false;
             } catch (e) {
@@ -3878,16 +4622,17 @@ ${logsText || '(no logs)'}
     <!-- Content Frame
          Clipboard: TELA apps (e.g. Villager "Paste" using navigator.clipboard.readText)
          need sandbox allow-clipboard-* + allow= delegation; otherwise readText fails
-         silently or with NotAllowedError inside the iframe (differs by OS/webview). -->
+         silently or with NotAllowedError inside the iframe (differs by OS/webview).
+         srcdoc must NOT include allow-same-origin (inherits parent → window.go pivot). -->
     <iframe
       bind:this={contentFrame}
       class="browser-content-frame"
       style:display={!showWelcome && !loading ? 'block' : 'none'}
-      sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-clipboard-read allow-clipboard-write"
+      sandbox={iframeUsesSrcdoc ? IFRAME_SANDBOX_SRCDOC : IFRAME_SANDBOX_HTTP}
       allow="clipboard-read; clipboard-write"
       title="App Content"
     ></iframe>
-    
+
     <!-- v6.1 Console Panel (matches Settings console) -->
     {#if showConsole}
       <div class="browser-console-panel">

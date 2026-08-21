@@ -13,9 +13,10 @@
   // Mining tab removed - Developer Support now in Settings > Developer Support
   // Network tab removed - node controls moved to Settings > Node
   import { appState, walletState, settingsState, updateStatus, addExternalRequest, dismissWalletRequest, toast, loadSettings, syncNetworkMode, navigateTo, requestPayment } from './lib/stores/appState.js';
-  import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions, NotifyWizardComplete, ConsumeLaunchURL } from '../wailsjs/go/main/App.js';
+  import { GetSetting, RespondToXSWDRequest, RespondToXSWDRequestWithPermissions, NotifyWizardComplete, ConsumeLaunchURL, NoteWalletActivity } from '../wailsjs/go/main/App.js';
   import { EventsOn } from '../wailsjs/runtime/runtime.js';
   import { waitForWails } from './lib/utils/wails.js';
+  import { isFileDrag } from './lib/utils/dragdrop.js';
   
   // Module-level interval ID to prevent duplicates during HMR
   let statusPollingInterval = null;
@@ -84,9 +85,22 @@
 
   onMount(async () => {
     console.log('Hologram initializing...');
-    
+
     // Generate noise texture once (replaces expensive SVG feTurbulence filter)
     generateNoiseTexture();
+
+    // Idle auto-lock: tell the backend the user is active so it doesn't lock an
+    // in-use wallet. Throttled to once per 30s; the backend lock window is minutes.
+    let lastActivityPing = 0;
+    const pingActivity = () => {
+      const now = Date.now();
+      if (now - lastActivityPing < 30000) return;
+      lastActivityPing = now;
+      NoteWalletActivity().catch(() => {});
+    };
+    for (const evt of ['pointerdown', 'keydown', 'wheel']) {
+      window.addEventListener(evt, pingActivity, { passive: true });
+    }
     
     // Fix for Wails/WebView scroll focus issue on macOS
     // When the app loses and regains focus, scroll events may not work until
@@ -118,10 +132,18 @@
 
     // Prevent WebKit from navigating to dropped files (Linux #3686).
     // Only preventDefault — do not stopPropagation, so Wails drag listeners still run.
+    //
+    // A file dragged from the desktop does NOT advertise 'Files' here. Measured on
+    // WebKitGTK 2026-08-09: a drag from the file manager carries exactly
+    // text/uri-list,text/html. Keying only on 'Files' meant this guard never fired,
+    // nothing cancelled dragover, so WebKit never dispatched drop at all and performed
+    // its default instead — navigating the whole webview to the dropped file.
     const preventFileDropNavigation = (e) => {
-      if (e.dataTransfer?.types?.includes('Files')) {
-        e.preventDefault();
-      }
+      try {
+        if (isFileDrag(e.dataTransfer && e.dataTransfer.types)) {
+          e.preventDefault();
+        }
+      } catch (err) { /* a drag we cannot inspect is a drag we do not claim */ }
     };
     for (const evtName of ['dragover', 'drop', 'dragleave', 'dragenter']) {
       window.addEventListener(evtName, preventFileDropNavigation, true);
@@ -210,23 +232,32 @@
           gnomonIndexedHeight: status.gnomon.indexed_height,
           gnomonChainHeight: status.gnomon.chain_height,
           gnomonProgress: status.gnomon.progress,
+          gnomonIndexerStatus: status.gnomon.indexer_status || '',
           // Clear the one-time re-index flag once the index has caught up.
           gnomonReindexing: state.gnomonReindexing && status.gnomon.running && (status.gnomon.progress || 0) < 100,
         }));
       }
       if (status.wallet) {
+        // The periodic status broadcast is authoritative for connection state, not
+        // for balance: the dedicated wallet poll (GetBalance) owns the balance and
+        // uses the accurate decrypted-balance path. If the broadcast carries a 0
+        // while the wallet is open and we already hold a positive balance, keep the
+        // known-good value -- otherwise the two writers race and the balance flickers
+        // 1000 -> 0 -> 1000. A real drop to 0 still propagates via the wallet poll.
+        const statusBalance = status.wallet.balance || 0;
+        const statusLocked = status.wallet.lockedBalance || 0;
         appState.update(state => ({
           ...state,
           walletOpen: status.wallet.open,
           walletAddress: status.wallet.address || '',
-          walletBalance: status.wallet.balance || 0,
+          walletBalance: status.wallet.open && statusBalance === 0 ? state.walletBalance : statusBalance,
         }));
         walletState.update(state => ({
           ...state,
           isOpen: !!status.wallet.open,
           address: status.wallet.address || '',
-          balance: status.wallet.balance || 0,
-          lockedBalance: status.wallet.lockedBalance || 0,
+          balance: status.wallet.open && statusBalance === 0 ? state.balance : statusBalance,
+          lockedBalance: status.wallet.open && statusBalance === 0 ? state.lockedBalance : statusLocked,
           walletPath: status.wallet.open ? state.walletPath : '',
         }));
       }
@@ -383,6 +414,13 @@
           scid: req.params?.scid,
           entrypoint: entrypoint,
           ringsize: req.params?.ringsize,
+          anonymize: req.params?.anonymize,
+          preferred_decoys: req.params?.preferred_decoys,
+          // Must surface deposits/fees — backend executes these even when transfers is empty (R2-B4)
+          sc_dero_deposit: req.params?.sc_dero_deposit,
+          sc_token_deposit: req.params?.sc_token_deposit,
+          sc_token_deposit_scid: req.params?.sc_token_deposit_scid,
+          fees: req.params?.fees,
         };
       }
 
@@ -400,8 +438,14 @@
         origin: req.origin || 'XSWD',
         // Include permission info for connect requests
         requestedPermissions: req.requestedPermissions,
-        existingPermissions: req.existingPermissions,
-        isReadOnly: req.isReadOnly || false
+        isReadOnly: req.isReadOnly || false,
+        // Both are read by the modal at the TOP level. They were only ever put in `payload`,
+        // so the Sign In with DERO prompt fell through to generic "read public data" text
+        // while approving actually decrypted the wallet and signed a challenge.
+        description: req.description,
+        isSignIn: req.isSignIn === true,
+        // true = the browser vouched for the origin; false = the app named itself
+        originVerified: req.originVerified === true
       }, 
       // On Approve
       (result) => {

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -27,6 +29,10 @@ type XSWDPendingRequest struct {
 type SubscriptionType string
 
 const (
+	// Ceiling on approval prompts queued at once. A person answers prompts one at a time;
+	// past a handful the queue is spam, not use.
+	maxPendingApprovals = 5
+
 	SubNewTopoheight SubscriptionType = "new_topoheight"
 	SubNewBalance    SubscriptionType = "new_balance"
 	SubNewEntry      SubscriptionType = "new_entry"
@@ -48,9 +54,14 @@ type XSWDServer struct {
 
 	pendingRequests map[string]*XSWDPendingRequest
 	pendingLock     sync.Mutex
+	reqSeq          uint64
 
 	// Track client origins for permission checking
 	clientOrigins map[*websocket.Conn]string
+
+	// The Origin header the BROWSER set on the upgrade, when there is one. A page cannot
+	// forge this; the app-supplied "url" in the handshake is just a string it chose.
+	clientWebOrigins map[*websocket.Conn]string
 
 	// Track client app names for display in wallet modal
 	clientAppNames map[*websocket.Conn]string
@@ -78,6 +89,7 @@ func NewXSWDServer(app *App) *XSWDServer {
 		},
 		pendingRequests:     make(map[string]*XSWDPendingRequest),
 		clientOrigins:       make(map[*websocket.Conn]string),
+		clientWebOrigins:    make(map[*websocket.Conn]string),
 		clientAppNames:      make(map[*websocket.Conn]string),
 		clientSubscriptions: make(map[*websocket.Conn]*ClientSubscriptions),
 		stopPusher:          make(chan struct{}),
@@ -157,8 +169,15 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	// Capture the browser-set Origin before the request goes out of scope. Absent for
+	// native clients (Go/CLI dApps set no Origin), present and unforgeable for web pages.
+	webOrigin := strings.TrimSpace(r.Header.Get("Origin"))
+
 	s.lock.Lock()
 	s.clients[conn] = true
+	if webOrigin != "" {
+		s.clientWebOrigins[conn] = webOrigin
+	}
 	s.lock.Unlock()
 
 	defer func() {
@@ -167,6 +186,7 @@ func (s *XSWDServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		origin := s.clientOrigins[conn]
 		delete(s.clients, conn)
 		delete(s.clientOrigins, conn)
+		delete(s.clientWebOrigins, conn)
 		delete(s.clientAppNames, conn)
 		delete(s.clientSubscriptions, conn)
 		s.lock.Unlock()
@@ -314,16 +334,15 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	origin := s.clientOrigins[conn]
 	s.lock.RUnlock()
 
-	// Check permissions for methods that require them
-	pm := GetPermissionManager()
-	requiredPerm := GetRequiredPermission(method)
+	// Each case names the permission it needs explicitly. The signing cases used to read a
+	// generic GetRequiredPermission(method) here, but signing is gated per action now, so
+	// nothing is left that wants the lookup.
 
 	// Handle permission-gated methods
 	switch method {
 	case "GetAddress", "DERO.GetAddress":
 		// Check if permission granted
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -341,8 +360,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	// Primary use case: server-side encryption of Dead Drop documents before storage,
 	// so only the wallet holder can decrypt them via DecryptPayload.
 	case "GetPublicKey":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -356,8 +374,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 
 	case "GetBalance", "DERO.GetBalance":
 		// Check if permission granted
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewBalance); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -419,8 +436,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	// (walletapi/xswd/xswd.go:651-693 treats DERO.* as always-permitted
 	// post-handshake).
 	case "GetHeight":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewBalance); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -432,8 +448,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "GetTransfers":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewBalance); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -463,8 +478,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "GetTransferbyTXID":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewBalance) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Balance permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewBalance); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -489,8 +503,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "MakeIntegratedAddress":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -538,8 +551,7 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "SplitIntegratedAddress":
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		if errRes = DenyUnlessPermission(origin, PermissionViewAddress); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -561,14 +573,12 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "SignData", "DecryptPayload":
-		// Check if base permission granted (still requires per-request approval)
-		if pm != nil && origin != "" {
-			if !pm.HasPermission(origin, requiredPerm) {
-				permInfo := GetPermissionInfo(requiredPerm)
-				errRes = &JSONRPCError{Code: -32003, Message: fmt.Sprintf("Permission denied: %s permission not granted", permInfo.Name)}
-				s.sendResponse(conn, req.ID, nil, errRes)
-				return
-			}
+		// Signing is approved per request, never by a standing grant — sign_transaction is
+		// not storable (CanStorePermission), so there is no permission here to check. The
+		// handshake bar stays: an unauthenticated socket must not raise a signing prompt.
+		if errRes = DenyUnlessHandshake(origin); errRes != nil {
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
 		}
 		s.handleSigningRequest(conn, req)
 
@@ -613,14 +623,11 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, errRes)
 
 	case "transfer", "Transfer", "DERO.Transfer", "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
-		// Check if base permission granted (still requires per-TX approval)
-		if pm != nil && origin != "" {
-			if !pm.HasPermission(origin, requiredPerm) {
-				permInfo := GetPermissionInfo(requiredPerm)
-				errRes = &JSONRPCError{Code: -32003, Message: fmt.Sprintf("Permission denied: %s permission not granted", permInfo.Name)}
-				s.sendResponse(conn, req.ID, nil, errRes)
-				return
-			}
+		// Same as SignData: the per-TX modal is the gate. sign_transaction / sc_invoke are
+		// not storable, so a standing-grant check here would deny every spend.
+		if errRes = DenyUnlessHandshake(origin); errRes != nil {
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
 		}
 		// Handle signing request (always requires user approval)
 		s.handleSigningRequest(conn, req)
@@ -679,6 +686,14 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		eventType, _ := params["event"].(string)
 		if eventType == "" {
 			errRes = &JSONRPCError{Code: -32602, Message: "Subscription event type is required. Valid types: new_topoheight, new_balance, new_entry"}
+			s.sendResponse(conn, req.ID, nil, errRes)
+			return
+		}
+
+		// GetRequiredPermission returns "" for Subscribe, so the generic handshake and
+		// permission checks never run on this path. Gate it explicitly: a balance or
+		// entry feed is the same data GetBalance/GetTransfers already require a grant for.
+		if errRes = DenyUnlessPermission(origin, SubscriptionPermission(SubscriptionType(eventType))); errRes != nil {
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -742,10 +757,10 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 		s.sendResponse(conn, req.ID, result, nil)
 
 	case "GetDaemon", "DERO.GetDaemon":
-		// Check if permission granted (requires view_address like other read methods)
-		if pm != nil && origin != "" && !pm.HasPermission(origin, PermissionViewAddress) {
-			log.Printf("[XSWD] GetDaemon: DENIED - origin=%q does not have view_address permission", origin)
-			errRes = &JSONRPCError{Code: -32003, Message: "Permission denied: View Wallet Address permission not granted"}
+		// Read the requirement from the shared table rather than restating it here; the
+		// two had already drifted apart once.
+		if errRes = DenyUnlessPermission(origin, GetRequiredPermission("GetDaemon")); errRes != nil {
+			log.Printf("[XSWD] GetDaemon: DENIED - origin=%q", origin)
 			s.sendResponse(conn, req.ID, nil, errRes)
 			return
 		}
@@ -807,11 +822,19 @@ func (s *XSWDServer) handleRequest(conn *websocket.Conn, req JSONRPCRequest, raw
 	}
 }
 
+// nextRequestID mints the key an approval is routed back on. NEVER derive this from the
+// dApp's own JSON-RPC id: two clients (or one malicious one) can pick the same id, and the
+// approval — along with the password the user typed — is then delivered to the other request.
+func (s *XSWDServer) nextRequestID(prefix string) string {
+	s.pendingLock.Lock()
+	s.reqSeq++
+	seq := s.reqSeq
+	s.pendingLock.Unlock()
+	return fmt.Sprintf("%s_%d", prefix, seq)
+}
+
 func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, raw []byte) {
-	reqID := fmt.Sprintf("%v", req.ID)
-	if reqID == "" {
-		reqID = fmt.Sprintf("handshake_%d", time.Now().UnixNano())
-	}
+	reqID := s.nextRequestID("handshake")
 
 	// Parse handshake info
 	info := map[string]interface{}{}
@@ -819,30 +842,61 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		log.Printf("[WARN] Failed to parse handshake info: %v", err)
 	}
 
+	appName, _ := info["name"].(string)
+	rawOrigin, _ := info["url"].(string)
+	description, _ := info["description"].(string)
+
+	// If the browser told us who this is, that outranks whatever the page claims. Without
+	// this a page at evil.com can send url:"https://trusted.example" and the approval
+	// prompt shows the trusted name — the asker choosing its own label, which is the
+	// permission theater R2-B2 exists to prevent.
+	s.lock.RLock()
+	webOrigin := s.clientWebOrigins[conn]
+	s.lock.RUnlock()
+
+	originVerified := webOrigin != ""
+	if originVerified {
+		if rawOrigin != "" && !strings.EqualFold(strings.TrimSpace(rawOrigin), webOrigin) {
+			log.Printf("[XSWD] Handshake declared url=%q but the browser says %q; using the browser's", rawOrigin, webOrigin)
+		}
+		rawOrigin = webOrigin
+	}
+
+	rawOrigin = strings.TrimSpace(rawOrigin)
+	if rawOrigin == "" {
+		s.sendRawJSON(conn, map[string]interface{}{
+			"accepted": false,
+			"error":    "Handshake requires a non-empty url (origin)",
+		})
+		return
+	}
+	origin := XSWDOriginKey(rawOrigin)
+
+	// Store the pending request only AFTER the handshake validates, so a rejected
+	// handshake leaves nothing behind to route an approval to.
 	resChan := make(chan interface{})
 	s.pendingLock.Lock()
+	// Nothing stopped a page opening sockets in a loop and queueing one approval modal
+	// per socket, each holding a blocked goroutine. A person can only answer a few
+	// prompts anyway, so refuse past a small ceiling rather than stack them up.
+	if len(s.pendingRequests) >= maxPendingApprovals {
+		s.pendingLock.Unlock()
+		log.Printf("[XSWD] Handshake refused: %d approvals already awaiting an answer", maxPendingApprovals)
+		s.sendRawJSON(conn, map[string]interface{}{
+			"accepted": false,
+			"error":    "too many pending approval requests; answer or dismiss the open prompts first",
+		})
+		return
+	}
 	s.pendingRequests[reqID] = &XSWDPendingRequest{
 		Method:   "handshake",
 		Params:   info,
+		Conn:     conn,
 		RespChan: resChan,
 	}
 	s.pendingLock.Unlock()
 
-	appName, _ := info["name"].(string)
-	origin, _ := info["url"].(string)
-	description, _ := info["description"].(string)
-
-	// Parse requested permissions from handshake (if provided by dApp)
-	// Format: {"permissions": ["view_address", "view_balance", ...]}
-	requestedPerms := DefaultRequestedPermissions()
-	if permsRaw, ok := info["permissions"].([]interface{}); ok {
-		requestedPerms = []XSWDPermission{}
-		for _, p := range permsRaw {
-			if pStr, ok := p.(string); ok {
-				requestedPerms = append(requestedPerms, XSWDPermission(pStr))
-			}
-		}
-	}
+	requestedPerms := ParseRequestedPermissions(info["permissions"])
 
 	// Build permission info for frontend display
 	permInfos := make([]map[string]interface{}, 0, len(requestedPerms))
@@ -856,28 +910,14 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		})
 	}
 
-	// Check if we already have stored permissions for this origin
-	pm := GetPermissionManager()
-	var existingPerms map[string]bool
-	if pm != nil {
-		if app := pm.GetApp(origin); app != nil {
-			existingPerms = make(map[string]bool)
-			for p, granted := range app.Permissions {
-				existingPerms[string(p)] = granted
-			}
-		}
-	}
-
+	// Deliberately NOT seeded from a stored grant. The origin is dApp-supplied, so an
+	// unauthenticated caller could arrive under a borrowed name and land pre-ticked boxes.
 	// Check if this is a read-only request (no wallet permissions needed)
 	isReadOnly := !HasAnyWalletPermission(requestedPerms)
 
-	// Emit toast warning if no wallet is open AND app needs wallet access
-	if !walletManager.isOpen && !isReadOnly {
-		runtime.EventsEmit(s.app.ctx, "toast:show", map[string]interface{}{
-			"type":    "warning",
-			"message": "Connect a wallet to interact with " + appName,
-		})
-	}
+	// No "connect a wallet" toast here: the modal itself now decides whether an unlock is
+	// needed from what the user actually ticks, and a toast fired at prompt time contradicts
+	// it — the app requesting a permission is not the user granting it.
 
 	runtime.EventsEmit(s.app.ctx, "xswd:request", map[string]interface{}{
 		"id":                   reqID,
@@ -886,8 +926,8 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		"origin":               origin,
 		"description":          description,
 		"requestedPermissions": permInfos,
-		"existingPermissions":  existingPerms,
 		"isReadOnly":           isReadOnly,
+		"originVerified":       originVerified,
 	})
 
 	resp := <-resChan
@@ -906,6 +946,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 
 	message := "Wallet connection approved"
 	var grantedPerms []XSWDPermission
+	permsProvided := false
 
 	if respMap, ok := resp.(map[string]interface{}); ok {
 		if msg, ok2 := respMap["message"].(string); ok2 {
@@ -913,6 +954,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		}
 		// Extract granted permissions from response
 		if perms, ok2 := respMap["permissions"].([]interface{}); ok2 {
+			permsProvided = true
 			for _, p := range perms {
 				if pStr, ok3 := p.(string); ok3 {
 					grantedPerms = append(grantedPerms, XSWDPermission(pStr))
@@ -921,13 +963,16 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 		}
 	}
 
-	// If no permissions explicitly granted, use requested permissions (backward compat)
-	if len(grantedPerms) == 0 {
-		grantedPerms = requestedPerms
+	// Only fall back when the UI omitted the field (legacy). Fall back to the public-data
+	// default, NOT to what the app asked for — the request is not the user's consent, and
+	// the offered set is now the full vocabulary.
+	if !permsProvided {
+		grantedPerms = DefaultRequestedPermissions()
 	}
 
-	// Store granted permissions
-	if pm != nil && origin != "" {
+	// Store granted permissions (origin already validated non-empty above)
+	pm := GetPermissionManager()
+	if pm != nil {
 		pm.GrantPermissions(origin, appName, description, grantedPerms)
 		pm.SetActiveClient(origin, true)
 	}
@@ -947,7 +992,7 @@ func (s *XSWDServer) handleHandshake(conn *websocket.Conn, req JSONRPCRequest, r
 func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCRequest) {
 	// Create channel for response
 	resChan := make(chan interface{})
-	reqID := fmt.Sprintf("%v", req.ID) // Use ID from request as key (simplification)
+	reqID := s.nextRequestID("sign")
 	if req.ID == nil {
 		// Notification? Skip
 		return
@@ -958,6 +1003,16 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 	if err := json.Unmarshal(req.Params, &paramsMap); err != nil {
 		s.sendResponse(conn, req.ID, nil, &JSONRPCError{Code: -32700, Message: "Failed to parse request parameters. Check JSON format."})
 		return
+	}
+
+	// A dApp calling the nameservice must use ring 2 (see nameServiceSCID): ring>2 yields a
+	// zero signer, so the name would land owned by nobody and be hijackable. Force it here,
+	// before the approval modal, so the user sees the ring size we will actually broadcast.
+	switch req.Method {
+	case "scinvoke", "SC_Invoke", "DERO.SC_Invoke":
+		if scid, _ := paramsMap["scid"].(string); scid == nameServiceSCID {
+			paramsMap["ringsize"] = float64(2)
+		}
 	}
 
 	// Get app name and origin for this connection
@@ -1145,7 +1200,23 @@ func (s *XSWDServer) GetWalletBalance() (uint64, error) {
 	if !walletManager.isOpen || walletManager.wallet == nil {
 		return 0, fmt.Errorf("wallet not open")
 	}
-	matureBalance, _ := walletManager.wallet.Get_Balance()
+	wallet := walletManager.wallet
+
+	// In simulator mode the in-memory Get_Balance() is stale -- the embedded
+	// wallet never scans the genesis/funding blocks, so it reports 0 even though
+	// the test wallet holds 1000 DERO. The status broadcaster calls this on a
+	// timer; returning that stale 0 made the dashboard balance flicker because a
+	// separate poll (App.GetBalance) writes the correct value back. Use the same
+	// decrypted-balance path GetBalance uses so every balance source agrees.
+	if s.app != nil && s.app.simulatorManager != nil && s.app.simulatorManager.isInitialized {
+		var zerohash [32]byte
+		addr := wallet.GetAddress().String()
+		if bal, _, err := wallet.GetDecryptedBalanceAtTopoHeight(zerohash, -1, addr); err == nil && bal > 0 {
+			return bal, nil
+		}
+	}
+
+	matureBalance, _ := wallet.Get_Balance()
 	return matureBalance, nil
 }
 
@@ -1228,12 +1299,31 @@ func (s *XSWDServer) getCurrentTopoheight() int64 {
 }
 
 // pushEvent sends an event to all clients subscribed to that event type
+// SubscriptionPermission is the permission an event feed requires. new_balance and
+// new_entry carry the same wallet data GetBalance/GetTransfers are gated on.
+func SubscriptionPermission(event SubscriptionType) XSWDPermission {
+	if event == SubNewTopoheight {
+		return PermissionReadPublicData
+	}
+	return PermissionViewBalance
+}
+
 func (s *XSWDServer) pushEvent(eventType SubscriptionType, data map[string]interface{}) {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
+	pm := GetPermissionManager()
+	required := SubscriptionPermission(eventType)
+
 	for conn, subs := range s.clientSubscriptions {
 		if subs == nil {
+			continue
+		}
+
+		// Re-check at PUSH time, not just at Subscribe. Settings has a live per-permission
+		// revoke and subscriptions are keyed by connection, so without this an explicit
+		// revoke is ignored for as long as the socket stays open.
+		if pm != nil && !pm.HasPermission(s.clientOrigins[conn], required) {
 			continue
 		}
 
@@ -1293,11 +1383,13 @@ func (s *XSWDServer) GetActiveConnections() []map[string]interface{} {
 			}
 		}
 
-		// Add permission info from permission manager
+		// Add permission info from permission manager. Reported against the open wallet, so
+		// this matches what the connection can actually do right now rather than the union
+		// of every wallet that ever approved it.
 		if pm != nil && origin != "" {
 			if app := pm.GetApp(origin); app != nil {
 				connInfo["appName"] = app.Name
-				connInfo["permissions"] = app.Permissions
+				connInfo["permissions"] = app.permissionsForWallet(walletFingerprint())
 			}
 		}
 
@@ -1318,6 +1410,32 @@ func (s *XSWDServer) GetActiveConnections() []map[string]interface{} {
 
 // handleAuthPage serves the redirect auth waiting page.
 // The page calls /auth/complete, then redirects back to the callback URL.
+// authURLMatchesDomain checks that a URL the caller supplied actually belongs to the
+// domain the user is shown. handleAuthPage takes callback, nonce and domain as independent
+// query params, so without this the name in the approval prompt need not have anything to
+// do with where the signature is delivered — a signing oracle for any site that asks.
+// Host equality is the whole check: a parsed URL host cannot contain a space, slash, "@"
+// or userinfo, so shape checks on the raw string buy nothing once the hosts must match.
+func authURLMatchesDomain(raw, domain string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("not an http(s) URL")
+	}
+	d := strings.ToLower(strings.TrimSpace(domain))
+	if h, _, splitErr := net.SplitHostPort(d); splitErr == nil {
+		d = h
+	}
+	d = strings.TrimSuffix(d, ".")
+	if d == "" {
+		return fmt.Errorf("domain is required")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host != d && !strings.HasSuffix(host, "."+d) {
+		return fmt.Errorf("host %q does not match domain %q", host, d)
+	}
+	return nil
+}
+
 func (s *XSWDServer) handleAuthPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1330,6 +1448,14 @@ func (s *XSWDServer) handleAuthPage(w http.ResponseWriter, r *http.Request) {
 
 	if callback == "" || nonce == "" || domain == "" {
 		http.Error(w, "Missing required parameters: callback, nonce, domain", http.StatusBadRequest)
+		return
+	}
+
+	// Enforce BEFORE serving the page — `callback` is only ever consumed by the JS in the
+	// page we are about to write, so this is the load-bearing gate.
+	if err := authURLMatchesDomain(callback, domain); err != nil {
+		log.Printf("[AUTH] Rejected sign-in: callback %q vs domain %q: %v", callback, domain, err)
+		http.Error(w, "callback must be on the domain shown to the user", http.StatusBadRequest)
 		return
 	}
 
@@ -1376,8 +1502,21 @@ func (s *XSWDServer) handleAuthComplete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// body.URI is interpolated into the text the wallet SIGNS, so it must belong to the
+	// domain the user is shown. This does not re-check the callback: this endpoint never
+	// sees one. The callback gate lives in handleAuthPage and that is the only place it
+	// can be enforced.
+	if body.URI != "" {
+		if err := authURLMatchesDomain(body.URI, body.Domain); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "uri must be on the domain shown to the user"})
+			return
+		}
+	}
+
 	resChan := make(chan interface{})
-	reqID := fmt.Sprintf("auth-%d", time.Now().UnixNano())
+	reqID := s.nextRequestID("auth")
 
 	s.pendingLock.Lock()
 	s.pendingRequests[reqID] = &XSWDPendingRequest{
@@ -1399,10 +1538,12 @@ func (s *XSWDServer) handleAuthComplete(w http.ResponseWriter, r *http.Request) 
 		"type":                 "connect",
 		"appName":              "Sign In with DERO",
 		"origin":               body.Domain,
-		"description":          body.Domain + " wants to verify your identity",
+		"description":          "Approving unlocks your wallet and signs a sign-in message for " + body.Domain + ". It proves you control your address. It does not move funds.",
 		"requestedPermissions": []map[string]interface{}{},
-		"existingPermissions":  map[string]bool{},
 		"isReadOnly":           false,
+		// Stated, not inferred. The modal used to detect sign-in by an EMPTY permission
+		// sheet, which stops working the moment a connect legitimately sends no sheet.
+		"isSignIn": true,
 	})
 
 	log.Printf("[AUTH] Emitted xswd:request for auth, reqID=%s domain=%s", reqID, body.Domain)

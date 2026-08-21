@@ -7,21 +7,29 @@ export function AddAllowedHost(arg1:string):Promise<Record<string, any>>;
 
 export function AddContact(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
+export function AddRingMember(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function AddRingMemberSet(arg1:string):Promise<Record<string, any>>;
+
 export function AddSCIDToIndex(arg1:string):Promise<Record<string, any>>;
 
 export function AddSearchExclusion(arg1:string):Promise<Record<string, any>>;
 
 export function AddTrackedToken(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
-export function ApproveWalletConnection():Promise<Record<string, any>>;
+export function ApproveWalletConnection(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<Record<string, any>>;
 
 export function BatchDeployToSimulator(arg1:string):Promise<Record<string, any>>;
 
 export function BatchPrefetchFavorites(arg1:Array<Record<string, any>>,arg2:number):Promise<Record<string, any>>;
 
+export function BroadcastRegistrationDCSP(arg1:string):Promise<Record<string, any>>;
+
 export function BuildRating(arg1:number,arg2:number):Promise<Record<string, any>>;
 
 export function CallXSWD(arg1:string):Promise<Record<string, any>>;
+
+export function CancelColdRegistration():Promise<Record<string, any>>;
 
 export function CancelRegistration():Promise<Record<string, any>>;
 
@@ -91,6 +99,8 @@ export function DecodeIntegratedAddress(arg1:string):Promise<Record<string, any>
 
 export function DeleteContact(arg1:string):Promise<Record<string, any>>;
 
+export function DeleteRingMemberSet(arg1:string):Promise<Record<string, any>>;
+
 export function DeleteTransactionLabel(arg1:string):Promise<Record<string, any>>;
 
 export function DeleteVar(arg1:string,arg2:string):Promise<Record<string, any>>;
@@ -115,8 +125,6 @@ export function DiffSCIDs(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function DisconnectXSWD():Promise<Record<string, any>>;
 
-export function DislikeTELAApp(arg1:string):Promise<Record<string, any>>;
-
 export function EnsureGnomonRunning():Promise<Record<string, any>>;
 
 export function EstimateBatchGas(arg1:string):Promise<Record<string, any>>;
@@ -129,6 +137,8 @@ export function EstimateSyncTime():Promise<Record<string, any>>;
 
 export function ExecuteSCViaXSWD(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
+export function ExportRegistrationDCSP(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+
 export function FetchByDURL(arg1:string):Promise<Record<string, any>>;
 
 export function FetchSCID(arg1:string):Promise<Record<string, any>>;
@@ -140,6 +150,8 @@ export function FilterSearchResults(arg1:Array<Record<string, any>>):Promise<Arr
 export function FormatBlockAge(arg1:number):Promise<string>;
 
 export function FundTestWallet(arg1:number,arg2:number):Promise<Record<string, any>>;
+
+export function GenerateColdWallet(arg1:string,arg2:number,arg3:boolean):Promise<Record<string, any>>;
 
 export function GenerateSemanticLabel(arg1:string,arg2:number):Promise<string>;
 
@@ -211,11 +223,15 @@ export function GetContentFilterConfig():Promise<Record<string, any>>;
 
 export function GetContentFilterHistory(arg1:number):Promise<Record<string, any>>;
 
+export function GetContentFilterPersistence():Promise<string>;
+
 export function GetContentFilterRules():Promise<Record<string, any>>;
 
 export function GetContentFilterStats():Promise<Record<string, any>>;
 
 export function GetCurrentWalletPath():Promise<string>;
+
+export function GetDOCSignatures(arg1:string):Promise<Record<string, any>>;
 
 export function GetDevSupportStats():Promise<Record<string, any>>;
 
@@ -312,6 +328,8 @@ export function GetRecentBlocks(arg1:number):Promise<Record<string, any>>;
 export function GetRecentWalletsWithInfo():Promise<Array<main.WalletInfo>>;
 
 export function GetRegistrationStatus():Promise<Record<string, any>>;
+
+export function GetRingMemberSets():Promise<Record<string, any>>;
 
 export function GetRingMembers(arg1:string):Promise<Record<string, any>>;
 
@@ -419,6 +437,8 @@ export function InvokeSCFromExplorer(arg1:string,arg2:string,arg3:Array<Record<s
 
 export function InvokeSCFunction(arg1:string):Promise<Record<string, any>>;
 
+export function IsAddressRegistered(arg1:string):Promise<Record<string, any>>;
+
 export function IsAppCachedOffline(arg1:string):Promise<Record<string, any>>;
 
 export function IsDevSupportEnabled():Promise<boolean>;
@@ -439,8 +459,6 @@ export function IsSimulatorWalletRegistered():Promise<Record<string, any>>;
 
 export function IsWalletOpen():Promise<boolean>;
 
-export function LikeTELAApp(arg1:string):Promise<Record<string, any>>;
-
 export function ListActiveServers():Promise<Record<string, any>>;
 
 export function ListDirectory(arg1:string):Promise<Record<string, any>>;
@@ -453,9 +471,13 @@ export function ManuallyAllowApp(arg1:string):Promise<Record<string, any>>;
 
 export function ManuallyBlockApp(arg1:string):Promise<Record<string, any>>;
 
+export function MineRegistration(arg1:string,arg2:string):Promise<Record<string, any>>;
+
 export function MoveFile(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function Navigate(arg1:string):Promise<Record<string, any>>;
+
+export function NoteWalletActivity():Promise<void>;
 
 export function NotifyWizardComplete():Promise<void>;
 
@@ -481,6 +503,8 @@ export function PrepareMODInstall(arg1:string,arg2:string):Promise<Record<string
 
 export function PreviewDOC(arg1:string):Promise<Record<string, any>>;
 
+export function PreviewRegistrationDCSP(arg1:string):Promise<Record<string, any>>;
+
 export function PreviewTELAApp(arg1:string):Promise<Record<string, any>>;
 
 export function QuickDeployFile(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
@@ -488,6 +512,8 @@ export function QuickDeployFile(arg1:string,arg2:string,arg3:string):Promise<Rec
 export function RateTELA(arg1:string,arg2:number):Promise<Record<string, any>>;
 
 export function RateTELAApp(arg1:string,arg2:number):Promise<Record<string, any>>;
+
+export function ReadDroppedFile(arg1:string):Promise<Record<string, any>>;
 
 export function ReadTextFile(arg1:string):Promise<Record<string, any>>;
 
@@ -513,9 +539,13 @@ export function RemoveFile(arg1:string):Promise<Record<string, any>>;
 
 export function RemoveRecentWallet(arg1:string):Promise<Record<string, any>>;
 
+export function RemoveRingMember(arg1:string,arg2:string):Promise<Record<string, any>>;
+
 export function RemoveSearchExclusion(arg1:string):Promise<Record<string, any>>;
 
 export function RemoveTrackedToken(arg1:string):Promise<Record<string, any>>;
+
+export function RenameRingMemberSet(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function RequestInterceptor(arg1:string):Promise<Record<string, any>>;
 
@@ -526,6 +556,8 @@ export function ResetSimulator():Promise<Record<string, any>>;
 export function ResolveDeroName(arg1:string):Promise<Record<string, any>>;
 
 export function ResolveDropPaths(arg1:Array<string>):Promise<Record<string, any>>;
+
+export function ResolveNameForSend(arg1:string):Promise<Record<string, any>>;
 
 export function RespondToXSWDRequest(arg1:string,arg2:boolean,arg3:string):Promise<void>;
 
@@ -544,6 +576,8 @@ export function RevokeAppPermissions(arg1:string):Promise<Record<string, any>>;
 export function RevokeXSWDConnection(arg1:string):Promise<Record<string, any>>;
 
 export function SaveBinaryFileWithDialog(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
+
+export function SaveColdBackup(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
 export function SaveFileWithDialog(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
@@ -702,6 +736,10 @@ export function ValidateProofFull(arg1:string,arg2:string):Promise<Record<string
 export function ValidateSCCode(arg1:string):Promise<Record<string, any>>;
 
 export function ValidateSenderProof(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<Record<string, any>>;
+
+export function VerifyColdWallet(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
+
+export function VerifyDOCSignature(arg1:string):Promise<Record<string, any>>;
 
 export function VerifySignature(arg1:string):Promise<Record<string, any>>;
 

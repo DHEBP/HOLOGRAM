@@ -69,7 +69,11 @@
       --emerald-300: #6ee7b7;
       --emerald-400: #34d399;
       --emerald-500: #10b981;
-      
+
+      /* === PINK (accent) === */
+      --pink-400: #f472b6;
+      --pink-500: #ec4899;
+
       /* === SEMANTIC STATUS === */
       --status-ok: #34d399;
       --status-warn: #fbbf24;
@@ -1263,6 +1267,8 @@
     .input:disabled { opacity: 0.5; cursor: not-allowed; background: var(--void-mid); }
     .input-error { border-color: var(--status-err) !important; }
     .input-error:focus { box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.15); }
+    .input-ok { border-color: var(--status-ok) !important; }
+    .input-ok:focus { box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.15); }
     .input-success { border-color: var(--status-ok) !important; }
     
     /* Input with icon/action */
@@ -7433,6 +7439,70 @@
       cursor: not-allowed;
     }
 
+    /* ===== Permission sheet foot — three answers =====
+       The panel is 384px. Minus padding and two gaps, three buttons at flex:1 get 104px
+       each while "Always allow" needs ~127px, so side by side they wrap to two lines. The
+       answers stack instead: a solid one-shot, the standing grant in the tint grammar the
+       danger/success buttons already use, and Deny dropped to a ghost below a hairline.
+       Least commitment on top — the top of a stack is where a reflexive click lands, and a
+       stray "allow once" costs one extra prompt while a stray "always" costs a standing
+       grant the user may never notice they gave.
+       Two-button feet are untouched; this applies only where the modifier is set. */
+    .modal-panel-actions-stack {
+      flex-direction: column;
+      gap: var(--s-2);
+    }
+
+    .modal-panel-actions-stack .modal-panel-btn {
+      flex: none;
+      width: 100%;
+    }
+
+    .modal-panel-actions-sep {
+      height: 1px;
+      background: var(--border-dim);
+      margin: var(--s-2) 0 var(--s-1);
+    }
+
+    /* Allow once — .btn-primary treatment (hologram.css:1169), given the extra height that
+       makes it the heaviest thing in the foot. */
+    .modal-panel-btn-once {
+      background: var(--cyan-500);
+      color: var(--void-pure);
+      font-weight: 600;
+      padding: var(--s-4) var(--s-5);
+    }
+
+    .modal-panel-btn-once:hover:not(:disabled) {
+      filter: brightness(1.1);
+      box-shadow: var(--glow-cyan-sm);
+    }
+
+    /* Always allow — the tint grammar of .btn-danger / .btn-success (1196, 1205) in cyan:
+       10% wash, full-strength text, 30% border. Present without competing with the solid. */
+    .modal-panel-btn-always {
+      background: rgba(34, 211, 238, 0.1);
+      color: var(--cyan-400);
+      border: 1px solid rgba(34, 211, 238, 0.3);
+    }
+
+    .modal-panel-btn-always:hover:not(:disabled) {
+      background: rgba(34, 211, 238, 0.2);
+      border-color: rgba(34, 211, 238, 0.5);
+    }
+
+    /* Deny goes ghost in the stack — never red, since status colours are semantic only and
+       refusing a prompt is not an alarm. The two-button foot keeps its filled deny. */
+    .modal-panel-actions-stack .modal-panel-btn-deny {
+      background: transparent;
+      padding: var(--s-2) var(--s-5);
+    }
+
+    .modal-panel-actions-stack .modal-panel-btn-deny:hover:not(:disabled) {
+      background: var(--void-hover);
+      color: var(--text-1);
+    }
+
     /* ===== Destructive native-DERO burn (permanent destruction) ===== */
     .modal-burn-danger {
       background: linear-gradient(180deg, rgba(248, 113, 113, 0.16), rgba(248, 113, 113, 0.06));
@@ -7533,6 +7603,17 @@
       font-family: var(--font-mono);
       font-size: 12px;
       color: var(--text-4);
+      /* Backstop for any origin the shortener does not shrink (long local dev URLs):
+         wrap rather than push the card open and clip. */
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+
+    /* Caution, not alarm: the name and address are unconfirmed, nothing is wrong yet. */
+    .modal-app-origin-unverified {
+      color: var(--status-warn);
+      opacity: 0.85;
+      cursor: help;
     }
     
     /* Modal Permission Items */

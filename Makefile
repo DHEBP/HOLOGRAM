@@ -12,11 +12,11 @@
 # The derod and simulator binaries are built from the derohe dependency
 # and placed alongside the HOLOGRAM executable in build/bin/
 
-.PHONY: all hologram release derod simulator mtp-anchor clean dev test-mtp test-mtp-integration help
+.PHONY: all hologram release derod simulator mtp-anchor clean dev test test-mtp test-mtp-integration check-invariants help
 
-# Build metadata - injected into the binary via ldflags
-# Match the actual variable assignment, not the example comment above it.
-VERSION  := $(shell sed -n 's/^[[:space:]]*AppVersion[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' version.go | sed -n '1p')
+# Build metadata - injected into the binary via ldflags.
+# VERSION file is the single source of truth (must match latest CHANGELOG section).
+VERSION  := $(shell tr -d '[:space:]' < VERSION)
 COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE     := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  := -X main.AppVersion=$(VERSION) -X main.BuildDate=$(DATE) -X main.GitCommit=$(COMMIT)
@@ -56,6 +56,23 @@ endif
 BUILD_DIR = build/bin
 DEROHE_PKG = github.com/deroproject/derohe
 
+# Toolchain for the chain binaries ONLY. HOLOGRAM itself follows your default Go.
+#
+# derod is the node our users run, so it has to behave like the rest of the
+# network. Some of that behaviour is decided by the Go standard library rather
+# than by derohe's source, and those details change between Go releases — a
+# derod built on an unvalidated toolchain can differ from the network while
+# looking normal and passing every test.
+#
+# So these two binaries are pinned to a toolchain that has been checked against
+# the network, and both targets verify the result afterwards: removing the pin
+# fails the build instead of silently shipping.
+#
+# ⚠️ DO NOT raise or delete this pin without asking DHEBP first. It is not stale
+# and it is not lint. The specific rationale is recorded outside this repository,
+# deliberately.
+DEROD_TOOLCHAIN ?= go1.26.5
+
 # Get derohe module path from go mod
 
 # Default target - build derod/simulator FIRST, then hologram
@@ -75,13 +92,13 @@ else
 endif
 
 # Build HOLOGRAM using wails (dev/local build with metadata)
-hologram:
+hologram: check-invariants
 	@echo "🔨 Building HOLOGRAM ($(VERSION), $(COMMIT))..."
 	wails build $(WAILS_TAGS) -ldflags "$(LDFLAGS)"
 	@echo "✅ HOLOGRAM built"
 
 # Release build — clean, trimpath, metadata injected (use this for distribution)
-release: derod simulator
+release: derod simulator check-invariants
 	@echo "🚀 Building HOLOGRAM release ($(VERSION), $(COMMIT))..."
 	wails build $(WAILS_TAGS) -ldflags "$(LDFLAGS)" -clean -trimpath
 	@echo "✅ Release build complete: $(BUILD_DIR)/$(HOLOGRAM_BIN)"
@@ -91,24 +108,31 @@ release: derod simulator
 derod: check-derohe
 	@echo "🔨 Building derod from derohe source..."
 	@mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(DEROD_BIN) $(DEROHE_PKG)/cmd/derod
+	GOTOOLCHAIN=$(DEROD_TOOLCHAIN) go build -o $(BUILD_DIR)/$(DEROD_BIN) $(DEROHE_PKG)/cmd/derod
 	@chmod +x $(BUILD_DIR)/$(DEROD_BIN)
-	@echo "✅ derod built: $(BUILD_DIR)/$(DEROD_BIN)"
+	@go version -m $(BUILD_DIR)/$(DEROD_BIN) | head -1 | grep -q '$(DEROD_TOOLCHAIN)' \
+		|| { echo "❌ derod was built with $$(go version -m $(BUILD_DIR)/$(DEROD_BIN) | head -1 | awk '{print $$2}'), expected $(DEROD_TOOLCHAIN) — refusing"; exit 1; }
+	@echo "✅ derod built: $(BUILD_DIR)/$(DEROD_BIN) ($(DEROD_TOOLCHAIN))"
 
 # Build simulator from derohe source
 # Note: We build from HOLOGRAM's module context so dependencies resolve correctly
 simulator: check-derohe
 	@echo "🔨 Building simulator from derohe source..."
 	@mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(SIMULATOR_BIN) $(DEROHE_PKG)/cmd/simulator
+	GOTOOLCHAIN=$(DEROD_TOOLCHAIN) go build -o $(BUILD_DIR)/$(SIMULATOR_BIN) $(DEROHE_PKG)/cmd/simulator
 	@chmod +x $(BUILD_DIR)/$(SIMULATOR_BIN)
-	@echo "✅ simulator built: $(BUILD_DIR)/$(SIMULATOR_BIN)"
+	@go version -m $(BUILD_DIR)/$(SIMULATOR_BIN) | head -1 | grep -q '$(DEROD_TOOLCHAIN)' \
+		|| { echo "❌ simulator was built with $$(go version -m $(BUILD_DIR)/$(SIMULATOR_BIN) | head -1 | awk '{print $$2}'), expected $(DEROD_TOOLCHAIN) — refusing"; exit 1; }
+	@echo "✅ simulator built: $(BUILD_DIR)/$(SIMULATOR_BIN) ($(DEROD_TOOLCHAIN))"
 
-# Check that derohe dependency is available and add cmd dependencies
+# Check that derohe dependency is available and add cmd dependencies.
+# No version is pinned here: the derohe module is resolved by go.mod (currently a
+# replace onto the public fork), and these go get calls only pull the cmd-only
+# transitive deps (readline, dns, lumberjack) into go.sum so derod/simulator build.
 check-derohe:
 	@echo "🔍 Checking derohe dependency..."
-	@go get $(DEROHE_PKG)/cmd/derod@v0.0.0-20250813215012-9b6a8b82c839 2>/dev/null || true
-	@go get $(DEROHE_PKG)/cmd/simulator@v0.0.0-20250813215012-9b6a8b82c839 2>/dev/null || true
+	@go get $(DEROHE_PKG)/cmd/derod 2>/dev/null || true
+	@go get $(DEROHE_PKG)/cmd/simulator 2>/dev/null || true
 
 # Build mtp-anchor CLI tool
 mtp-anchor:
@@ -135,8 +159,18 @@ test-mtp-integration: mtp-anchor
 		--wallet-rpc "$${WALLET_RPC:-http://127.0.0.1:30000/json_rpc}" \
 		--daemon-rpc "$${DAEMON_RPC:-http://127.0.0.1:20000/json_rpc}"
 
+# A14 data-dir consolidation invariant gates (see redteam-hologram-datadir-consolidation.md).
+# Prerequisite of every hologram/release build; also runnable standalone.
+check-invariants:
+	@bash scripts/check-datadir-invariants.sh
+
+# Run the Go unit-test suite plus the invariant gates
+test: check-invariants
+	@echo "🧪 Running Go unit tests..."
+	go test ./... -count=1
+
 # Development mode
-dev:
+dev: check-invariants
 	wails dev $(WAILS_TAGS)
 
 # Clean build artifacts

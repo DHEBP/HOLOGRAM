@@ -38,6 +38,19 @@ func (a *App) SetVar(scid, key, value string) map[string]interface{} {
 		}
 	}
 
+	// Refuse a write the chain cannot apply, BEFORE it is broadcast. Over the storage-gas
+	// ceiling the transaction is still mined and still charged, and the contract stores
+	// nothing — so without this the user pays a fee to lose their data.
+	args, err := tela.NewSetVarArgs(scid, key, value)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] SetVar rejected: %v", err))
+		return ErrorResponse(err)
+	}
+	if err := a.guardStorageGas(args, wallet.GetAddress().String(), "setting this variable"); err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] SetVar refused: %v", err))
+		return ErrorResponse(err)
+	}
+
 	// Set variable using tela library
 	txid, err := tela.SetVar(wallet, scid, key, value)
 	if err != nil {
@@ -45,14 +58,17 @@ func (a *App) SetVar(scid, key, value string) map[string]interface{} {
 		return ErrorResponse(err)
 	}
 
-	a.logToConsole(fmt.Sprintf("[OK] Variable set: %s = %s (txid: %s)", key, value, txid[:16]+"..."))
+	// Submitted, not stored. This returns as soon as the transaction is broadcast; the
+	// contract runs when it is mined and can still refuse — only an entrypoint returning 0
+	// commits, everything else is discarded. Claiming "set" here would be a guess.
+	a.logToConsole(fmt.Sprintf("[OK] SetVar submitted: %s (txid: %s)", key, txid[:16]+"..."))
 
 	return map[string]interface{}{
 		"success": true,
 		"txid":    txid,
 		"key":     key,
 		"value":   value,
-		"message": "Variable set successfully",
+		"message": "Transaction submitted — the variable updates once it is mined",
 	}
 }
 
@@ -91,13 +107,16 @@ func (a *App) DeleteVar(scid, key string) map[string]interface{} {
 		return ErrorResponse(err)
 	}
 
-	a.logToConsole(fmt.Sprintf("[OK] Variable deleted: %s (txid: %s)", key, txid[:16]+"..."))
+	// Submitted, not deleted — same reasoning as SetVar above. A delete needs no storage-gas
+	// guard because it shrinks contract state rather than growing it, but the contract can
+	// still refuse it (this entrypoint is owner-only) and the answer arrives when it is mined.
+	a.logToConsole(fmt.Sprintf("[OK] DeleteVar submitted: %s (txid: %s)", key, txid[:16]+"..."))
 
 	return map[string]interface{}{
 		"success": true,
 		"txid":    txid,
 		"key":     key,
-		"message": "Variable deleted successfully",
+		"message": "Transaction submitted — the variable is removed once it is mined",
 	}
 }
 

@@ -587,7 +587,12 @@ func (a *App) InstallINDEX(indexJSON string) map[string]interface{} {
 		// For non-simulator: use walletapi.Connect()
 		a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi to daemon: %s", endpoint))
 		if err := walletapi.Connect(endpoint); err != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
+			a.logToConsole(fmt.Sprintf("[ERR] walletapi.Connect failed: %v", err))
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Could not connect to daemon: " + FriendlyError(err),
+				"technicalError": err.Error(),
+			}
 		}
 		wallet.SetDaemonAddress(endpoint)
 		wallet.SetOnlineMode()
@@ -675,7 +680,12 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		// Connect walletapi for non-simulator mode
 		a.logToConsole(fmt.Sprintf("[NET] Connecting walletapi to daemon: %s", endpoint))
 		if err := walletapi.Connect(endpoint); err != nil {
-			a.logToConsole(fmt.Sprintf("[WARN] walletapi.Connect failed: %v", err))
+			a.logToConsole(fmt.Sprintf("[ERR] walletapi.Connect failed: %v", err))
+			return map[string]interface{}{
+				"success":        false,
+				"error":          "Could not connect to daemon: " + FriendlyError(err),
+				"technicalError": err.Error(),
+			}
 		}
 		wallet.SetDaemonAddress(endpoint)
 		wallet.SetOnlineMode()
@@ -732,6 +742,19 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		}
 	}
 
+	// Refuse an update the chain cannot apply, BEFORE it is broadcast. An update is metered
+	// on the whole contract, headers and DOC list together, so a long description or a large
+	// DOC set can cross the ceiling even though each field looks small on its own.
+	args, err := tela.NewUpdateArgs(&index)
+	if err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] INDEX update rejected: %v", err))
+		return ErrorResponse(err)
+	}
+	if err := a.guardStorageGas(args, wallet.GetAddress().String(), "this INDEX update"); err != nil {
+		a.logToConsole(fmt.Sprintf("[ERR] INDEX update refused: %v", err))
+		return ErrorResponse(err)
+	}
+
 	// Update INDEX using tela library
 	txid, err := tela.Updater(wallet, &index)
 	if err != nil {
@@ -739,13 +762,15 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		return ErrorResponse(err)
 	}
 
-	a.logToConsole(fmt.Sprintf("[OK] INDEX updated successfully! TXID: %s", txid))
+	// Submitted, not updated — this returns at broadcast, and the contract applies the change
+	// only when the transaction is mined.
+	a.logToConsole(fmt.Sprintf("[OK] INDEX update submitted. TXID: %s", txid))
 
 	return map[string]interface{}{
 		"success": true,
 		"scid":    scid,
 		"txid":    txid,
-		"message": "INDEX updated successfully",
+		"message": "Transaction submitted — the INDEX updates once it is mined",
 	}
 }
 
@@ -940,42 +965,17 @@ func (a *App) GetClonePath() string {
 	return tela.GetClonePath()
 }
 
-// RateTELA submits a rating for TELA content
+// RateTELA submits a rating for TELA content (0–99 Engram/TELA scale).
+// Routes through RateTELAApp so Discover Apps and Studio share one path:
+// integrated wallet first, Engram XSWD client as fallback.
 func (a *App) RateTELA(scid string, rating uint64) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("[STAR] Rating SCID %s with %d", scid[:16]+"...", rating))
-
-	// Check wallet
-	wallet := GetWallet()
-	if wallet == nil {
+	if rating > 99 {
 		return map[string]interface{}{
 			"success": false,
-			"error":   "No wallet is currently open",
+			"error":   "Rating must be between 0 and 99",
 		}
 	}
-
-	// Validate rating (0-10)
-	if rating > 10 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Rating must be between 0 and 10",
-		}
-	}
-
-	// Submit rating using tela library
-	txid, err := tela.Rate(wallet, scid, rating)
-	if err != nil {
-		a.logToConsole(fmt.Sprintf("[ERR] Rating failed: %v", err))
-		return ErrorResponse(err)
-	}
-
-	a.logToConsole(fmt.Sprintf("[OK] Rating submitted: %s", txid))
-
-	return map[string]interface{}{
-		"success": true,
-		"txid":    txid,
-		"rating":  rating,
-		"message": "Rating submitted successfully",
-	}
+	return a.RateTELAApp(scid, int(rating))
 }
 
 // ParseFolderForTELA analyzes a folder and returns staged file information
@@ -1898,10 +1898,7 @@ func (a *App) getCommitContentFallback(scid string, commit Commit, commitNum int
 			// It's a DOC - get the code directly
 			scData, _ := a.daemonClient.GetSC(scid, true, false)
 			if code, ok := scData["code"].(string); ok {
-				// Extract doc content from SC code
-				docContent := extractDocCodeFromSC(code)
-				fileName := inferFileNameFromDocType(docInfo.DocType, docInfo.DURL)
-				files[fileName] = docContent
+				files[docFileName(docInfo)] = docContentFromSC(docInfo, code)
 			}
 			durl = docInfo.DURL
 		}
@@ -1918,12 +1915,7 @@ func (a *App) getCommitContentFallback(scid string, commit Commit, commitNum int
 
 			scData, _ := a.daemonClient.GetSC(docScid, true, false)
 			if code, ok := scData["code"].(string); ok {
-				docContent := extractDocCodeFromSC(code)
-				fileName := inferFileNameFromDocType(docInfo.DocType, docInfo.DURL)
-				if docInfo.SubDir != "" {
-					fileName = docInfo.SubDir + "/" + fileName
-				}
-				files[fileName] = docContent
+				files[docFileName(docInfo)] = docContentFromSC(docInfo, code)
 			}
 		}
 	}
@@ -1976,20 +1968,88 @@ func (a *App) readClonedFiles(basePath string) (map[string]string, error) {
 	return files, err
 }
 
-// extractDocCodeFromSC extracts the document content from SC code
+// extractDocCodeFromSC extracts the document content from SC code.
+//
+// TELA appends the document to the END of the contract, wrapped in a multiline
+// comment (parse.go: code + "\n\n/*\n" + docCode + "\n*/"). This previously
+// required the contract to START with "/*", which no DOC on chain does, so it
+// always fell through and returned the whole DVM contract to the version and
+// diff viewers instead of the user's file.
+//
+// LastIndex, not Index, for the closing marker: document bodies legitimately
+// contain "*/", and an older-template DOC whose body starts with "//" produces
+// "/*//", putting the first "*/" before the wrapper even opens.
+//
+// This mirrors TELA's own parseDocCode, including its TrimSpace, so what
+// HOLOGRAM displays matches what TELA serves. Signature verification
+// deliberately does NOT reuse this - see candidateSignedMessages, which must
+// recover the exact signed bytes rather than the served ones.
 func extractDocCodeFromSC(code string) string {
-	// TELA DOC code is stored in a comment block at the start of the SC
-	// Format: /* DOC_CONTENT */ followed by the actual BASIC code
-	if strings.HasPrefix(code, "/*") {
-		endIdx := strings.Index(code, "*/")
-		if endIdx > 2 {
-			return strings.TrimSpace(code[2:endIdx])
-		}
+	start := strings.Index(code, "/*")
+	if start < 0 {
+		return code
 	}
-	return code
+
+	body := code[start+2:]
+	end := strings.LastIndex(body, "*/")
+	if end < 0 {
+		return code
+	}
+
+	return strings.TrimSpace(body[:end])
 }
 
-// inferFileNameFromDocType generates a filename from doc type and dURL
+// docContentFromSC returns the document a DOC contract carries, decompressed
+// when it was stored compressed.
+//
+// A compressed DOC holds base64-encoded gzip, so the raw comment body is an
+// unreadable blob - which is exactly what the version and diff viewers used to
+// print for every .gz file. tela.Decompress does the base64 decode and the
+// gunzip together, keyed off the extension GetDOCInfo already parsed.
+//
+// On failure it returns the stored body rather than nothing: the pinned tela
+// handles gzip only, so a brotli DOC would otherwise render as an empty file
+// and read as "this file is empty" instead of "we cannot decode this".
+func docContentFromSC(doc tela.DOC, code string) string {
+	body := extractDocCodeFromSC(code)
+	if doc.Compression == "" {
+		return body
+	}
+
+	decompressed, err := tela.Decompress([]byte(body), doc.Compression)
+	if err != nil {
+		return body
+	}
+	return string(decompressed)
+}
+
+// docFileName returns the name the publisher actually gave a DOC, joined with
+// its subdirectory.
+//
+// Always prefer NameHdr. inferFileNameFromDocType derives a name from the doc
+// TYPE, so it returns the same string for every file of that type - and callers
+// key a map on it. deaddrop-library.tela's 8 DOCs collapsed to 3 keys that way
+// (5 .js files all became "content.js" and overwrote each other), silently
+// dropping 5 files from the version and diff viewers while the real names sat
+// unread in NameHdr.
+//
+// inferFileNameFromDocType is kept only as a fallback for DOCs that store no
+// name at all.
+func docFileName(doc tela.DOC) string {
+	name := doc.NameHdr
+	if name == "" {
+		name = inferFileNameFromDocType(doc.DocType, doc.DURL)
+	}
+
+	// Trim both ends: a SubDir of "/" previously produced a leading "//".
+	if sub := strings.Trim(doc.SubDir, "/"); sub != "" {
+		return sub + "/" + name
+	}
+	return name
+}
+
+// inferFileNameFromDocType generates a filename from doc type and dURL.
+// Only a fallback - see docFileName.
 func inferFileNameFromDocType(docType, durl string) string {
 	// Extract extension from docType (e.g., "TELA-HTML-1" -> "html")
 	ext := ".txt"

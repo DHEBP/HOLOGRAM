@@ -10,6 +10,14 @@ export function AddContact(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddContact'](arg1, arg2, arg3);
 }
 
+export function AddRingMember(arg1, arg2) {
+  return window['go']['main']['App']['AddRingMember'](arg1, arg2);
+}
+
+export function AddRingMemberSet(arg1) {
+  return window['go']['main']['App']['AddRingMemberSet'](arg1);
+}
+
 export function AddSCIDToIndex(arg1) {
   return window['go']['main']['App']['AddSCIDToIndex'](arg1);
 }
@@ -22,8 +30,8 @@ export function AddTrackedToken(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddTrackedToken'](arg1, arg2, arg3);
 }
 
-export function ApproveWalletConnection() {
-  return window['go']['main']['App']['ApproveWalletConnection']();
+export function ApproveWalletConnection(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ApproveWalletConnection'](arg1, arg2, arg3, arg4);
 }
 
 export function BatchDeployToSimulator(arg1) {
@@ -34,12 +42,20 @@ export function BatchPrefetchFavorites(arg1, arg2) {
   return window['go']['main']['App']['BatchPrefetchFavorites'](arg1, arg2);
 }
 
+export function BroadcastRegistrationDCSP(arg1) {
+  return window['go']['main']['App']['BroadcastRegistrationDCSP'](arg1);
+}
+
 export function BuildRating(arg1, arg2) {
   return window['go']['main']['App']['BuildRating'](arg1, arg2);
 }
 
 export function CallXSWD(arg1) {
   return window['go']['main']['App']['CallXSWD'](arg1);
+}
+
+export function CancelColdRegistration() {
+  return window['go']['main']['App']['CancelColdRegistration']();
 }
 
 export function CancelRegistration() {
@@ -178,6 +194,10 @@ export function DeleteContact(arg1) {
   return window['go']['main']['App']['DeleteContact'](arg1);
 }
 
+export function DeleteRingMemberSet(arg1) {
+  return window['go']['main']['App']['DeleteRingMemberSet'](arg1);
+}
+
 export function DeleteTransactionLabel(arg1) {
   return window['go']['main']['App']['DeleteTransactionLabel'](arg1);
 }
@@ -226,10 +246,6 @@ export function DisconnectXSWD() {
   return window['go']['main']['App']['DisconnectXSWD']();
 }
 
-export function DislikeTELAApp(arg1) {
-  return window['go']['main']['App']['DislikeTELAApp'](arg1);
-}
-
 export function EnsureGnomonRunning() {
   return window['go']['main']['App']['EnsureGnomonRunning']();
 }
@@ -254,6 +270,10 @@ export function ExecuteSCViaXSWD(arg1, arg2, arg3) {
   return window['go']['main']['App']['ExecuteSCViaXSWD'](arg1, arg2, arg3);
 }
 
+export function ExportRegistrationDCSP(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExportRegistrationDCSP'](arg1, arg2, arg3);
+}
+
 export function FetchByDURL(arg1) {
   return window['go']['main']['App']['FetchByDURL'](arg1);
 }
@@ -276,6 +296,10 @@ export function FormatBlockAge(arg1) {
 
 export function FundTestWallet(arg1, arg2) {
   return window['go']['main']['App']['FundTestWallet'](arg1, arg2);
+}
+
+export function GenerateColdWallet(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GenerateColdWallet'](arg1, arg2, arg3);
 }
 
 export function GenerateSemanticLabel(arg1, arg2) {
@@ -418,6 +442,10 @@ export function GetContentFilterHistory(arg1) {
   return window['go']['main']['App']['GetContentFilterHistory'](arg1);
 }
 
+export function GetContentFilterPersistence() {
+  return window['go']['main']['App']['GetContentFilterPersistence']();
+}
+
 export function GetContentFilterRules() {
   return window['go']['main']['App']['GetContentFilterRules']();
 }
@@ -428,6 +456,10 @@ export function GetContentFilterStats() {
 
 export function GetCurrentWalletPath() {
   return window['go']['main']['App']['GetCurrentWalletPath']();
+}
+
+export function GetDOCSignatures(arg1) {
+  return window['go']['main']['App']['GetDOCSignatures'](arg1);
 }
 
 export function GetDevSupportStats() {
@@ -620,6 +652,10 @@ export function GetRecentWalletsWithInfo() {
 
 export function GetRegistrationStatus() {
   return window['go']['main']['App']['GetRegistrationStatus']();
+}
+
+export function GetRingMemberSets() {
+  return window['go']['main']['App']['GetRingMemberSets']();
 }
 
 export function GetRingMembers(arg1) {
@@ -834,6 +870,10 @@ export function InvokeSCFunction(arg1) {
   return window['go']['main']['App']['InvokeSCFunction'](arg1);
 }
 
+export function IsAddressRegistered(arg1) {
+  return window['go']['main']['App']['IsAddressRegistered'](arg1);
+}
+
 export function IsAppCachedOffline(arg1) {
   return window['go']['main']['App']['IsAppCachedOffline'](arg1);
 }
@@ -874,10 +914,6 @@ export function IsWalletOpen() {
   return window['go']['main']['App']['IsWalletOpen']();
 }
 
-export function LikeTELAApp(arg1) {
-  return window['go']['main']['App']['LikeTELAApp'](arg1);
-}
-
 export function ListActiveServers() {
   return window['go']['main']['App']['ListActiveServers']();
 }
@@ -902,12 +938,20 @@ export function ManuallyBlockApp(arg1) {
   return window['go']['main']['App']['ManuallyBlockApp'](arg1);
 }
 
+export function MineRegistration(arg1, arg2) {
+  return window['go']['main']['App']['MineRegistration'](arg1, arg2);
+}
+
 export function MoveFile(arg1, arg2) {
   return window['go']['main']['App']['MoveFile'](arg1, arg2);
 }
 
 export function Navigate(arg1) {
   return window['go']['main']['App']['Navigate'](arg1);
+}
+
+export function NoteWalletActivity() {
+  return window['go']['main']['App']['NoteWalletActivity']();
 }
 
 export function NotifyWizardComplete() {
@@ -958,6 +1002,10 @@ export function PreviewDOC(arg1) {
   return window['go']['main']['App']['PreviewDOC'](arg1);
 }
 
+export function PreviewRegistrationDCSP(arg1) {
+  return window['go']['main']['App']['PreviewRegistrationDCSP'](arg1);
+}
+
 export function PreviewTELAApp(arg1) {
   return window['go']['main']['App']['PreviewTELAApp'](arg1);
 }
@@ -972,6 +1020,10 @@ export function RateTELA(arg1, arg2) {
 
 export function RateTELAApp(arg1, arg2) {
   return window['go']['main']['App']['RateTELAApp'](arg1, arg2);
+}
+
+export function ReadDroppedFile(arg1) {
+  return window['go']['main']['App']['ReadDroppedFile'](arg1);
 }
 
 export function ReadTextFile(arg1) {
@@ -1022,12 +1074,20 @@ export function RemoveRecentWallet(arg1) {
   return window['go']['main']['App']['RemoveRecentWallet'](arg1);
 }
 
+export function RemoveRingMember(arg1, arg2) {
+  return window['go']['main']['App']['RemoveRingMember'](arg1, arg2);
+}
+
 export function RemoveSearchExclusion(arg1) {
   return window['go']['main']['App']['RemoveSearchExclusion'](arg1);
 }
 
 export function RemoveTrackedToken(arg1) {
   return window['go']['main']['App']['RemoveTrackedToken'](arg1);
+}
+
+export function RenameRingMemberSet(arg1, arg2) {
+  return window['go']['main']['App']['RenameRingMemberSet'](arg1, arg2);
 }
 
 export function RequestInterceptor(arg1) {
@@ -1048,6 +1108,10 @@ export function ResolveDeroName(arg1) {
 
 export function ResolveDropPaths(arg1) {
   return window['go']['main']['App']['ResolveDropPaths'](arg1);
+}
+
+export function ResolveNameForSend(arg1) {
+  return window['go']['main']['App']['ResolveNameForSend'](arg1);
 }
 
 export function RespondToXSWDRequest(arg1, arg2, arg3) {
@@ -1084,6 +1148,10 @@ export function RevokeXSWDConnection(arg1) {
 
 export function SaveBinaryFileWithDialog(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SaveBinaryFileWithDialog'](arg1, arg2, arg3, arg4);
+}
+
+export function SaveColdBackup(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveColdBackup'](arg1, arg2, arg3, arg4);
 }
 
 export function SaveFileWithDialog(arg1, arg2, arg3, arg4) {
@@ -1400,6 +1468,14 @@ export function ValidateSCCode(arg1) {
 
 export function ValidateSenderProof(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['ValidateSenderProof'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function VerifyColdWallet(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['VerifyColdWallet'](arg1, arg2, arg3, arg4);
+}
+
+export function VerifyDOCSignature(arg1) {
+  return window['go']['main']['App']['VerifyDOCSignature'](arg1);
 }
 
 export function VerifySignature(arg1) {

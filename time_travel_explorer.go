@@ -77,12 +77,16 @@ type TimeTravelExplorer struct {
 
 // NewTimeTravelExplorer creates a new time-travel explorer service
 func NewTimeTravelExplorer(app *App, logFn func(string)) (*TimeTravelExplorer, error) {
-	wd, _ := os.Getwd()
-	explorePath := filepath.Join(wd, "datashards", "time_travel")
+	explorePath := filepath.Join(getDatashardsDir(), "time_travel")
 	_ = os.MkdirAll(explorePath, 0755)
 
 	store, err := graviton.NewDiskStore(explorePath)
 	if err != nil {
+		// Re-derivable cache tier (A5): WARN-only fallback to a volatile store —
+		// history is reconstructable from chain, so this is graceful degradation.
+		if logFn != nil {
+			logFn(fmt.Sprintf("[TIME][WARN] time-travel disk store unavailable at %s (%v) — using in-memory store; history will not persist", explorePath, err))
+		}
 		store, err = graviton.NewMemStore()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create time travel store: %v", err)

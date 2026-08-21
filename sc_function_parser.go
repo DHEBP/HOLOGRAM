@@ -202,6 +202,23 @@ func (a *App) ValidateSCCode(code string) map[string]interface{} {
 	}
 }
 
+// nameServiceSCID is the hardcoded on-chain name-registration contract. Calls that read
+// SIGNER() (Register/TransferOwnership) must use ring 2, or the signer is all-zero and the
+// name lands owned by nobody — anyone can then seize it. We force ring 2 for this SCID
+// regardless of anonymous mode. The contract itself cannot be fixed (editing hardcoded_sc
+// would fork the chain), so this client-side guard is the remediation.
+const nameServiceSCID = "0000000000000000000000000000000000000000000000000000000000000001"
+
+// scinvokeRingsize picks the ring size for an SC call: 2 (attributable) by default, 16 when
+// the caller requests anonymity — except nameservice calls, which must stay ring 2 so the
+// stored SIGNER() is a real key (ring>2 => zero signer => name owned by nobody, hijackable).
+func scinvokeRingsize(scid string, anonymous bool) uint64 {
+	if anonymous && scid != nameServiceSCID {
+		return 16
+	}
+	return 2
+}
+
 // InvokeSCFunctionParams represents the parameters for invoking an SC function
 type InvokeSCFunctionParams struct {
 	SCID        string                 `json:"scid"`
@@ -242,6 +259,22 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 		}
 	}
 
+	// Refuse a call the chain could not apply, before it is broadcast. Same ceiling as the
+	// SetVar and INDEX-update paths, and this is the widest of the three: it reaches ANY
+	// entrypoint with any string argument. It was also the path that demonstrated the bug —
+	// a 10 KB SetVar sent from here was mined, charged, and stored nothing while the UI
+	// reported success. estimateSCInvokeGas answers 0 when it cannot measure, which reads as
+	// "proceed", so the guard only ever blocks a size it actually saw.
+	guardRingsize := scinvokeRingsize(params.SCID, params.Anonymous)
+	if gas := a.estimateSCInvokeGas(params, wallet, guardRingsize); storageGasExceeded(gas) {
+		err := storageGasError(fmt.Sprintf("calling %s", params.Function), gas)
+		a.logToConsole(fmt.Sprintf("[ERR] SC invoke refused: %v", err))
+		return map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		}
+	}
+
 	// Route through the wallet's built-in scinvoke path (same path used by dApps),
 	// which keeps SC arg handling consistent across Studio and XSWD calls.
 	scRPC := []interface{}{
@@ -271,10 +304,7 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 	walletParams := map[string]interface{}{
 		"scid":     params.SCID,
 		"sc_rpc":   scRPC,
-		"ringsize": float64(2),
-	}
-	if params.Anonymous {
-		walletParams["ringsize"] = float64(16)
+		"ringsize": float64(scinvokeRingsize(params.SCID, params.Anonymous)),
 	}
 	if params.DeroAmount > 0 {
 		walletParams["sc_dero_deposit"] = float64(params.DeroAmount)
@@ -309,72 +339,6 @@ func (a *App) InvokeSCFunction(paramsJSON string) map[string]interface{} {
 	}
 
 	a.logToConsole(fmt.Sprintf("[OK] SC invoked successfully: %s...", txid))
-	return map[string]interface{}{
-		"success":  true,
-		"txid":     txid,
-		"function": params.Function,
-		"message":  "Smart contract function called successfully",
-	}
-}
-
-func (a *App) invokeSCFunctionSimulator(params InvokeSCFunctionParams, wallet *walletapi.Wallet_Disk, scArgs rpc.Arguments) map[string]interface{} {
-	mature, _ := wallet.Get_Balance()
-	if mature == 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Insufficient balance. Smart contract calls require gas fees — please fund your simulator wallet first.",
-		}
-	}
-
-	destination := a.getSimulatorTransferDestination(wallet.GetAddress().String())
-	transfers := []rpc.Transfer{}
-	if params.DeroAmount > 0 {
-		transfers = append(transfers, rpc.Transfer{
-			Destination: destination,
-			Amount:      0,
-			Burn:        params.DeroAmount,
-		})
-	}
-	if params.AssetSCID != "" && params.AssetAmount > 0 {
-		transfers = append(transfers, rpc.Transfer{
-			Destination: destination,
-			SCID:        crypto.HashHexToHash(params.AssetSCID),
-			Amount:      0,
-			Burn:        params.AssetAmount,
-		})
-	}
-	if len(transfers) == 0 {
-		transfers = append(transfers, rpc.Transfer{
-			Destination: destination,
-			Amount:      0,
-		})
-	}
-
-	ringsize := uint64(2)
-	if params.Anonymous {
-		ringsize = 16
-	}
-
-	gasStorage := a.estimateSCInvokeGas(params, wallet, ringsize)
-	a.logToConsole(fmt.Sprintf("[SC] Building simulator TX: ringsize=%d gasStorage=%d transfers=%d", ringsize, gasStorage, len(transfers)))
-
-	tx, err := wallet.TransferPayload0(transfers, ringsize, false, scArgs, gasStorage, false)
-	if err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Transaction failed: " + err.Error(),
-		}
-	}
-
-	if err := wallet.SendTransaction(tx); err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Failed to send transaction: " + err.Error(),
-		}
-	}
-
-	txid := tx.GetHash().String()
-	a.logToConsole(fmt.Sprintf("[OK] SC invoked successfully: %s...", txid[:16]))
 	return map[string]interface{}{
 		"success":  true,
 		"txid":     txid,

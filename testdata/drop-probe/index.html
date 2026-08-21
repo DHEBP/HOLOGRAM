@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<!--
+  drop-probe — does a dropped file actually reach the app, and does the host tell the truth about it?
+
+  Two zones. LEFT registers a drop handler and calls preventDefault(). RIGHT registers nothing at all.
+  The host is supposed to report the first as accepted and the second as ignored.
+
+  The readout records defaultPrevented at three moments, because that single flag is what the host
+  reads back as "the app took it":
+
+    capture  — a document-level capture listener, installed by the app AFTER the injected bridge.
+               If this is already true, something upstream of the app prevented the event, and the
+               host's "handled" signal is measuring the bridge rather than the app.
+    bubble   — after the zone handlers have run. True for LEFT is correct.
+    target   — what the synthetic drop was actually aimed at. If a drop on the RIGHT zone reports
+               the LEFT zone (or BODY), the coordinates the host sent are wrong.
+
+  Expected if the host is honest:
+    drop on LEFT   → capture false · bubble true  · target ZONE-HANDLED   → green "sent to"
+    drop on RIGHT  → capture false · bubble false · target ZONE-IGNORED   → grey "does not accept"
+
+  Any run where capture is true on the RIGHT zone means the host cannot distinguish an app that
+  handled a file from one that never saw it.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>drop probe</title>
+<style>
+  :root { --ink:#7fd4e8; --dim:#4a6b78; --bg:#0e1621; --panel:#16222f; --ok:#3fbf87; --no:#c9713f; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:28px; background:var(--bg); color:var(--ink);
+         font:13px/1.6 ui-monospace,"JetBrains Mono",Menlo,monospace; }
+  h1 { font-size:14px; letter-spacing:.18em; font-weight:500; margin:0 0 4px; text-transform:uppercase; }
+  .sub { color:var(--dim); margin-bottom:24px; }
+  .zones { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:24px; }
+  .zone { border:1px solid #24384a; border-radius:6px; padding:32px 20px; min-height:150px;
+          display:flex; flex-direction:column; justify-content:center; align-items:center;
+          text-align:center; transition:border-color .12s, background .12s; }
+  .zone .tag { letter-spacing:.14em; font-size:11px; text-transform:uppercase; margin-bottom:8px; }
+  .zone .note { color:var(--dim); font-size:12px; }
+  #handled { border-color:#2f5a4a; }
+  #handled.over { border-color:var(--ok); background:#122a22; }
+  #ignored { border-color:#4a3628; }
+  table { width:100%; border-collapse:collapse; background:var(--panel);
+          border:1px solid #24384a; border-radius:6px; overflow:hidden; }
+  th, td { text-align:left; padding:9px 14px; border-bottom:1px solid #1d2b3a; }
+  th { color:var(--dim); font-weight:500; width:210px; letter-spacing:.08em;
+       font-size:11px; text-transform:uppercase; }
+  tr:last-child th, tr:last-child td { border-bottom:0; }
+  .t { color:var(--ok); } .f { color:var(--no); } .none { color:var(--dim); }
+  #contents { white-space:pre-wrap; word-break:break-all; max-height:120px; overflow:auto; }
+</style>
+</head>
+<body>
+
+<h1>Drop probe</h1>
+<div class="sub">Drop a small text file on either zone. Nothing here uploads or leaves the page.</div>
+
+<div class="zones">
+  <div class="zone" id="handled">
+    <div class="tag">Zone · handled</div>
+    <div class="note">has a drop handler<br>calls preventDefault()</div>
+  </div>
+  <div class="zone" id="ignored">
+    <div class="tag">Zone · ignored</div>
+    <div class="note">no drop handler at all<br>host should say "does not accept"</div>
+  </div>
+</div>
+
+<table>
+  <tr><th>last event</th><td id="r-event" class="none">— waiting for a drop —</td></tr>
+  <tr><th>target hit</th><td id="r-target" class="none">—</td></tr>
+  <tr><th>prevented @ capture</th><td id="r-capture" class="none">—</td></tr>
+  <tr><th>prevented @ bubble</th><td id="r-bubble" class="none">—</td></tr>
+  <tr><th>file</th><td id="r-file" class="none">—</td></tr>
+  <tr><th>contents</th><td id="r-contents"><span id="contents" class="none">—</span></td></tr>
+  <tr><th>verdict</th><td id="r-verdict" class="none">—</td></tr>
+</table>
+
+<script>
+(function () {
+  var el = function (id) { return document.getElementById(id); };
+  var atCapture = null;
+
+  function paint(id, value, text) {
+    var node = el(id);
+    node.textContent = text !== undefined ? text : String(value);
+    node.className = value === true ? 't' : value === false ? 'f' : 'none';
+  }
+
+  // Capture, on document. The injected bridge installs its own capture listener first, so if the
+  // event arrives here already prevented, the prevention did not come from this app.
+  document.addEventListener('drop', function (e) {
+    atCapture = e.defaultPrevented;
+  }, true);
+
+  // A thrown error inside a listener is invisible — it does not reach the host console and
+  // leaves the readout showing stale values, which reads as "nothing happened". Surface it.
+  window.addEventListener('error', function (ev) {
+    paint('r-verdict', false, 'JS ERROR: ' + ev.message + ' @ line ' + ev.lineno);
+  });
+
+  // Bubble, on document. Runs after any zone handler.
+  document.addEventListener('drop', function (e) {
+   try {
+    var t = e.target && e.target.id ? e.target.id.toUpperCase()
+          : (e.target && e.target.tagName) || 'unknown';
+    paint('r-event', null, new Date().toTimeString().slice(0, 8) + '  drop');
+    paint('r-target', null, t);
+    paint('r-capture', atCapture);
+    paint('r-bubble', e.defaultPrevented);
+
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) {
+      // constructor name matters: the receiver falls back to a Blob with a .name bolted on
+      // when File construction fails, and a Blob is not a File to code that checks.
+      paint('r-file', null, f.name + '  ·  ' + f.size + ' B  ·  ' + (f.type || 'no type') +
+                            '  ·  ' + (f.constructor && f.constructor.name));
+      // Write to the cell, not to a span inside it. An inner node can be replaced by an
+      // earlier paint() and then silently swallow every later write, which is exactly the
+      // shape of failure this probe exists to catch — so it does not rely on one.
+      var show = function (cls, text) {
+        var node = el('r-contents');
+        if (!node) { paint('r-verdict', false, 'PROBE BUG: #r-contents missing'); return; }
+        node.className = cls;
+        node.textContent = text;
+      };
+      show('none', 'reading…');
+      var reader = new FileReader();
+      reader.onload = function () {
+        var out = String(reader.result);
+        show('', out === '' ? '(read succeeded but returned 0 bytes)' : out.slice(0, 500));
+      };
+      reader.onerror = function () {
+        show('f', 'FileReader failed: ' + (reader.error && reader.error.name));
+      };
+      try {
+        reader.readAsText(f);
+      } catch (err) {
+        show('f', 'readAsText threw: ' + err.message);
+      }
+    } else {
+      paint('r-file', false, 'no file on the event');
+      var td = el('r-contents');
+      if (td) td.textContent = '—';
+    }
+
+    var verdict;
+    if (atCapture === true) {
+      verdict = 'FALSE POSITIVE — prevented before the app saw it; "handled" measures the bridge';
+    } else if (t === 'ZONE-IGNORED' || t === 'IGNORED') {
+      verdict = e.defaultPrevented
+        ? 'FALSE POSITIVE — the ignore zone reports handled'
+        : 'correct — ignored zone did not handle it';
+    } else {
+      verdict = e.defaultPrevented ? 'correct — handled zone took it' : 'app did not handle it';
+    }
+    paint('r-verdict', verdict.indexOf('correct') === 0, verdict);
+
+    atCapture = null;
+   } catch (err) {
+     paint('r-verdict', false, 'HANDLER THREW: ' + (err && err.message));
+   }
+  }, false);
+
+  // The only real handler in this document.
+  var handled = el('handled');
+  handled.addEventListener('dragover', function (e) { e.preventDefault(); handled.classList.add('over'); });
+  handled.addEventListener('dragleave', function () { handled.classList.remove('over'); });
+  handled.addEventListener('drop', function (e) {
+    e.preventDefault();
+    handled.classList.remove('over');
+  });
+
+  // el('ignored') is deliberately left without listeners. Do not add any.
+})();
+</script>
+</body>
+</html>

@@ -154,7 +154,7 @@ export function addExternalRequest(request, onApprove, onDeny) {
   walletRequests.update(reqs => [...reqs, fullRequest]);
 }
 
-export async function approveWalletRequest(id, password, txid = null, permissions = null) {
+export async function approveWalletRequest(id, password, txid = null, permissions = null, remember = false) {
   // Find the request
   const requests = get(walletRequests);
   const request = requests.find(r => r.id === id);
@@ -163,8 +163,9 @@ export async function approveWalletRequest(id, password, txid = null, permission
     // Log to history
     logWalletRequest(request, 'approved', txid);
 
-    // We resolve with the password and permissions so the caller can use them
-    request.resolve({ approved: true, password, permissions });
+    // `remember` distinguishes "Allow once" from "Always allow" — the caller decides
+    // whether to persist, and only the storable doors can be persisted at all.
+    request.resolve({ approved: true, password, permissions, remember });
 
     // Remove from queue
     walletRequests.update(reqs => reqs.filter(r => r.id !== id));
@@ -206,6 +207,7 @@ export const appState = writable({
   gnomonProgress: 0,
   gnomonIndexedHeight: 0,
   gnomonChainHeight: 0,
+  gnomonIndexerStatus: '', // Gnomon indexer lifecycle; 'indexed' means the first pass is complete
   gnomonAppsLoaded: false, // True when GetDiscoveredApps() has completed at least once
   gnomonReindexing: false, // True during the one-time filter-change re-index (token discovery update)
   telaSession: null,
@@ -397,6 +399,7 @@ export async function updateStatus() {
       gnomonIndexedHeight: gnomonStatus?.status?.indexed_height || 0,
       gnomonChainHeight: gnomonStatus?.status?.chain_height || 0,
       gnomonAppsLoaded: gnomonStatus?.status?.apps_loaded || false,
+      gnomonIndexerStatus: gnomonStatus?.status?.indexer_status || '',
     }));
   } catch (error) {
     console.error('Status update error:', error);

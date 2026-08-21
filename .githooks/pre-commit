@@ -34,4 +34,8 @@ EOF
   fi
 done
 
+# Also refuse cross-persona authorship: GitHub noreply addresses resolve by
+# numeric ID alone, so name and ID can disagree while git log reads clean.
+/home/quickbrownfox/.local/bin/git-identity-check || exit 1
+
 exit 0

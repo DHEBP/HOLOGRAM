@@ -16,19 +16,35 @@ export function dropCoordsToCSS(x, y) {
 }
 
 /**
- * True if native drop coordinates fall inside element's bounding box.
- * Tries CSS-scaled coords first, then raw coords (platform variance).
+ * Resolve native drop coordinates to the CSS-pixel point inside element, or null if the drop
+ * landed outside it. Tries CSS-scaled coords first, then raw (platform variance).
+ *
+ * Returning the point rather than a boolean is deliberate. A caller that needs to pass the
+ * position on — to elementFromPoint inside the frame, say — must use the SAME space the hit
+ * test matched in, and a boolean cannot tell it which one that was. Passing the raw coords
+ * after a CSS-scaled match aims at devicePixelRatio times the intended offset, which is
+ * invisible at dpr 1 and lands nowhere near the cursor on a scaled display.
  */
-export function isDropPointInElement(x, y, element) {
+export function resolveDropPoint(x, y, element) {
   if (!element) {
-    return false;
+    return null;
   }
   const rect = element.getBoundingClientRect();
   const css = dropCoordsToCSS(x, y);
   if (pointInRect(css.x, css.y, rect)) {
-    return true;
+    return css;
   }
-  return pointInRect(x, y, rect);
+  if (pointInRect(x, y, rect)) {
+    return { x, y };
+  }
+  return null;
+}
+
+/**
+ * True if native drop coordinates fall inside element's bounding box.
+ */
+export function isDropPointInElement(x, y, element) {
+  return resolveDropPoint(x, y, element) !== null;
 }
 
 function pointInRect(x, y, rect) {

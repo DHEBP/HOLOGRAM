@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"mime"
 	"os"
 	"path/filepath"
 	"sort"
@@ -445,18 +446,47 @@ func (a *App) MoveFile(source, destination string) map[string]interface{} {
 	}
 }
 
+// removableUnderDatashards reports whether path may be removed by RemoveFile: it
+// must resolve to an entry strictly inside the canonical datashards dir (A6 — via
+// filepath.Rel, so a sibling like "datashardsX" is NOT matched), must not be the
+// datashards root itself, and must not fall in the wallets/ or settings/ subtrees
+// that now live co-located there (A11). why is "protected" for a wallet/settings
+// hit and "outside" otherwise.
+func removableUnderDatashards(path string) (ok bool, why string) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false, "outside"
+	}
+	shardsDir, _ := filepath.Abs(getDatashardsDir())
+	rel, relErr := filepath.Rel(shardsDir, absPath)
+	if relErr != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false, "outside"
+	}
+	firstSeg := rel
+	if i := strings.IndexRune(rel, filepath.Separator); i >= 0 {
+		firstSeg = rel[:i]
+	}
+	if firstSeg == "wallets" || firstSeg == "settings" {
+		return false, "protected"
+	}
+	return true, ""
+}
+
 // RemoveFile removes a file or directory (only from datashards/clone)
 func (a *App) RemoveFile(path string) map[string]interface{} {
 	a.logToConsole(fmt.Sprintf("[File] Removing: %s", path))
 
-	// Security check: only allow removal from datashards directory
-	absPath, _ := filepath.Abs(path)
-	shardsDir, _ := filepath.Abs(filepath.Join(".", "datashards"))
-	
-	if !strings.HasPrefix(absPath, shardsDir) {
+	// Security check (A6/A11): only allow removal from the CANONICAL datashards dir,
+	// and never the co-located wallets/ or settings/ subtrees. Containment rules live
+	// in removableUnderDatashards so they can be unit-tested without a running App.
+	if okRemove, why := removableUnderDatashards(path); !okRemove {
+		msg := "Can only remove files from the datashards directory"
+		if why == "protected" {
+			msg = "Refusing to remove protected wallet/settings data"
+		}
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Can only remove files from datashards directory",
+			"error":   msg,
 		}
 	}
 
@@ -551,21 +581,51 @@ func (a *App) SelectFile() string {
 	return selection
 }
 
-// SelectFileWithContent opens a native file picker dialog and returns the file content as base64.
-// This is used by TELA dApps that need to select files (e.g., importing images).
+// saveFilters wraps a caller's save-dialog filter, dropping catch-all patterns.
+//
+// Same macOS trap as buildFileFilters: WailsContext.m hands the pattern to NSSavePanel's
+// allowedFileTypes after stripping "*.", so "*.*" arrives as "*" and matches no extension.
+// Callers pass exactly that as their fallback for an unrecognised file type, so a save that
+// should have been unrestricted became a dialog that refused every name.
+func saveFilters(name, pattern string) []runtime.FileFilter {
+	p := strings.TrimSpace(pattern)
+	if p == "" || p == "*.*" || p == "*" {
+		return nil
+	}
+	return []runtime.FileFilter{{DisplayName: name, Pattern: p}}
+}
+
+// buildFileFilters turns an HTML accept attribute into dialog filters.
 // The accept parameter is a comma-separated list of MIME types (e.g., "image/png,image/jpeg")
 // or file extensions (e.g., ".png,.jpg"). If empty, all files are shown.
-func (a *App) SelectFileWithContent(title string, accept string) map[string]interface{} {
-	a.logToConsole(fmt.Sprintf("[FILE] SelectFileWithContent: title=%s, accept=%s", title, accept))
-
-	// Build file filters from accept parameter
+//
+// Split out from SelectFileWithContent so it can be tested without a Wails context: the
+// caller opens a real dialog, this does not.
+func buildFileFilters(accept string) []runtime.FileFilter {
+	// NO "All Files" catch-all. It looks like a safe fallback and on macOS it is the
+	// opposite: WailsContext.m strips "*." from every pattern and hands the remainder to
+	// NSOpenPanel's allowedFileTypes, which takes bare EXTENSIONS. "*.*" becomes "*", no
+	// file has the extension "*", and every file greys out. darwin also flattens all
+	// filters into one list, so there is no dropdown to escape to. On GTK "*.*" is a real
+	// glob and matches everything, which is why this only ever bit macOS users.
+	//
+	// Emitting no filters means "allow anything" on both platforms, so that is what an
+	// absent or untranslatable accept produces.
 	filters := []runtime.FileFilter{}
 	if accept != "" {
 		// Parse accept string to build filters
 		parts := strings.Split(accept, ",")
 		patterns := []string{}
+		// One unrecognised token voids the narrow filter entirely. Translating only the
+		// tokens we know would quietly narrow the dialog to a SUBSET of what the app
+		// accepts: accept="image/png,application/pdf" would offer PNGs and hide the PDFs
+		// the app explicitly allows.
+		understood := true
 		for _, part := range parts {
 			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
 			if strings.HasPrefix(part, ".") {
 				// Extension like ".png"
 				patterns = append(patterns, "*"+part)
@@ -578,6 +638,8 @@ func (a *App) SelectFileWithContent(title string, accept string) map[string]inte
 					patterns = append(patterns, "*.jpg", "*.jpeg")
 				case "image/gif":
 					patterns = append(patterns, "*.gif")
+				case "image/webp":
+					patterns = append(patterns, "*.webp")
 				case "image/svg+xml":
 					patterns = append(patterns, "*.svg")
 				case "image/*":
@@ -588,25 +650,55 @@ func (a *App) SelectFileWithContent(title string, accept string) map[string]inte
 					patterns = append(patterns, "*.html", "*.htm")
 				case "text/css":
 					patterns = append(patterns, "*.css")
+				case "text/markdown":
+					patterns = append(patterns, "*.md")
+				case "text/csv":
+					patterns = append(patterns, "*.csv")
 				case "application/javascript", "text/javascript":
 					patterns = append(patterns, "*.js")
 				case "application/json":
 					patterns = append(patterns, "*.json")
+				case "application/pdf":
+					patterns = append(patterns, "*.pdf")
+				case "application/zip":
+					patterns = append(patterns, "*.zip")
+				case "application/msword":
+					patterns = append(patterns, "*.doc")
+				case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+					patterns = append(patterns, "*.docx")
+				case "application/vnd.ms-excel":
+					patterns = append(patterns, "*.xls")
+				case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+					patterns = append(patterns, "*.xlsx")
+				default:
+					// Wildcards we cannot enumerate (application/*, audio/*, */*) and any
+					// type absent from the map above. Stop pretending we can express it.
+					understood = false
 				}
+			} else {
+				// Neither an extension nor a MIME type.
+				understood = false
 			}
 		}
-		if len(patterns) > 0 {
+		if understood && len(patterns) > 0 {
 			filters = append(filters, runtime.FileFilter{
 				DisplayName: "Allowed Files",
 				Pattern:     strings.Join(patterns, ";"),
 			})
 		}
 	}
-	// Always add "All Files" as fallback
-	filters = append(filters, runtime.FileFilter{
-		DisplayName: "All Files",
-		Pattern:     "*.*",
-	})
+	if len(filters) == 0 {
+		return nil
+	}
+	return filters
+}
+
+// SelectFileWithContent opens a native file picker dialog and returns the file content as base64.
+// This is used by TELA dApps that need to select files (e.g., importing images).
+func (a *App) SelectFileWithContent(title string, accept string) map[string]interface{} {
+	a.logToConsole(fmt.Sprintf("[FILE] SelectFileWithContent: title=%s, accept=%s", title, accept))
+
+	filters := buildFileFilters(accept)
 
 	dialogTitle := title
 	if dialogTitle == "" {
@@ -999,7 +1091,61 @@ func detectMimeType(filename string) string {
 	if mime, ok := mimeTypes[ext]; ok {
 		return mime
 	}
+	// The table above covers what TELA serves. A file a user drags in is anything at all, and
+	// falling straight to octet-stream told apps that a .txt was opaque binary — enough for an
+	// app filtering on type to refuse a file it handles fine. Measured 2026-08-09: dragtest.txt
+	// reached drop-probe as application/octet-stream. The table still wins where it has an
+	// entry, so nothing TELA serves changes (stdlib answers .js as text/javascript, not
+	// application/javascript).
+	if mt := mime.TypeByExtension(ext); mt != "" {
+		return mt
+	}
 	return "application/octet-stream"
+}
+
+// maxDroppedFileBytes bounds a file handed to a TELA app. The bytes cross into the frame
+// as base64 through postMessage — a structured-clone copy of a ~33% inflated string — so a
+// large file stalls the renderer rather than failing outright.
+const maxDroppedFileBytes = 25 * 1024 * 1024
+
+// ReadDroppedFile reads a file the user dropped onto the window, base64-encoded.
+//
+// The path is never supplied by an app. It arrives on Wails' native file-drop channel,
+// which only fires after a real drag-and-release by the user, and the caller is the parent
+// document. The path is deliberately NOT returned: the app receives bytes and a filename,
+// never the user's directory layout.
+//
+// This channel exists because on Linux the DOM cannot supply the file at all. Measured on
+// WebKitGTK 2026-08-09: an external drag reports types=text/uri-list,text/html with
+// files.length 0 and an empty text/uri-list, so a drop event alone carries nothing to read.
+func (a *App) ReadDroppedFile(path string) map[string]interface{} {
+	info, err := os.Stat(path)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("Cannot read file: %v", err)}
+	}
+	if info.IsDir() {
+		return map[string]interface{}{"success": false, "error": "Folders cannot be handed to an app"}
+	}
+	if info.Size() > maxDroppedFileBytes {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("%s is too large to hand to an app (max 25 MB)", info.Name()),
+		}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("Failed to read file: %v", err)}
+	}
+
+	a.logToConsole(fmt.Sprintf("[Drop] Read %s (%d bytes)", info.Name(), info.Size()))
+	return map[string]interface{}{
+		"success":  true,
+		"filename": info.Name(),
+		"size":     info.Size(),
+		"mimeType": detectMimeType(info.Name()),
+		"base64":   base64.StdEncoding.EncodeToString(data),
+	}
 }
 
 // ================== BATCH UPLOAD (Folder Scanner) ==================
@@ -1424,12 +1570,7 @@ func (a *App) SaveBinaryFileWithDialog(defaultFilename string, base64Content str
 	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		DefaultFilename: defaultFilename,
 		Title:           "Save File",
-		Filters: []runtime.FileFilter{
-			{
-				DisplayName: filterName,
-				Pattern:     filterPattern,
-			},
-		},
+		Filters:         saveFilters(filterName, filterPattern),
 	})
 
 	if err != nil {
@@ -1473,12 +1614,7 @@ func (a *App) SaveFileWithDialog(defaultFilename string, content string, filterN
 	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		DefaultFilename: defaultFilename,
 		Title:           "Save File",
-		Filters: []runtime.FileFilter{
-			{
-				DisplayName: filterName,
-				Pattern:     filterPattern,
-			},
-		},
+		Filters:         saveFilters(filterName, filterPattern),
 	})
 
 	if err != nil {

@@ -1,0 +1,9 @@
+{
+ "scid": "80f7f6ba23348e2432621ef9bc594e0a18331f6b0f681ae8de03231bef220bb9",
+ "owner": "dero1qyqqtsvggrfxtsz6p3yn49n26k83nnr50jmpnyqylykzju4wgl9yvqqdxdvse",
+ "checkC": "154e250e11c95a18710972326f2379a505ce78b33b6b07895570316d8c6e2590",
+ "checkS": "c925efc976d538def6decb2f5372fcb7f87d5576956dc04be645f5e4f5161e4",
+ "code": "Function InitializePrivate() Uint64\n10 IF init() == 0 THEN GOTO 30\n20 RETURN 1\n30 STORE(\"var_header_name\", \"appData.txt.gz\")\n31 STORE(\"var_header_description\", \"\")\n32 STORE(\"var_header_icon\", \"\")\n33 STORE(\"dURL\", \"villager.tela\")\n34 STORE(\"docType\", \"TELA-STATIC-1\")\n35 STORE(\"subDir\", \"\")\n36 STORE(\"fileCheckC\", \"154e250e11c95a18710972326f2379a505ce78b33b6b07895570316d8c6e2590\")\n37 STORE(\"fileCheckS\", \"c925efc976d538def6decb2f5372fcb7f87d5576956dc04be645f5e4f5161e4\")\n100 RETURN 0\nEnd Function\n\nFunction init() Uint64\n10 IF EXISTS(\"owner\") == 0 THEN GOTO 30\n20 RETURN 1\n30 STORE(\"owner\", address())\n50 STORE(\"docVersion\", \"1.0.0\")\n60 STORE(\"hash\", HEX(TXID()))\n70 STORE(\"likes\", 0)\n80 STORE(\"dislikes\", 0)\n100 RETURN 0\nEnd Function\n\nFunction address() String\n10 DIM s as String\n20 LET s = SIGNER()\n30 IF IS_ADDRESS_VALID(s) THEN GOTO 50\n40 RETURN \"anon\"\n50 RETURN ADDRESS_STRING(s)\nEnd Function\n\nFunction Rate(r Uint64) Uint64\n10 DIM addr as String\n15 LET addr = address()\n16 IF r < 100 && EXISTS(addr) == 0 && addr != \"anon\" THEN GOTO 30\n20 RETURN 1\n30 STORE(addr, \"\"+r+\"_\"+BLOCK_HEIGHT())\n40 IF r < 50 THEN GOTO 70\n50 STORE(\"likes\", LOAD(\"likes\")+1)\n60 RETURN 0\n70 STORE(\"dislikes\", LOAD(\"dislikes\")+1)\n100 RETURN 0\nEnd Function\n\n/*\nH4sIAAAAAAAC/wTAAREAMAgCwErqjQAo0D/S/iqx3yxFIDzLVBfXbRSMY9wjmMLaeZMqhcd26wcAAP//cxqkrEAAAAA=\n*/",
+ "name": "appData.txt.gz",
+ "docType": "TELA-STATIC-1"
+}

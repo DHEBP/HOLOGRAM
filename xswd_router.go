@@ -39,15 +39,37 @@ func xswdError(msg string, technicalErr ...string) XSWDResponse {
 	return resp
 }
 
-// routeDaemonCall handles DERO.* daemon RPC methods
+// daemonParams turns an empty argument map into an absent one.
+//
+// derod's no-argument methods refuse a params object outright — DERO.GetHeight answers
+// -32602 "no parameters accepted" to {"params":{}} and succeeds when the key is missing. A
+// dApp that always sends a params object, which is ordinary JSON-RPC client behaviour, could
+// therefore not read the chain tip through HOLOGRAM at all.
+//
+// It cannot be fixed by nilling the map: DaemonClient.Call takes interface{} and `omitempty`
+// only fires for a nil INTERFACE, while an interface holding a nil map is itself non-nil. So
+// the emptiness has to be resolved here, before the value is widened.
+func daemonParams(params map[string]interface{}) interface{} {
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
+// routeDaemonCall handles DERO.* daemon RPC methods as a raw passthrough.
+//
+// Deliberately NOT run through normalizeDEROGetSCResult, unlike Explorer's own DaemonGetSC in
+// app.go, which decodes for display. derod hex-encodes every SC string variable before it leaves
+// the daemon (cmd/derod/rpc/rpc_dero_getsc.go, fmt.Sprintf("%x", ...)), so hex IS the wire
+// format a dApp is written against — Engram passes it through, and an app that decodes it (the
+// correct thing to do) gets garbage if HOLOGRAM decoded first. It cannot compensate either: a
+// decoded value that is itself hex-charset text ("CAFE") is indistinguishable from one that was
+// never encoded, so there is no reliable downstream test for which happened.
 func (a *App) routeDaemonCall(method string, params map[string]interface{}) XSWDResponse {
-	result, err := a.daemonClient.Call(method, params)
+	result, err := a.daemonClient.Call(method, daemonParams(params))
 	if err != nil {
 		log.Printf("[ERR] Daemon call failed: %v", err)
 		return xswdError(FriendlyError(err), err.Error())
-	}
-	if method == "DERO.GetSC" {
-		result = normalizeDEROGetSCResult(result)
 	}
 	return xswdSuccess(result)
 }
@@ -305,7 +327,7 @@ func (a *App) routeGnomonCall(method string, params map[string]interface{}) XSWD
 		})
 
 	case "ResolveDURL":
-		scid, found := a.gnomonClient.ResolveDURL(getStr("durl"))
+		scid, found := a.resolveServableDURL(getStr("durl"))
 		return xswdSuccess(map[string]interface{}{
 			"scid":  scid,
 			"found": found,

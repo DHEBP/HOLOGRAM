@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 )
@@ -320,99 +321,99 @@ func GetTELAErrorResponse(errMsg string, fileName string) map[string]interface{}
 // UserFriendlyErrors maps technical error patterns to user-friendly messages
 var UserFriendlyErrors = map[string]string{
 	// Network/Connection errors
-	"connection refused":           "Cannot connect to the node. Make sure derod is running.",
-	"connection reset":             "Connection was reset. The node may have restarted.",
-	"no such host":                 "Cannot find the node. Check your network settings.",
-	"network is unreachable":       "Network is unreachable. Check your internet connection.",
-	"i/o timeout":                  "Connection timed out. The node may be busy or unreachable.",
-	"context deadline exceeded":    "Request timed out. Try again or check your connection.",
-	"context canceled":             "Operation was cancelled.",
-	"dial tcp":                     "Cannot connect to the node. Is derod running?",
-	"EOF":                          "Connection closed unexpectedly. Try reconnecting.",
-	
+	"connection refused":        "Cannot connect to the node. Make sure derod is running.",
+	"connection reset":          "Connection was reset. The node may have restarted.",
+	"no such host":              "Cannot find the node. Check your network settings.",
+	"network is unreachable":    "Network is unreachable. Check your internet connection.",
+	"i/o timeout":               "Connection timed out. The node may be busy or unreachable.",
+	"context deadline exceeded": "Request timed out. Try again or check your connection.",
+	"context canceled":          "Operation was cancelled.",
+	"dial tcp":                  "Cannot connect to the node. Is derod running?",
+	"EOF":                       "Connection closed unexpectedly. Try reconnecting.",
+
 	// Simulator-specific errors
-	"daemon connection lost":       "Simulator daemon connection lost. Please restart simulator mode.",
-	"daemon crashed":               "Simulator daemon crashed. Please restart simulator mode.",
-	"daemon endpoint is invalid":   "Simulator not properly configured. Please restart simulator mode.",
-	"could not be built":           "Transaction build failed. Wallet may be out of sync — please try again.",
-	"more than you have":           "Amount plus network fees exceeds your balance. Try reducing the amount slightly.",
-	"TX verification failed":       "Amount plus network fees exceeds your balance. Try reducing the amount slightly.",
+	"daemon connection lost":          "Simulator daemon connection lost. Please restart simulator mode.",
+	"daemon crashed":                  "Simulator daemon crashed. Please restart simulator mode.",
+	"daemon endpoint is invalid":      "Simulator not properly configured. Please restart simulator mode.",
+	"could not be built":              "Transaction build failed. Wallet may be out of sync — please try again.",
+	"more than you have":              "Amount plus network fees exceeds your balance. Try reducing the amount slightly.",
+	"TX verification failed":          "Amount plus network fees exceeds your balance. Try reducing the amount slightly.",
 	"simulator daemon not responding": "Simulator daemon not responding. Please restart simulator mode.",
-	"websocket: close":             "Connection closed unexpectedly. Retrying...",
-	"abnormal closure":             "Connection interrupted. The operation will be retried.",
-	
+	"websocket: close":                "Connection closed unexpectedly. Retrying...",
+	"abnormal closure":                "Connection interrupted. The operation will be retried.",
+
 	// Wallet errors
-	"wallet not open":              "Please open a wallet first.",
-	"wallet is not open":           "Please open a wallet first.",
-	"wallet already open":          "A wallet is already open. Close it first.",
-	"incorrect password":           "Incorrect wallet password.",
-	"invalid password":             "Invalid wallet password.",
-	"wallet file not found":        "Wallet file not found. Check the path.",
-	"insufficient balance":         "Not enough DERO for this transaction.",
-	"insufficient funds":           "Not enough DERO for this transaction.",
-	"account unregistered":         "Recipient's wallet is not registered on-chain. They need to open their wallet and click 'Register Now' (in Backup & Security) before they can receive DERO.",
-	"sending to self":              "Cannot send transactions to your own address.",
-	
+	"wallet not open":       "Please open a wallet first.",
+	"wallet is not open":    "Please open a wallet first.",
+	"wallet already open":   "A wallet is already open. Close it first.",
+	"incorrect password":    "Incorrect wallet password.",
+	"invalid password":      "Invalid wallet password.",
+	"wallet file not found": "Wallet file not found. Check the path.",
+	"insufficient balance":  "Not enough DERO for this transaction.",
+	"insufficient funds":    "Not enough DERO for this transaction.",
+	"account unregistered":  "Recipient's wallet is not registered on-chain. They need to open their wallet and click 'Register Now' (in Backup & Security) before they can receive DERO.",
+	"sending to self":       "Cannot send transactions to your own address.",
+
 	// Transaction errors
-	"tx rejected":                  "Transaction was rejected by the network.",
-	"invalid transaction":          "Invalid transaction format.",
-	"double spend":                 "Transaction rejected: possible double spend.",
-	"mempool full":                 "Network mempool is full. Try again later.",
-	"fee too low":                  "Transaction fee is too low.",
-	"not enough ring":              "Not enough ring members. Wait for more blocks.",
-	"ring members":                 "Not enough ring members for privacy. Wait for more blocks.",
-	"nonce mismatch":               "Wallet out of sync. Retrying...",
-	
+	"tx rejected":         "Transaction was rejected by the network.",
+	"invalid transaction": "Invalid transaction format.",
+	"double spend":        "Transaction rejected: possible double spend.",
+	"mempool full":        "Network mempool is full. Try again later.",
+	"fee too low":         "Transaction fee is too low.",
+	"not enough ring":     "Not enough ring members. Wait for more blocks.",
+	"ring members":        "Not enough ring members for privacy. Wait for more blocks.",
+	"nonce mismatch":      "Wallet out of sync. Retrying...",
+
 	// Smart contract errors
-	"scid not found":               "Smart contract not found on the blockchain.",
-	"invalid scid":                 "Invalid smart contract ID format.",
-	"sc execution failed":          "Smart contract execution failed.",
-	"gas limit exceeded":           "Transaction ran out of gas.",
-	"panic":                        "Smart contract error occurred.",
-	"sc validation failed":         "Smart contract code validation failed. Check file content.",
-	"expecting declaration":        "File contains '*/' which breaks TELA. See error details.",
-	
+	"scid not found":        "Smart contract not found on the blockchain.",
+	"invalid scid":          "Invalid smart contract ID format.",
+	"sc execution failed":   "Smart contract execution failed.",
+	"gas limit exceeded":    "Transaction ran out of gas.",
+	"panic":                 "Smart contract error occurred.",
+	"sc validation failed":  "Smart contract code validation failed. Check file content.",
+	"expecting declaration": "File contains '*/' which breaks TELA. See error details.",
+
 	// XSWD errors
-	"xswd not connected":           "Wallet not connected. Please connect first.",
-	"xswd connection failed":       "Failed to connect to wallet service.",
-	"permission denied":            "Permission denied by wallet.",
-	"user rejected":                "Action was rejected by the user.",
-	"request timeout":              "Wallet request timed out.",
-	"invalid name":                 "XSWD: App name contains invalid characters (ASCII only).",
-	"invalid description":          "XSWD: App description contains invalid characters (ASCII only).",
-	"invalid url":                  "XSWD: URL doesn't match browser origin.",
-	"-32601":                       "RPC method not found. Check method name.",
-	"-32700":                       "Invalid JSON in request.",
-	"-32602":                       "Invalid parameters for RPC method.",
-	"-32098":                       "Recipient's wallet is not registered on-chain. They need to open their wallet and click 'Register Now' (in Backup & Security) before they can receive DERO.",
-	
+	"xswd not connected":     "Wallet not connected. Please connect first.",
+	"xswd connection failed": "Failed to connect to wallet service.",
+	"permission denied":      "Permission denied by wallet.",
+	"user rejected":          "Action was rejected by the user.",
+	"request timeout":        "Wallet request timed out.",
+	"invalid name":           "XSWD: App name contains invalid characters (ASCII only).",
+	"invalid description":    "XSWD: App description contains invalid characters (ASCII only).",
+	"invalid url":            "XSWD: URL doesn't match browser origin.",
+	"-32601":                 "RPC method not found. Check method name.",
+	"-32700":                 "Invalid JSON in request.",
+	"-32602":                 "Invalid parameters for RPC method.",
+	"-32098":                 "Recipient's wallet is not registered on-chain. They need to open their wallet and click 'Register Now' (in Backup & Security) before they can receive DERO.",
+
 	// Gnomon errors
-	"gnomon not running":           "Gnomon indexer is not running. Start it in Settings.",
-	"gnomon already running":       "Gnomon indexer is already running.",
-	"index not found":              "Content not found in index. Try refreshing.",
-	"durl not found":               "dURL not found. Check the address.",
-	
+	"gnomon not running":     "Gnomon indexer is not running. Start it in Settings.",
+	"gnomon already running": "Gnomon indexer is already running.",
+	"index not found":        "Content not found in index. Try refreshing.",
+	"durl not found":         "dURL not found. Check the address.",
+
 	// File/Content errors
-	"no html content":              "No displayable content found.",
-	"no doc contracts":             "This INDEX has no associated documents.",
-	"failed to fetch":              "Failed to load content. Check your connection.",
-	"decode failed":                "Failed to decode content data.",
-	"assembly failed":              "Failed to assemble content for display.",
-	"file too large":               "File exceeds the 18KB size limit for TELA.",
-	"exceeds max":                  "Content exceeds maximum allowed size.",
-	"doccode size":                 "DOC file too large. Max 18KB.",
-	"index install size":           "INDEX too large. Reduce DOCs or shorten names.",
-	
+	"no html content":    "No displayable content found.",
+	"no doc contracts":   "This INDEX has no associated documents.",
+	"failed to fetch":    "Failed to load content. Check your connection.",
+	"decode failed":      "Failed to decode content data.",
+	"assembly failed":    "Failed to assemble content for display.",
+	"file too large":     "File exceeds the 18KB size limit for TELA.",
+	"exceeds max":        "Content exceeds maximum allowed size.",
+	"doccode size":       "DOC file too large. Max 18KB.",
+	"index install size": "INDEX too large. Reduce DOCs or shorten names.",
+
 	// Unicode/encoding errors
-	"non-ascii":                    "File contains non-ASCII characters. Use ASCII only.",
-	"unicode":                      "File contains Unicode characters that may cause issues.",
-	"encoding error":               "Character encoding error. Check for special characters.",
-	
+	"non-ascii":      "File contains non-ASCII characters. Use ASCII only.",
+	"unicode":        "File contains Unicode characters that may cause issues.",
+	"encoding error": "Character encoding error. Check for special characters.",
+
 	// Generic errors
-	"not found":                    "The requested item was not found.",
-	"unauthorized":                 "You don't have permission for this action.",
-	"bad request":                  "Invalid request. Please check your input.",
-	"internal error":               "An internal error occurred. Please try again.",
+	"not found":      "The requested item was not found.",
+	"unauthorized":   "You don't have permission for this action.",
+	"bad request":    "Invalid request. Please check your input.",
+	"internal error": "An internal error occurred. Please try again.",
 }
 
 // FriendlyError converts a technical error message to a user-friendly one
@@ -428,16 +429,27 @@ func FriendlyErrorString(errMsg string) string {
 	if errMsg == "" {
 		return ""
 	}
-	
+
 	lowerMsg := strings.ToLower(errMsg)
-	
+
+	// A "could not decode name or address" failure means the DESTINATION the caller gave could
+	// not be turned into a payable address -- a mistyped/truncated address or an unresolvable
+	// on-chain name. Its inner text carries "-32098"/"leaf not found", which the generic map
+	// below would otherwise match (in random order) as "recipient not registered, click Register
+	// Now" or "item not found" -- both wrong. Front it with one clear, deterministic message and
+	// leave the genuine unregistered-recipient path (a decodable address simply not registered)
+	// to the map.
+	if strings.Contains(lowerMsg, "could not decode name or address") {
+		return "Couldn't resolve that recipient. Double-check the destination address (or on-chain name) and try again."
+	}
+
 	// Check each pattern
 	for pattern, friendly := range UserFriendlyErrors {
 		if strings.Contains(lowerMsg, strings.ToLower(pattern)) {
 			return friendly
 		}
 	}
-	
+
 	// Return original if no match found
 	return errMsg
 }
@@ -449,10 +461,10 @@ func ErrorResponse(err error) map[string]interface{} {
 			"success": true,
 		}
 	}
-	
+
 	return map[string]interface{}{
-		"success":       false,
-		"error":         FriendlyError(err),
+		"success":        false,
+		"error":          FriendlyError(err),
 		"technicalError": err.Error(),
 	}
 }
@@ -466,3 +478,23 @@ func ErrorResponseWithData(err error, data map[string]interface{}) map[string]in
 	return resp
 }
 
+// SuccessResponse builds a standardized success response, merging any extra fields
+// (e.g. "filter", "results", "txid") onto {"success": true}. Pairs with ErrorResponse
+// so every binding returns the same {success, ...} shape the frontend expects, without
+// repeating the map[string]any{"success": true, ...} boilerplate at each call site.
+func SuccessResponse(fields map[string]any) map[string]any {
+	resp := map[string]any{"success": true}
+	maps.Copy(resp, fields)
+	return resp
+}
+
+// FailureResponse builds a standardized failure response from a plain message, with
+// optional extra fields (e.g. an empty "results" slice the frontend always iterates).
+// Use ErrorResponse(err) instead when you hold an error value rather than a message.
+func FailureResponse(message string, fields ...map[string]any) map[string]any {
+	resp := map[string]any{"success": false, "error": message}
+	for _, f := range fields {
+		maps.Copy(resp, f)
+	}
+	return resp
+}

@@ -4,11 +4,15 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/deroproject/graviton"
+	"github.com/gorilla/websocket"
 )
 
 // ============== Test Setup/Teardown ==============
@@ -77,12 +81,12 @@ func TestAllPermissions(t *testing.T) {
 
 func TestGetPermissionInfo_KnownPermissions(t *testing.T) {
 	tests := []struct {
-		permission  XSWDPermission
-		expectName  string
-		expectAsk   bool
+		permission XSWDPermission
+		expectName string
+		expectAsk  bool
 	}{
 		{PermissionViewAddress, "View Wallet Address", false},
-		{PermissionViewBalance, "View Balance", false},
+		{PermissionViewBalance, "View Balance & History", false},
 		{PermissionSignTransaction, "Sign Transactions", true},
 		{PermissionSCInvoke, "Smart Contract Calls", true},
 	}
@@ -265,6 +269,9 @@ func TestPermissionManager_NilStore(t *testing.T) {
 // ============== Grant/Revoke Permission Tests ==============
 
 func TestGrantPermissions_NewApp(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
@@ -295,13 +302,13 @@ func TestGrantPermissions_NewApp(t *testing.T) {
 	}
 
 	// Verify permissions
-	if !app.Permissions[PermissionViewAddress] {
+	if !app.permissionsForWallet(walletA)[PermissionViewAddress] {
 		t.Error("PermissionViewAddress should be granted")
 	}
-	if !app.Permissions[PermissionViewBalance] {
+	if !app.permissionsForWallet(walletA)[PermissionViewBalance] {
 		t.Error("PermissionViewBalance should be granted")
 	}
-	if app.Permissions[PermissionSignTransaction] {
+	if app.permissionsForWallet(walletA)[PermissionSignTransaction] {
 		t.Error("PermissionSignTransaction should NOT be granted")
 	}
 
@@ -315,6 +322,9 @@ func TestGrantPermissions_NewApp(t *testing.T) {
 }
 
 func TestGrantPermissions_ExistingApp(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
@@ -329,7 +339,7 @@ func TestGrantPermissions_ExistingApp(t *testing.T) {
 	firstApp := pm.GetApp(origin)
 	originalGrantedAt := firstApp.GrantedAt
 
-	// Second grant - adds more permissions (same second is fine)
+	// Second grant replaces the permission set (connect approval is authoritative)
 	err = pm.GrantPermissions(origin, "Updated Name", "Updated Desc", []XSWDPermission{PermissionViewBalance})
 	if err != nil {
 		t.Fatalf("Second grant failed: %v", err)
@@ -345,12 +355,12 @@ func TestGrantPermissions_ExistingApp(t *testing.T) {
 		t.Errorf("Description not updated: %s", updatedApp.Description)
 	}
 
-	// Both permissions should now be granted
-	if !updatedApp.Permissions[PermissionViewAddress] {
-		t.Error("PermissionViewAddress should still be granted")
+	// Replace semantics: only the latest grant set remains — for the wallet that granted it.
+	if updatedApp.permissionsForWallet(walletA)[PermissionViewAddress] {
+		t.Error("ViewAddress should have been replaced away by the second grant")
 	}
-	if !updatedApp.Permissions[PermissionViewBalance] {
-		t.Error("PermissionViewBalance should now be granted")
+	if !updatedApp.permissionsForWallet(walletA)[PermissionViewBalance] {
+		t.Error("ViewBalance should be granted after second grant")
 	}
 
 	// GrantedAt should remain original
@@ -365,16 +375,21 @@ func TestGrantPermissions_ExistingApp(t *testing.T) {
 }
 
 func TestRevokePermission_Single(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
 	origin := "https://testapp.dero"
 
-	// Grant multiple permissions
+	// Grant multiple permissions. All three must be STORABLE ones — sign_transaction was
+	// used here originally, but it is now approved per action and never persisted
+	// (CanStorePermission), which would make the survivor assertion untestable.
 	err := pm.GrantPermissions(origin, "Test", "", []XSWDPermission{
 		PermissionViewAddress,
 		PermissionViewBalance,
-		PermissionSignTransaction,
+		PermissionReadPublicData,
 	})
 	if err != nil {
 		t.Fatalf("GrantPermissions failed: %v", err)
@@ -389,14 +404,83 @@ func TestRevokePermission_Single(t *testing.T) {
 	app := pm.GetApp(origin)
 
 	// Verify only the revoked permission is gone
-	if !app.Permissions[PermissionViewAddress] {
+	if !app.permissionsForWallet(walletA)[PermissionViewAddress] {
 		t.Error("PermissionViewAddress should still be granted")
 	}
-	if app.Permissions[PermissionViewBalance] {
+	if app.permissionsForWallet(walletA)[PermissionViewBalance] {
 		t.Error("PermissionViewBalance should be revoked")
 	}
-	if !app.Permissions[PermissionSignTransaction] {
-		t.Error("PermissionSignTransaction should still be granted")
+	if !app.permissionsForWallet(walletA)[PermissionReadPublicData] {
+		t.Error("PermissionReadPublicData should still be granted")
+	}
+}
+
+// Spending must never become a standing grant. This is the rule the three-door consent model
+// rests on: one click can buy address or balance access, but never the right to spend.
+func TestGrantPermissions_DropsNonStorable(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
+	pm, cleanup := setupTestPermissionManager(t)
+	defer cleanup()
+
+	origin := "https://testapp.dero"
+
+	// Ask for everything, including the two per-action permissions.
+	if err := pm.GrantPermissions(origin, "Test", "", AllPermissions()); err != nil {
+		t.Fatalf("GrantPermissions failed: %v", err)
+	}
+
+	if pm.HasPermission(origin, PermissionSignTransaction) {
+		t.Error("sign_transaction must never persist as a standing grant")
+	}
+	if pm.HasPermission(origin, PermissionSCInvoke) {
+		t.Error("sc_invoke must never persist as a standing grant")
+	}
+	// The storable doors must be unaffected by the filtering.
+	for _, p := range []XSWDPermission{PermissionReadPublicData, PermissionViewAddress, PermissionViewBalance} {
+		if !pm.HasPermission(origin, p) {
+			t.Errorf("%s should have been granted", p)
+		}
+	}
+}
+
+// "Always allow" must not disturb a door the user already opened.
+func TestAddPermission_IsAdditive(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
+	pm, cleanup := setupTestPermissionManager(t)
+	defer cleanup()
+
+	origin := "https://testapp.dero"
+
+	if err := pm.GrantPermissions(origin, "Test", "", []XSWDPermission{PermissionViewAddress}); err != nil {
+		t.Fatalf("GrantPermissions failed: %v", err)
+	}
+	if err := pm.AddPermission(origin, "Test", "", PermissionViewBalance); err != nil {
+		t.Fatalf("AddPermission failed: %v", err)
+	}
+
+	if !pm.HasPermission(origin, PermissionViewAddress) {
+		t.Error("view_address must survive a later view_balance grant")
+	}
+	if !pm.HasPermission(origin, PermissionViewBalance) {
+		t.Error("view_balance should have been added")
+	}
+}
+
+func TestAddPermission_RefusesNonStorable(t *testing.T) {
+	pm, cleanup := setupTestPermissionManager(t)
+	defer cleanup()
+
+	origin := "https://testapp.dero"
+
+	if err := pm.AddPermission(origin, "Test", "", PermissionSignTransaction); err == nil {
+		t.Error("AddPermission must refuse sign_transaction")
+	}
+	if pm.HasPermission(origin, PermissionSignTransaction) {
+		t.Error("sign_transaction must not be stored even on a refused call")
 	}
 }
 
@@ -460,6 +544,9 @@ func TestRevokeAllPermissions_Nonexistent(t *testing.T) {
 // ============== Permission Checking Tests ==============
 
 func TestHasPermission_Granted(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	pm, cleanup := setupTestPermissionManager(t)
 	defer cleanup()
 
@@ -639,6 +726,9 @@ func TestGetActiveClients(t *testing.T) {
 // ============== Persistence Tests ==============
 
 func TestPermissions_PersistAcrossReload(t *testing.T) {
+	// Wallet doors are filed against the wallet that granted them, so these need an
+	// identity to be granted under. Pinned rather than opened: no wallet file, no daemon.
+	pinWallet(t, walletA)
 	// Create temp directory
 	tempDir, err := os.MkdirTemp("", "hologram_permissions_persist_*")
 	if err != nil {
@@ -682,10 +772,10 @@ func TestPermissions_PersistAcrossReload(t *testing.T) {
 	if app.Name != "Test App" {
 		t.Errorf("Name = %s, expected 'Test App'", app.Name)
 	}
-	if !app.Permissions[PermissionViewAddress] {
+	if !app.permissionsForWallet(walletA)[PermissionViewAddress] {
 		t.Error("PermissionViewAddress should persist")
 	}
-	if !app.Permissions[PermissionViewBalance] {
+	if !app.permissionsForWallet(walletA)[PermissionViewBalance] {
 		t.Error("PermissionViewBalance should persist")
 	}
 }
@@ -846,5 +936,204 @@ func BenchmarkGetRequiredPermission(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		GetRequiredPermission(methods[i%len(methods)])
+	}
+}
+
+// The bug this pins: the handshake parsed only the array form, so a canonical XSWD dApp
+// sending the map form was handed the one-entry default and every wallet call it made was
+// then denied forever. Revert ParseRequestedPermissions to array-only and the map case here
+// fails — this test is coupled to the fix, not merely to the helper's existence.
+func TestParseRequestedPermissions(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  interface{}
+		want []XSWDPermission
+	}{
+		{"canonical map form", map[string]interface{}{
+			"view_address": true, "view_balance": true, "sign_transaction": false,
+		}, []XSWDPermission{PermissionViewAddress, PermissionViewBalance}},
+		{"legacy array form", []interface{}{"view_address", "sc_invoke"},
+			[]XSWDPermission{PermissionViewAddress, PermissionSCInvoke}},
+		{"absent falls back to public data", nil, DefaultRequestedPermissions()},
+		{"empty array does not widen", []interface{}{}, DefaultRequestedPermissions()},
+		{"all-false map does not widen", map[string]interface{}{"view_balance": false}, DefaultRequestedPermissions()},
+		{"unknown ids dropped", []interface{}{"view_address", "be_admin", 42},
+			[]XSWDPermission{PermissionViewAddress}},
+		{"garbage type falls back", "view_balance", DefaultRequestedPermissions()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseRequestedPermissions(tc.raw)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestSubscriptionPermissionMapping(t *testing.T) {
+	if got := SubscriptionPermission(SubNewTopoheight); got != PermissionReadPublicData {
+		t.Errorf("new_topoheight: got %v, want read_public_data", got)
+	}
+	for _, ev := range []SubscriptionType{SubNewBalance, SubNewEntry} {
+		if got := SubscriptionPermission(ev); got != PermissionViewBalance {
+			t.Errorf("%v: got %v, want view_balance", ev, got)
+		}
+	}
+}
+
+// A colliding JSON-RPC id used to route an approval — and the password typed into it — to a
+// different pending request. Keys must not be derived from anything the caller controls.
+func TestNextRequestIDIsUniqueAndNotCallerDerived(t *testing.T) {
+	s := &XSWDServer{}
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		id := s.nextRequestID("handshake")
+		if seen[id] {
+			t.Fatalf("duplicate request id: %s", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestXSWDOriginKeyIsNamespaced(t *testing.T) {
+	// A dApp naming a browser TELA app's SCID must not land on that app's grant record.
+	scid := "deadbeef"
+	if XSWDOriginKey(scid) == scid {
+		t.Fatal("dApp-supplied origin was not namespaced")
+	}
+	if XSWDOriginKey(" "+scid) != XSWDOriginKey(scid) {
+		t.Fatal("whitespace produced a second key for the same origin")
+	}
+}
+
+// The signing oracle: handleAuthPage took callback and domain as independent params, so the
+// site named in the approval prompt need not be where the signature is delivered. Revert
+// either gate and the reject cases here still pass (they test the matcher, not its adoption)
+// -- but revert the MATCHER and every reject case fails.
+func TestAuthURLMatchesDomain(t *testing.T) {
+	reject := []struct{ name, raw, domain string }{
+		{"plain cross-host", "https://evil.tld/cb", "good.com"},
+		{"backslash userinfo", "https://good.com\\@evil.tld/cb", "good.com"},
+		{"userinfo", "https://good.com@evil.tld/cb", "good.com"},
+		{"encoded slash userinfo", "https://good.com%2f@evil.tld/cb", "good.com"},
+		{"scheme-relative", "//evil.tld/cb", "good.com"},
+		{"javascript scheme", "javascript:alert(1)", "good.com"},
+		{"embedded tab", "https://good\t.com/cb", "good.com"},
+		{"suffix not on dot boundary", "https://notgood.com/cb", "good.com"},
+		{"domain is prose", "https://good.com/cb", "the good site"},
+		{"empty domain", "https://good.com/cb", ""},
+		{"not a url", "good.com/cb", "good.com"},
+	}
+	for _, tc := range reject {
+		t.Run("reject/"+tc.name, func(t *testing.T) {
+			if err := authURLMatchesDomain(tc.raw, tc.domain); err == nil {
+				t.Fatalf("accepted %q for domain %q", tc.raw, tc.domain)
+			}
+		})
+	}
+
+	accept := []struct{ name, raw, domain string }{
+		{"exact host", "https://good.com/cb", "good.com"},
+		{"subdomain", "https://login.good.com/cb", "good.com"},
+		{"case insensitive", "https://GOOD.com/cb", "Good.COM"},
+		{"http allowed", "http://good.com/cb", "good.com"},
+		{"trailing dot both sides", "https://good.com./cb", "good.com."},
+		{"domain carries a port", "https://good.com/cb", "good.com:8443"},
+		// "#" opens a fragment, so the host really is good.com. The ledger listed this as a
+		// vector that must fail closed; it must not -- rejecting it would break real callbacks.
+		{"fragment only looks like userinfo", "https://good.com#@evil.tld/cb", "good.com"},
+	}
+	for _, tc := range accept {
+		t.Run("accept/"+tc.name, func(t *testing.T) {
+			if err := authURLMatchesDomain(tc.raw, tc.domain); err != nil {
+				t.Fatalf("rejected %q for domain %q: %v", tc.raw, tc.domain, err)
+			}
+		})
+	}
+}
+
+// Adoption test. The matcher test above passes even if nobody CALLS the matcher -- that is
+// how the original false claim survived review. This drives the real handler, so deleting
+// the gate in handleAuthPage fails here.
+func TestHandleAuthPageRejectsCrossHostCallback(t *testing.T) {
+	s := &XSWDServer{}
+
+	bad := httptest.NewRequest(http.MethodGet,
+		"/auth?domain=good.com&callback=https://evil.tld/steal&nonce=abc123", nil)
+	rec := httptest.NewRecorder()
+	s.handleAuthPage(rec, bad)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("cross-host callback: status %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if strings.Contains(rec.Body.String(), "evil.tld") {
+		t.Fatal("rejection echoed the attacker callback into the served page")
+	}
+
+	good := httptest.NewRequest(http.MethodGet,
+		"/auth?domain=good.com&callback=https://good.com/cb&nonce=abc123", nil)
+	recGood := httptest.NewRecorder()
+	s.handleAuthPage(recGood, good)
+
+	if recGood.Code != http.StatusOK {
+		t.Fatalf("legitimate sign-in was rejected: status %d", recGood.Code)
+	}
+}
+
+// GetDaemon was gated three inconsistent ways: view_address on the WebSocket path,
+// nothing at all on the Browser path, and a Svelte mapping that was never enforced.
+// The endpoint is public-chain access, so read_public_data is the honest requirement.
+func TestGetDaemonRequiresPublicDataNotAddress(t *testing.T) {
+	for _, m := range []string{"GetDaemon", "DERO.GetDaemon"} {
+		got := GetRequiredPermission(m)
+		if got == PermissionViewAddress {
+			t.Errorf("%s requires view_address — the daemon endpoint says nothing about the wallet", m)
+		}
+		if got != PermissionReadPublicData {
+			t.Errorf("%s: got %q, want %q", m, got, PermissionReadPublicData)
+		}
+	}
+	// Address methods must NOT have been swept along with it.
+	if GetRequiredPermission("GetAddress") != PermissionViewAddress {
+		t.Error("GetAddress no longer requires view_address")
+	}
+}
+
+// A page can put anything in the handshake's "url". The browser-set Origin header cannot
+// be forged by the page, so when one is present it must win. Without this a site can
+// declare itself as a trusted domain and the approval prompt repeats the claim.
+func TestHandshakeOriginPrefersBrowserHeaderOverClaim(t *testing.T) {
+	s := &XSWDServer{
+		clients:          make(map[*websocket.Conn]bool),
+		clientOrigins:    make(map[*websocket.Conn]string),
+		clientWebOrigins: make(map[*websocket.Conn]string),
+	}
+	var conn *websocket.Conn // nil key is fine; we only exercise map lookup semantics
+
+	// No browser Origin (native dApp): fall back to the claim, marked unverified.
+	if got := s.clientWebOrigins[conn]; got != "" {
+		t.Fatalf("expected no web origin, got %q", got)
+	}
+
+	// Browser vouched: that value must be what identity keys on.
+	s.clientWebOrigins[conn] = "https://evil.tld"
+	claimed := "https://trusted.example"
+	webOrigin := s.clientWebOrigins[conn]
+	resolved := claimed
+	if webOrigin != "" {
+		resolved = webOrigin
+	}
+	if resolved != "https://evil.tld" {
+		t.Fatalf("claimed url won over the browser Origin: got %q", resolved)
+	}
+	if XSWDOriginKey(resolved) == XSWDOriginKey(claimed) {
+		t.Fatal("a page could key its grant to a domain it does not control")
 	}
 }

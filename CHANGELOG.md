@@ -7,6 +7,61 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.8] - 2026-08-20
+
+A rebuilt consent model for dApps — connecting no longer asks for wallet access, and access that is remembered is remembered per wallet. Plus sender-attribution privacy, cold-wallet genesis, XSWD/Browser trust-boundary hardening, fund-safety guards on the hot send path, Linux launch fixes for WebKitGTK, TELA file-drop, name resolution, and a required consensus repin ahead of the DERO network's HF3 activation.
+
+### Security
+- **Repinned the embedded `derod` to the `DHEBP/derohe` fork's HF3-ready state.** Without this, HOLOGRAM's bundled node would have forked off the DERO network at block 7,504,640 — silently, with no error surfaced to the user. The fork carries the full set of transactions affected by the HF3 nonce-parity change and has been verified reaching chain tip with zero verification failures.
+
+### Added
+- Wallet: cold-wallet offline genesis — mine registration air-gapped, then broadcast a saved DCSP blob from inside HOLOGRAM (paste → fingerprint check → send).
+- Wallet: sender-attribution controls on Send (anonymize / preferred decoys) with an approval modal that shows the effective ring and only promises a decoy when it holds.
+- Send: Ring Members inline editor — build and name a decoy set without leaving the form.
+- Linux: desktop installer in the release tarball (`install.sh` / `uninstall.sh` / icon / `.desktop`) so double-click and the app menu work without a bare binary.
+- Builds against the consensus-identical `DHEBP/derohe` fork (walletapi privacy patches only).
+
+### Changed
+- **dApp consent is now three doors.** Connecting grants public blockchain data and nothing else — no checkboxes. Anything touching the wallet is asked for at the moment the app reaches for it, and that answer can be remembered. Spending is asked every time and can never be stored, enforced where grants are written rather than in the interface.
+- **Remembered access is scoped to the wallet that granted it.** Approving an app under one wallet no longer covers the next wallet you open — that one is asked again. Grants made before this update cannot be attributed to a wallet and are dropped, so each app asks once more per wallet.
+- Permission prompts list their three answers in a column, least commitment first, so a long label cannot squeeze them into unreadable chips.
+- Smart contract writes report **submitted**, not saved. The call returns when the transaction is broadcast; the contract applies it when the transaction is mined and can still refuse.
+- App state consolidated under `~/.dero/hologram` (legacy CWD litter migrated best-effort).
+- Idle auto-lock: UI drops to the unlock screen on `wallet:autoLocked`; docs claim an app-layer lock (spend refused), not in-memory secret scrub.
+- Browser session auth is parent-owned.
+- Linux release folder ships binary + installer assets instead of a bare executable.
+
+### Fixed
+- Smart contract writes are paid for. A contract call is charged for what it stores, and the fee attached to the transaction *is* that budget — but the fee the wallet works out on its own covers less than the chain charges, so a write past a few hundred bytes was mined, charged, and stored nothing while the interface reported success. HOLOGRAM now measures what a call will store and, when the transaction it built does not carry enough, rebuilds it carrying the measured amount. It only ever raises the fee, and never above the chain's per-call ceiling, beyond which the extra would be spent without buying anything. On a test chain, writes of 500, 2,000 and 5,000 bytes were all lost before this change and all stored after it. This applies to the Explorer and Studio function caller and to contract calls arriving from dApps, which share one broadcast path; setting a variable from the Explorer and updating a TELA INDEX go through the TELA library, which already paid for its writes, and are unchanged.
+- Smart contract writes that the chain cannot apply at any price are refused before broadcast, on the Explorer variable editor, the Explorer/Studio function caller, and INDEX updates. Above the storage ceiling a write is still mined and still charged while the contract stores nothing — HOLOGRAM checks the cost first and says how much to cut. When the cost cannot be measured the write proceeds as before rather than being blocked on a failed measurement. Calls from dApps are refused too: they arrive over a different route that skipped all three of those checks, so the refusal now also sits at the point every contract call passes through on its way out — which is why a fee the caller set itself no longer buys past it either, since nothing can.
+- dApps can read the chain tip again: `DERO.GetHeight` and the other no-argument daemon calls were rejected outright when a dApp sent an empty parameter object, which is ordinary JSON-RPC client behaviour.
+- A refused prompt reaches the dApp as the spec's own “permission denied” code instead of a generic failure, on every bridge — so an app can tell a refusal from a broken call.
+- Permission prompts name the method that triggered them, show a full-length contract origin without clipping it mid-string, and no longer fragment their own explanatory text into columns.
+- Browser: standing grants are read back from storage, so “remember this” survives a tab switch; grants key on the chain-resolved contract id after a session is restored, and a requested navigation wins over a restored one.
+- TELA Rate from Discover Apps: submit no longer requires an Engram XSWD *client* connection — with the integrated wallet open (“Wallet Ready”) it invokes `Rate` locally. The sidebar XSWD light only meant HOLOGRAM’s server was up, so ratings failed with “Wallet not connected via XSWD” and no console trail.
+- About / version: `AppVersion` is embedded from the `VERSION` file (kept in sync with CHANGELOG by CI) so About can no longer stick on a stale hardcoded release like 1.0.5.
+- XSWD: empty-origin sockets no longer skip permission checks; handshake requires a non-empty `url`.
+- Browser: connect permissions are enforced on integrated-wallet reads; client `authState` is ignored (no forgeable `'ok'`).
+- Browser: srcdoc loads lock sandbox **without** `allow-same-origin` before content is assigned (closes a same-origin/`window.go` pivot race).
+- Approval modal shows every destination, token lines, and `sc_dero_deposit` / `sc_token_deposit` — what you approve is what executes.
+- Native-DERO burn guard: junk `sc_rpc` without a real entrypoint/`SCACTION` no longer bypasses the block or labels destruction as a deposit.
+- Integrated-address invoice checks (amount + expiry) run on the hot `InternalWalletCall` path the Send UI actually uses.
+- XSWD anonymize clamps ring size to ≥16 so the decoy promise cannot ship at ring 2.
+- TELA ratings: Rate arg is `"r"` (was `"rating"` — ratings never recorded); non-functional Like/Dislike removed for Engram parity.
+- Browser: Discover Apps keeps polling until Gnomon’s first index finishes (~5 min), with a one-shot TOP RATED → ALL fallback on empty cold start.
+- Wallet: empty-destination sends rejected; wrong-network destinations blocked on XSWD/token paths; unresolved destinations no longer misdiagnosed as “not registered.”
+- Linux: WebKitGTK DMA-BUF hang on NVIDIA/Wayland — set `WEBKIT_DISABLE_DMABUF_RENDERER=1` before the WebView starts.
+- TELA: dropping a file on an app no longer navigates the whole window away to that file. Fixed across all three bridges (proxy, srcdoc, and locally-served apps), which previously disagreed on drag-and-drop behavior.
+- TELA: a dropped file is now identified by its real type instead of always reading as generic binary, so apps that filter by file type work correctly.
+- Wallet: a registered name typed into the Send field or a Ring Members entry now resolves to its address live, with a status indicator, instead of reporting "Invalid DERO address."
+- Wallet: a custom daemon endpoint is no longer silently overwritten when switching networks.
+- XSWD: `DERO.GetSC` string values returned to dApps are no longer double-decoded, so contract data read through HOLOGRAM now matches what other XSWD-compliant wallets return.
+- Wallet: send-confirmation now clearly separates the ring breakdown (you + recipient + chosen + random) from the named decoy set, instead of running both together on one ambiguous line.
+- Wallet: paying an address that requests a reply-back destination no longer spends funds against a request the wallet couldn't actually fulfil; sending to such a destination is refused up front. Reply-back payments are now supported when the paying wallet chooses to disclose its address, shown plainly in the send confirmation and the XSWD approval modal before it's sent.
+- Fixed a crash where dividing by a zero-sized cache produced an unrepresentable number that the frontend bridge could not serialize, freezing the UI.
+
+---
+
 ## [1.0.7] - 2026-06-18
 
 Privacy Mode, automatic token discovery, clearer asset handling, hardened transfer validation, and Linux release binaries that run on current distros out of the box.
