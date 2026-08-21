@@ -122,33 +122,6 @@ jobs:
           go install github.com/wailsapp/wails/v2/cmd/wails@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Build derod
-        shell: bash
-        env:
-          CGO_ENABLED: "0"
-        run: |
-          case "${{ matrix.platform }}" in
-            linux-amd64)
-              GOOS=linux GOARCH=amd64 make derod
-              ;;
-            linux-arm64)
-              GOOS=linux GOARCH=arm64 make derod
-              ;;
-            windows-amd64)
-              GOOS=windows GOARCH=amd64 make derod
-              ;;
-            darwin-universal)
-              # Makefile's derod target is a plain `go build`, not wails' universal
-              # binary — build both arches and glue them together the same way.
-              GOOS=darwin GOARCH=amd64 make derod
-              mv build/bin/derod-darwin build/bin/derod-darwin-amd64
-              GOOS=darwin GOARCH=arm64 make derod
-              mv build/bin/derod-darwin build/bin/derod-darwin-arm64
-              lipo -create -output build/bin/derod-darwin \
-                build/bin/derod-darwin-amd64 build/bin/derod-darwin-arm64
-              ;;
-          esac
-
       - name: Determine version
         id: version
         shell: bash
@@ -183,6 +156,37 @@ jobs:
         run: |
           LDFLAGS="-X main.AppVersion=${VERSION} -X main.BuildDate=${BUILD_DATE} -X main.GitCommit=${SHORT_SHA}"
           wails build -platform ${{ matrix.wails_platform }} ${WAILS_TAGS} -ldflags "$LDFLAGS" -clean -trimpath
+
+      - name: Build derod
+        # MUST run after "Build HOLOGRAM (Wails)" — that step's `-clean` flag
+        # wipes build/bin/ first. A derod built before it gets deleted before
+        # packaging ever sees it (caught by a live workflow_dispatch test run:
+        # derod built fine, then vanished, then `cp` failed at package time).
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          case "${{ matrix.platform }}" in
+            linux-amd64)
+              GOOS=linux GOARCH=amd64 make derod
+              ;;
+            linux-arm64)
+              GOOS=linux GOARCH=arm64 make derod
+              ;;
+            windows-amd64)
+              GOOS=windows GOARCH=amd64 make derod
+              ;;
+            darwin-universal)
+              # Makefile's derod target is a plain `go build`, not wails' universal
+              # binary — build both arches and glue them together the same way.
+              GOOS=darwin GOARCH=amd64 make derod
+              mv build/bin/derod-darwin build/bin/derod-darwin-amd64
+              GOOS=darwin GOARCH=arm64 make derod
+              mv build/bin/derod-darwin build/bin/derod-darwin-arm64
+              lipo -create -output build/bin/derod-darwin \
+                build/bin/derod-darwin-amd64 build/bin/derod-darwin-arm64
+              ;;
+          esac
 
       - name: Verify Linux binary links webkit2gtk-4.1, not the dead 4.0
         if: startsWith(matrix.platform, 'linux')

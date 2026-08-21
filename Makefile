@@ -98,9 +98,13 @@ hologram: check-invariants
 	@echo "✅ HOLOGRAM built"
 
 # Release build — clean, trimpath, metadata injected (use this for distribution)
-release: derod simulator check-invariants
+# derod/simulator MUST be built AFTER `wails build`, not before: its -clean flag
+# wipes build/bin/ first, so anything built earlier gets deleted before packaging
+# ever sees it (caught live via a CI workflow_dispatch test run, 2026-08-21).
+release: check-invariants
 	@echo "🚀 Building HOLOGRAM release ($(VERSION), $(COMMIT))..."
 	wails build $(WAILS_TAGS) -ldflags "$(LDFLAGS)" -clean -trimpath
+	@$(MAKE) derod simulator
 	@echo "✅ Release build complete: $(BUILD_DIR)/$(HOLOGRAM_BIN)"
 
 # Build derod from derohe source
