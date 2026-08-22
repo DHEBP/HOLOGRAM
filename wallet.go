@@ -16,6 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/DHEBP/HOLOGRAM/wallet/genesis"
 	"github.com/deroproject/derohe/cryptography/bn256"
 	"github.com/deroproject/derohe/cryptography/crypto"
 	"github.com/deroproject/derohe/rpc"
@@ -4957,8 +4958,12 @@ func (a *App) GetRegistrationStatus() map[string]interface{} {
 }
 
 // RegisterWallet starts the PoW registration process for an unregistered wallet
-// This is a CPU-intensive process that can take up to 120 minutes.
-// The wallet must find a registration TX hash that starts with 3 zero bytes.
+// This is a CPU-intensive process that can take a long time — the target is
+// 28 leading zero bits, ~16x the attempts of the old 24-bit target, and this
+// path mines via GetRegistrationTX's re-randomizing search (slower per-attempt
+// than the cold miner's incremental one), so wall-clock varies widely by core
+// count and there is no tight upper bound worth hardcoding.
+// The wallet must find a registration TX hash that meets genesis.MeetsRegistrationTarget.
 func (a *App) RegisterWallet() map[string]interface{} {
 	walletManager.RLock()
 	if !walletManager.isOpen || walletManager.wallet == nil {
@@ -5001,12 +5006,12 @@ func (a *App) RegisterWallet() map[string]interface{} {
 	regState.Unlock()
 
 	a.logToConsole("[REGISTER] Starting PoW registration process...")
-	a.logToConsole("[REGISTER] This can take up to 120 minutes. Please be patient.")
+	a.logToConsole("[REGISTER] This can take a long time. Please be patient.")
 
 	// Emit event to frontend
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "wallet:registration_started", map[string]interface{}{
-			"message": "Registration started. This can take up to 120 minutes...",
+			"message": "Registration started. This can take a long time...",
 		})
 	}
 
@@ -5066,12 +5071,15 @@ func (a *App) RegisterWallet() map[string]interface{} {
 							}
 						}
 
-						// Check if hash meets the difficulty requirement (28 leading zero bits:
-						// 3 full zero bytes plus the top 4 bits of the 4th byte). Raised from 24
-						// bits to match wallet/genesis/registration.go's cold-miner target — the
-						// increment-optimized search made 24-bit hashing ~10-20x cheaper, and a
-						// 28-bit winner still satisfies derohe's own 24-bit IsRegistrationValid().
-						if hash[0] == 0 && hash[1] == 0 && hash[2] == 0 && hash[3]&0xF0 == 0 {
+						// Check if hash meets the difficulty requirement. Raised from 24 bits to
+						// match wallet/genesis/registration.go's cold-miner target — the
+						// increment-optimized search made 24-bit hashing ~10-20x cheaper. The
+						// consensus floor is blockchain.go's Add_TX_To_Pool (checks only the
+						// first 3 zero bytes = 24 bits), NOT IsRegistrationValid() (a pure
+						// Schnorr-signature check with no PoW logic); a 28-bit winner still
+						// clears that 24-bit floor. genesis.MeetsRegistrationTarget is the
+						// single source of truth shared with the cold-wallet miner.
+						if genesis.MeetsRegistrationTarget(hash) {
 							// Found a valid hash! Send the transaction immediately before returning
 							doneOnce.Do(func() {
 								close(doneCh) // Signal other threads to stop
@@ -5189,7 +5197,7 @@ func (a *App) RegisterWallet() map[string]interface{} {
 
 	return map[string]interface{}{
 		"success": true,
-		"message": "Registration started in background. This can take up to 120 minutes.",
+		"message": "Registration started in background. This can take a long time.",
 	}
 }
 

@@ -293,7 +293,7 @@
             <div class="cg-stat"><div class="cg-stat-value">{fmt(hashRate)}</div><div class="cg-stat-label">H/s</div></div>
             <div class="cg-stat"><div class="cg-stat-value">{Math.round(elapsed)}s</div><div class="cg-stat-label">elapsed</div></div>
           </div>
-          <p class="cg-fine">~16 min typical · runs in the background</p>
+          <p class="cg-fine">can take a while (target raised for anti-spam) · runs in the background</p>
           <button class="cg-btn cg-btn-ghost" on:click={cancelMine}>Cancel</button>
         </div>
       {/if}

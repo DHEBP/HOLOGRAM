@@ -29,6 +29,15 @@ import (
 	"github.com/deroproject/derohe/walletapi"
 )
 
+// MeetsRegistrationTarget reports whether hash has 28 leading zero bits (3
+// full zero bytes plus the top 4 bits of the 4th byte) — the client-side
+// anti-spam PoW target. This is the single source of truth for the check:
+// both mineWorker below and wallet.go's inline hot-wallet miner call it, so
+// the two independent implementations cannot drift apart.
+func MeetsRegistrationTarget(hash [32]byte) bool {
+	return hash[0] == 0 && hash[1] == 0 && hash[2] == 0 && hash[3]&0xF0 == 0
+}
+
 // MineRegistrationFromSeed re-derives the wallet from its seed and mines a
 // registration for it, then releases the handle. This is the entry point the
 // *App wrapper uses: GenerateColdWallet does not keep a live wallet around (the
@@ -103,14 +112,17 @@ func MineRegistration(
 	}
 }
 
-// mineWorker runs the increment-optimized nonce search until it finds a tx whose
-// hash has 28 leading zero bits (3 full zero bytes plus the top 4 bits of the
-// 4th byte), cancel fires, or another worker wins. Raised from the original
-// 24-bit target: the increment optimization above made hashing ~10-20x cheaper
-// than the re-randomizing search it replaced, undercutting the per-wallet
-// anti-spam cost the target exists to enforce (matches Engram's f2fda83 fix). A
-// 28-bit winner still satisfies derohe's own 24-bit IsRegistrationValid(), so
-// registrations mined at either target remain consensus-valid.
+// mineWorker runs the increment-optimized nonce search until it finds a tx
+// meeting MeetsRegistrationTarget's 28-bit target, cancel fires, or another
+// worker wins. Raised from the original 24-bit target: the increment
+// optimization above made hashing ~10-20x cheaper than the re-randomizing
+// search it replaced, undercutting the per-wallet anti-spam cost the target
+// exists to enforce (matches Engram's f2fda83 fix). The consensus gate that
+// actually enforces a PoW floor is blockchain.go's Add_TX_To_Pool (checks only
+// the first 3 zero bytes = 24 bits) — NOT IsRegistrationValid(), which is a
+// pure Schnorr-signature check with no PoW logic at all. A 28-bit winner
+// still clears that 24-bit floor, so registrations mined at either target
+// remain consensus-valid.
 // Lifted from the Dirtybird/mmarcel coldwallet GetRegistrationTX.
 func mineWorker(
 	w *walletapi.Wallet_Memory,
@@ -156,7 +168,7 @@ func mineWorker(
 		}
 
 		hash := tx.GetHash()
-		if hash[0] == 0 && hash[1] == 0 && hash[2] == 0 && hash[3]&0xF0 == 0 {
+		if MeetsRegistrationTarget(hash) {
 			// Non-blocking send: the first worker delivers; the rest fall through
 			// to default and return cleanly instead of blocking forever
 			// (Dirtybird's fix to mmarcel's bare send).
