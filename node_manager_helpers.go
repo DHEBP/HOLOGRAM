@@ -187,6 +187,11 @@ func (a *App) startNodeProcess(binaryPath string, args []string, fullDataDir str
 	cmd := exec.Command(binaryPath, args...)
 	cmd.Dir = filepath.Dir(binaryPath)
 
+	// Disable derod's /debug/pprof/* endpoints on the spawned node. Left on, they
+	// serve the build path and OS username to anyone who can reach the RPC port —
+	// loopback here, but free to close. derod gates this on DISABLE_RUNTIME_PROFILE=1.
+	cmd.Env = append(os.Environ(), "DISABLE_RUNTIME_PROFILE=1")
+
 	a.logToConsole(fmt.Sprintf("[Exec] %s %s", binaryPath, strings.Join(args, " ")))
 
 	// Set up pipes
