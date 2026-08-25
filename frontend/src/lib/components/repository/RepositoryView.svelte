@@ -64,6 +64,13 @@
   let diffResult = null;
   let diffLoading = false;
 
+  // "What did this commit change" — n-1 → n for the commit being viewed.
+  // Deliberately separate from the compare-mode state above so neither can
+  // bleed into the other.
+  let commitDiffOpen = false;
+  let commitDiff = null;
+  let commitDiffLoading = false;
+
   let cloning = false;
   let clonePrompt = '';
 
@@ -72,6 +79,9 @@
   // Re-selecting a commit would otherwise re-clone the whole version from chain
   // every time. Keyed by commit number and thrown away with the component.
   const commitCache = new Map();
+
+  // Same reasoning: an uncached diff reconstructs BOTH versions from chain.
+  const diffCache = new Map();
 
   $: if (scid && scid !== loadedScid) {
     loadedScid = scid;
@@ -101,9 +111,13 @@
     compareA = null;
     compareB = null;
     diffResult = null;
+    commitDiffOpen = false;
+    commitDiff = null;
+    commitDiffLoading = false;
     clonePrompt = '';
     forkOpen = false;
     commitCache.clear();
+    diffCache.clear();
   }
 
   async function loadAll() {
@@ -198,6 +212,7 @@
       return;
     }
 
+    closeCommitDiff();
     viewedCommit = commit;
     viewedWarning = '';
 
@@ -233,6 +248,7 @@
   }
 
   function backToLatest() {
+    closeCommitDiff();
     viewedCommit = null;
     viewedEntries = [];
     viewedWarning = '';
@@ -240,11 +256,58 @@
   }
 
   function toggleCompare() {
+    closeCommitDiff();
     compareMode = !compareMode;
     compareA = null;
     compareB = null;
     diffResult = null;
     if (!compareMode) backToLatest();
+  }
+
+  function closeCommitDiff() {
+    commitDiffOpen = false;
+    commitDiff = null;
+    commitDiffLoading = false;
+  }
+
+  async function viewCommitChanges() {
+    const commit = viewedCommit;
+    // Commit 1 has no predecessor — the banner renders static text instead of
+    // this action, so this guard is belt-and-braces, not a reachable path.
+    if (!commit || commit.number <= 1) return;
+    commitDiffOpen = true;
+
+    const key = `${commit.number - 1}:${commit.number}`;
+    const cached = diffCache.get(key);
+    if (cached) {
+      commitDiff = cached;
+      return;
+    }
+
+    commitDiffLoading = true;
+    commitDiff = null;
+    // The commit-number check alone is not enough: switching repositories keeps
+    // this component alive, and the same commit number exists in both — a slow
+    // response from the old repo would display here and poison the (cleared,
+    // not replaced) diffCache for the new one.
+    const requestScid = scid;
+    try {
+      const result = await DiffCommits(requestScid, commit.number - 1, commit.number);
+      if (scid !== requestScid || viewedCommit?.number !== commit.number || !commitDiffOpen) return;
+      if (result?.success) {
+        commitDiff = result;
+        diffCache.set(key, result);
+      } else {
+        toast.error(result?.error || 'Could not read the changes in this version');
+        commitDiffOpen = false;
+      }
+    } catch (error) {
+      if (scid !== requestScid || viewedCommit?.number !== commit.number || !commitDiffOpen) return;
+      toast.error('Could not read the changes in this version');
+      commitDiffOpen = false;
+    } finally {
+      if (scid === requestScid && viewedCommit?.number === commit.number) commitDiffLoading = false;
+    }
   }
 
   async function pickForCompare(commit) {
@@ -433,6 +496,20 @@
         not the current state of the repository.
       </span>
       <span class="repo-banner-actions">
+        {#if viewedCommit.number <= 1}
+          {#if !viewedLoading && !viewedWarning}
+            <!-- Nothing came before v1, so there are no changes to show. Hidden
+                 when reconstruction failed: a file count would be a false zero. -->
+            <span class="repo-banner-note">Initial deployment — {fileCount} file{fileCount !== 1 ? 's' : ''}</span>
+          {/if}
+        {:else if compareMode}
+          <!-- Compare owns the main pane, so a diff toggle here would fetch two
+               whole versions from chain and display nothing. -->
+        {:else if commitDiffOpen}
+          <button type="button" class="repo-btn small" on:click={closeCommitDiff}>View files</button>
+        {:else}
+          <button type="button" class="repo-btn small" on:click={viewCommitChanges}>View changes</button>
+        {/if}
         <button type="button" class="repo-btn small" on:click={backToLatest}>Back to latest</button>
       </span>
     </div>
@@ -521,6 +598,13 @@
           loading={diffLoading}
           fromLabel={compareA ? `v${compareA.number}` : ''}
           toLabel={compareB ? `v${compareB.number}` : ''}
+        />
+      {:else if commitDiffOpen && viewedCommit}
+        <RepoDiff
+          result={commitDiff}
+          loading={commitDiffLoading}
+          fromLabel={`v${viewedCommit.number - 1}`}
+          toLabel={`v${viewedCommit.number}`}
         />
       {:else if viewedLoading}
         <div class="repo-content-status">
@@ -733,8 +817,16 @@
 
   .repo-banner-actions {
     display: flex;
+    align-items: center;
     gap: var(--s-2);
     flex-shrink: 0;
+  }
+
+  .repo-banner-note {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-4);
+    white-space: nowrap;
   }
 
   .repo-body {
