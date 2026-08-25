@@ -671,8 +671,8 @@ func TestGenerateDiff(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			diff := generateDiff(tt.oldContent, tt.newContent)
-			
+			diff := changedRows(generateDiff(tt.oldContent, tt.newContent))
+
 			if len(diff) != tt.wantLen {
 				t.Errorf("generateDiff() returned %d changes, want %d", len(diff), tt.wantLen)
 			}

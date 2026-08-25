@@ -302,13 +302,22 @@
                       <div class="line-diff-list">
                         {#each fileDiff.lineDiffs as change}
                           <div class="diff-change {change.type}">
-                            <span class="diff-line-num">L{change.line}</span>
-                            {#if change.type === 'modified'}
-                              <div class="diff-old">- {change.oldContent}</div>
-                              <div class="diff-new">+ {change.newContent}</div>
+                            {#if change.type === 'gap'}
+                              <span class="diff-content dim">⋯ {change.count} unchanged line{change.count !== 1 ? 's' : ''}</span>
                             {:else}
-                              <span class="diff-symbol">{change.type === 'added' ? '+' : '-'}</span>
-                              <span class="diff-content">{change.content}</span>
+                              <span class="diff-line-num">L{change.line}</span>
+                              {#if change.type === 'modified'}
+                                <div class="diff-old">- {change.oldContent}</div>
+                                <div class="diff-new">+ {change.newContent}</div>
+                              {:else if change.type === 'added' || change.type === 'removed'}
+                                <span class="diff-symbol">{change.type === 'added' ? '+' : '-'}</span>
+                                <span class="diff-content">{change.content}</span>
+                              {:else}
+                                <!-- context and notice rows: unchanged lines and
+                                     backend explanations carry no sign. -->
+                                <span class="diff-symbol"></span>
+                                <span class="diff-content dim">{change.content}</span>
+                              {/if}
                             {/if}
                           </div>
                         {/each}
@@ -332,13 +341,19 @@
               <div class="diff-list">
                 {#each diffResult.diff as change}
                   <div class="diff-change {change.type}">
-                    <span class="diff-line-num">Line {change.line}:</span>
-                    {#if change.type === 'modified'}
-                      <div class="diff-old">{change.oldContent}</div>
-                      <div class="diff-new">{change.newContent}</div>
+                    {#if change.type === 'gap'}
+                      <span class="dim">⋯ {change.count} unchanged line{change.count !== 1 ? 's' : ''}</span>
                     {:else}
-                      <span class="diff-symbol">{change.type === 'added' ? '+' : '-'}</span>
-                      {change.content}
+                      <span class="diff-line-num">Line {change.line}:</span>
+                      {#if change.type === 'modified'}
+                        <div class="diff-old">{change.oldContent}</div>
+                        <div class="diff-new">{change.newContent}</div>
+                      {:else if change.type === 'added' || change.type === 'removed'}
+                        <span class="diff-symbol">{change.type === 'added' ? '+' : '-'}</span>
+                        {change.content}
+                      {:else}
+                        <span class="dim">{change.content}</span>
+                      {/if}
                     {/if}
                   </div>
                 {/each}
@@ -812,7 +827,18 @@
     border-color: var(--status-warn);
     color: var(--status-warn);
   }
-  
+
+  /* context / gap / notice rows: unchanged surroundings, no tint. */
+  .diff-change.context,
+  .diff-change.gap,
+  .diff-change.notice {
+    border-color: transparent;
+  }
+
+  .dim {
+    color: var(--text-4);
+  }
+
   .diff-line-num {
     color: var(--text-5);
     margin-right: var(--s-2);

@@ -9,8 +9,28 @@
 
   // The line list is flat and uncapped upstream, so a whole-file rewrite of a
   // large DOC would render thousands of rows. Cap the DOM and say so, rather
-  // than freeze the UI thread.
+  // than freeze the UI thread. The cap counts CHANGED rows only — context and
+  // gap rows are bounded by construction (at most 6 per hunk plus the gaps),
+  // so letting them ride free keeps the number honest: "400 lines" means 400
+  // lines that actually changed, not 60 changes drowned in their surroundings.
   const MAX_LINES_SHOWN = 400;
+
+  function isChangedRow(change) {
+    return change.type === 'added' || change.type === 'removed' || change.type === 'modified';
+  }
+
+  // capRows cuts the list at the row where the changed-row count passes the
+  // cap, and reports how many changed rows fell past it for the footer.
+  function capRows(lineDiffs) {
+    let changed = 0;
+    let cut = lineDiffs.length;
+    for (let i = 0; i < lineDiffs.length; i++) {
+      if (isChangedRow(lineDiffs[i]) && ++changed > MAX_LINES_SHOWN && cut === lineDiffs.length) {
+        cut = i;
+      }
+    }
+    return { rows: lineDiffs.slice(0, cut), hiddenChanged: Math.max(0, changed - MAX_LINES_SHOWN) };
+  }
 
   function statusClass(status) {
     switch (status) {
@@ -67,6 +87,7 @@
     <div class="repo-diff-status">Pick two versions to compare.</div>
   {:else if result.fileDiffs && result.fileDiffs.length > 0}
     {#each result.fileDiffs as fileDiff (fileDiff.fileName)}
+      {@const capped = capRows(fileDiff.lineDiffs || [])}
       <div class="repo-diff-file">
         <div class="repo-diff-file-header {statusClass(fileDiff.status)}">
           <span class="repo-diff-file-icon"><Icons name={iconFor(fileDiff.fileName)} size={13} /></span>
@@ -76,7 +97,7 @@
 
         {#if fileDiff.lineDiffs && fileDiff.lineDiffs.length > 0}
           <div class="repo-diff-lines">
-            {#each fileDiff.lineDiffs.slice(0, MAX_LINES_SHOWN) as change}
+            {#each capped.rows as change}
               {#if change.type === 'notice'}
                 <!-- Not a line: the backend explaining why there are none. No
                      +/- sign, because nothing was added or removed. -->
@@ -99,17 +120,38 @@
                   <span class="repo-diff-sign">+</span>
                   <span class="repo-diff-text">{change.newContent}</span>
                 </div>
-              {:else}
+              {:else if change.type === 'context'}
+                <!-- An unchanged line shown for orientation. No sign, no tint:
+                     nothing happened to it. -->
+                <div class="repo-diff-row is-context">
+                  <span class="repo-diff-num">{change.newLine || change.line || ''}</span>
+                  <span class="repo-diff-sign"></span>
+                  <span class="repo-diff-text">{change.content}</span>
+                </div>
+              {:else if change.type === 'gap'}
+                <div class="repo-diff-row is-gap">
+                  <span class="repo-diff-text">⋯ {change.count} unchanged line{change.count !== 1 ? 's' : ''}</span>
+                </div>
+              {:else if change.type === 'added' || change.type === 'removed'}
                 <div class="repo-diff-row {change.type}">
                   <span class="repo-diff-num">{change.type === 'added' ? (change.newLine || change.line || '') : (change.oldLine || change.line || '')}</span>
                   <span class="repo-diff-sign">{change.type === 'added' ? '+' : '-'}</span>
                   <span class="repo-diff-text">{change.content}</span>
                 </div>
+              {:else}
+                <!-- A type this component doesn't know. Rendering it plainly is
+                     a deliberate floor, not a fall-through: content without a
+                     sign or tint beats a silent hole in the diff. -->
+                <div class="repo-diff-row">
+                  <span class="repo-diff-num"></span>
+                  <span class="repo-diff-sign"></span>
+                  <span class="repo-diff-text">{change.content || ''}</span>
+                </div>
               {/if}
             {/each}
-            {#if fileDiff.lineDiffs.length > MAX_LINES_SHOWN}
+            {#if capped.hiddenChanged > 0}
               <div class="repo-diff-truncated">
-                {fileDiff.lineDiffs.length - MAX_LINES_SHOWN} more changed line{fileDiff.lineDiffs.length - MAX_LINES_SHOWN !== 1 ? 's' : ''} not shown
+                {capped.hiddenChanged} more changed line{capped.hiddenChanged !== 1 ? 's' : ''} not shown
               </div>
             {/if}
           </div>
@@ -268,6 +310,22 @@
   .repo-diff-row.is-notice {
     color: var(--text-4);
     font-style: italic;
+  }
+
+  .repo-diff-row.is-context {
+    color: var(--text-4);
+  }
+
+  .repo-diff-row.is-gap {
+    justify-content: center;
+    color: var(--text-4);
+    user-select: none;
+  }
+
+  /* The text span's flex: 1 would swallow the free space and defeat
+     justify-content — pin it to its content so the ⋯ actually centers. */
+  .repo-diff-row.is-gap .repo-diff-text {
+    flex: 0 0 auto;
   }
 
   /* Deliberately not --status-warn: a changed line ending is a fact, not an

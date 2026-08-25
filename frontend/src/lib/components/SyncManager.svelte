@@ -381,6 +381,11 @@
                             <span class="line-num">{line.newLine || line.line || ''}</span>
                             <span class="line-content">+{line.newContent}</span>
                           </div>
+                        {:else if line.type === 'gap'}
+                          <div class="diff-line gap">
+                            <span class="line-num"></span>
+                            <span class="line-content">⋯ {line.count} unchanged line{line.count !== 1 ? 's' : ''}</span>
+                          </div>
                         {:else}
                           <div class="diff-line {line.type}">
                             <span class="line-num">{line.line || ''}</span>

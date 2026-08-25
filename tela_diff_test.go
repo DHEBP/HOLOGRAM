@@ -14,6 +14,8 @@ func describeDiff(diff []map[string]interface{}) string {
 		switch d["type"] {
 		case "modified":
 			fmt.Fprintf(&b, "\n  [%d] modified -%q +%q", d["line"], d["oldContent"], d["newContent"])
+		case "gap":
+			fmt.Fprintf(&b, "\n  gap %v", d["count"])
 		default:
 			fmt.Fprintf(&b, "\n  [%d] %v %q", d["line"], d["type"], d["content"])
 		}
@@ -22,6 +24,18 @@ func describeDiff(diff []map[string]interface{}) string {
 		return " (no changes)"
 	}
 	return b.String()
+}
+
+// changedRows strips the context and gap framing so assertions about the
+// CHANGES are not coupled to how much surrounding file the diff carries.
+func changedRows(diff []map[string]interface{}) []map[string]interface{} {
+	out := []map[string]interface{}{}
+	for _, d := range diff {
+		if d["type"] != "context" && d["type"] != "gap" {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func lineNo(t *testing.T, entry map[string]interface{}) int {
@@ -50,7 +64,7 @@ func TestGenerateDiff_SingleLineInsertIsSingleChange(t *testing.T) {
 	old := "line1\nline2\nline3\n"
 	updated := "NEW\nline1\nline2\nline3\n"
 
-	diff := generateDiff(old, updated)
+	diff := changedRows(generateDiff(old, updated))
 
 	if len(diff) != 1 {
 		t.Fatalf("inserting one line at the top produced %d changes, want 1:%s", len(diff), describeDiff(diff))
@@ -78,7 +92,7 @@ func TestGenerateDiff_TopInsertLargeFile(t *testing.T) {
 	old := strings.Join(lines, "\n") + "\n"
 	updated := "NEW\n" + old
 
-	diff := generateDiff(old, updated)
+	diff := changedRows(generateDiff(old, updated))
 
 	if len(diff) != 1 {
 		t.Fatalf("inserting one line at the top of a %d-line file produced %d changes, want 1", n, len(diff))
@@ -89,7 +103,7 @@ func TestGenerateDiff_TopInsertLargeFile(t *testing.T) {
 }
 
 func TestGenerateDiff_TopDeleteIsSingleChange(t *testing.T) {
-	diff := generateDiff("z\na\nb\n", "a\nb\n")
+	diff := changedRows(generateDiff("z\na\nb\n", "a\nb\n"))
 
 	if len(diff) != 1 {
 		t.Fatalf("deleting the first line produced %d changes, want 1:%s", len(diff), describeDiff(diff))
@@ -106,7 +120,7 @@ func TestGenerateDiff_TopDeleteIsSingleChange(t *testing.T) {
 }
 
 func TestGenerateDiff_MiddleInsertIsSingleChange(t *testing.T) {
-	diff := generateDiff("a\nb\nc\n", "a\nX\nb\nc\n")
+	diff := changedRows(generateDiff("a\nb\nc\n", "a\nX\nb\nc\n"))
 
 	if len(diff) != 1 {
 		t.Fatalf("inserting one line mid-file produced %d changes, want 1:%s", len(diff), describeDiff(diff))
@@ -123,7 +137,7 @@ func TestGenerateDiff_MiddleInsertIsSingleChange(t *testing.T) {
 // go-diff hashes each line including its "\n", so without normalization "b" and
 // "b\n" are different lines and appending "c" falsely reports "b" as changed.
 func TestGenerateDiff_AppendWithoutTrailingNewline(t *testing.T) {
-	diff := generateDiff("a\nb", "a\nb\nc")
+	diff := changedRows(generateDiff("a\nb", "a\nb\nc"))
 
 	if len(diff) != 1 {
 		t.Fatalf("appending one line to a file with no trailing newline produced %d changes, want 1:%s",
@@ -151,7 +165,7 @@ func TestGenerateDiff_TrailingNewlineOnlyIsNoChange(t *testing.T) {
 }
 
 func TestGenerateDiff_BlankLineInsert(t *testing.T) {
-	diff := generateDiff("a\nb\n", "a\n\nb\n")
+	diff := changedRows(generateDiff("a\nb\n", "a\n\nb\n"))
 
 	if len(diff) != 1 {
 		t.Fatalf("inserting a blank line produced %d changes, want 1:%s", len(diff), describeDiff(diff))
@@ -194,7 +208,7 @@ func TestGenerateDiff_MovedBlock(t *testing.T) {
 // modification numbers the modification against the NEW file, which is what the
 // UI labels ("L{change.line}").
 func TestGenerateDiff_LineNumbersTrackBothSides(t *testing.T) {
-	diff := generateDiff("a\nb\nc\n", "X\na\nB\nc\n")
+	diff := changedRows(generateDiff("a\nb\nc\n", "X\na\nB\nc\n"))
 
 	if len(diff) != 2 {
 		t.Fatalf("got %d changes, want 2:%s", len(diff), describeDiff(diff))
@@ -234,7 +248,8 @@ func TestGenerateDiff_WireShape(t *testing.T) {
 		if !ok {
 			t.Fatalf("entry %d has no string \"type\"", i)
 		}
-		if _, ok := entry["line"].(int); !ok {
+		// A gap is a count of absent lines; it is the one row with no "line".
+		if _, ok := entry["line"].(int); !ok && typ != "gap" {
 			t.Errorf("entry %d (%s) has no int \"line\"", i, typ)
 		}
 		switch typ {
@@ -249,8 +264,22 @@ func TestGenerateDiff_WireShape(t *testing.T) {
 			if _, ok := entry["newContent"].(string); !ok {
 				t.Errorf("entry %d (modified) has no string \"newContent\"", i)
 			}
+		case "context":
+			if _, ok := entry["content"].(string); !ok {
+				t.Errorf("entry %d (context) has no string \"content\"", i)
+			}
+			if _, ok := entry["oldLine"].(int); !ok {
+				t.Errorf("entry %d (context) has no int \"oldLine\"", i)
+			}
+			if _, ok := entry["newLine"].(int); !ok {
+				t.Errorf("entry %d (context) has no int \"newLine\"", i)
+			}
+		case "gap":
+			if n, ok := entry["count"].(int); !ok || n <= 0 {
+				t.Errorf("entry %d (gap) count = %v, want a positive int", i, entry["count"])
+			}
 		default:
-			t.Errorf("entry %d has unknown type %q; the UI only renders added/removed/modified", i, typ)
+			t.Errorf("entry %d has unknown type %q; the UI only renders added/removed/modified/context/gap", i, typ)
 		}
 	}
 }
@@ -290,7 +319,7 @@ func TestGenerateDiff_EdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			diff := generateDiff(tt.oldContent, tt.newContent)
+			diff := changedRows(generateDiff(tt.oldContent, tt.newContent))
 			if len(diff) != tt.wantLen {
 				t.Fatalf("got %d changes, want %d:%s", len(diff), tt.wantLen, describeDiff(diff))
 			}
@@ -320,7 +349,7 @@ func TestGenerateDiff_VeryLargeFile(t *testing.T) {
 		}
 	}
 
-	diff := generateDiff(oldB.String(), newB.String())
+	diff := changedRows(generateDiff(oldB.String(), newB.String()))
 
 	// 20 edited lines -> 20 modified entries. Assert it is bounded well below the
 	// file size; the old implementation's failure mode was "everything changed".
@@ -391,9 +420,9 @@ func TestGenerateFileDiffs_UsesRealDiff(t *testing.T) {
 	if diffs[0].Status != "modified" {
 		t.Errorf("status = %s, want modified", diffs[0].Status)
 	}
-	if len(diffs[0].LineDiffs) != 1 {
+	if changes := changedRows(diffs[0].LineDiffs); len(changes) != 1 {
 		t.Fatalf("prepending one line produced %d line changes, want 1:%s",
-			len(diffs[0].LineDiffs), describeDiff(diffs[0].LineDiffs))
+			len(changes), describeDiff(diffs[0].LineDiffs))
 	}
 }
 
@@ -489,10 +518,10 @@ func TestGenerateDiff_AtLineCapIsStillCompared(t *testing.T) {
 		}
 	}
 
-	diff := generateDiff(oldB.String(), newB.String())
+	diff := changedRows(generateDiff(oldB.String(), newB.String()))
 
 	if len(diff) != 1 {
-		t.Fatalf("got %d entries, want 1 modified line", len(diff))
+		t.Fatalf("got %d changed entries, want 1 modified line", len(diff))
 	}
 	if diff[0]["type"] != "modified" {
 		t.Fatalf("entry type = %v, want \"modified\" — the cap must not swallow a legitimate diff", diff[0]["type"])
@@ -538,6 +567,212 @@ func TestCountLines(t *testing.T) {
 	for _, tc := range cases {
 		if got := countLines(tc.in); got != tc.want {
 			t.Errorf("countLines(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// typeSeq reduces a diff to its type sequence so hunk-framing assertions read
+// as the shape they expect.
+func typeSeq(diff []map[string]interface{}) []string {
+	out := make([]string, 0, len(diff))
+	for _, d := range diff {
+		out = append(out, d["type"].(string))
+	}
+	return out
+}
+
+// numberedFile builds n lines "line 1".."line n", with edit applied to the
+// 1-based lines named in edits.
+func numberedFile(n int, edits map[int]string) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		if text, ok := edits[i]; ok {
+			fmt.Fprintf(&b, "%s\n", text)
+		} else {
+			fmt.Fprintf(&b, "line %d\n", i)
+		}
+	}
+	return b.String()
+}
+
+// TestGenerateDiff_ContextSurroundsChange: a lone mid-file change carries at
+// most 3 unchanged lines on each side, with one gap row for everything elided
+// toward each end of the file.
+//
+// Mutation proof: with the flushContext() calls removed from the change cases
+// (the ring never flushes), no context rows are emitted and this test fails on
+// the expected type sequence.
+func TestGenerateDiff_ContextSurroundsChange(t *testing.T) {
+	old := numberedFile(21, nil)
+	updated := numberedFile(21, map[int]string{11: "line 11 edited"})
+
+	diff := generateDiff(old, updated)
+
+	want := []string{"gap", "context", "context", "context", "modified", "context", "context", "context", "gap"}
+	if got := typeSeq(diff); !reflect.DeepEqual(got, want) {
+		t.Fatalf("type sequence = %v, want %v:%s", got, want, describeDiff(diff))
+	}
+
+	// 10 equal lines precede the change; 3 are context, 7 are the gap. Same on
+	// the other side.
+	if diff[0]["count"] != 7 || diff[8]["count"] != 7 {
+		t.Errorf("gap counts = %v/%v, want 7/7", diff[0]["count"], diff[8]["count"])
+	}
+	// Context is real file lines with real numbers on both sides.
+	if diff[1]["content"] != "line 8" || diff[1]["oldLine"] != 8 || diff[1]["newLine"] != 8 {
+		t.Errorf("first context row = %v, want line 8 at 8/8", diff[1])
+	}
+	if diff[7]["content"] != "line 14" || diff[7]["oldLine"] != 14 || diff[7]["newLine"] != 14 {
+		t.Errorf("last context row = %v, want line 14 at 14/14", diff[7])
+	}
+}
+
+// TestGenerateDiff_ContextAtFileEdges: a change on the first and last line has
+// nothing before or after it — no leading or trailing context, no gap rows of
+// zero.
+func TestGenerateDiff_ContextAtFileEdges(t *testing.T) {
+	old := numberedFile(3, nil)
+	updated := numberedFile(3, map[int]string{1: "first edited", 3: "last edited"})
+
+	diff := generateDiff(old, updated)
+
+	// The single equal line between the two changes joins their context runs.
+	want := []string{"modified", "context", "modified"}
+	if got := typeSeq(diff); !reflect.DeepEqual(got, want) {
+		t.Fatalf("type sequence = %v, want %v:%s", got, want, describeDiff(diff))
+	}
+}
+
+// TestGenerateDiff_HunksSixApartMerge: 2*3 context lines is exactly the span
+// two adjacent hunks can share, so changes 6 equal lines apart merge — every
+// equal line between them is context and no gap row appears.
+//
+// Mutation proof: lowering the merge threshold by one (join only at <= 5
+// equal lines) splits these hunks and inserts a gap row, failing the expected
+// type sequence here.
+func TestGenerateDiff_HunksSixApartMerge(t *testing.T) {
+	old := numberedFile(8, nil)
+	updated := numberedFile(8, map[int]string{1: "first edited", 8: "last edited"})
+
+	diff := generateDiff(old, updated)
+
+	want := []string{"modified", "context", "context", "context", "context", "context", "context", "modified"}
+	if got := typeSeq(diff); !reflect.DeepEqual(got, want) {
+		t.Fatalf("changes 6 apart must merge into one hunk; type sequence = %v, want %v:%s",
+			got, want, describeDiff(diff))
+	}
+}
+
+// TestGenerateDiff_HunksFourApartMerge: comfortably inside the threshold, all
+// 4 equal lines between the changes ride along as context.
+func TestGenerateDiff_HunksFourApartMerge(t *testing.T) {
+	old := numberedFile(6, nil)
+	updated := numberedFile(6, map[int]string{1: "first edited", 6: "last edited"})
+
+	diff := generateDiff(old, updated)
+
+	want := []string{"modified", "context", "context", "context", "context", "modified"}
+	if got := typeSeq(diff); !reflect.DeepEqual(got, want) {
+		t.Fatalf("changes 4 apart must merge into one hunk; type sequence = %v, want %v:%s",
+			got, want, describeDiff(diff))
+	}
+}
+
+// TestGenerateDiff_HunksTenApartGap: past the threshold the hunks split — 3
+// trailing context, a gap carrying exactly the elided count, 3 leading context.
+//
+// Mutation proof: raising the merge threshold by one (join at <= 7 equal
+// lines) still splits these hunks but elides only 3 lines, failing the gap
+// count assertion here.
+func TestGenerateDiff_HunksTenApartGap(t *testing.T) {
+	old := numberedFile(12, nil)
+	updated := numberedFile(12, map[int]string{1: "first edited", 12: "last edited"})
+
+	diff := generateDiff(old, updated)
+
+	want := []string{"modified", "context", "context", "context", "gap", "context", "context", "context", "modified"}
+	if got := typeSeq(diff); !reflect.DeepEqual(got, want) {
+		t.Fatalf("changes 10 apart must split; type sequence = %v, want %v:%s", got, want, describeDiff(diff))
+	}
+	if diff[4]["count"] != 4 {
+		t.Errorf("gap count = %v, want 4 — 10 equal lines minus 3 context on each side", diff[4]["count"])
+	}
+	// The context runs sit flush against their hunks: lines 2-4 close the first,
+	// lines 9-11 open the second.
+	if diff[1]["newLine"] != 2 || diff[3]["newLine"] != 4 || diff[5]["newLine"] != 9 || diff[7]["newLine"] != 11 {
+		t.Errorf("context line numbers wrong:%s", describeDiff(diff))
+	}
+}
+
+// TestGenerateDiff_GapsAccountForEveryLine: framing must conserve the file —
+// changed rows plus context rows plus gap counts walk every line exactly once.
+func TestGenerateDiff_GapsAccountForEveryLine(t *testing.T) {
+	const n = 200
+	old := numberedFile(n, nil)
+	updated := numberedFile(n, map[int]string{40: "edited", 120: "also edited"})
+
+	diff := generateDiff(old, updated)
+
+	covered := 0
+	for _, d := range diff {
+		switch d["type"] {
+		case "gap":
+			covered += d["count"].(int)
+		default:
+			covered++
+		}
+	}
+	if covered != n {
+		t.Errorf("rows and gap counts cover %d lines, want %d:%s", covered, n, describeDiff(diff))
+	}
+}
+
+// TestGenerateDiff_ShortTrailingContextNoGap: fewer than 3 equal lines after
+// the last hunk all become context and no trailing gap row appears.
+//
+// Mutation proof: deleting the `else { diff = append(diff, pending...) }`
+// branch in generateDiff's tail block silently drops the trailing context and
+// fails the expected type sequence here.
+func TestGenerateDiff_ShortTrailingContextNoGap(t *testing.T) {
+	old := numberedFile(13, nil)
+	updated := numberedFile(13, map[int]string{11: "line 11 edited"})
+
+	diff := generateDiff(old, updated)
+
+	want := []string{"gap", "context", "context", "context", "modified", "context", "context"}
+	if got := typeSeq(diff); !reflect.DeepEqual(got, want) {
+		t.Fatalf("type sequence = %v, want %v:%s", got, want, describeDiff(diff))
+	}
+	if diff[5]["content"] != "line 12" || diff[6]["content"] != "line 13" {
+		t.Errorf("trailing context = %v / %v, want lines 12 and 13", diff[5], diff[6])
+	}
+}
+
+// TestGenerateDiff_ContextLineNumbersSkewAfterInsert: an unpaired insert moves
+// the two sides apart, so context rows after it must carry oldLine one behind
+// newLine — a symmetric-hunk suite cannot see oldLine and newLine swapped.
+//
+// Mutation proof: emitting context rows with oldLine and newLine exchanged
+// leaves every symmetric test green and fails only here.
+func TestGenerateDiff_ContextLineNumbersSkewAfterInsert(t *testing.T) {
+	old := numberedFile(5, nil)
+	updated := "line 1\nline 2\ninserted line\nline 3\nline 4\nline 5\n"
+
+	diff := generateDiff(old, updated)
+
+	want := []string{"context", "context", "added", "context", "context", "context"}
+	if got := typeSeq(diff); !reflect.DeepEqual(got, want) {
+		t.Fatalf("type sequence = %v, want %v:%s", got, want, describeDiff(diff))
+	}
+	// Before the insert the sides agree; after it old lags new by one.
+	for i, wantOld := range map[int]int{0: 1, 1: 2} {
+		if diff[i]["oldLine"] != wantOld || diff[i]["newLine"] != wantOld {
+			t.Errorf("leading context row %d = %v, want %d/%d", i, diff[i], wantOld, wantOld)
+		}
+	}
+	for i, wantOld := range map[int]int{3: 3, 4: 4, 5: 5} {
+		if diff[i]["oldLine"] != wantOld || diff[i]["newLine"] != wantOld+1 {
+			t.Errorf("trailing context row %d = %v, want oldLine %d / newLine %d", i, diff[i], wantOld, wantOld+1)
 		}
 	}
 }

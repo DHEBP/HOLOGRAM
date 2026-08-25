@@ -2343,11 +2343,15 @@ func diffNotice(message string) []map[string]interface{} {
 // inserting a single line at the top of a file reported every following line as
 // modified — a one-line edit to a 500-line file read as 501 changes.
 //
-// The returned wire shape is unchanged so the Svelte consumers need no edit:
-// each entry carries "type" (added|removed|modified|notice), "line", and either
-// "content" or "oldContent"+"newContent". "oldLine"/"newLine" are additive and
-// currently ignored by the UI; they exist so a side-by-side view can be built
-// later without another wire break.
+// Each entry carries "type" (added|removed|modified|notice|context|gap),
+// "line", and either "content" or "oldContent"+"newContent". "oldLine"/
+// "newLine" are additive; they exist so a side-by-side view can be built later
+// without another wire break. "context" rows are the up-to-three unchanged
+// lines around each hunk and "gap" rows ({"type":"gap","count":N}) stand in
+// for the N lines elided between them — standard unified-diff framing, so a
+// change can be read in place instead of against a bare line number. Both are
+// additive: renderers that only know added/removed/modified keep working,
+// they just print context plainly.
 func generateDiff(oldContent, newContent string) []map[string]interface{} {
 	diff := []map[string]interface{}{}
 
@@ -2387,15 +2391,56 @@ func generateDiff(oldContent, newContent string) []map[string]interface{} {
 		}
 	}
 
+	// contextLines is per side: up to 3 trailing lines close one hunk and up to
+	// 3 leading lines open the next, so two changes 2*contextLines or fewer
+	// equal lines apart share one context run and merge into a single hunk.
+	const contextLines = 3
+
+	// pending holds the equal lines seen since the last change, already in wire
+	// shape. flushContext decides, at the moment a change is about to be
+	// emitted, how much of that run to keep: everything when the hunks merge,
+	// otherwise contextLines from each end with one gap row for the rest. The
+	// same split runs once more after the loop for the file's tail.
+	var pending []map[string]interface{}
+	emitted := false
+	flushContext := func() {
+		switch elided := len(pending) - 2*contextLines; {
+		case len(pending) == 0:
+		case !emitted:
+			// Before the first hunk only the trailing lines are context.
+			if elided := len(pending) - contextLines; elided > 0 {
+				diff = append(diff, map[string]interface{}{"type": "gap", "count": elided})
+				pending = pending[elided:]
+			}
+			diff = append(diff, pending...)
+		case elided > 0:
+			diff = append(diff, pending[:contextLines]...)
+			diff = append(diff, map[string]interface{}{"type": "gap", "count": elided})
+			diff = append(diff, pending[len(pending)-contextLines:]...)
+		default:
+			diff = append(diff, pending...)
+		}
+		pending = pending[:0]
+		emitted = true
+	}
+
 	oldNo, newNo := 1, 1
 	for i := 0; i < len(flat); {
 		switch flat[i].op {
 		case dmpkg.DiffEqual:
+			pending = append(pending, map[string]interface{}{
+				"type":    "context",
+				"line":    newNo,
+				"content": flat[i].text,
+				"oldLine": oldNo,
+				"newLine": newNo,
+			})
 			oldNo++
 			newNo++
 			i++
 
 		case dmpkg.DiffInsert:
+			flushContext()
 			diff = append(diff, map[string]interface{}{
 				"type":    "added",
 				"line":    newNo,
@@ -2407,6 +2452,7 @@ func generateDiff(oldContent, newContent string) []map[string]interface{} {
 			i++
 
 		case dmpkg.DiffDelete:
+			flushContext()
 			// Collect the delete run, then any insert run directly behind it.
 			j := i
 			for j < len(flat) && flat[j].op == dmpkg.DiffDelete {
@@ -2461,6 +2507,18 @@ func generateDiff(oldContent, newContent string) []map[string]interface{} {
 			// go-diff only emits the three operations above. Advance anyway so
 			// the loop is provably terminating: a hang here would freeze the UI.
 			i++
+		}
+	}
+
+	// Close the last hunk. When nothing changed there is nothing to anchor, so
+	// the pending equals are dropped and equal inputs still return an empty
+	// list.
+	if emitted && len(pending) > 0 {
+		if elided := len(pending) - contextLines; elided > 0 {
+			diff = append(diff, pending[:contextLines]...)
+			diff = append(diff, map[string]interface{}{"type": "gap", "count": elided})
+		} else {
+			diff = append(diff, pending...)
 		}
 	}
 
