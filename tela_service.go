@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1507,9 +1508,121 @@ type CommitDiff struct {
 	HasChanges bool       `json:"hasChanges"`
 }
 
+// is64LowerHex reports whether s is exactly 64 lowercase hex characters -- the
+// shape of a decoded commit TXID. Numbered keys are not guaranteed to hold a
+// TXID, so anything else is skipped rather than trusted.
+func is64LowerHex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// commitsFromContract reads the authoritative commit history straight from the
+// INDEX contract's own variables. The contract stores each version's TXID under
+// a numbered key ("0","1",...) next to a "commit" counter; that numbered list is
+// the complete, canonical history -- independent of local Gnomon index coverage
+// (fastsync leaves historical interaction heights unindexed, collapsing a
+// multi-version INDEX to one) and free of the non-commit interactions like
+// rating votes that a raw interaction-height scan would miscount. The TELA spec
+// template keeps the numbered keys in stringkeys; live contracts have been seen
+// keeping them in uint64keys, so both maps are scanned.
+func (a *App) commitsFromContract(scid string) []Commit {
+	if a.daemonClient == nil {
+		return nil
+	}
+
+	vars, err := a.daemonClient.GetSCVariables(scid, false, true)
+	if err != nil {
+		return nil
+	}
+
+	// Numbered key -> decoded 64-hex TXID. First map wins, so a number present
+	// in both stringkeys and uint64keys is counted once.
+	txids := map[int]string{}
+	for _, field := range []string{"stringkeys", "uint64keys"} {
+		m, ok := vars[field].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for k, v := range m {
+			n, err := strconv.Atoi(k)
+			// Atoi accepts "+1"/"01"/"-0"; require the canonical form so two
+			// spellings of one number cannot collide and drop a commit.
+			if err != nil || n < 0 || strconv.Itoa(n) != k {
+				continue
+			}
+			if _, seen := txids[n]; seen {
+				continue
+			}
+			hexVal, ok := v.(string)
+			if !ok {
+				continue
+			}
+			txid := decodeHexString(hexVal)
+			if !is64LowerHex(txid) {
+				continue
+			}
+			txids[n] = txid
+		}
+	}
+
+	if len(txids) == 0 {
+		return nil
+	}
+
+	nums := make([]int, 0, len(txids))
+	for n := range txids {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+
+	commits := make([]Commit, 0, len(nums))
+	for i, n := range nums {
+		commit := Commit{
+			Number:    i + 1,
+			TXID:      txids[n],
+			IsCurrent: i == len(nums)-1,
+		}
+		// Height/Timestamp are left zero on purpose: CloneAtCommit resolves the
+		// height from the TXID and the "block N" banner omits when Height==0, so
+		// there is no reason to spend N extra daemon calls resolving them here.
+		if i == 0 {
+			commit.Label = "Initial deployment"
+		} else {
+			// Label off the 1-based position, not the raw key, so it never
+			// disagrees with Number and matches the Gnomon path's "Update #i".
+			commit.Label = fmt.Sprintf("Update #%d", i)
+		}
+		commits = append(commits, commit)
+	}
+
+	return commits
+}
+
 // GetCommitHistory retrieves all commits (versions) for a TELA SCID
 func (a *App) GetCommitHistory(scid string) map[string]interface{} {
 	a.logToConsole(fmt.Sprintf("[SC] Getting commit history for: %s", scid[:16]+"..."))
+
+	// Prefer the contract's own numbered keys: they are the authoritative commit
+	// list, so this stays correct even where the local Gnomon index is partial
+	// (fastsync) and where the daemon fallback's "C"-counter heuristic does not
+	// apply. Old INDEX templates that store no numbered keys yield nothing here
+	// and fall through to the existing Gnomon/daemon paths below.
+	if commits := a.commitsFromContract(scid); len(commits) > 0 {
+		a.logToConsole(fmt.Sprintf("[OK] Found %d commits from contract variables", len(commits)))
+		return map[string]interface{}{
+			"success": true,
+			"scid":    scid,
+			"commits": commits,
+			"count":   len(commits),
+		}
+	}
 
 	if a.gnomonClient == nil || !a.gnomonClient.IsRunning() {
 		// Fallback: try to get from daemon directly

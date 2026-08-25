@@ -18,9 +18,11 @@ import (
 // repoFakeDaemon is a BlockchainClient that answers GetSC from a fixed table.
 // Named apart from the package's existing fakeDaemon, whose GetSC is a nil stub.
 type repoFakeDaemon struct {
-	code map[string]interface{}
-	err  error
-	last string
+	code    map[string]interface{}
+	err     error
+	last    string
+	vars    map[string]interface{}
+	varsErr error
 }
 
 func (f *repoFakeDaemon) GetSC(scid string, _, _ bool) (map[string]interface{}, error) {
@@ -31,7 +33,7 @@ func (f *repoFakeDaemon) GetSC(scid string, _, _ bool) (map[string]interface{}, 
 func (f *repoFakeDaemon) Call(string, interface{}) (interface{}, error) { return nil, nil }
 func (f *repoFakeDaemon) GetInfo() (map[string]interface{}, error)      { return nil, nil }
 func (f *repoFakeDaemon) GetSCVariables(string, bool, bool) (map[string]interface{}, error) {
-	return nil, nil
+	return f.vars, f.varsErr
 }
 func (f *repoFakeDaemon) TestConnection() error { return nil }
 func (f *repoFakeDaemon) GetEndpoint() string   { return "" }
