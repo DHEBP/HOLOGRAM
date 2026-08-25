@@ -100,6 +100,14 @@ const (
 	// binarySniffBytes is how much of a file is inspected for NUL bytes and
 	// invalid UTF-8. Same window git uses.
 	binarySniffBytes = 8000
+
+	// maxNumberedLines caps how many per-line entries highlightSource produces.
+	// Every entry becomes its own table row in the viewer, so LINE count - not
+	// byte count - bounds the DOM: 2MB of "a\n" passes every size gate above
+	// yet is ~1M entries, several million nodes built synchronously on the UI
+	// thread. Past the cap no Lines are returned and the viewer falls back to
+	// the single-block HTML, which is one text node.
+	maxNumberedLines = 10000
 )
 
 // HighlightResult is the outcome of highlighting one file.
@@ -108,12 +116,21 @@ const (
 // through html.EscapeString, and every path in this file that does not produce
 // chroma output either escapes the content itself or returns nothing. It is one
 // of only two values in this package for which that is true.
+//
+// Lines carries the same guarantee entry by entry: each element is either
+// chroma output for exactly that source line or html.EscapeString of it, so
+// every entry is individually safe for {@html}. One entry per source line,
+// counted by the countLines rule - a terminating newline ends the last line
+// rather than starting an empty one - and entries carry no trailing newline
+// and no carriage returns. The paths that return no HTML ("binary", "too
+// large") return no Lines, and neither does a file past maxNumberedLines.
 type HighlightResult struct {
-	HTML        string `json:"html"`
-	Language    string `json:"language"`
-	Highlighted bool   `json:"highlighted"`
-	Reason      string `json:"reason,omitempty"`
-	Bytes       int    `json:"bytes"`
+	HTML        string   `json:"html"`
+	Lines       []string `json:"lines"`
+	Language    string   `json:"language"`
+	Highlighted bool     `json:"highlighted"`
+	Reason      string   `json:"reason,omitempty"`
+	Bytes       int      `json:"bytes"`
 }
 
 // chromaStyleRe bounds the style attribute the sanitiser will keep.
@@ -288,6 +305,55 @@ func lexerName(filename string) string {
 	return filename
 }
 
+// escapeLines splits content by the countLines rule and escapes each line for
+// {@html}. It is the Lines equivalent of the html.EscapeString fallbacks in
+// highlightSource: no markup, only escaped text, one entry per line, no
+// trailing newline on any entry. Empty content has no lines.
+//
+// Carriage returns are dropped, not escaped: html.EscapeString leaves \r
+// intact, the HTML parser normalises it back to \n, and white-space:pre then
+// renders extra visual lines under a single line number. The highlighted path
+// already loses its \r to chroma's EnsureLF, so this also keeps the two paths
+// rendering the same CRLF file identically.
+func escapeLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = html.EscapeString(strings.ReplaceAll(line, "\r", ""))
+	}
+	return out
+}
+
+// highlightLines formats each source line as its own chroma document, so the
+// viewer can put every line in its own numbered element without ever parsing
+// the joined HTML apart.
+//
+// SplitTokensIntoLines cuts any token whose value spans a newline into
+// per-line clones of the same type - a multi-line string literal is one token
+// but must not become one display line. It already applies the countLines
+// rule: the newline ends its line, and a terminating newline does not open an
+// empty final line. The tokens it hands back are copies, so trimming the
+// line-ending newline off them cannot corrupt a caller's slice.
+func highlightLines(tokens []chroma.Token) ([]string, error) {
+	split := chroma.SplitTokensIntoLines(tokens)
+	out := make([]string, 0, len(split))
+	var buf bytes.Buffer
+	for _, line := range split {
+		if n := len(line); n > 0 {
+			line[n-1].Value = strings.TrimSuffix(line[n-1].Value, "\n")
+		}
+		buf.Reset()
+		if err := chromaFormatter.Format(&buf, chromaStyle, chroma.Literator(line...)); err != nil {
+			return nil, err
+		}
+		out = append(out, buf.String())
+	}
+	return out, nil
+}
+
 func highlightSource(filename, content string) HighlightResult {
 	result := HighlightResult{Bytes: len(content)}
 
@@ -299,10 +365,17 @@ func highlightSource(filename, content string) HighlightResult {
 		result.Reason = "too large"
 		return result
 	}
+	// The cap is on lines, not bytes, because rows are what the viewer builds
+	// from Lines. Past it every path below returns HTML only.
+	numbered := countLines(content) <= maxNumberedLines
+
 	if len(content) > maxHighlightBytes {
 		result.Language = "plaintext"
 		result.Reason = "too large to highlight"
 		result.HTML = html.EscapeString(content)
+		if numbered {
+			result.Lines = escapeLines(content)
+		}
 		return result
 	}
 
@@ -324,18 +397,43 @@ func highlightSource(filename, content string) HighlightResult {
 	if err != nil {
 		result.Reason = "tokenise failed"
 		result.HTML = html.EscapeString(content)
+		if numbered {
+			result.Lines = escapeLines(content)
+		}
 		return result
 	}
 
+	// The iterator is single-use and needed twice - once joined, once split
+	// into lines - so it is drained into a slice here.
+	tokens := iterator.Tokens()
+
 	var buf bytes.Buffer
-	if err := chromaFormatter.Format(&buf, chromaStyle, iterator); err != nil {
+	if err := chromaFormatter.Format(&buf, chromaStyle, chroma.Literator(tokens...)); err != nil {
 		result.Reason = "format failed"
 		result.HTML = html.EscapeString(content)
+		if numbered {
+			result.Lines = escapeLines(content)
+		}
 		return result
 	}
 
 	result.HTML = buf.String()
 	result.Highlighted = true
+
+	// Lines must line up with the file the user is reading, entry for entry.
+	// A lexer is allowed to rewrite what it tokenises (EnsureNL and friends),
+	// which would silently shift every line number, so the count is checked
+	// against the source rather than trusted. On any disagreement - or a
+	// formatter error, which cannot leave a partial entry - the escaped
+	// source is authoritative: unstyled lines over misnumbered ones.
+	if !numbered {
+		return result
+	}
+	if lines, err := highlightLines(tokens); err == nil && len(lines) == countLines(content) {
+		result.Lines = lines
+	} else {
+		result.Lines = escapeLines(content)
+	}
 	return result
 }
 
@@ -411,12 +509,13 @@ func convertMarkdown(source string) (rendered string, err error) {
 // HighlightSource returns syntax-highlighted HTML for one file.
 //
 // Callers must render "language" and any filename with plain Svelte {}; only
-// "html" is safe for {@html}.
+// "html" and each entry of "lines" are safe for {@html}.
 func (a *App) HighlightSource(filename, content string) map[string]interface{} {
 	result := highlightSource(filename, content)
 	return map[string]interface{}{
 		"success":     true,
 		"html":        result.HTML,
+		"lines":       result.Lines,
 		"language":    result.Language,
 		"highlighted": result.Highlighted,
 		"reason":      result.Reason,

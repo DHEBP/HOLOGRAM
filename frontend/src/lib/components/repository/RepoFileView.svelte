@@ -11,6 +11,12 @@
   const dispatch = createEventDispatcher();
 
   let renderedHtml = '';
+  // Per-line HTML from HighlightSource. Each entry is chroma output or escaped
+  // text for exactly one source line; absent on older backends and past the
+  // backend's line cap (each entry becomes a table row, so a newline-dense
+  // file must not arrive per line), in which case the single-block <pre>
+  // below is the whole view.
+  let lines = [];
   let language = '';
   let highlighted = false;
   let reason = '';
@@ -20,6 +26,9 @@
   let loadToken = 0;
 
   $: isMarkdown = /\.md$/i.test(entry?.name || '');
+  // Gutter width in ch, sized once for the largest line number so the column
+  // never shifts while scrolling.
+  $: gutterCh = String(lines.length || 1).length;
   $: hasBody = entry?.kind === 'doc' && typeof entry?.content === 'string' && entry.content.length > 0;
 
   // A new file resets the view mode before anything is fetched, so a slow
@@ -28,6 +37,7 @@
 
   function resetFor(next) {
     renderedHtml = '';
+    lines = [];
     language = '';
     highlighted = false;
     reason = '';
@@ -65,6 +75,7 @@
         const result = await HighlightSource(target.name || '', target.content);
         if (token !== loadToken) return;
         renderedHtml = result?.html || '';
+        lines = Array.isArray(result?.lines) ? result.lines : [];
         language = result?.language || '';
         highlighted = !!result?.highlighted;
         reason = result?.reason || '';
@@ -73,6 +84,7 @@
       if (token !== loadToken) return;
       renderError = 'This file could not be read.';
       renderedHtml = '';
+      lines = [];
     } finally {
       if (token === loadToken) loading = false;
     }
@@ -177,8 +189,26 @@
       {#if reason}
         <div class="repo-view-note-sub">{reason}</div>
       {/if}
-      <!-- HighlightSource escapes every path that is not chroma output. -->
-      <pre class="repo-source" class:plain={!highlighted}>{@html renderedHtml}</pre>
+      <!-- HighlightSource escapes every path that is not chroma output; that
+           covers both the whole-file html and every entry in lines. -->
+      {#if lines.length > 0}
+        <div class="repo-source repo-source-numbered" class:plain={!highlighted}>
+          <table class="repo-source-table">
+            <tbody>
+              {#each lines as line, i}
+                <tr>
+                  <td class="repo-line-num" style="min-width: {gutterCh}ch">{i + 1}</td>
+                  <!-- The '&nbsp;' constant keeps an empty line at full row
+                       height; it is never taken from the response. -->
+                  <td class="repo-line-code">{@html line || '&nbsp;'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else}
+        <pre class="repo-source" class:plain={!highlighted}>{@html renderedHtml}</pre>
+      {/if}
     {/if}
   </div>
 {/if}
@@ -330,6 +360,36 @@
 
   .repo-source.plain {
     color: var(--text-3);
+  }
+
+  /* Numbered variant. The container keeps .repo-source's scroll behaviour;
+     rows must not wrap, so a long line widens the table and scrolls with it. */
+  .repo-source-numbered {
+    padding: var(--s-4) 0;
+  }
+
+  .repo-source-table {
+    border-collapse: collapse;
+    border-spacing: 0;
+    width: 100%;
+  }
+
+  .repo-line-num {
+    font-family: var(--font-mono);
+    color: var(--text-5);
+    text-align: right;
+    vertical-align: top;
+    user-select: none;
+    padding: 0 var(--s-3);
+    border-right: 1px solid var(--border-dim);
+    white-space: pre;
+  }
+
+  .repo-line-code {
+    padding: 0 var(--s-4);
+    white-space: pre;
+    vertical-align: top;
+    width: 100%;
   }
 
   .repo-view-empty {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"html"
 	"regexp"
 	"strings"
 	"sync"
@@ -849,10 +850,20 @@ func TestAppHighlightSource_ResponseShape(t *testing.T) {
 	if strings.Contains(htmlOut, "<script") {
 		t.Fatalf("wrapper leaked a script tag: %s", htmlOut)
 	}
-	for _, k := range []string{"success", "html", "language", "highlighted", "reason", "bytes"} {
+	for _, k := range []string{"success", "html", "lines", "language", "highlighted", "reason", "bytes"} {
 		if _, ok := res[k]; !ok {
 			t.Errorf("response is missing key %q", k)
 		}
+	}
+	lines, ok := res["lines"].([]string)
+	if !ok {
+		t.Fatalf("lines is %T, want []string", res["lines"])
+	}
+	if len(lines) != 1 {
+		t.Fatalf("lines = %d entries for a one-line file", len(lines))
+	}
+	if strings.Contains(lines[0], "<script") {
+		t.Fatalf("wrapper leaked a script tag in lines: %s", lines[0])
 	}
 }
 
@@ -997,6 +1008,267 @@ func TestHighlightSource_CompressedNamesMatchTheirLexer(t *testing.T) {
 			if !strings.Contains(got.HTML, "<span") {
 				t.Errorf("%s produced no highlight spans, so it rendered as flat text", name)
 			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// per-line output
+// ---------------------------------------------------------------------------
+
+// stripAndUnescapeLine reduces one Lines entry back to the source text it
+// renders: chroma's own spans removed, entities unescaped. Valid for both
+// producers of an entry - chroma output and the EscapeString fallback - because
+// the fallback contains no markup at all.
+func stripAndUnescapeLine(entry string) string {
+	return html.UnescapeString(chromaSpanRe.ReplaceAllString(entry, ""))
+}
+
+// sourceLines is the expectation the countLines rule implies: a terminating
+// newline ends the last line rather than starting an empty one.
+func sourceLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+}
+
+// TestHighlightSource_LineCount pins one entry per source line under the
+// countLines rule. The multi-line literal cases are the load-bearing ones: a
+// raw string is ONE token spanning several lines, so a formatter that does not
+// split tokens collapses those lines into one entry and fails here.
+func TestHighlightSource_LineCount(t *testing.T) {
+	cases := []struct {
+		name     string
+		filename string
+		content  string
+		want     int
+	}{
+		{"trailing newline", "x.js", "var a = 1;\nvar b = 2;\n", 2},
+		{"no trailing newline", "x.js", "var a = 1;\nvar b = 2;\nvar c = 3;", 3},
+		{"empty content", "x.js", "", 0},
+		{"lone newline", "x.js", "\n", 1},
+		{"crlf endings", "x.js", "var a = 1;\r\nvar b = 2;\r\n", 2},
+		// Lone \r pins the count-mismatch guard: chroma's EnsureLF rewrites it
+		// to \n, so highlightLines yields more entries than countLines and the
+		// guard MUST fall back to escapeLines. Trusting highlightLines here
+		// would shift every line number after the \r.
+		{"classic-mac lone cr", "x.js", "var a = 1;\rvar b = 2;\rvar c = 3;", 1},
+		{"stray cr mid file", "x.js", "a\rb\nc\n", 2},
+		{"js template literal spanning lines", "x.js", "const s = `one\ntwo\nthree\nfour`;\nconst t = 1;\n", 5},
+		{"go raw string spanning lines", "main.go", "package main\n\nvar s = `a\nb\nc`\n", 5},
+		{"unicode content", "x.js", "// café naïve 你好\nvar x = \"🔒\";\n", 2},
+		{"unrecognised extension", "noext", "line one\nline two\n", 2},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			r := highlightSource(c.filename, c.content)
+			if len(r.Lines) != c.want {
+				t.Fatalf("len(Lines) = %d, want %d\nlines: %q", len(r.Lines), c.want, r.Lines)
+			}
+			// The rule and countLines must never drift apart: the diff view and
+			// the numbered file view describe the same file.
+			if got := countLines(c.content); len(r.Lines) != got {
+				t.Fatalf("len(Lines) = %d but countLines = %d", len(r.Lines), got)
+			}
+			for i, line := range r.Lines {
+				if strings.ContainsRune(line, '\n') {
+					t.Errorf("line %d carries a newline: %q", i, line)
+				}
+				// A raw \r survives html.EscapeString, and the HTML parser
+				// turns it back into \n - an extra visual line under one
+				// number. No entry may carry one.
+				if strings.ContainsRune(line, '\r') {
+					t.Errorf("line %d carries a carriage return: %q", i, line)
+				}
+			}
+		})
+	}
+}
+
+// TestHighlightSource_LinesPreserveContent is the round trip: stripping
+// chroma's spans and unescaping each entry must reproduce the source line for
+// line, in order. This is what fails loudly if a multi-line token is not split
+// (its text lands on the wrong entries) or if the count is off by one (every
+// comparison after the slip fails).
+func TestHighlightSource_LinesPreserveContent(t *testing.T) {
+	cases := []struct{ filename, content string }{
+		{"x.js", "var a = 1;\nvar b = \"<script>alert(1)</script>\";\nvar c = 3;\n"},
+		{"x.js", "const s = `one\ntwo\nthree\nfour`;\nconst t = 1;"},
+		{"main.go", "package main\n\nvar s = `<b>\n&amp;\n</b>`\n"},
+		{"index.html", "<html>\n<body onload=\"x()\">\n</body>\n</html>\n"},
+		{"noext", "plain <script>alert(1)</script>\nsecond & line\n"},
+		{"x.js", "// café 你好\nvar x = \"🔒\";\n"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.filename+" "+c.content[:min(20, len(c.content))], func(t *testing.T) {
+			r := highlightSource(c.filename, c.content)
+			want := sourceLines(c.content)
+			if len(r.Lines) != len(want) {
+				t.Fatalf("len(Lines) = %d, want %d", len(r.Lines), len(want))
+			}
+			for i, entry := range r.Lines {
+				// Each entry must be individually injectable: nothing outside
+				// chroma's own spans may open a tag.
+				assertOnlyChromaSpans(t, entry)
+				if got := stripAndUnescapeLine(entry); got != want[i] {
+					t.Errorf("line %d round-trips to %q, want %q", i, got, want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestHighlightSource_LinesAreHighlighted pins that ordinary source gets
+// chroma output per line, not the escaped fallback. The count-mismatch guard
+// in highlightSource repairs a broken line splitter by degrading to escaped
+// text - safe, but a silent loss of highlighting - so a defect in the split or
+// an off-by-one in highlightLines surfaces HERE rather than nowhere.
+func TestHighlightSource_LinesAreHighlighted(t *testing.T) {
+	// No blank lines, and a token (the template literal) spanning lines 0-2,
+	// so every entry must carry a coloured span of its own.
+	r := highlightSource("x.js", "const s = `one\ntwo\nthree`;\nconst t = 1;\n")
+	if !r.Highlighted {
+		t.Fatalf("not highlighted: %q", r.Reason)
+	}
+	if len(r.Lines) != 4 {
+		t.Fatalf("len(Lines) = %d, want 4", len(r.Lines))
+	}
+	for i, line := range r.Lines {
+		if !strings.Contains(line, `<span style="color:#`) {
+			t.Errorf("line %d has no chroma span - the per-line path fell back to escaped text: %q", i, line)
+		}
+	}
+}
+
+// TestHighlightSource_LinesFallbackEscaped pins that the fallback path escapes
+// PER LINE: above maxHighlightBytes no chroma runs, so if the per-line
+// EscapeString were removed, these entries would carry the raw payload.
+func TestHighlightSource_LinesFallbackEscaped(t *testing.T) {
+	const hostile = "<script>alert(1)</script>"
+	// Lines long enough that the byte cap trips while the line count stays
+	// under maxNumberedLines, so this test exercises the escape, not the cap.
+	line := strings.Repeat(hostile, 3)
+	content := strings.Repeat(line+"\n", maxHighlightBytes/len(line))
+	if len(content) <= maxHighlightBytes {
+		t.Fatalf("test setup: content is only %d bytes", len(content))
+	}
+	if n := countLines(content); n > maxNumberedLines {
+		t.Fatalf("test setup: %d lines is over maxNumberedLines", n)
+	}
+	r := highlightSource("x.js", content)
+	if r.Reason != "too large to highlight" {
+		t.Fatalf("reason = %q, want %q", r.Reason, "too large to highlight")
+	}
+	if got, want := len(r.Lines), countLines(content); got != want {
+		t.Fatalf("len(Lines) = %d, want %d", got, want)
+	}
+	wantLine := html.EscapeString(line)
+	for i, line := range r.Lines {
+		if line != wantLine {
+			t.Fatalf("line %d = %q, want %q", i, line, wantLine)
+		}
+	}
+}
+
+// TestHighlightSource_LinesCapped pins maxNumberedLines: every Lines entry
+// becomes a table row, so a newline-dense file under the byte caps ("a\n"
+// repeated fits ~1M lines inside maxPlaintextBytes) must NOT come back per
+// line - the viewer falls back to the single-block HTML instead. Both the
+// highlighted path and the too-large-to-highlight fallback are covered,
+// because each assigns Lines at its own site.
+func TestHighlightSource_LinesCapped(t *testing.T) {
+	t.Run("at the cap, still numbered", func(t *testing.T) {
+		r := highlightSource("x.js", strings.Repeat("a\n", maxNumberedLines))
+		if len(r.Lines) != maxNumberedLines {
+			t.Fatalf("len(Lines) = %d, want %d", len(r.Lines), maxNumberedLines)
+		}
+	})
+	t.Run("over the cap, highlighted path", func(t *testing.T) {
+		content := strings.Repeat("a\n", maxNumberedLines+1)
+		if len(content) > maxHighlightBytes {
+			t.Fatalf("test setup: %d bytes hits the byte cap, not the line cap", len(content))
+		}
+		r := highlightSource("x.js", content)
+		if len(r.Lines) != 0 {
+			t.Fatalf("over the cap produced %d lines", len(r.Lines))
+		}
+		if r.HTML == "" {
+			t.Fatal("no single-block HTML to fall back to")
+		}
+	})
+	t.Run("over the cap, too large to highlight", func(t *testing.T) {
+		content := strings.Repeat("a\n", maxHighlightBytes)
+		r := highlightSource("x.js", content)
+		if r.Reason != "too large to highlight" {
+			t.Fatalf("reason = %q", r.Reason)
+		}
+		if len(r.Lines) != 0 {
+			t.Fatalf("over the cap produced %d lines", len(r.Lines))
+		}
+		if r.HTML == "" {
+			t.Fatal("no single-block HTML to fall back to")
+		}
+	})
+}
+
+// TestHighlightSource_LinesAbsentWhenContentDropped: the two paths that return
+// no HTML must return no lines either - the content was refused, not rendered.
+func TestHighlightSource_LinesAbsentWhenContentDropped(t *testing.T) {
+	t.Run("binary", func(t *testing.T) {
+		r := highlightSource("logo.png", "line\x00one\nline two\n")
+		if r.Reason != "binary" {
+			t.Fatalf("reason = %q", r.Reason)
+		}
+		if len(r.Lines) != 0 {
+			t.Fatalf("binary content produced %d lines", len(r.Lines))
+		}
+	})
+	t.Run("over the plaintext cap", func(t *testing.T) {
+		r := highlightSource("x.js", strings.Repeat("a\n", maxPlaintextBytes/2+1))
+		if r.Reason != "too large" {
+			t.Fatalf("reason = %q", r.Reason)
+		}
+		if len(r.Lines) != 0 {
+			t.Fatalf("dropped content produced %d lines", len(r.Lines))
+		}
+	})
+}
+
+// TestEscapeLines covers the helper's line rule directly, since both fallback
+// paths and the count-mismatch guard depend on it agreeing with countLines.
+func TestEscapeLines(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"a", []string{"a"}},
+		{"a\n", []string{"a"}},
+		{"\n", []string{""}},
+		{"a\n\n", []string{"a", ""}},
+		{"a\nb", []string{"a", "b"}},
+		{"<x>\n&\n", []string{"&lt;x&gt;", "&amp;"}},
+		// Carriage returns are dropped, never passed through: escaped, they
+		// re-emerge as line breaks under a single number.
+		{"a\rb", []string{"ab"}},
+		{"a\r\nb\r\n", []string{"a", "b"}},
+	}
+	for _, c := range cases {
+		got := escapeLines(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("escapeLines(%q) = %q, want %q", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("escapeLines(%q)[%d] = %q, want %q", c.in, i, got[i], c.want[i])
+			}
+		}
+		if len(got) != countLines(c.in) {
+			t.Errorf("escapeLines(%q) has %d entries, countLines says %d", c.in, len(got), countLines(c.in))
 		}
 	}
 }
