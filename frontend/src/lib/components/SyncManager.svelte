@@ -11,6 +11,7 @@
   } from '../../../wailsjs/go/main/App.js';
   import { favorites } from '../stores/favorites.js';
   import { Icons } from './holo';
+  import { capDiffRows } from '../utils/diffRows.js';
 
   // State
   let cachedApps = [];
@@ -365,13 +366,15 @@
                     </span>
                   </div>
                   {#if diffData.diff && diffData.diff.length > 0}
+                    {@const capped = capDiffRows(diffData.diff, 50)}
                     <div class="diff-content">
                       <!-- generateDiff emits "line", never "line_num", and a
                            "modified" entry carries oldContent/newContent rather
                            than content. Reading the wrong keys rendered every
                            line number blank and every modified line as an empty
-                           row. -->
-                      {#each diffData.diff.slice(0, 50) as line}
+                           row. The cap counts changed rows only, or the context
+                           rows would eat most of the 50-line window. -->
+                      {#each capped.rows as line}
                         {#if line.type === 'modified'}
                           <div class="diff-line removed">
                             <span class="line-num">{line.oldLine || line.line || ''}</span>
@@ -393,9 +396,9 @@
                           </div>
                         {/if}
                       {/each}
-                      {#if diffData.diff.length > 50}
+                      {#if capped.hiddenChanged > 0}
                         <div class="diff-truncated">
-                          ... and {diffData.diff.length - 50} more lines
+                          ... and {capped.hiddenChanged} more changed line{capped.hiddenChanged !== 1 ? 's' : ''}
                         </div>
                       {/if}
                     </div>

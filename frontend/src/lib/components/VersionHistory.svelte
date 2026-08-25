@@ -3,6 +3,12 @@
   import { GetCommitHistoryWithLabels, GetCommitContent, DiffCommits, GetDOCSignatures } from '../../../wailsjs/go/main/App.js';
   import { Icons } from './holo';
   import SignatureBadge from './repository/SignatureBadge.svelte';
+  import { capDiffRows } from '../utils/diffRows.js';
+
+  // Same cap and reasoning as RepoDiff: the line list is uncapped upstream
+  // (bounded only by maxDiffLines), and the count speaks in changed rows so
+  // context and gaps ride free.
+  const MAX_DIFF_ROWS = 400;
 
   export let scid = '';
   export let show = false;
@@ -299,8 +305,9 @@
                     </div>
                     
                     {#if fileDiff.lineDiffs && fileDiff.lineDiffs.length > 0}
+                      {@const capped = capDiffRows(fileDiff.lineDiffs, MAX_DIFF_ROWS)}
                       <div class="line-diff-list">
-                        {#each fileDiff.lineDiffs as change}
+                        {#each capped.rows as change}
                           <div class="diff-change {change.type}">
                             {#if change.type === 'gap'}
                               <span class="diff-content dim">⋯ {change.count} unchanged line{change.count !== 1 ? 's' : ''}</span>
@@ -321,6 +328,11 @@
                             {/if}
                           </div>
                         {/each}
+                        {#if capped.hiddenChanged > 0}
+                          <p class="no-line-diff">
+                            {capped.hiddenChanged} more changed line{capped.hiddenChanged !== 1 ? 's' : ''} not shown
+                          </p>
+                        {/if}
                       </div>
                     {:else}
                       <p class="no-line-diff">
@@ -337,9 +349,10 @@
                 {/each}
               </div>
             {:else if diffResult.diff && diffResult.diff.length > 0}
+              {@const cappedLegacy = capDiffRows(diffResult.diff, MAX_DIFF_ROWS)}
               <!-- Fallback to legacy diff format -->
               <div class="diff-list">
-                {#each diffResult.diff as change}
+                {#each cappedLegacy.rows as change}
                   <div class="diff-change {change.type}">
                     {#if change.type === 'gap'}
                       <span class="dim">⋯ {change.count} unchanged line{change.count !== 1 ? 's' : ''}</span>
@@ -357,6 +370,11 @@
                     {/if}
                   </div>
                 {/each}
+                {#if cappedLegacy.hiddenChanged > 0}
+                  <p class="no-diff">
+                    {cappedLegacy.hiddenChanged} more changed line{cappedLegacy.hiddenChanged !== 1 ? 's' : ''} not shown
+                  </p>
+                {/if}
               </div>
             {:else}
               <p class="no-diff">No differences found</p>
