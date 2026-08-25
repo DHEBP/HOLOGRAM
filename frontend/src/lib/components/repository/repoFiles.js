@@ -45,6 +45,19 @@ export function groupByFolder(list) {
 }
 
 /**
+ * Narrow a file list to names containing the query.
+ *
+ * Matches the FULL path ("assets/css/app.css"), case-insensitively, so typing
+ * a folder name finds everything under it. A name filter only — never content,
+ * never fuzzy.
+ */
+export function filterEntries(list, query) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return list || [];
+  return (list || []).filter((e) => (e?.name || '').toLowerCase().includes(q));
+}
+
+/**
  * Which file opens first.
  *
  * Five rules, in order, so the choice is predictable rather than "whatever the

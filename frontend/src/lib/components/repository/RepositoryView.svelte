@@ -12,7 +12,7 @@
   import { ClipboardSetText } from '../../../../wailsjs/runtime/runtime.js';
   import { toast } from '../../stores/appState.js';
   import { Icons } from '../holo';
-  import { pickDefaultFile, entriesFromCommitFiles } from './repoFiles.js';
+  import { pickDefaultFile, entriesFromCommitFiles, filterEntries } from './repoFiles.js';
   import RepoFileTree from './RepoFileTree.svelte';
   import RepoFileView from './RepoFileView.svelte';
   import RepoCommitRail from './RepoCommitRail.svelte';
@@ -58,6 +58,10 @@
   let viewedWarning = '';
   let selectedName = '';
 
+  // Kept while switching between head and a historical version, on purpose:
+  // whoever typed it is looking for the same file across versions.
+  let fileQuery = '';
+
   let compareMode = false;
   let compareA = null;
   let compareB = null;
@@ -89,6 +93,12 @@
   }
 
   $: entries = viewedCommit ? viewedEntries : headEntries;
+  $: visibleEntries = filterEntries(entries, fileQuery);
+  // A selection the filter hid would leave the main pane showing a file the
+  // sidebar denies having.
+  $: if (selectedName && visibleEntries !== entries && !visibleEntries.some((e) => e.name === selectedName)) {
+    selectedName = '';
+  }
   $: selectedEntry = entries.find((e) => e.name === selectedName) || null;
   $: selectedSignature = selectedEntry?.scid ? signatures[selectedEntry.scid] || null : null;
   $: atHead = !viewedCommit;
@@ -107,6 +117,7 @@
     viewedEntries = [];
     viewedWarning = '';
     selectedName = '';
+    fileQuery = '';
     compareMode = false;
     compareA = null;
     compareB = null;
@@ -527,11 +538,26 @@
             </span>
           {/if}
         </div>
+        {#if entries.length > 8 || fileQuery.trim()}
+          <!-- Counts every entry, docs and others alike: the widget answers
+               "is this list long enough to need narrowing", not "how many
+               files open". The fileQuery escape keeps the input on screen
+               when a kept query outlives the threshold (e.g. switching to a
+               smaller historical commit), so it can always be cleared. -->
+          <input
+            type="text"
+            class="repo-filter"
+            placeholder="Filter files…"
+            bind:value={fileQuery}
+          />
+        {/if}
         {#if filesError}
           <div class="repo-sidebar-note">{filesError}</div>
+        {:else if fileQuery.trim() && visibleEntries.length === 0 && entries.length > 0}
+          <div class="repo-sidebar-note">No files match “{fileQuery.trim()}”.</div>
         {:else}
           <RepoFileTree
-            entries={entries}
+            entries={visibleEntries}
             signatures={signatures}
             selected={selectedName}
             loading={filesLoading || viewedLoading}
@@ -869,6 +895,27 @@
 
   .repo-count {
     color: var(--text-5);
+  }
+
+  .repo-filter {
+    margin: 0 var(--s-3) var(--s-2);
+    padding: var(--s-1) var(--s-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-2);
+    background: var(--void-base);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-sm);
+    outline: none;
+    transition: border-color var(--dur-fast) ease;
+  }
+
+  .repo-filter::placeholder {
+    color: var(--text-5);
+  }
+
+  .repo-filter:focus {
+    border-color: var(--border-accent);
   }
 
   .repo-compare-toggle {
