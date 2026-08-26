@@ -2,6 +2,8 @@ cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMT
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/DHEBP/derohe v0.0.0-20260820134946-b00fb9d72b3a h1:radVTZcKYdj/kGC1BiBFcvs9dFntmsB5qAiDE3QZtgY=
 github.com/DHEBP/derohe v0.0.0-20260820134946-b00fb9d72b3a/go.mod h1:EWHh1VkXRnCHvyGML98kXhngDFYebmOhk/9kZ1ATJ1c=
+github.com/DHEBP/derohe v0.0.0-20260826032139-3727aab73265 h1:XwH115jNAgWvxH0CyudlyfCCS74TpXDjGCM3rB5a8QM=
+github.com/DHEBP/derohe v0.0.0-20260826032139-3727aab73265/go.mod h1:EWHh1VkXRnCHvyGML98kXhngDFYebmOhk/9kZ1ATJ1c=
 github.com/OneOfOne/xxhash v1.2.2 h1:KMrpdQIwFcEqXDklaen+P1axHaj9BSKzvpUUfnHldSE=
 github.com/OneOfOne/xxhash v1.2.2/go.mod h1:HSdplMjZKSmBqAxg5vPj2TmRDmfkzw+cTzAElWljhcU=
 github.com/VictoriaMetrics/metrics v1.23.1 h1:/j8DzeJBxSpL2qSIdqnRFLvQQhbJyJbbEi22yMm7oL0=
