@@ -82,7 +82,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          # Pinned to match the Makefile's DEROD_TOOLCHAIN. go.mod's own floor
+          # (go 1.25.0) would otherwise let GOTOOLCHAIN=auto silently fetch a
+          # newer Go release here — 1.27.0 hit a reproducible internal compiler
+          # error building this exact codebase, so don't leave this floating.
+          go-version: "1.26.5"
           cache: true
 
       - name: Set up Node.js
@@ -153,6 +157,37 @@ jobs:
           LDFLAGS="-X main.AppVersion=${VERSION} -X main.BuildDate=${BUILD_DATE} -X main.GitCommit=${SHORT_SHA}"
           wails build -platform ${{ matrix.wails_platform }} ${WAILS_TAGS} -ldflags "$LDFLAGS" -clean -trimpath
 
+      - name: Build derod
+        # MUST run after "Build HOLOGRAM (Wails)" — that step's `-clean` flag
+        # wipes build/bin/ first. A derod built before it gets deleted before
+        # packaging ever sees it (caught by a live workflow_dispatch test run:
+        # derod built fine, then vanished, then `cp` failed at package time).
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          case "${{ matrix.platform }}" in
+            linux-amd64)
+              GOOS=linux GOARCH=amd64 make derod
+              ;;
+            linux-arm64)
+              GOOS=linux GOARCH=arm64 make derod
+              ;;
+            windows-amd64)
+              GOOS=windows GOARCH=amd64 make derod
+              ;;
+            darwin-universal)
+              # Makefile's derod target is a plain `go build`, not wails' universal
+              # binary — build both arches and glue them together the same way.
+              GOOS=darwin GOARCH=amd64 make derod
+              mv build/bin/derod-darwin build/bin/derod-darwin-amd64
+              GOOS=darwin GOARCH=arm64 make derod
+              mv build/bin/derod-darwin build/bin/derod-darwin-arm64
+              lipo -create -output build/bin/derod-darwin \
+                build/bin/derod-darwin-amd64 build/bin/derod-darwin-arm64
+              ;;
+          esac
+
       - name: Verify Linux binary links webkit2gtk-4.1, not the dead 4.0
         if: startsWith(matrix.platform, 'linux')
         shell: bash
@@ -184,6 +219,11 @@ jobs:
           mkdir -p "build/bin/${STAGE}"
           cp build/bin/Hologram "build/bin/${STAGE}/Hologram"
           chmod +x "build/bin/${STAGE}/Hologram"
+          # Bundled node: HOLOGRAM already prefers a derod already on the user's
+          # PATH/$HOME/system dirs if one exists — this is the fallback for
+          # someone with nothing installed, not a forced replacement.
+          cp build/bin/derod-linux-amd64 "build/bin/${STAGE}/derod-linux-amd64"
+          chmod +x "build/bin/${STAGE}/derod-linux-amd64"
           cp build/linux/install.sh build/linux/uninstall.sh "build/bin/${STAGE}/"
           chmod +x "build/bin/${STAGE}/install.sh" "build/bin/${STAGE}/uninstall.sh"
           cp build/appicon.png "build/bin/${STAGE}/appicon.png"
@@ -202,6 +242,8 @@ jobs:
           mkdir -p "build/bin/${STAGE}"
           cp build/bin/Hologram "build/bin/${STAGE}/Hologram"
           chmod +x "build/bin/${STAGE}/Hologram"
+          cp build/bin/derod-linux-arm64 "build/bin/${STAGE}/derod-linux-arm64"
+          chmod +x "build/bin/${STAGE}/derod-linux-arm64"
           cp build/linux/install.sh build/linux/uninstall.sh "build/bin/${STAGE}/"
           chmod +x "build/bin/${STAGE}/install.sh" "build/bin/${STAGE}/uninstall.sh"
           cp build/appicon.png "build/bin/${STAGE}/appicon.png"
@@ -217,7 +259,7 @@ jobs:
         run: |
           cd build/bin
           $archive = "HOLOGRAM-v${{ steps.version.outputs.version }}-windows-amd64.zip"
-          Compress-Archive -Path "Hologram.exe" -DestinationPath $archive
+          Compress-Archive -Path "Hologram.exe","derod.exe" -DestinationPath $archive
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
           "$hash  $archive" | Out-File -FilePath "$archive.sha256" -Encoding ascii
           Get-ChildItem
@@ -226,9 +268,15 @@ jobs:
         if: matrix.platform == 'darwin-universal'
         shell: bash
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          STAGE="HOLOGRAM-v${VERSION}-macos-universal"
+          mkdir -p "build/bin/${STAGE}"
+          cp -R "build/bin/Hologram.app" "build/bin/${STAGE}/Hologram.app"
+          cp build/bin/derod-darwin "build/bin/${STAGE}/derod-darwin"
+          chmod +x "build/bin/${STAGE}/derod-darwin"
           cd build/bin
-          ditto -c -k --sequesterRsrc --keepParent "Hologram.app" "HOLOGRAM-v${{ steps.version.outputs.version }}-macos-universal.zip"
-          shasum -a 256 "HOLOGRAM-v${{ steps.version.outputs.version }}-macos-universal.zip" > "HOLOGRAM-v${{ steps.version.outputs.version }}-macos-universal.zip.sha256"
+          ditto -c -k --sequesterRsrc --keepParent "${STAGE}" "${STAGE}.zip"
+          shasum -a 256 "${STAGE}.zip" > "${STAGE}.zip.sha256"
           ls -la
 
       - name: Upload artifacts

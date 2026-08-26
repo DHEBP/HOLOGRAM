@@ -1,11 +1,15 @@
 package genesis
 
-// Tests for the registration miner. The 24-bit PoW correctness of the lifted
-// mmarcel/Dirtybird algorithm is already pinned by the burned-vector gate
-// (TestBurnedVector_DerivesAndRegistrationComplete). Here we test the logic THIS
-// port adds around it: cancellation, the progress callback, and seed
-// re-derivation — all fast. The full real mine is -short-gated (it is a genuine
-// ~16-min 24-bit grind).
+// Tests for the registration miner. TestBurnedVector_DerivesAndRegistrationComplete
+// pins a frozen historical mainnet registration mined years before the 28-bit
+// target existed — it only exercises the old 24-bit (3-zero-byte) check and
+// says nothing about the 4th-byte nibble clause. 28-bit correctness is pinned
+// here by TestRegistrationPoW_28BitBoundary, which calls the real production
+// function (MeetsRegistrationTarget, shared by mineWorker and wallet.go's
+// hot-wallet miner), plus the -short-gated live mine below (a genuine
+// multi-minute 28-bit grind) which exercises the full mineWorker path. The
+// rest of this file tests the logic THIS port adds around the algorithm:
+// cancellation, the progress callback, and seed re-derivation — all fast.
 
 import (
 	"testing"
@@ -109,10 +113,46 @@ func TestMineRegistrationFromSeed_DerivesCorrectWallet(t *testing.T) {
 	}
 }
 
-// ---- full live mine: real 24-bit grind, -short-gated ----
+// ---- 28-bit target boundary: exercises the real production function
+// (MeetsRegistrationTarget, called by both mineWorker and wallet.go's
+// hot-wallet miner), not a local reimplementation — so a regression back to
+// the old 24-bit-only check in EITHER call site fails this test. Pins the
+// case that would have wrongly passed under that old (3-zero-byte-only)
+// check. ----
+func TestRegistrationPoW_28BitBoundary(t *testing.T) {
+	cases := []struct {
+		name string
+		b3   byte // hash[3]
+		want bool
+	}{
+		{"byte4 = 0x00 — meets 28-bit target", 0x00, true},
+		{"byte4 = 0x0F (high nibble zero) — meets 28-bit target", 0x0F, true},
+		{"byte4 = 0x10 (high nibble nonzero) — just misses 28-bit target", 0x10, false},
+		{"byte4 = 0xF0 — meets old 24-bit target but fails 28-bit", 0xF0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var hash [32]byte
+			hash[3] = c.b3
+			if got := MeetsRegistrationTarget(hash); got != c.want {
+				t.Fatalf("hash[3]=%#x: got %v, want %v", c.b3, got, c.want)
+			}
+		})
+	}
+
+	t.Run("byte3 nonzero — fails", func(t *testing.T) {
+		var hash [32]byte
+		hash[2] = 0x01
+		if MeetsRegistrationTarget(hash) {
+			t.Fatal("hash[2] nonzero must fail regardless of hash[3]")
+		}
+	})
+}
+
+// ---- full live mine: real 28-bit grind, -short-gated ----
 func TestMineRegistrationFromSeed_Live(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping live 24-bit cold registration mine (mean ~16 min); run without -short")
+		t.Skip("skipping live 28-bit cold registration mine (mean ~16 min at 24-bit hashrate; longer at 28-bit); run without -short")
 	}
 	cleanGlobals(t)
 

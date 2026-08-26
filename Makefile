@@ -12,7 +12,7 @@
 # The derod and simulator binaries are built from the derohe dependency
 # and placed alongside the HOLOGRAM executable in build/bin/
 
-.PHONY: all hologram release derod simulator mtp-anchor clean dev test test-mtp test-mtp-integration check-invariants help
+.PHONY: all hologram release derod simulator mtp-anchor clean dev test test-live test-mtp test-mtp-integration check-invariants help
 
 # Build metadata - injected into the binary via ldflags.
 # VERSION file is the single source of truth (must match latest CHANGELOG section).
@@ -98,9 +98,13 @@ hologram: check-invariants
 	@echo "✅ HOLOGRAM built"
 
 # Release build — clean, trimpath, metadata injected (use this for distribution)
-release: derod simulator check-invariants
+# derod/simulator MUST be built AFTER `wails build`, not before: its -clean flag
+# wipes build/bin/ first, so anything built earlier gets deleted before packaging
+# ever sees it (caught live via a CI workflow_dispatch test run, 2026-08-21).
+release: check-invariants
 	@echo "🚀 Building HOLOGRAM release ($(VERSION), $(COMMIT))..."
 	wails build $(WAILS_TAGS) -ldflags "$(LDFLAGS)" -clean -trimpath
+	@$(MAKE) derod simulator
 	@echo "✅ Release build complete: $(BUILD_DIR)/$(HOLOGRAM_BIN)"
 
 # Build derod from derohe source
@@ -164,9 +168,16 @@ test-mtp-integration: mtp-anchor
 check-invariants:
 	@bash scripts/check-datadir-invariants.sh
 
-# Run the Go unit-test suite plus the invariant gates
+# Run the Go unit-test suite plus the invariant gates.
+# -short skips genuine multi-hour live grinds (e.g. TestMineRegistrationFromSeed_Live,
+# which mines a real 28-bit registration PoW). Use `make test-live` to run those too.
 test: check-invariants
 	@echo "🧪 Running Go unit tests..."
+	go test -short ./... -count=1
+
+# Full suite including multi-hour live PoW grinds. Not for routine use.
+test-live: check-invariants
+	@echo "🧪 Running FULL Go test suite (including multi-hour live PoW grinds)..."
 	go test ./... -count=1
 
 # Development mode

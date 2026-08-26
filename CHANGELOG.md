@@ -59,6 +59,8 @@ A rebuilt consent model for dApps — connecting no longer asks for wallet acces
 - Wallet: send-confirmation now clearly separates the ring breakdown (you + recipient + chosen + random) from the named decoy set, instead of running both together on one ambiguous line.
 - Wallet: paying an address that requests a reply-back destination no longer spends funds against a request the wallet couldn't actually fulfil; sending to such a destination is refused up front. Reply-back payments are now supported when the paying wallet chooses to disclose its address, shown plainly in the send confirmation and the XSWD approval modal before it's sent.
 - Fixed a crash where dividing by a zero-sized cache produced an unrepresentable number that the frontend bridge could not serialize, freezing the UI.
+- Smart contract *deployment* (Explorer/Studio "install a new contract") now gets the same storage-gas measurement, refusal, and fee top-up as calling an existing contract. It had been broadcasting directly and, on the non-simulator path, with a fee of `0` — the exact under-funding the rest of the storage-gas fix exists to prevent, just on the one path that was missed.
+- XSWD plain transfers (a dApp asking HOLOGRAM to send DERO, with no special parameters) now default to ring size 16, matching every other send path in the wallet. They had been defaulting to ring 2, silently stripping sender privacy for the ordinary case; contract-call paths (SC deployment, `scinvoke`) are unaffected and correctly remain at ring 2, where a larger ring would break refundability.
 
 ---
 
