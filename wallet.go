@@ -2094,7 +2094,13 @@ func (a *App) InternalWalletCall(method string, params map[string]interface{}, p
 			if rs, ok := params["ringsize"].(float64); ok && rs >= 2 {
 				ringsize = uint64(rs)
 			}
-			deployResult := a.InstallSmartContract(scCode, ringsize >= 16)
+			// Sign with the wallet this call already resolved -- the connected one, the same
+			// wallet GetAddress and scinvoke answer for. Calling InstallSmartContract here
+			// instead would re-decide the signer: in simulator mode it took wallet #0, so the
+			// contract recorded a deployer the dApp had never connected to and then refused
+			// its own creator; off simulator it called GetWallet(), taking RLock on the mutex
+			// this function already holds for writing, which never returns.
+			deployResult := a.installSmartContractWith(wallet, scCode, ringsize >= 16)
 			if success, ok := deployResult["success"].(bool); ok && success {
 				return map[string]interface{}{
 					"success": true,

@@ -1038,15 +1038,12 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 	}
 	s.pendingLock.Unlock()
 
-	// Notify frontend
+	// Notify frontend. GetWalletAddress takes walletManager's read lock; this runs on the
+	// socket handler goroutine, before InternalWalletCall takes the write lock, so naming
+	// the signer here cannot contend with the call it describes.
 	log.Printf("[XSWD] Emitting xswd:request for %s from %s", req.Method, appName)
-	runtime.EventsEmit(s.app.ctx, "xswd:request", map[string]interface{}{
-		"id":      reqID,
-		"method":  req.Method,
-		"params":  paramsMap,
-		"appName": appName,
-		"origin":  origin,
-	})
+	runtime.EventsEmit(s.app.ctx, "xswd:request",
+		signingRequestEvent(reqID, req.Method, paramsMap, appName, origin, s.GetWalletAddress()))
 
 	// Wait for response with timeout (prevents goroutine leak if user never responds or frontend crashes)
 	var resp interface{}
@@ -1080,6 +1077,34 @@ func (s *XSWDServer) handleSigningRequest(conn *websocket.Conn, req JSONRPCReque
 	} else {
 		s.sendResponse(conn, req.ID, inner, nil)
 	}
+}
+
+// signingRequestEvent builds the payload the approval modal receives for a signing
+// request. Two fields exist so the prompt describes what will actually happen:
+//
+//   - walletAddress: the wallet that will sign. A dApp holds one connection but the app
+//     holds the wallet, and approving without seeing which one signs is approving blind.
+//   - scDeploy/scCodeBytes: a "transfer" carrying "sc" is a contract deployment. It has no
+//     destination, no SCID and no entrypoint, so without these the modal renders an empty
+//     request -- the user approves a blank prompt and a contract is deployed.
+//
+// Pure so the disclosure contract is unit-testable without a running frontend.
+func signingRequestEvent(reqID, method string, params map[string]interface{}, appName, origin, walletAddress string) map[string]interface{} {
+	event := map[string]interface{}{
+		"id":            reqID,
+		"method":        method,
+		"params":        params,
+		"appName":       appName,
+		"origin":        origin,
+		"walletAddress": walletAddress,
+	}
+
+	if code, ok := params["sc"].(string); ok && code != "" {
+		event["scDeploy"] = true
+		event["scCodeBytes"] = len(code)
+	}
+
+	return event
 }
 
 // unwrapInternalResult converts an InternalWalletCall {success, result|error}

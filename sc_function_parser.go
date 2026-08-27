@@ -460,23 +460,40 @@ func (a *App) invokeSCViaXSWD(params InvokeSCFunctionParams) map[string]interfac
 	}
 }
 
+// InstallSmartContract deploys DVM code, signed by the wallet HOLOGRAM uses for a
+// deployment: the one open in the interface, falling back to the simulator's primary
+// wallet when nothing is open. That is getWalletForDeployment -- the same policy the
+// TELA deployment paths use. It previously took the primary wallet unconditionally in
+// simulator mode, which signed with wallet #0 while every other call the session made
+// (GetAddress, scinvoke, transfer) answered for the open wallet.
 func (a *App) InstallSmartContract(code string, anonymous bool) map[string]interface{} {
+	isSimulator := a.simulatorManager != nil && a.simulatorManager.isInitialized
+
+	wallet := a.getWalletForDeployment(isSimulator)
+	if wallet == nil {
+		errMsg := "No wallet available. Open a wallet first."
+		if isSimulator {
+			errMsg = "Simulator wallet not available. Restart simulator mode."
+		}
+		return map[string]interface{}{
+			"success": false,
+			"error":   errMsg,
+		}
+	}
+
+	return a.installSmartContractWith(wallet, code, anonymous)
+}
+
+// installSmartContractWith installs a contract with a caller-supplied signer and takes no
+// wallet decision of its own -- it must never reach walletManager, directly or through a
+// helper. Callers that already hold a wallet use this: the XSWD `transfer`-carrying-`sc`
+// branch resolves the connected wallet and runs under walletManager's write lock, so a
+// GetWallet() underneath it would both substitute a different signer and take RLock on a
+// mutex this goroutine already holds for writing (sync.RWMutex is not reentrant).
+func (a *App) installSmartContractWith(wallet *walletapi.Wallet_Disk, code string, anonymous bool) map[string]interface{} {
 	a.logToConsole("[SC] Installing smart contract...")
 
 	isSimulator := a.simulatorManager != nil && a.simulatorManager.isInitialized
-
-	// In simulator mode, use the simulator wallet manager's primary wallet
-	// (same as TELA deployment) rather than the user-facing walletManager.
-	// GetWallet() returns the wallet opened via the UI, but it may not have
-	// a properly synced encrypted balance in simulator mode.
-	var wallet *walletapi.Wallet_Disk
-	if isSimulator {
-		if a.simulatorManager != nil && a.simulatorManager.walletManager != nil {
-			wallet = a.simulatorManager.walletManager.GetPrimaryWallet()
-		}
-	} else {
-		wallet = GetWallet()
-	}
 
 	if wallet == nil {
 		errMsg := "No wallet available. Open a wallet first."
@@ -487,6 +504,12 @@ func (a *App) InstallSmartContract(code string, anonymous bool) map[string]inter
 			"success": false,
 			"error":   errMsg,
 		}
+	}
+
+	// Name the signer in the log: a contract records its deployer, and a deployment
+	// attributed to the wrong wallet is not recoverable after the fact.
+	if signer := wallet.GetAddress().String(); len(signer) > 16 {
+		a.logToConsole(fmt.Sprintf("[SC] Signing wallet: %s...%s", signer[:10], signer[len(signer)-6:]))
 	}
 
 	if code == "" {
