@@ -626,6 +626,45 @@ func (a *App) InstallINDEX(indexJSON string) map[string]interface{} {
 	}
 }
 
+// sameINDEXAuthor reports whether the author stored in a TELA INDEX and an address
+// rendered by walletapi belong to the same key.
+//
+// The two strings come from two different renderers, and on the simulator they
+// disagree. The INDEX stores whatever the contract's address() returned, which is
+// the DVM's ADDRESS_STRING, which builds the string with rpc.NewAddressFromKeys --
+// and that leaves Mainnet true, always. It has to: consensus cannot depend on which
+// network a node believes it is running. So a contract records dero1... on every
+// chain, the simulator included. walletapi renders the same key through the wallet's
+// own network flag and says deto1... there.
+//
+// A DERO address is bech32: the prefix names the network and the checksum is
+// computed over that prefix, so both halves of the string differ and a string
+// compare reads one wallet as two. The contract's own owner gate gets this right by
+// accident -- it compares address() to address() -- so only the client-side check
+// breaks, and only on the simulator. Comparing the decoded keys is what that check
+// means.
+func sameINDEXAuthor(stored, walletAddr string) bool {
+	if stored == "" || walletAddr == "" {
+		return false
+	}
+	if stored == walletAddr {
+		return true
+	}
+
+	a, err := rpc.NewAddress(stored)
+	if err != nil {
+		return false
+	}
+	b, err := rpc.NewAddress(walletAddr)
+	if err != nil {
+		return false
+	}
+
+	// Compare the compressed public keys. This drops the prefix, the checksum and
+	// any integrated payload -- none of which say anything about ownership.
+	return string(a.Compressed()) == string(b.Compressed())
+}
+
 // UpdateINDEX updates an existing TELA INDEX
 func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 	isSimulator := a.IsInSimulatorMode()
@@ -710,9 +749,10 @@ func (a *App) UpdateINDEX(scid, indexJSON string) map[string]interface{} {
 		}
 	}
 
-	// Check if wallet is owner
+	// Check if wallet is owner. Compare keys, not renderings -- see sameINDEXAuthor.
 	walletAddr := wallet.GetAddress().String()
-	if existingIndex.Author != walletAddr {
+	if !sameINDEXAuthor(existingIndex.Author, walletAddr) {
+		a.logToConsole(fmt.Sprintf("[ERR] INDEX owner mismatch: stored=%s wallet=%s", existingIndex.Author, walletAddr))
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Your wallet is not the owner of this INDEX. Only the original author can update it.",
@@ -809,7 +849,7 @@ func (a *App) GetINDEXInfo(scid string) map[string]interface{} {
 	wallet := GetWallet()
 	if wallet != nil {
 		walletAddr := wallet.GetAddress().String()
-		isOwner = index.Author == walletAddr
+		isOwner = sameINDEXAuthor(index.Author, walletAddr)
 	}
 
 	// "anon" author means immutable (ring 16+)
