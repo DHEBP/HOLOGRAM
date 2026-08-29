@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -522,15 +523,23 @@ func (f *ContentFilter) evaluateRule(rule FilterRule, app AppInfo, effectiveRati
 		case "eq":
 			return app.Category == rule.Value
 		case "contains":
-			return app.Category == rule.Value
+			return strings.Contains(app.Category, rule.Value)
 		}
 
 	case "author":
 		switch rule.Operator {
 		case "eq":
-			return app.Author == rule.Value
+			// Addresses have two renderings of one key: a contract always stores the
+			// dero1 form (ADDRESS_STRING leaves Mainnet true so consensus cannot depend
+			// on the node's network), while a wallet on a simulator shows deto1. They are
+			// bech32, so prefix AND checksum differ and a string compare reads one wallet
+			// as two. Compare the decoded keys, as UpdateINDEX does.
+			return sameINDEXAuthor(app.Author, rule.Value)
 		case "contains":
-			return app.Author == rule.Value
+			// A substring of an address cannot be decoded, so this stays a text match.
+			// An author rule naming a whole address must use "eq" to survive the two
+			// renderings above.
+			return strings.Contains(app.Author, rule.Value)
 		}
 	}
 
