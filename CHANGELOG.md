@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **A TELA INDEX can be updated on the simulator again.** `update-index` refused every attempt with *"Your wallet is not the owner of this INDEX"*, including from the wallet that had just installed it. The check compared the author string stored in the INDEX against the address the wallet renders — but those two strings come from two different renderers. The stored author is what the contract's `address()` returned, which is the DVM's `ADDRESS_STRING`, which builds it with `rpc.NewAddressFromKeys` and leaves `Mainnet` true; consensus cannot depend on which network a node thinks it is on, so a contract records `dero1...` on every chain, the simulator included. walletapi renders the same key through the wallet's network flag and says `deto1...` there. A DERO address is bech32 — the prefix names the network and the checksum is computed over it — so both halves differ and the compare read one wallet as two, always. Ownership is now decided on the decoded public key. The contract's own owner gate was never affected (it compares `address()` to `address()`), and neither was mainnet, where both renderings agree. The same correction applies to the ownership flag reported by INDEX info, which read `false` for the owner's own INDEX on the simulator.
+
 ## [1.0.8] - 2026-08-20
 
 A rebuilt consent model for dApps — connecting no longer asks for wallet access, and access that is remembered is remembered per wallet. Plus sender-attribution privacy, cold-wallet genesis, XSWD/Browser trust-boundary hardening, fund-safety guards on the hot send path, Linux launch fixes for WebKitGTK, TELA file-drop, name resolution, and a required consensus repin ahead of the DERO network's HF3 activation.
