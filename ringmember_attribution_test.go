@@ -2,9 +2,16 @@
 // curated ring members). This exercises the EXACT fork code path HOLOGRAM's send
 // wiring calls — TransferPayload0WithOptions with AttributionAnonymous + curated
 // PreferredDecoys — against the live simulator daemon, then opens the RECEIVER
-// wallet and asserts it decodes a DECOY as the claimed sender (not the real one).
+// wallet and asserts the anonymizing ring reached the chain and that the receiver
+// was handed NO attribution.
 //
 // This proves the wiring actually drives attribution on-chain, not just renders.
+//
+// It used to assert the receiver decoded a DECOY as the claimed sender. It cannot
+// any more: above ring 2 the wallet no longer surfaces an attribution at all,
+// because the name came from a byte the sender picks and nothing checks. Left
+// alone, every old assertion would have passed trivially against an empty string
+// and the test would have printed PASS while proving nothing.
 //
 // Opt-in (does not run in normal `go test`):
 //   HOLOGRAM_RINGTEST=1 go test -run TestRingMemberAnonymousAttribution -v -timeout 300s
@@ -96,10 +103,6 @@ func TestRingMemberAnonymousAttribution(t *testing.T) {
 		w := openSimWalletFromSeed(t, SimulatorWalletSeeds[i])
 		curated = append(curated, w.GetAddress().String())
 	}
-	curatedSet := map[string]bool{}
-	for _, a := range curated {
-		curatedSet[a] = true
-	}
 	t.Logf("sender   = %s", senderAddr)
 	t.Logf("receiver = %s", receiverAddr)
 	t.Logf("curated decoys (%d) = %v", len(curated), curated)
@@ -157,25 +160,26 @@ func TestRingMemberAnonymousAttribution(t *testing.T) {
 	}
 
 	// === The assertions that prove anonymization happened on-chain ===
-	t.Logf("receiver decoded sender = %s (verified=%v)", got.Sender, got.SenderVerified)
+	t.Logf("receiver decoded sender = %q (verified=%v, ring=%d)", got.Sender, got.SenderVerified, got.RingSize)
 
+	// The load-bearing assertion. A silent fallback to ring 2 is the one failure
+	// that would undo anonymization without any other symptom, and it is the only
+	// thing here that an empty Sender cannot make vacuous.
+	if got.RingSize != ringTestRing {
+		t.Fatalf("FAIL: receiver saw ring %d, expected %d — the anonymizing ring never reached the chain", got.RingSize, ringTestRing)
+	}
+	if got.Sender != "" {
+		what := "a ring member"
+		if got.Sender == senderAddr {
+			what = "the REAL sender"
+		} else if got.Sender == receiverAddr {
+			what = "its OWN address"
+		}
+		t.Errorf("FAIL: receiver was handed %s (%s) at ring %d — above ring 2 the attribution byte is a sender-chosen claim and must not be surfaced", what, got.Sender, got.RingSize)
+	}
 	if got.SenderVerified {
-		t.Errorf("SenderVerified=true at ring %d — attribution must be UNVERIFIED above ring 2", ringTestRing)
-	}
-	if got.Sender == senderAddr {
-		t.Fatalf("FAIL: receiver decoded the REAL sender (%s) — anonymization did not take effect", senderAddr)
-	}
-	if got.Sender == receiverAddr {
-		t.Errorf("receiver decoded its OWN address as sender — that's honest-mode behavior, not anonymous")
-	}
-	if !curatedSet[got.Sender] {
-		// Not fatal: the fork picks a random slot among witness_index[2:], which
-		// includes our curated members AND any random top-up. A curated hit proves
-		// curation drove it; a non-curated decoy still proves anonymization worked.
-		t.Logf("NOTE: decoded sender is a decoy but not from the curated set (random top-up slot) — anonymization still confirmed")
-	} else {
-		t.Logf("CONFIRMED: receiver attributes the send to a CURATED decoy — curation drove the attribution")
+		t.Errorf("SenderVerified=true at ring %d — attribution must be UNVERIFIED above ring 2", got.RingSize)
 	}
 
-	t.Logf("PASS: anonymized attribution verified on-chain — receiver sees a decoy, not the real sender")
+	t.Logf("PASS: ring-%d send reached the chain and the receiver was given no attribution", got.RingSize)
 }
