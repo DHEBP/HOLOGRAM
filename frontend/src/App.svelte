@@ -421,6 +421,11 @@
           sc_token_deposit: req.params?.sc_token_deposit,
           sc_token_deposit_scid: req.params?.sc_token_deposit_scid,
           fees: req.params?.fees,
+          // A transfer carrying `sc` deploys a contract. It has no destination, no SCID and
+          // no entrypoint, so without these two the modal shows an empty request while a
+          // contract is being deployed. The code itself is not surfaced — its size is.
+          scDeploy: req.scDeploy === true,
+          scCodeBytes: req.scCodeBytes,
         };
       }
 
@@ -444,6 +449,10 @@
         // while approving actually decrypted the wallet and signed a challenge.
         description: req.description,
         isSignIn: req.isSignIn === true,
+        // The wallet that will sign this request. The app holds the wallet, not the dApp,
+        // so which one signs is the app's to disclose — approving without seeing it is
+        // approving blind, and a deployment records its signer permanently.
+        walletAddress: req.walletAddress,
         // true = the browser vouched for the origin; false = the app named itself
         originVerified: req.originVerified === true
       }, 

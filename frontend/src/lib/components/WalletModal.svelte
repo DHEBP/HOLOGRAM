@@ -510,6 +510,29 @@
             <h3 class="modal-section-title">Transaction Details</h3>
             
             <div class="modal-tx-details-card">
+              <!-- A `transfer` carrying `sc` is a contract deployment: no destination, no
+                   SCID, no entrypoint, so every block below would render nothing. Say what
+                   it is, and say which wallet the contract will record as its deployer. -->
+              {#if request.payload.scDeploy}
+                <div class="wallet-tx-sc-header">
+                  <div class="modal-tx-field">
+                    <div class="modal-tx-label">CONTRACT DEPLOYMENT</div>
+                    <div class="modal-tx-entrypoint">
+                      New contract{#if request.payload.scCodeBytes} — {request.payload.scCodeBytes.toLocaleString()} bytes of code{/if}
+                    </div>
+                  </div>
+                </div>
+              {/if}
+
+              {#if request.walletAddress}
+                <div class="modal-tx-field">
+                  <div class="modal-tx-label">SIGNING WALLET</div>
+                  <div class="modal-tx-scid" title={request.walletAddress}>
+                    {request.walletAddress.slice(0, 10)}...{request.walletAddress.slice(-6)}
+                  </div>
+                </div>
+              {/if}
+
               <!-- Smart Contract Info (show first if present) -->
               {#if request.payload.scid || request.payload.entrypoint}
                 <div class="wallet-tx-sc-header">

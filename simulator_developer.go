@@ -34,8 +34,10 @@ func (a *App) DeployToSimulator(code string) map[string]interface{} {
 		}
 	}
 
-	// Check wallet (use primary wallet #0)
-	wallet := a.simulatorManager.walletManager.GetPrimaryWallet()
+	// Sign with the wallet open in the interface, falling back to the primary wallet when
+	// none is open -- the same policy as every other deployment path. Signing with #0 while
+	// the user has another wallet open records a deployer they never chose.
+	wallet := a.getWalletForDeployment(true)
 	if wallet == nil {
 		return map[string]interface{}{
 			"success": false,
@@ -48,7 +50,7 @@ func (a *App) DeployToSimulator(code string) map[string]interface{} {
 
 	// Deploy the SC using wallet transfer with SC code
 	// For simulator, we use the XSWD server to install
-	txid, err := a.deployRawSC(code)
+	txid, err := a.deployRawSC(wallet, code)
 	if err != nil {
 		return map[string]interface{}{
 			"success": false,
@@ -75,11 +77,11 @@ func (a *App) DeployToSimulator(code string) map[string]interface{} {
 	}
 }
 
-// deployRawSC deploys raw SC code using the simulator's primary wallet.
-// Pauses Gnomon and uses a temporary connect/disconnect pattern to avoid
-// crashing the simulator daemon's single WebSocket slot.
-func (a *App) deployRawSC(code string) (string, error) {
-	wallet := a.simulatorManager.walletManager.GetPrimaryWallet()
+// deployRawSC deploys raw SC code signed by the caller-supplied wallet. Pauses Gnomon and
+// uses a temporary connect/disconnect pattern to avoid crashing the simulator daemon's
+// single WebSocket slot. The signer is a parameter so this cannot silently disagree with
+// the wallet its caller checked and showed.
+func (a *App) deployRawSC(wallet *walletapi.Wallet_Disk, code string) (string, error) {
 	if wallet == nil {
 		return "", fmt.Errorf("no wallet available")
 	}
