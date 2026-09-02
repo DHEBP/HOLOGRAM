@@ -3107,10 +3107,18 @@
                       <!--
                         Sender (for incoming) is intentionally NOT rendered. On DERO a sender
                         label is only trustworthy at ring size 2 (structural), which is rare,
-                        opt-in, and already deducible by the receiver; for larger rings the
-                        engine blanks it as an unverified claim. Displaying it gains a rare,
-                        derivable signal at the cost of a coherent "the wallet never shows a
-                        sender" privacy line. Do not re-add without a deliberate decision.
+                        opt-in, and already deducible by the receiver. Above ring 2 the sender
+                        picks the attribution byte and nothing checks it: consensus never reads
+                        it and the proof does not bind it, so the label is a claim.
+
+                        The engine does NOT blank it. entry.Sender stays populated and is only
+                        marked, via sender_verified=false, so the raw string still reaches every
+                        GetTransfers consumer — this view, and any XSWD dApp holding a
+                        view-balance grant, which is free to ignore the flag.
+
+                        Displaying it gains a rare, derivable signal at the cost of a coherent
+                        "the wallet never shows a sender" privacy line. Do not re-add without a
+                        deliberate decision.
                       -->
 
                       <!-- Destination (for outgoing) -->
