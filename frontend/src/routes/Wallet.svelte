@@ -3247,11 +3247,11 @@
                             <div class="tx-detail-receipt-head">
                               <span>Receipt — the other party verifies this without a node</span>
                               <div class="tx-detail-receipt-actions">
-                                <button class="btn-icon-sm" on:click={copyTxReceipt} title="Copy receipt">
+                                <button type="button" class="btn btn-ghost btn-sm" on:click={copyTxReceipt}>
                                   <Copy size={12} />
                                   {receiptCopied ? 'Copied' : 'Copy'}
                                 </button>
-                                <button class="btn-icon-sm" on:click={saveTxReceipt} title="Save receipt">
+                                <button type="button" class="btn btn-ghost btn-sm" on:click={saveTxReceipt}>
                                   <Download size={12} />
                                   {receiptSaved ? 'Saved' : 'Save file'}
                                 </button>
@@ -6129,17 +6129,25 @@
     color: var(--text-3);
   }
 
+  .tx-detail-receipt-head > span {
+    min-width: 0;
+    flex: 1;
+    line-height: 1.4;
+  }
+
   .tx-detail-receipt-actions {
     display: flex;
+    flex-shrink: 0;
+    flex-wrap: nowrap;
     gap: var(--s-2);
     align-items: center;
   }
 
-  .tx-detail-receipt-actions .btn-icon-sm {
-    display: flex;
+  .tx-detail-receipt-actions .btn {
+    display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    white-space: nowrap;
   }
 
   .tx-detail-receipt-disclosure {
