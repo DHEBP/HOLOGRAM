@@ -137,6 +137,8 @@ export function EstimateSyncTime():Promise<Record<string, any>>;
 
 export function ExecuteSCViaXSWD(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
+export function ExportProofBundle(arg1:string,arg2:string):Promise<Record<string, any>>;
+
 export function ExportRegistrationDCSP(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
 export function FetchByDURL(arg1:string):Promise<Record<string, any>>;
@@ -740,6 +742,8 @@ export function ValidateSenderProof(arg1:string,arg2:string,arg3:string,arg4:num
 export function VerifyColdWallet(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
 export function VerifyDOCSignature(arg1:string):Promise<Record<string, any>>;
+
+export function VerifyProofBundle(arg1:string):Promise<Record<string, any>>;
 
 export function VerifySignature(arg1:string):Promise<Record<string, any>>;
 

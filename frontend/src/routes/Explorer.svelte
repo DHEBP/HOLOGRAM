@@ -3,7 +3,7 @@
   import { get } from 'svelte/store';
   import { appState } from '../lib/stores/appState.js';
   import { recentSearchesKey, migrateLegacyExplorerSearchStorage } from '../lib/recentSearchStorage.js';
-  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline, GetBlockByHash, GetCoinbaseMiner, GetAddressSCIDReferences, IsInSimulatorMode } from '../../wailsjs/go/main/App.js';
+  import { CallXSWD, DaemonGetBlockHeaderByHeight, DaemonGetTxPool, ValidateProofFull, ExportProofBundle, VerifyProofBundle, SaveFileWithDialog, FormatBlockAge, GetTransactionWithRings, GetTransactionExtended, DaemonGetSC, StartBlockMonitoring, StopBlockMonitoring, OmniSearch, SetVar, DeleteVar, GetSCVariables, GetSCInteractionHistory, SubscribeToBlockEvents, GetXSWDStatus, ResolveDeroName, GetRandomSmartContracts, GetMempoolExtended, ParseSCFunctions, InvokeSCFunction, CaptureSCState, GetSCStateHistory, GetSCStateAtHeight, CompareSCStateAtHeights, WatchSmartContract, UnwatchSmartContract, GetWatchedSmartContracts, RefreshWatchedSCs, GetSCChangeTimeline, GetBlockByHash, GetCoinbaseMiner, GetAddressSCIDReferences, IsInSimulatorMode } from '../../wailsjs/go/main/App.js';
   import { walletState } from '../lib/stores/appState.js';
   import { toast, navigateTo } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
@@ -23,7 +23,7 @@
     Package, FileText, Coins, Clock, Copy, ArrowLeft, Home, X, ChevronLeft, ChevronRight,
     FileCode, User, Globe, Lock, Info, AlertTriangle, Check, Loader2, Shield, Pickaxe,
     ChevronDown, Search, Layers, Activity, CheckCircle, BarChart3, Palette, Wallet, Zap, Link,
-    GitBranch, History, Key, Database, Code, Eye, EyeOff
+    GitBranch, History, Key, Database, Code, Eye, EyeOff, FolderOpen, Download
   } from 'lucide-svelte';
   
   // v6.2 Sidebar navigation state - Simplified (landing view + tools only)
@@ -54,6 +54,15 @@
   let proofInput = '';
   let txidInput = '';
   let proofResult = null;
+  let proofMode = 'lookup';      // 'lookup' = ask your node | 'receipt' = verify offline
+  let proofSource = null;        // which source produced the result on screen
+  let receiptInput = '';
+  let receiptOutput = '';
+  let receiptExporting = false;
+  let receiptExportError = '';
+  let receiptCopied = false;
+  let receiptSaved = false;
+  let receiptFileInput;
   let proofLoading = false;
   let proofError = '';
   
@@ -1041,6 +1050,130 @@
   function clearProofResult() {
     proofResult = null;
     proofError = '';
+    proofSource = null;
+  }
+
+  // Receipt mode: verify a receipt handed over by the sender, with no daemon,
+  // no explorer and no network. The receipt carries the transaction and the
+  // ring, which is everything the proof needs to be checked.
+  async function verifyReceipt() {
+    if (!receiptInput.trim()) {
+      proofError = 'Please paste the receipt you were given';
+      return;
+    }
+
+    proofLoading = true;
+    proofError = '';
+    proofResult = null;
+    proofSource = null;
+
+    try {
+      const result = await VerifyProofBundle(receiptInput.trim());
+
+      if (result.success) {
+        if (result.valid) {
+          const receivers = result.receivers || [];
+          proofResult = {
+            valid: true,
+            addresses: receivers.map(r => r.address),
+            amounts: receivers.map(r => r.amountFormatted || '?'),
+            payloads: receivers.map(r => r.payload || ''),
+            txid: result.txid,
+            warnings: [],
+            supplyContexts: [],
+            percentOfSupply: [],
+          };
+          proofSource = 'offline';
+        } else {
+          proofResult = {
+            valid: false,
+            error: result.error || 'Receipt verification failed',
+            securityNote: result.securityNote || null,
+          };
+          proofSource = 'offline';
+        }
+      } else {
+        proofError = result.error || 'Failed to verify receipt';
+      }
+    } catch (error) {
+      console.error('Receipt verification error:', error);
+      proofError = error.message || 'An error occurred while verifying the receipt';
+    } finally {
+      proofLoading = false;
+    }
+  }
+
+  // Package a verified proof so the other party can check it without a node.
+  async function exportReceipt() {
+    if (!proofInput.trim() || !txidInput.trim()) return;
+
+    receiptExporting = true;
+    receiptExportError = '';
+
+    try {
+      const result = await ExportProofBundle(proofInput.trim(), txidInput.trim());
+      if (result.success) {
+        receiptOutput = result.bundle;
+      } else {
+        receiptExportError = result.error || 'Could not build the receipt';
+      }
+    } catch (error) {
+      console.error('Receipt export error:', error);
+      receiptExportError = error.message || 'An error occurred building the receipt';
+    } finally {
+      receiptExporting = false;
+    }
+  }
+
+  async function copyReceipt() {
+    try {
+      await navigator.clipboard.writeText(receiptOutput);
+      receiptCopied = true;
+      setTimeout(() => { receiptCopied = false; }, 2000);
+    } catch (e) {
+      console.error('Copy failed:', e);
+    }
+  }
+
+  async function onReceiptFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      receiptInput = await file.text();
+      proofError = '';
+      proofResult = null;
+      proofSource = null;
+    } catch (e) {
+      proofError = e.message || 'Could not read that file';
+    } finally {
+      event.target.value = '';
+    }
+  }
+
+  async function saveReceipt() {
+    if (!receiptOutput) return;
+    let name = 'dero-receipt.json';
+    try {
+      const parsed = JSON.parse(receiptOutput);
+      if (parsed?.txid) name = `dero-receipt-${String(parsed.txid).slice(0, 12)}.json`;
+    } catch (_) { /* keep default name */ }
+    const result = await SaveFileWithDialog(name, receiptOutput, 'Receipt', '*.json');
+    if (result.success) {
+      receiptSaved = true;
+      setTimeout(() => { receiptSaved = false; }, 2000);
+      toast.success(`Receipt saved to ${result.path}`);
+    } else if (!result.cancelled) {
+      receiptExportError = result.error || 'Could not save the receipt';
+    }
+  }
+
+  function setProofMode(mode) {
+    proofMode = mode;
+    proofResult = null;
+    proofError = '';
+    proofSource = null;
+    receiptOutput = '';
+    receiptExportError = '';
   }
   
   // SC Variable Editor functions
@@ -3223,8 +3356,26 @@
           <div class="content-section-title">Proof Validator</div>
           <p class="content-section-desc">Validate transaction proofs using the DeroProof system</p>
           
+          <div class="proof-mode">
+            <button
+              class="proof-mode-btn"
+              class:active={proofMode === 'lookup'}
+              on:click={() => setProofMode('lookup')}
+            >
+              <span class="proof-mode-led"></span>Look up
+            </button>
+            <button
+              class="proof-mode-btn"
+              class:active={proofMode === 'receipt'}
+              on:click={() => setProofMode('receipt')}
+            >
+              <span class="proof-mode-led"></span>Receipt
+            </button>
+          </div>
+
           <div class="explorer-section">
             <div class="explorer-section-body">
+              {#if proofMode === 'lookup'}
               <div class="explorer-form-group">
                 <label class="explorer-form-label">Proof String</label>
               <input
@@ -3234,7 +3385,7 @@
                   class="explorer-input"
               />
             </div>
-            
+
               <div class="explorer-form-group">
                 <label class="explorer-form-label">Transaction ID</label>
               <input
@@ -3243,21 +3394,64 @@
                 placeholder="Enter the transaction hash..."
                   class="explorer-input"
               />
+                <div class="proof-source-line daemon">
+                  <span class="proof-mode-led"></span>ASKS YOUR NODE FOR THE TRANSACTION
+                </div>
             </div>
-            
+              {:else}
+              <div class="explorer-form-group">
+                <div class="proof-receipt-label-row">
+                  <label class="explorer-form-label">Receipt</label>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    on:click={() => receiptFileInput?.click()}
+                  >
+                    <FolderOpen size={12} />
+                    Load file
+                  </button>
+                  <input
+                    bind:this={receiptFileInput}
+                    type="file"
+                    accept=".json,application/json,text/plain"
+                    class="proof-receipt-file"
+                    on:change={onReceiptFile}
+                  />
+                </div>
+                <textarea
+                  bind:value={receiptInput}
+                  placeholder="Paste the receipt you were given, or load the file..."
+                  class="explorer-input proof-receipt-input"
+                ></textarea>
+                <div class="proof-source-line offline">
+                  <span class="proof-mode-led"></span>VERIFIES ON THIS MACHINE — NO NODE, NO EXPLORER, NO NETWORK
+                </div>
+              </div>
+              {/if}
+
             {#if proofError}
                 <div class="explorer-alert error">{proofError}</div>
             {/if}
-            
+
               <div class="explorer-form-actions">
-              <button 
+              {#if proofMode === 'lookup'}
+              <button
                 on:click={validateProof}
                 disabled={proofLoading}
                 class="btn btn-primary"
               >
                 {proofLoading ? 'Validating...' : 'Validate Proof'}
               </button>
-              
+              {:else}
+              <button
+                on:click={verifyReceipt}
+                disabled={proofLoading}
+                class="btn btn-primary"
+              >
+                {proofLoading ? 'Verifying...' : 'Verify Receipt'}
+              </button>
+              {/if}
+
               {#if proofResult}
                 <button on:click={clearProofResult} class="btn btn-ghost">Clear</button>
               {/if}
@@ -3269,6 +3463,9 @@
                   <div class="proof-result-head valid">
                     <Check size={20} strokeWidth={2} />
                     <span>Proof Valid</span>
+                    {#if proofSource === 'offline'}
+                      <span class="proof-result-badge">VERIFIED OFFLINE</span>
+                    {/if}
                   </div>
                   
                   <div class="proof-receivers">
@@ -3317,6 +3514,46 @@
                       Transaction: <span class="proof-txid-value">{proofResult.txid}</span>
                     </div>
                   </div>
+
+                  {#if proofMode === 'lookup'}
+                    <div class="proof-result-actions">
+                      <button
+                        on:click={exportReceipt}
+                        disabled={receiptExporting}
+                        class="btn btn-ghost"
+                      >
+                        {receiptExporting ? 'Building...' : 'Export Receipt'}
+                      </button>
+                      <span class="proof-result-hint">
+                        Packages this proof so the other party can verify it without a node.
+                      </span>
+                    </div>
+                    <div class="proof-source-line disclosure">
+                      A receipt names the counterparties and the amount in a file that outlives the conversation.
+                    </div>
+
+                    {#if receiptExportError}
+                      <div class="explorer-alert error">{receiptExportError}</div>
+                    {/if}
+
+                    {#if receiptOutput}
+                      <div class="proof-receipt-output">
+                        <div class="proof-receipt-output-head">
+                          <span class="explorer-form-label" style="margin:0">Receipt</span>
+                          <div class="proof-receipt-output-actions">
+                            <button on:click={copyReceipt} class="btn btn-ghost btn-sm">
+                              {receiptCopied ? 'Copied' : 'Copy'}
+                            </button>
+                            <button on:click={saveReceipt} class="btn btn-ghost btn-sm">
+                              <Download size={12} />
+                              {receiptSaved ? 'Saved' : 'Save file'}
+                            </button>
+                          </div>
+                        </div>
+                        <pre class="proof-receipt-output-body">{receiptOutput}</pre>
+                      </div>
+                    {/if}
+                  {/if}
                 {:else}
                   <div class="proof-result-head invalid">
                     <Shield size={20} strokeWidth={2} />
@@ -4026,6 +4263,170 @@
   }
   
   /* === v6.1 Proof Result === */
+  /* --- Proof source rail: look up on your node, or verify a receipt offline.
+     One panel, two sources -- not a second screen. --- */
+  .proof-mode {
+    display: flex;
+    margin-bottom: var(--s-4);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    width: fit-content;
+  }
+
+  .proof-mode-btn {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: var(--void-mid);
+    color: var(--text-3);
+    border: 0;
+    padding: 10px 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: color 150ms ease, background 150ms ease;
+  }
+
+  .proof-mode-btn:hover { color: var(--text-2); }
+  .proof-mode-btn.active { background: var(--void-up); color: var(--cyan-400); }
+  .proof-mode-btn + .proof-mode-btn { border-left: 1px solid var(--border-subtle); }
+
+  .proof-mode-led {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-4);
+    flex-shrink: 0;
+    transition: background 150ms ease, box-shadow 150ms ease;
+  }
+
+  .proof-mode-btn.active .proof-mode-led {
+    background: var(--cyan-400);
+    box-shadow: 0 0 8px var(--cyan-400);
+  }
+
+  /* Where the answer came from, stated plainly under the input. */
+  .proof-source-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: var(--s-3);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--text-4);
+  }
+
+  .proof-source-line .proof-mode-led { width: 5px; height: 5px; }
+
+  .proof-source-line.daemon .proof-mode-led {
+    background: var(--violet-400);
+    box-shadow: 0 0 8px var(--violet-400);
+  }
+
+  .proof-source-line.offline { color: var(--cyan-400); }
+
+  .proof-source-line.offline .proof-mode-led {
+    background: var(--cyan-400);
+    box-shadow: 0 0 8px var(--cyan-400);
+  }
+
+  textarea.proof-receipt-input {
+    min-height: 132px;
+    resize: vertical;
+    line-height: 1.6;
+  }
+
+  .proof-receipt-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--s-2);
+  }
+
+  .proof-receipt-label-row .explorer-form-label {
+    margin: 0;
+  }
+
+  .proof-receipt-file {
+    display: none;
+  }
+
+  .proof-receipt-output-actions {
+    display: flex;
+    gap: var(--s-2);
+    align-items: center;
+  }
+
+  .proof-source-line.disclosure {
+    margin-top: var(--s-2);
+    color: var(--text-4);
+    letter-spacing: 0.02em;
+    text-transform: none;
+  }
+
+  .proof-result-badge {
+    margin-left: auto;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    padding: 4px 9px;
+    border-radius: 99px;
+    background: rgba(34, 211, 238, 0.1);
+    border: 1px solid rgba(34, 211, 238, 0.3);
+    color: var(--cyan-300);
+  }
+
+  /* A receipt is something you produce AFTER a proof verifies, so the
+     affordance lives inside the verified result. */
+  .proof-result-actions {
+    margin-top: var(--s-4);
+    padding-top: var(--s-4);
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    gap: var(--s-3);
+    align-items: center;
+  }
+
+  .proof-result-hint {
+    font-size: 11px;
+    color: var(--text-4);
+    margin-left: auto;
+    max-width: 340px;
+    text-align: right;
+    line-height: 1.6;
+  }
+
+  .proof-receipt-output {
+    margin-top: var(--s-3);
+    background: var(--void-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+  }
+
+  .proof-receipt-output-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--s-2) var(--s-3);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .proof-receipt-output-body {
+    margin: 0;
+    padding: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+
   .proof-result {
     margin-top: var(--s-5);
     padding: var(--s-4);

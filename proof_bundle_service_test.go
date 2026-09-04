@@ -67,24 +67,65 @@ func TestVerifyProofBundleTouchesNoDaemon(t *testing.T) {
 	}
 }
 
-// A tampered receipt must be reported invalid rather than crashing the app --
-// derohe's transaction parser panics on some malformed bytes, and a receipt is
-// untrusted input by construction.
-func TestVerifyProofBundleRejectsTampered(t *testing.T) {
+// MUTATION: flipping the transaction blob, a ring member, or the proof
+// (the blinder lives in the deroproof string) must all fail closed through
+// the Wails entry point — a passing test that cannot fail is worth nothing.
+func TestVerifyProofBundleRejectsMutations(t *testing.T) {
 	a := &App{daemonClient: nil, settings: map[string]interface{}{"network": "mainnet"}}
 
-	runes := []rune(tbTxHex)
-	i := len(runes) / 2
-	if runes[i] == '0' {
-		runes[i] = '1'
-	} else {
-		runes[i] = '0'
+	cases := []struct {
+		name   string
+		mutate func(map[string]interface{})
+	}{
+		{
+			name: "tx blob",
+			mutate: func(m map[string]interface{}) {
+				hex := m["tx_hex"].(string)
+				runes := []rune(hex)
+				i := len(runes) / 2
+				if runes[i] == '0' {
+					runes[i] = '1'
+				} else {
+					runes[i] = '0'
+				}
+				m["tx_hex"] = string(runes)
+			},
+		},
+		{
+			name: "ring entry",
+			mutate: func(m map[string]interface{}) {
+				// A well-formed decoy swap can still verify — Prove only
+				// needs the keys it opens. Flip a character so the entry
+				// is no longer a valid address.
+				broken := []rune(tbRing1)
+				broken[20] = 'x'
+				m["ring"] = [][]string{{string(broken), tbRing2, tbRing3, tbRing4}}
+			},
+		},
+		{
+			name: "proof / blinder",
+			mutate: func(m map[string]interface{}) {
+				m["proof"] = strings.Replace(tbProof, "deroproof1qyzlkv8", "deroproof1qyzlkv9", 1)
+			},
+		},
 	}
-	tampered := strings.Replace(buildTestBundle(t), tbTxHex, string(runes), 1)
 
-	res := a.VerifyProofBundle(tampered)
-	if res["valid"] == true {
-		t.Fatalf("a tampered receipt was reported valid")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var m map[string]interface{}
+			if err := json.Unmarshal([]byte(buildTestBundle(t)), &m); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(m)
+			data, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := a.VerifyProofBundle(string(data))
+			if res["valid"] == true {
+				t.Fatalf("%s: a mutated receipt was reported valid", tc.name)
+			}
+		})
 	}
 }
 

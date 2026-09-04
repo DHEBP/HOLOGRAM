@@ -270,6 +270,10 @@ export function ExecuteSCViaXSWD(arg1, arg2, arg3) {
   return window['go']['main']['App']['ExecuteSCViaXSWD'](arg1, arg2, arg3);
 }
 
+export function ExportProofBundle(arg1, arg2) {
+  return window['go']['main']['App']['ExportProofBundle'](arg1, arg2);
+}
+
 export function ExportRegistrationDCSP(arg1, arg2, arg3) {
   return window['go']['main']['App']['ExportRegistrationDCSP'](arg1, arg2, arg3);
 }
@@ -1476,6 +1480,10 @@ export function VerifyColdWallet(arg1, arg2, arg3, arg4) {
 
 export function VerifyDOCSignature(arg1) {
   return window['go']['main']['App']['VerifyDOCSignature'](arg1);
+}
+
+export function VerifyProofBundle(arg1) {
+  return window['go']['main']['App']['VerifyProofBundle'](arg1);
 }
 
 export function VerifySignature(arg1) {

@@ -1,7 +1,7 @@
 <script>
   import { walletState, appState, settingsState, addressMasked, balanceMasked, toast, handleBackendError, syncNetworkMode, pendingPayment, clearPendingPayment } from '../lib/stores/appState.js';
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime.js';
-  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, SplitIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents, GetRegistrationStatus, RegisterWallet, CancelRegistration, ResolveNameForSend, GetRingMemberSets, GetAllSettings, SetSetting } from '../../wailsjs/go/main/App.js';
+  import { OpenWallet, CloseWallet, GetBalance, GetWalletStatus, ListRecentWallets, GetRecentWalletsWithInfo, RemoveRecentWallet, ClearRecentWallets, ConnectXSWD, SelectWalletFile, CreateWallet, RestoreWallet, GetTransactionHistory, GetIntegratedAddress, SplitIntegratedAddress, InternalWalletCall, GetAddressBook, DeleteContact, SignMessage, VerifySignature, GetSeedPhrase, GetWalletKeys, GetSimulatorTestWallets, SyncSimulatorTestWallets, OpenSimulatorTestWallet, FundTestWallet, RefreshTestWalletBalance, SaveFileWithDialog, ExportProofBundle, SyncWallet, GetWalletSyncStatus, ChangeWalletPassword, SetTransactionLabel, GetAllTransactionLabels, GetTransactionLabel, DeleteTransactionLabel, CreatePaymentRequest, DecodeIntegratedAddress, GetMiningEarningsSummary, GetWalletMiningEarnings, IsWalletOpen, GetCurrentWalletPath, SubscribeToWalletEvents, UnsubscribeFromEvents, GetRegistrationStatus, RegisterWallet, CancelRegistration, ResolveNameForSend, GetRingMemberSets, GetAllSettings, SetSetting } from '../../wailsjs/go/main/App.js';
   import { onMount, onDestroy } from 'svelte';
   import { looksLikeDeroAddress } from '../lib/utils/deroAddress.js';
   import { 
@@ -189,6 +189,12 @@
   let historyHasMore = false;
   let historyLoadingMore = false;
   let expandedTxId = null;
+  let receiptExporting = false;
+  let receiptExportTxid = '';
+  let receiptOutput = '';
+  let receiptExportError = '';
+  let receiptCopied = false;
+  let receiptSaved = false;
   
   // ============================================
   // SYNC STATUS
@@ -2009,6 +2015,52 @@
       detail: { tab: 'explorer', type: 'hash', query: txid, result: null }
     }));
   }
+
+  // Sender-side: package the proof already sitting on this row so the
+  // other party can verify it without asking a node. Still uses the daemon
+  // here — that is fine; the privacy win is on the receiving side.
+  async function exportTxReceipt(tx) {
+    if (!tx?.proof || !tx?.txid) return;
+    receiptExporting = true;
+    receiptExportTxid = tx.txid;
+    receiptExportError = '';
+    receiptOutput = '';
+    try {
+      const result = await ExportProofBundle(tx.proof, tx.txid);
+      if (result.success) {
+        receiptOutput = result.bundle;
+      } else {
+        receiptExportError = result.error || 'Could not build the receipt';
+      }
+    } catch (e) {
+      receiptExportError = e.message || 'Could not build the receipt';
+    } finally {
+      receiptExporting = false;
+    }
+  }
+
+  async function copyTxReceipt() {
+    if (!receiptOutput) return;
+    await navigator.clipboard.writeText(receiptOutput);
+    receiptCopied = true;
+    toast.success('Receipt copied', 2000);
+    setTimeout(() => { receiptCopied = false; }, 2000);
+  }
+
+  async function saveTxReceipt() {
+    if (!receiptOutput) return;
+    const name = receiptExportTxid
+      ? `dero-receipt-${receiptExportTxid.slice(0, 12)}.json`
+      : 'dero-receipt.json';
+    const result = await SaveFileWithDialog(name, receiptOutput, 'Receipt', '*.json');
+    if (result.success) {
+      receiptSaved = true;
+      toast.success(`Receipt saved to ${result.path}`);
+      setTimeout(() => { receiptSaved = false; }, 2000);
+    } else if (!result.cancelled) {
+      receiptExportError = result.error || 'Could not save the receipt';
+    }
+  }
   
   async function selectWalletFile() {
     try {
@@ -3169,13 +3221,49 @@
                         </div>
                       {/if}
 
-                      <!-- View in Explorer Action -->
+                      <!-- View in Explorer / Export Receipt -->
                       <div class="tx-detail-actions">
                         <button class="btn btn-secondary btn-sm" on:click={() => viewInExplorer(tx.txid)}>
                           <ExternalLink size={14} />
                           View in Explorer
                         </button>
+                        {#if tx.proof && tx.txid}
+                          <button
+                            class="btn btn-secondary btn-sm"
+                            disabled={receiptExporting && receiptExportTxid === tx.txid}
+                            on:click={() => exportTxReceipt(tx)}
+                          >
+                            <Shield size={14} />
+                            {receiptExporting && receiptExportTxid === tx.txid ? 'Building...' : 'Export Receipt'}
+                          </button>
+                        {/if}
                       </div>
+                      {#if receiptExportTxid === tx.txid && (receiptOutput || receiptExportError)}
+                        <div class="tx-detail-receipt">
+                          {#if receiptExportError}
+                            <div class="tx-detail-receipt-error">{receiptExportError}</div>
+                          {/if}
+                          {#if receiptOutput}
+                            <div class="tx-detail-receipt-head">
+                              <span>Receipt — the other party verifies this without a node</span>
+                              <div class="tx-detail-receipt-actions">
+                                <button class="btn-icon-sm" on:click={copyTxReceipt} title="Copy receipt">
+                                  <Copy size={12} />
+                                  {receiptCopied ? 'Copied' : 'Copy'}
+                                </button>
+                                <button class="btn-icon-sm" on:click={saveTxReceipt} title="Save receipt">
+                                  <Download size={12} />
+                                  {receiptSaved ? 'Saved' : 'Save file'}
+                                </button>
+                              </div>
+                            </div>
+                            <p class="tx-detail-receipt-disclosure">
+                              Names the counterparties and the amount in a file that outlives the conversation.
+                            </p>
+                            <pre class="tx-detail-receipt-body">{receiptOutput}</pre>
+                          {/if}
+                        </div>
+                      {/if}
                     </div>
                   {/if}
                 </div>
@@ -6019,6 +6107,66 @@
     border-top: 1px solid var(--border-dim);
     display: flex;
     gap: var(--s-2);
+  }
+
+  .tx-detail-receipt {
+    grid-column: 1 / -1;
+    background: var(--void-deep);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+  }
+
+  .tx-detail-receipt-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    border-bottom: 1px solid var(--border-dim);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: var(--text-3);
+  }
+
+  .tx-detail-receipt-actions {
+    display: flex;
+    gap: var(--s-2);
+    align-items: center;
+  }
+
+  .tx-detail-receipt-actions .btn-icon-sm {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+  }
+
+  .tx-detail-receipt-disclosure {
+    margin: 0;
+    padding: var(--s-2) var(--s-3) 0;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-4);
+  }
+
+  .tx-detail-receipt-body {
+    margin: 0;
+    padding: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .tx-detail-receipt-error {
+    padding: var(--s-3);
+    font-size: 12px;
+    color: var(--red-400, #f87171);
   }
 
   /* Sync Progress Bar */
