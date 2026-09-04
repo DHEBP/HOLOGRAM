@@ -52,6 +52,20 @@ else
     WAILS_TAGS ?=
 endif
 
+# The Wails CLI bundles golang.org/x/tools and can only read export data from
+# the Go release it was built against or older. wails v2.11.0 ships x/tools
+# v0.30.0, so a newer local toolchain makes `wails dev` die inside `go mod tidy`
+# with the misleading:
+#
+#   internal error: package "fmt" without types was imported from ...
+#
+# Pin the toolchain builds run under. go1.26.5 is what release.yml already uses,
+# so this makes local match CI instead of drifting ahead of it.
+# Override on the command line if you need a different one:
+#   make GOTOOLCHAIN=go1.27.0 ...
+GOTOOLCHAIN ?= go1.26.5
+export GOTOOLCHAIN
+
 # Build directories
 BUILD_DIR = build/bin
 DEROHE_PKG = github.com/deroproject/derohe

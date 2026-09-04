@@ -1,9 +1,5 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/DHEBP/derohe v0.0.0-20260820134946-b00fb9d72b3a h1:radVTZcKYdj/kGC1BiBFcvs9dFntmsB5qAiDE3QZtgY=
-github.com/DHEBP/derohe v0.0.0-20260820134946-b00fb9d72b3a/go.mod h1:EWHh1VkXRnCHvyGML98kXhngDFYebmOhk/9kZ1ATJ1c=
-github.com/DHEBP/derohe v0.0.0-20260826032139-3727aab73265 h1:XwH115jNAgWvxH0CyudlyfCCS74TpXDjGCM3rB5a8QM=
-github.com/DHEBP/derohe v0.0.0-20260826032139-3727aab73265/go.mod h1:EWHh1VkXRnCHvyGML98kXhngDFYebmOhk/9kZ1ATJ1c=
 github.com/DHEBP/derohe v0.0.0-20260902032843-6b080d068b30 h1:PDn9AGg9hgmK9jbv+HDEktHXQB/W4vbM2moqFWiwNGk=
 github.com/DHEBP/derohe v0.0.0-20260902032843-6b080d068b30/go.mod h1:EWHh1VkXRnCHvyGML98kXhngDFYebmOhk/9kZ1ATJ1c=
 github.com/OneOfOne/xxhash v1.2.2 h1:KMrpdQIwFcEqXDklaen+P1axHaj9BSKzvpUUfnHldSE=
